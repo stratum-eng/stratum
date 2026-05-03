@@ -205,7 +205,7 @@ vi.mock("../src/storage/imports", () => ({
         ...existing.logs,
         {
           message: "Import cancellation requested",
-          level: "info",
+          level: "info" as const,
           timestamp: new Date().toISOString(),
         },
       ].slice(-100),
@@ -506,9 +506,12 @@ describe("Import Cancellation End-to-End Tests", () => {
       const progressResult = await getImportProgress(env.DB, "@userA", "test-project", logger);
 
       expect(progressResult.success).toBe(true);
-      expect(progressResult.data?.status).toBe("cancelling");
+      if (!progressResult.success) return;
+      expect(progressResult.data).not.toBeNull();
+      if (progressResult.data === null) return;
+      expect(progressResult.data.status).toBe("cancelling");
       expect(
-        progressResult.data?.logs.some((log) => log.message.includes("cancellation requested")),
+        progressResult.data.logs.some((log: { message: string }) => log.message.includes("cancellation requested")),
       ).toBe(true);
     });
 
@@ -549,8 +552,9 @@ describe("Import Cancellation End-to-End Tests", () => {
         "Import cancelled by user",
       );
       expect(updateResult.success).toBe(true);
-      expect(updateResult.data?.status).toBe("cancelled");
-      expect(updateResult.data?.completedAt).toBeDefined();
+      if (!updateResult.success) return;
+      expect(updateResult.data.status).toBe("cancelled");
+      expect(updateResult.data.completedAt).toBeDefined();
 
       // Delete the job
       const deleteResult = await deleteImportJob(env.DB, "@userA", "test-project", logger);
@@ -558,6 +562,8 @@ describe("Import Cancellation End-to-End Tests", () => {
 
       // Verify job is removed
       const afterDelete = await getImportProgress(env.DB, "@userA", "test-project", logger);
+      expect(afterDelete.success).toBe(true);
+      if (!afterDelete.success) return;
       expect(afterDelete.data).toBeNull();
     });
   });
@@ -798,7 +804,11 @@ describe("Import Cancellation End-to-End Tests", () => {
       const logger = createLogger({ component: "Test" });
 
       const progress = await getImportProgress(env.DB, "@userA", "processing-project", logger);
-      expect(progress.data?.status).toBe("cancelling");
+      expect(progress.success).toBe(true);
+      if (!progress.success) return;
+      expect(progress.data).not.toBeNull();
+      if (progress.data === null) return;
+      expect(progress.data.status).toBe("cancelling");
     });
 
     it("should preserve progress data when cancelling during processing", async () => {
@@ -841,10 +851,14 @@ describe("Import Cancellation End-to-End Tests", () => {
       const { getImportProgress } = await import("../src/storage/imports");
       const progress = await getImportProgress(env.DB, "@userA", "progress-project", logger);
 
-      expect(progress.data?.progress.processedFiles).toBe(50);
-      expect(progress.data?.progress.totalFiles).toBe(100);
-      expect(progress.data?.progress.currentFile).toBe("src/main.ts");
-      expect(progress.data?.status).toBe("cancelling");
+      expect(progress.success).toBe(true);
+      if (!progress.success) return;
+      expect(progress.data).not.toBeNull();
+      if (progress.data === null) return;
+      expect(progress.data.progress.processedFiles).toBe(50);
+      expect(progress.data.progress.totalFiles).toBe(100);
+      expect(progress.data.progress.currentFile).toBe("src/main.ts");
+      expect(progress.data.status).toBe("cancelling");
     });
 
     it("should add cancellation log entry when cancelling", async () => {
@@ -869,8 +883,12 @@ describe("Import Cancellation End-to-End Tests", () => {
 
       const progress = await getImportProgress(env.DB, "@userA", "log-test-project", logger);
 
-      const hasCancellationLog = progress.data?.logs.some(
-        (log) => log.message.includes("cancellation requested") && log.level === "info",
+      expect(progress.success).toBe(true);
+      if (!progress.success) return;
+      expect(progress.data).not.toBeNull();
+      if (progress.data === null) return;
+      const hasCancellationLog = progress.data.logs.some(
+        (log: { message: string; level: string }) => log.message.includes("cancellation requested") && log.level === "info",
       );
       expect(hasCancellationLog).toBe(true);
     });
