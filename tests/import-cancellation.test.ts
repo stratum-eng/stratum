@@ -511,7 +511,9 @@ describe("Import Cancellation End-to-End Tests", () => {
       if (progressResult.data === null) return;
       expect(progressResult.data.status).toBe("cancelling");
       expect(
-        progressResult.data.logs.some((log: { message: string }) => log.message.includes("cancellation requested")),
+        progressResult.data.logs.some((log: { message: string }) =>
+          log.message.includes("cancellation requested"),
+        ),
       ).toBe(true);
     });
 
@@ -888,7 +890,8 @@ describe("Import Cancellation End-to-End Tests", () => {
       expect(progress.data).not.toBeNull();
       if (progress.data === null) return;
       const hasCancellationLog = progress.data.logs.some(
-        (log: { message: string; level: string }) => log.message.includes("cancellation requested") && log.level === "info",
+        (log: { message: string; level: string }) =>
+          log.message.includes("cancellation requested") && log.level === "info",
       );
       expect(hasCancellationLog).toBe(true);
     });
