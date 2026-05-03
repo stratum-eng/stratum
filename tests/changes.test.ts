@@ -74,7 +74,14 @@ vi.mock("../src/evaluation", () => ({
     }),
   })),
   CompositeEvaluator: vi.fn().mockImplementation(() => ({
-    evaluateAndAggregate: vi.fn(),
+    evaluate: vi.fn().mockResolvedValue({
+      success: true,
+      data: [{ score: 1, passed: true, reason: "All evaluators passed." }],
+    }),
+    evaluateAndAggregate: vi.fn().mockResolvedValue({
+      success: true,
+      data: { score: 1, passed: true, reason: "All evaluators passed." },
+    }),
     aggregate: vi.fn().mockReturnValue({
       score: 1,
       passed: true,
@@ -206,19 +213,53 @@ describe("POST /api/projects/:name/changes", () => {
     app = makeApp();
     env = makeEnv();
     vi.clearAllMocks();
-    vi.mocked(getUserByToken).mockResolvedValue({
-      success: true,
-      data: {
-        id: "user_test",
-        email: "test@example.com",
-        username: "test",
-        tokenHash: "hash",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      },
+    vi.mocked(getUserByToken).mockImplementation(async (_db, token) => {
+      if (token === "stratum_user_testtoken00000000000000000") {
+        return {
+          success: true,
+          data: {
+            id: "user_test",
+            email: "test@example.com",
+            username: "test",
+            tokenHash: "hash",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        };
+      }
+      if (token === "stratum_user_othertoken000000000000000") {
+        return {
+          success: true,
+          data: {
+            id: "user_other",
+            email: "other@example.com",
+            username: "other",
+            tokenHash: "hash",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        };
+      }
+      return {
+        success: false,
+        error: new NotFoundError("User", token),
+      };
     });
-    vi.mocked(getAgentByToken).mockResolvedValue({
-      success: false,
-      error: new NotFoundError("Agent", "test"),
+    vi.mocked(getAgentByToken).mockImplementation(async (_db, token) => {
+      if (token === "stratum_agent_testtoken0000000000000000") {
+        return {
+          success: true,
+          data: {
+            id: "agent_test",
+            ownerId: "user_test",
+            name: "test-agent",
+            tokenHash: "hash",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        };
+      }
+      return {
+        success: false,
+        error: new NotFoundError("Agent", token),
+      };
     });
     vi.mocked(getProject).mockResolvedValue({
       success: true,
@@ -248,10 +289,15 @@ describe("POST /api/projects/:name/changes", () => {
     vi.mocked(CompositeEvaluator).mockImplementation(
       () =>
         ({
+          evaluate: vi.fn().mockResolvedValue({
+            success: true,
+            data: [passingEvalResult],
+          }),
           evaluateAndAggregate: vi.fn().mockResolvedValue({
             success: true,
             data: passingEvalResult,
           }),
+          aggregate: vi.fn().mockReturnValue(passingEvalResult),
         }) as unknown as CompositeEvaluator,
     );
   });
@@ -272,12 +318,14 @@ describe("POST /api/projects/:name/changes", () => {
     expect(body.eval.passed).toBe(true);
     expect(updateChangeStatus).toHaveBeenCalledWith(
       env.DB,
+      expect.any(Object),
       "chg_abc123",
       "accepted",
       expect.objectContaining({ evalPassed: true }),
     );
     expect(recordEvalRuns).toHaveBeenCalledWith(
       env.DB,
+      expect.any(Object),
       "chg_abc123",
       expect.arrayContaining([
         expect.objectContaining({ evaluatorType: "secret_scan" }),
@@ -320,10 +368,15 @@ describe("POST /api/projects/:name/changes", () => {
     vi.mocked(CompositeEvaluator).mockImplementation(
       () =>
         ({
+          evaluate: vi.fn().mockResolvedValue({
+            success: true,
+            data: [failingEvalResult],
+          }),
           evaluateAndAggregate: vi.fn().mockResolvedValue({
             success: true,
             data: failingEvalResult,
           }),
+          aggregate: vi.fn().mockReturnValue(failingEvalResult),
         }) as unknown as CompositeEvaluator,
     );
 
@@ -338,6 +391,7 @@ describe("POST /api/projects/:name/changes", () => {
     expect(body.eval.passed).toBe(false);
     expect(updateChangeStatus).toHaveBeenCalledWith(
       env.DB,
+      expect.any(Object),
       "chg_abc123",
       "needs_changes",
       expect.objectContaining({ evalPassed: false }),
@@ -367,6 +421,16 @@ describe("POST /api/projects/:name/changes", () => {
     vi.mocked(CompositeEvaluator).mockImplementation(
       () =>
         ({
+          evaluate: vi.fn().mockResolvedValue({
+            success: true,
+            data: [
+              {
+                score: 1,
+                passed: true,
+                reason: "All evaluators passed.",
+              },
+            ],
+          }),
           evaluateAndAggregate: vi.fn().mockResolvedValue({
             success: true,
             data: {
@@ -374,6 +438,11 @@ describe("POST /api/projects/:name/changes", () => {
               passed: true,
               reason: "All evaluators passed.",
             },
+          }),
+          aggregate: vi.fn().mockReturnValue({
+            score: 1,
+            passed: true,
+            reason: "All evaluators passed.",
           }),
         }) as unknown as CompositeEvaluator,
     );
@@ -403,6 +472,7 @@ describe("POST /api/projects/:name/changes", () => {
     expect(res.status).toBe(201);
     expect(recordEvalRuns).toHaveBeenCalledWith(
       env.DB,
+      expect.any(Object),
       "chg_abc123",
       expect.arrayContaining([
         expect.objectContaining({
@@ -473,15 +543,35 @@ describe("GET /api/projects/:name/changes", () => {
     app = makeApp();
     env = makeEnv();
     vi.clearAllMocks();
-    vi.mocked(getUserByToken).mockResolvedValue({
-      success: true,
-      data: {
-        id: "user_test",
-        email: "test@example.com",
-        username: "test",
-        tokenHash: "hash",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      },
+    vi.mocked(getUserByToken).mockImplementation(async (_db, token) => {
+      if (token === "stratum_user_testtoken00000000000000000") {
+        return {
+          success: true,
+          data: {
+            id: "user_test",
+            email: "test@example.com",
+            username: "test",
+            tokenHash: "hash",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        };
+      }
+      if (token === "stratum_user_othertoken000000000000000") {
+        return {
+          success: true,
+          data: {
+            id: "user_other",
+            email: "other@example.com",
+            username: "other",
+            tokenHash: "hash",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        };
+      }
+      return {
+        success: false,
+        error: new NotFoundError("User", token),
+      };
     });
     vi.mocked(getProject).mockResolvedValue({
       success: true,
@@ -563,15 +653,35 @@ describe("GET /api/changes/:id", () => {
     app = makeApp();
     env = makeEnv();
     vi.clearAllMocks();
-    vi.mocked(getUserByToken).mockResolvedValue({
-      success: true,
-      data: {
-        id: "user_test",
-        email: "test@example.com",
-        username: "test",
-        tokenHash: "hash",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      },
+    vi.mocked(getUserByToken).mockImplementation(async (_db, token) => {
+      if (token === "stratum_user_testtoken00000000000000000") {
+        return {
+          success: true,
+          data: {
+            id: "user_test",
+            email: "test@example.com",
+            username: "test",
+            tokenHash: "hash",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        };
+      }
+      if (token === "stratum_user_othertoken000000000000000") {
+        return {
+          success: true,
+          data: {
+            id: "user_other",
+            email: "other@example.com",
+            username: "other",
+            tokenHash: "hash",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        };
+      }
+      return {
+        success: false,
+        error: new NotFoundError("User", token),
+      };
     });
   });
 
@@ -646,15 +756,35 @@ describe("POST /api/changes/:id/merge", () => {
     app = makeApp();
     env = makeEnv();
     vi.clearAllMocks();
-    vi.mocked(getUserByToken).mockResolvedValue({
-      success: true,
-      data: {
-        id: "user_test",
-        email: "test@example.com",
-        username: "test",
-        tokenHash: "hash",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      },
+    vi.mocked(getUserByToken).mockImplementation(async (_db, token) => {
+      if (token === "stratum_user_testtoken00000000000000000") {
+        return {
+          success: true,
+          data: {
+            id: "user_test",
+            email: "test@example.com",
+            username: "test",
+            tokenHash: "hash",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        };
+      }
+      if (token === "stratum_user_othertoken000000000000000") {
+        return {
+          success: true,
+          data: {
+            id: "user_other",
+            email: "other@example.com",
+            username: "other",
+            tokenHash: "hash",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        };
+      }
+      return {
+        success: false,
+        error: new NotFoundError("User", token),
+      };
     });
     vi.mocked(getProject).mockResolvedValue({
       success: true,
@@ -873,15 +1003,35 @@ describe("POST /api/changes/:id/reject", () => {
     app = makeApp();
     env = makeEnv();
     vi.clearAllMocks();
-    vi.mocked(getUserByToken).mockResolvedValue({
-      success: true,
-      data: {
-        id: "user_test",
-        email: "test@example.com",
-        username: "test",
-        tokenHash: "hash",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      },
+    vi.mocked(getUserByToken).mockImplementation(async (_db, token) => {
+      if (token === "stratum_user_testtoken00000000000000000") {
+        return {
+          success: true,
+          data: {
+            id: "user_test",
+            email: "test@example.com",
+            username: "test",
+            tokenHash: "hash",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        };
+      }
+      if (token === "stratum_user_othertoken000000000000000") {
+        return {
+          success: true,
+          data: {
+            id: "user_other",
+            email: "other@example.com",
+            username: "other",
+            tokenHash: "hash",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        };
+      }
+      return {
+        success: false,
+        error: new NotFoundError("User", token),
+      };
     });
     vi.mocked(getProject).mockResolvedValue({
       success: true,
