@@ -1,7 +1,7 @@
 import type { FC } from "hono/jsx";
-import { Layout } from "../layout";
-import { ImportProgressCard } from "../components/import-progress";
 import type { ImportProgress } from "../../types";
+import { ImportProgressCard } from "../components/import-progress";
+import { Layout } from "../layout";
 
 interface RepoProps {
   project: { name: string; namespace: string; slug: string; remote: string; createdAt: string };

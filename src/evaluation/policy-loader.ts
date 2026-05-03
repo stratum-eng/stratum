@@ -9,8 +9,18 @@ const DEFAULT_POLICY: EvalPolicy = {
   minScore: 0.7,
 };
 
-export async function loadPolicy(remote: string, token: string, logger: Logger): Promise<EvalPolicy> {
-  const yamlPolicy = await readAndParsePolicy(remote, token, ".stratum/policy.yaml", "yaml", logger);
+export async function loadPolicy(
+  remote: string,
+  token: string,
+  logger: Logger,
+): Promise<EvalPolicy> {
+  const yamlPolicy = await readAndParsePolicy(
+    remote,
+    token,
+    ".stratum/policy.yaml",
+    "yaml",
+    logger,
+  );
   if (yamlPolicy) return yamlPolicy;
 
   const jsonPolicy = await readAndParsePolicy(remote, token, "stratum.config.json", "json", logger);
@@ -29,7 +39,7 @@ async function readAndParsePolicy(
   try {
     const contentResult = await readFileFromRepo(remote, token, path, logger);
     if (!contentResult.success) return null;
-    
+
     const content = contentResult.data;
     if (content === null || content === undefined) return null;
 

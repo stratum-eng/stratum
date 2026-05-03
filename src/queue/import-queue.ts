@@ -4,16 +4,9 @@
  */
 
 import { importFromGitHub } from "../storage/git-ops";
-import {
-  createImportJob,
-  getImportProgress,
-  updateImportProgress,
-  updateImportStatus,
-  deleteImportJob,
-  isImportCancelled,
-} from "../storage/imports";
+import { deleteImportJob, isImportCancelled, updateImportStatus } from "../storage/imports";
 import { getProjectByPath, setProject } from "../storage/state";
-import type { ImportJobMessage, SyncJobMessage, ProjectEntry, Env } from "../types";
+import type { Env, ImportJobMessage, ProjectEntry, SyncJobMessage } from "../types";
 import type { Message, MessageBatch } from "../types";
 import { getArtifactsRepoName } from "../types";
 import { createLogger } from "../utils/logger";
@@ -122,7 +115,7 @@ function validateSyncMessage(body: unknown): SyncJobMessage | null {
 async function checkAndHandleCancellation(
   env: Env,
   namespace: string,
-  slug: string
+  slug: string,
 ): Promise<boolean> {
   const isCancelled = await isImportCancelled(env.DB, namespace, slug, logger);
   if (isCancelled) {
@@ -133,7 +126,7 @@ async function checkAndHandleCancellation(
       slug,
       "cancelled",
       logger,
-      "Import cancelled by user"
+      "Import cancelled by user",
     );
     await deleteImportJob(env.DB, namespace, slug, logger);
   }
@@ -147,7 +140,7 @@ async function checkAndHandleCancellation(
 async function processImportJob(
   env: Env,
   message: ImportJobMessage,
-  msg: Message<ImportJobMessage>
+  msg: Message<ImportJobMessage>,
 ): Promise<void> {
   const { importId, projectId, namespace, slug, githubUrl, branch, depth } = message;
   const artifactsRepoName = getArtifactsRepoName(namespace, slug);
@@ -195,7 +188,7 @@ async function processImportJob(
       githubUrl,
       logger,
       branch,
-      depth
+      depth,
     );
 
     if (!importResult.success) {
@@ -212,7 +205,7 @@ async function processImportJob(
         slug,
         "failed",
         logger,
-        `Import failed: ${importResult.error.message}`
+        `Import failed: ${importResult.error.message}`,
       );
       msg.ack();
       return;
@@ -240,7 +233,7 @@ async function processImportJob(
         slug,
         "failed",
         logger,
-        `Failed to update project: ${setResult.error.message}`
+        `Failed to update project: ${setResult.error.message}`,
       );
       msg.ack();
       return;
@@ -259,7 +252,7 @@ async function processImportJob(
       slug,
       "completed",
       logger,
-      "Import completed successfully"
+      "Import completed successfully",
     );
 
     logger.info("Import completed successfully", { importId, namespace, slug });
@@ -274,14 +267,7 @@ async function processImportJob(
     // Check if this was a cancellation
     const wasCancelled = await isImportCancelled(env.DB, namespace, slug, logger);
     if (wasCancelled) {
-      await updateImportStatus(
-        env.DB,
-        namespace,
-        slug,
-        "cancelled",
-        logger,
-        "Import cancelled"
-      );
+      await updateImportStatus(env.DB, namespace, slug, "cancelled", logger, "Import cancelled");
       await deleteImportJob(env.DB, namespace, slug, logger);
     } else {
       await updateImportStatus(
@@ -290,7 +276,7 @@ async function processImportJob(
         slug,
         "failed",
         logger,
-        `Import failed: ${error instanceof Error ? error.message : String(error)}`
+        `Import failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
@@ -305,7 +291,7 @@ async function processImportJob(
 async function processSyncJob(
   env: Env,
   message: SyncJobMessage,
-  msg: Message<SyncJobMessage>
+  msg: Message<SyncJobMessage>,
 ): Promise<void> {
   const { importId, namespace, slug, githubUrl, branch, depth } = message;
   const artifactsRepoName = getArtifactsRepoName(namespace, slug);
@@ -337,7 +323,7 @@ async function processSyncJob(
       githubUrl,
       logger,
       branch,
-      depth
+      depth,
     );
 
     if (!importResult.success) {
@@ -348,7 +334,7 @@ async function processSyncJob(
         slug,
         "failed",
         logger,
-        `Sync failed: ${importResult.error.message}`
+        `Sync failed: ${importResult.error.message}`,
       );
       msg.ack();
       return;
@@ -361,7 +347,7 @@ async function processSyncJob(
       slug,
       "completed",
       logger,
-      "Sync completed successfully"
+      "Sync completed successfully",
     );
 
     logger.info("Sync completed successfully", { importId, namespace, slug });
@@ -375,14 +361,7 @@ async function processSyncJob(
 
     const wasCancelled = await isImportCancelled(env.DB, namespace, slug, logger);
     if (wasCancelled) {
-      await updateImportStatus(
-        env.DB,
-        namespace,
-        slug,
-        "cancelled",
-        logger,
-        "Sync cancelled"
-      );
+      await updateImportStatus(env.DB, namespace, slug, "cancelled", logger, "Sync cancelled");
       await deleteImportJob(env.DB, namespace, slug, logger);
     } else {
       await updateImportStatus(
@@ -391,7 +370,7 @@ async function processSyncJob(
         slug,
         "failed",
         logger,
-        `Sync failed: ${error instanceof Error ? error.message : String(error)}`
+        `Sync failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
@@ -405,7 +384,7 @@ async function processSyncJob(
  */
 export async function handleImportQueue(
   batch: MessageBatch<ImportJobMessage | SyncJobMessage>,
-  env: Env
+  env: Env,
 ): Promise<void> {
   logger.info("Processing import queue batch", {
     queue: batch.queue,
@@ -442,7 +421,7 @@ export async function handleImportQueue(
  */
 export async function queueImportJob(
   queue: Queue<ImportJobMessage> | undefined,
-  params: Omit<ImportJobMessage, "type" | "timestamp"> & { depth?: number }
+  params: Omit<ImportJobMessage, "type" | "timestamp"> & { depth?: number },
 ): Promise<void> {
   if (!queue) {
     throw new Error("IMPORT_QUEUE not configured");
@@ -461,7 +440,11 @@ export async function queueImportJob(
   };
 
   await queue.send(message);
-  logger.info("Import job queued", { importId: params.importId, namespace: params.namespace, slug: params.slug });
+  logger.info("Import job queued", {
+    importId: params.importId,
+    namespace: params.namespace,
+    slug: params.slug,
+  });
 }
 
 /**
@@ -469,7 +452,7 @@ export async function queueImportJob(
  */
 export async function queueSyncJob(
   queue: Queue<SyncJobMessage> | undefined,
-  params: Omit<SyncJobMessage, "type" | "timestamp"> & { depth?: number }
+  params: Omit<SyncJobMessage, "type" | "timestamp"> & { depth?: number },
 ): Promise<void> {
   if (!queue) {
     throw new Error("IMPORT_QUEUE not configured");
@@ -488,5 +471,9 @@ export async function queueSyncJob(
   };
 
   await (queue as Queue<SyncJobMessage | ImportJobMessage>).send(message);
-  logger.info("Sync job queued", { importId: params.importId, namespace: params.namespace, slug: params.slug });
+  logger.info("Sync job queued", {
+    importId: params.importId,
+    namespace: params.namespace,
+    slug: params.slug,
+  });
 }

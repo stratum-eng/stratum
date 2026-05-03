@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { createAgent, deleteAgent, getAgent, listAgents } from "../storage/agents";
-import { createLogger } from "../utils/logger";
 import type { Env } from "../types";
+import { createLogger } from "../utils/logger";
 import { badRequest, created, ok } from "../utils/response";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -163,7 +163,11 @@ app.delete("/:id", async (c) => {
 
   const agent = getResult.data;
   if (agent.ownerId !== userId) {
-    logger.warn("Forbidden attempt to delete agent", { agentId: id, userId, ownerId: agent.ownerId });
+    logger.warn("Forbidden attempt to delete agent", {
+      agentId: id,
+      userId,
+      ownerId: agent.ownerId,
+    });
     return c.json({ error: "Forbidden" }, 403);
   }
 

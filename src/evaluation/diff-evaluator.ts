@@ -1,6 +1,6 @@
+import type { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import type { Result } from "../utils/result";
-import type { AppError } from "../utils/errors";
 import { ok } from "../utils/result";
 import type { EvalPolicy, EvalResult, Evaluator } from "./types";
 
@@ -45,7 +45,11 @@ function countFiles(diff: string): number {
 }
 
 export class DiffEvaluator implements Evaluator {
-  async evaluate(diff: string, policy: EvalPolicy, logger: Logger): Promise<Result<EvalResult, AppError>> {
+  async evaluate(
+    diff: string,
+    policy: EvalPolicy,
+    logger: Logger,
+  ): Promise<Result<EvalResult, AppError>> {
     logger.debug("Starting diff evaluation");
 
     const config = policy.evaluators.find((e) => e.type === "diff");

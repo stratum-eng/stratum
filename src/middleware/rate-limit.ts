@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from "hono";
-import { createLogger } from "../utils/logger";
 import type { Env } from "../types";
+import { createLogger } from "../utils/logger";
 
 const logger = createLogger({ component: "RateLimit" });
 
@@ -49,7 +49,12 @@ export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<
 
       if (count >= limit) {
         logger.warn("Rate limit exceeded", {
-          identifier: identifier === userId ? `user:${userId}` : identifier === agentId ? `agent:${agentId}` : identifier.slice(0, 8),
+          identifier:
+            identifier === userId
+              ? `user:${userId}`
+              : identifier === agentId
+                ? `agent:${agentId}`
+                : identifier.slice(0, 8),
           path: c.req.path,
           limit,
           count,
@@ -69,7 +74,11 @@ export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<
       c.header("X-RateLimit-Reset", String(nextMinuteSeconds));
 
       logger.debug("Rate limit check passed", {
-        identifier: userId ? `user:${userId}` : agentId ? `agent:${agentId}` : identifier.slice(0, 8),
+        identifier: userId
+          ? `user:${userId}`
+          : agentId
+            ? `agent:${agentId}`
+            : identifier.slice(0, 8),
         path: c.req.path,
         limit,
         remaining,
@@ -153,7 +162,7 @@ export function importRateLimitMiddleware(opts?: ImportRateLimitOptions): Middle
             "X-RateLimit-Limit": String(importsPerWindow),
             "X-RateLimit-Remaining": "0",
             "X-RateLimit-Reset": String(nextWindowSeconds),
-          }
+          },
         );
       }
 
@@ -178,7 +187,8 @@ export function importRateLimitMiddleware(opts?: ImportRateLimitOptions): Middle
           return c.json(
             {
               error: "Project import in progress",
-              message: `This project is already being imported. Please wait for the current import to complete before starting a new one.`,
+              message:
+                "This project is already being imported. Please wait for the current import to complete before starting a new one.",
               retryAfter,
             },
             429,
@@ -186,7 +196,7 @@ export function importRateLimitMiddleware(opts?: ImportRateLimitOptions): Middle
               "Retry-After": String(Math.max(1, retryAfter)),
               "X-RateLimit-Limit": String(maxConcurrentPerProject),
               "X-RateLimit-Remaining": "0",
-            }
+            },
           );
         }
       }
@@ -197,9 +207,13 @@ export function importRateLimitMiddleware(opts?: ImportRateLimitOptions): Middle
       });
 
       // Increment project counter (acts as a lock during import)
-      await c.env.STATE.put(projectKey, String((projectRaw !== null ? Number.parseInt(projectRaw, 10) : 0) + 1), {
-        expirationTtl: projectLockSeconds,
-      });
+      await c.env.STATE.put(
+        projectKey,
+        String((projectRaw !== null ? Number.parseInt(projectRaw, 10) : 0) + 1),
+        {
+          expirationTtl: projectLockSeconds,
+        },
+      );
 
       // Set rate limit headers on the response
       const remaining = importsPerWindow - userCount - 1;
@@ -235,7 +249,7 @@ export async function releaseImportLock(
   kv: KVNamespace,
   namespace: string,
   slug: string,
-  logger: ReturnType<typeof createLogger>
+  logger: ReturnType<typeof createLogger>,
 ): Promise<void> {
   const projectKey = `ratelimit:import:project:${namespace}:${slug}`;
 

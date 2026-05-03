@@ -1,8 +1,8 @@
 import type { Change } from "../types";
-import { newId } from "../utils/ids";
-import { Result, ok, err } from "../utils/result";
-import { Logger } from "../utils/logger";
 import { AppError, NotFoundError } from "../utils/errors";
+import { newId } from "../utils/ids";
+import type { Logger } from "../utils/logger";
+import { type Result, err, ok } from "../utils/result";
 
 interface ChangeRow {
   id: string;
@@ -78,18 +78,26 @@ export async function createChange(
     };
     if (opts.agentId !== undefined) change.agentId = opts.agentId;
 
-    logger.debug("Change created", { changeId: id, project: opts.project, workspace: opts.workspace });
+    logger.debug("Change created", {
+      changeId: id,
+      project: opts.project,
+      workspace: opts.workspace,
+    });
     return ok(change);
   } catch (error) {
-    const appError = error instanceof AppError
-      ? error
-      : new AppError(
-          error instanceof Error ? error.message : "Failed to create change",
-          "DATABASE_ERROR",
-          500,
-          { operation: "createChange", project: opts.project }
-        );
-    logger.error("Failed to create change", appError, { project: opts.project, workspace: opts.workspace });
+    const appError =
+      error instanceof AppError
+        ? error
+        : new AppError(
+            error instanceof Error ? error.message : "Failed to create change",
+            "DATABASE_ERROR",
+            500,
+            { operation: "createChange", project: opts.project },
+          );
+    logger.error("Failed to create change", appError, {
+      project: opts.project,
+      workspace: opts.workspace,
+    });
     return err(appError);
   }
 }
@@ -97,7 +105,7 @@ export async function createChange(
 export async function getChange(
   db: D1Database,
   logger: Logger,
-  id: string
+  id: string,
 ): Promise<Result<Change, NotFoundError | AppError>> {
   try {
     const row = await db.prepare("SELECT * FROM changes WHERE id = ?").bind(id).first<ChangeRow>();
@@ -111,14 +119,15 @@ export async function getChange(
     logger.debug("Change retrieved", { changeId: id });
     return ok(rowToChange(row));
   } catch (error) {
-    const appError = error instanceof AppError
-      ? error
-      : new AppError(
-          error instanceof Error ? error.message : "Failed to get change",
-          "DATABASE_ERROR",
-          500,
-          { operation: "getChange", changeId: id }
-        );
+    const appError =
+      error instanceof AppError
+        ? error
+        : new AppError(
+            error instanceof Error ? error.message : "Failed to get change",
+            "DATABASE_ERROR",
+            500,
+            { operation: "getChange", changeId: id },
+          );
     logger.error("Failed to get change", appError, { changeId: id });
     return err(appError);
   }
@@ -133,7 +142,9 @@ export async function listChanges(
   try {
     const result = status
       ? await db
-          .prepare("SELECT * FROM changes WHERE project = ? AND status = ? ORDER BY created_at DESC")
+          .prepare(
+            "SELECT * FROM changes WHERE project = ? AND status = ? ORDER BY created_at DESC",
+          )
           .bind(project, status)
           .all<ChangeRow>()
       : await db
@@ -145,14 +156,15 @@ export async function listChanges(
     logger.debug("Changes listed", { project, status, count: changes.length });
     return ok(changes);
   } catch (error) {
-    const appError = error instanceof AppError
-      ? error
-      : new AppError(
-          error instanceof Error ? error.message : "Failed to list changes",
-          "DATABASE_ERROR",
-          500,
-          { operation: "listChanges", project, status }
-        );
+    const appError =
+      error instanceof AppError
+        ? error
+        : new AppError(
+            error instanceof Error ? error.message : "Failed to list changes",
+            "DATABASE_ERROR",
+            500,
+            { operation: "listChanges", project, status },
+          );
     logger.error("Failed to list changes", appError, { project, status });
     return err(appError);
   }
@@ -180,7 +192,10 @@ export async function updateChangeStatus(
 ): Promise<Result<void, NotFoundError | AppError>> {
   try {
     // First check if the change exists
-    const existingRow = await db.prepare("SELECT id FROM changes WHERE id = ?").bind(id).first<{ id: string }>();
+    const existingRow = await db
+      .prepare("SELECT id FROM changes WHERE id = ?")
+      .bind(id)
+      .first<{ id: string }>();
     if (!existingRow) {
       const notFoundError = new NotFoundError("Change", id);
       logger.debug("Change not found for update", { changeId: id });
@@ -222,14 +237,15 @@ export async function updateChangeStatus(
     logger.debug("Change status updated", { changeId: id, status, opts });
     return ok(undefined);
   } catch (error) {
-    const appError = error instanceof AppError
-      ? error
-      : new AppError(
-          error instanceof Error ? error.message : "Failed to update change status",
-          "DATABASE_ERROR",
-          500,
-          { operation: "updateChangeStatus", changeId: id, status }
-        );
+    const appError =
+      error instanceof AppError
+        ? error
+        : new AppError(
+            error instanceof Error ? error.message : "Failed to update change status",
+            "DATABASE_ERROR",
+            500,
+            { operation: "updateChangeStatus", changeId: id, status },
+          );
     logger.error("Failed to update change status", appError, { changeId: id, status });
     return err(appError);
   }

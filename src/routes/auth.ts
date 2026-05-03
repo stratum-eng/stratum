@@ -2,8 +2,8 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { createSession, deleteSession } from "../storage/sessions";
 import { upsertGitHubUser } from "../storage/users";
-import { createLogger } from "../utils/logger";
 import type { Env } from "../types";
+import { createLogger } from "../utils/logger";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -147,7 +147,7 @@ app.get("/github/callback", async (c) => {
       email: primaryEmail,
       username: githubUser.login,
     },
-    logger
+    logger,
   );
 
   if (!userResult.success) {
@@ -200,7 +200,7 @@ app.get("/logout", async (c) => {
   const sessionId = getCookie(c, "stratum_session");
 
   if (sessionId) {
-    logger.debug("Deleting session", { sessionId: sessionId.slice(0, 8) + "..." });
+    logger.debug("Deleting session", { sessionId: `${sessionId.slice(0, 8)}...` });
     await deleteSession(c.env.DB, sessionId, logger);
   }
 

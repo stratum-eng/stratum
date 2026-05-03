@@ -2,13 +2,13 @@ import type { FC } from "hono/jsx";
 import { Layout } from "../layout";
 
 interface HomeProps {
-  projects: Array<{ 
-    name: string; 
+  projects: Array<{
+    name: string;
     namespace: string;
     slug: string;
-    remote: string; 
-    createdAt: string; 
-    visibility?: string 
+    remote: string;
+    createdAt: string;
+    visibility?: string;
   }>;
   user?: { id: string; email: string } | null;
 }
@@ -29,14 +29,22 @@ export const HomePage: FC<HomeProps> = ({ projects, user }) => {
           {user ? (
             <>
               <p>No projects yet.</p>
-              <a href="/new" class="btn btn-primary" style={{ marginTop: "1rem", display: "inline-block" }}>
+              <a
+                href="/new"
+                class="btn btn-primary"
+                style={{ marginTop: "1rem", display: "inline-block" }}
+              >
                 Create your first project
               </a>
             </>
           ) : (
             <>
               <p>No public projects available.</p>
-              <a href="/auth/email" class="btn btn-primary" style={{ marginTop: "1rem", display: "inline-block" }}>
+              <a
+                href="/auth/email"
+                class="btn btn-primary"
+                style={{ marginTop: "1rem", display: "inline-block" }}
+              >
                 Sign in to see your projects
               </a>
             </>
@@ -45,7 +53,11 @@ export const HomePage: FC<HomeProps> = ({ projects, user }) => {
       ) : (
         <div class="card-grid">
           {projects.map((project) => (
-            <a class="card card-link" href={`/${project.namespace}/${project.slug}`} key={project.name}>
+            <a
+              class="card card-link"
+              href={`/${project.namespace}/${project.slug}`}
+              key={project.name}
+            >
               <div class="card-title">
                 {project.name}
                 {project.visibility === "public" && <span class="badge badge-public">public</span>}

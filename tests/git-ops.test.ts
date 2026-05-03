@@ -39,7 +39,7 @@ describe("MemoryFS walkDir (via manual test)", () => {
 async function walkDir(fs: MemoryFS, base: string, prefix: string): Promise<string[]> {
   const nodeFS = fs.toNodeFS();
   const entries = await nodeFS.promises.readdir(base === "/" ? "/" : base);
-  
+
   const files: string[] = [];
   for (const entry of entries) {
     if (entry === ".git") continue;

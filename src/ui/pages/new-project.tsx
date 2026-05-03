@@ -8,13 +8,13 @@ interface NewProjectProps {
 
 export const NewProjectPage: FC<NewProjectProps> = ({ user, error }) => {
   // Always set username data, fallback to empty string if not available
-  const username = user?.username || '';
-  
+  const username = user?.username || "";
+
   return (
     <Layout title="New Project" user={user}>
       {/* Set username for import form JavaScript - always render even if empty */}
       <div data-username={username} style="display:none" id="user-data" />
-      
+
       <div class="page-header">
         <h1>Create New Project</h1>
         <a class="btn" href="/">
@@ -72,14 +72,30 @@ export const NewProjectPage: FC<NewProjectProps> = ({ user, error }) => {
                 fontFamily: "inherit",
               }}
             >
-              <option value="public" selected>Public (anyone can see it)</option>
+              <option value="public" selected>
+                Public (anyone can see it)
+              </option>
               <option value="private">Private (only you can see it)</option>
             </select>
           </div>
 
           <div style="margin-bottom: 1rem;">
-            <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#888", cursor: "pointer" }}>
-              <input type="checkbox" name="seed" value="true" checked style={{ cursor: "pointer" }} />
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "0.5rem",
+                color: "#888",
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                name="seed"
+                value="true"
+                checked
+                style={{ cursor: "pointer" }}
+              />
               Seed with sample files (README.md and src/index.ts)
             </label>
           </div>
@@ -97,7 +113,12 @@ export const NewProjectPage: FC<NewProjectProps> = ({ user, error }) => {
 
       <div class="card" style={{ marginTop: "1.5rem" }}>
         <h3 style={{ marginTop: 0 }}>Or import from GitHub</h3>
-        <form method="post" action="/api/projects/import" style={{ marginTop: "1rem" }} onsubmit="const name = this.querySelector('[name=name]').value; const userData = document.getElementById('user-data'); const username = userData ? userData.dataset.username : ''; if (!username) { alert('Please log in first'); return false; } this.action = '/api/projects/@' + encodeURIComponent(username) + '/' + encodeURIComponent(name) + '/import'; return true;">
+        <form
+          method="post"
+          action="/api/projects/import"
+          style={{ marginTop: "1rem" }}
+          onsubmit="const name = this.querySelector('[name=name]').value; const userData = document.getElementById('user-data'); const username = userData ? userData.dataset.username : ''; if (!username) { alert('Please log in first'); return false; } this.action = '/api/projects/@' + encodeURIComponent(username) + '/' + encodeURIComponent(name) + '/import'; return true;"
+        >
           <div style="margin-bottom: 1rem;">
             <label style={{ display: "block", marginBottom: "0.5rem", color: "#888" }}>
               Project Name
@@ -160,7 +181,9 @@ export const NewProjectPage: FC<NewProjectProps> = ({ user, error }) => {
                 fontFamily: "inherit",
               }}
             >
-              <option value="public" selected>Public (anyone can see it)</option>
+              <option value="public" selected>
+                Public (anyone can see it)
+              </option>
               <option value="private">Private (only you can see it)</option>
             </select>
           </div>

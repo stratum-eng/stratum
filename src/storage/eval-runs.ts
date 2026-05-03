@@ -1,7 +1,7 @@
 import type { EvalResult } from "../evaluation/types";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
-import { ok, err, type Result } from "../utils/result";
+import { type Result, err, ok } from "../utils/result";
 
 export interface EvalRun {
   id: string;
@@ -97,12 +97,19 @@ export async function recordEvalRuns(
     logger.info("Eval runs recorded successfully", { changeId, count: runs.length });
     return ok(runs);
   } catch (error) {
-    logger.error("Failed to record eval runs", error instanceof Error ? error : undefined, { changeId, count: results.length });
+    logger.error("Failed to record eval runs", error instanceof Error ? error : undefined, {
+      changeId,
+      count: results.length,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
-export async function listEvalRuns(db: D1Database, logger: Logger, changeId: string): Promise<Result<EvalRun[], Error>> {
+export async function listEvalRuns(
+  db: D1Database,
+  logger: Logger,
+  changeId: string,
+): Promise<Result<EvalRun[], Error>> {
   logger.debug("Listing eval runs", { changeId });
 
   try {
@@ -114,7 +121,9 @@ export async function listEvalRuns(db: D1Database, logger: Logger, changeId: str
     logger.debug("Eval runs listed", { changeId, count: result.results.length });
     return ok(result.results.map(rowToEvalRun));
   } catch (error) {
-    logger.error("Failed to list eval runs", error instanceof Error ? error : undefined, { changeId });
+    logger.error("Failed to list eval runs", error instanceof Error ? error : undefined, {
+      changeId,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }

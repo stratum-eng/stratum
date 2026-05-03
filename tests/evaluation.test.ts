@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CompositeEvaluator } from "../src/evaluation/composite-evaluator";
 import { DiffEvaluator } from "../src/evaluation/diff-evaluator";
 import { loadPolicy } from "../src/evaluation/policy-loader";
-import type { EvalPolicy, EvalResult, Evaluator } from "../src/evaluation/types";
+import type { EvalPolicy, Evaluator } from "../src/evaluation/types";
 import { WebhookEvaluator } from "../src/evaluation/webhook-evaluator";
-import type { Logger } from "../src/utils/logger";
 import { AppError } from "../src/utils/errors";
+import type { Logger } from "../src/utils/logger";
 
 const mockLogger: Logger = {
   trace: vi.fn(),

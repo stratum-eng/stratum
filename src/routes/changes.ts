@@ -18,11 +18,11 @@ import { recordProvenance } from "../storage/provenance";
 import { getProject, getWorkspace } from "../storage/state";
 import type { Change, Env } from "../types";
 import { canReadProject, canWriteProject } from "../utils/authz";
-import { badRequest, created, forbidden, notFound, ok, unauthorized } from "../utils/response";
+import type { AppError } from "../utils/errors";
 import { createLogger } from "../utils/logger";
-import { ok as okResult, err as errResult } from "../utils/result";
-import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
+import { badRequest, created, forbidden, notFound, ok, unauthorized } from "../utils/response";
+import { ok as okResult } from "../utils/result";
 
 const app = new Hono<{ Bindings: Env }>();
 function parseGitHubRepo(url: string): { owner: string; repo: string } | null {
@@ -39,15 +39,23 @@ class UnavailableEvaluator implements Evaluator {
     private reason: string,
   ) {}
 
-  async evaluate(_diff: string, _policy: EvalPolicy, _logger: Logger): Promise<{ success: true; data: EvalResult } | { success: false; error: AppError }> {
-    return okResult({ score: 0, passed: false, reason: `${this.evaluatorType} unavailable: ${this.reason}` });
+  async evaluate(
+    _diff: string,
+    _policy: EvalPolicy,
+    _logger: Logger,
+  ): Promise<{ success: true; data: EvalResult } | { success: false; error: AppError }> {
+    return okResult({
+      score: 0,
+      passed: false,
+      reason: `${this.evaluatorType} unavailable: ${this.reason}`,
+    });
   }
 }
 
 app.post("/projects/:name/changes", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -61,10 +69,10 @@ app.post("/projects/:name/changes", async (c) => {
 
   const projectResult = await getProject(c.env.STATE, projectName, logger);
   if (!projectResult.success) {
-    if (projectResult.error.code === 'NOT_FOUND') {
+    if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", projectName);
     }
-    logger.error('Failed to get project', projectResult.error);
+    logger.error("Failed to get project", projectResult.error);
     return badRequest(projectResult.error.message);
   }
   const project = projectResult.data;
@@ -78,10 +86,10 @@ app.post("/projects/:name/changes", async (c) => {
 
   const workspaceResult = await getWorkspace(c.env.STATE, project.id, body.workspace, logger);
   if (!workspaceResult.success) {
-    if (workspaceResult.error.code === 'NOT_FOUND') {
+    if (workspaceResult.error.code === "NOT_FOUND") {
       return notFound("Workspace", body.workspace);
     }
-    logger.error('Failed to get workspace', workspaceResult.error);
+    logger.error("Failed to get workspace", workspaceResult.error);
     return badRequest(workspaceResult.error.message);
   }
   const workspace = workspaceResult.data;
@@ -96,7 +104,7 @@ app.post("/projects/:name/changes", async (c) => {
     ...(agentId !== undefined ? { agentId } : {}),
   });
   if (!changeResult.success) {
-    logger.error('Failed to create change', changeResult.error);
+    logger.error("Failed to create change", changeResult.error);
     return badRequest(changeResult.error.message);
   }
   const change = changeResult.data;
@@ -118,7 +126,7 @@ app.post("/projects/:name/changes", async (c) => {
     logger,
   );
   if (!diffResult.success) {
-    logger.error('Failed to get diff between repos', diffResult.error);
+    logger.error("Failed to get diff between repos", diffResult.error);
     return badRequest(diffResult.error.message);
   }
   const diff = diffResult.data;
@@ -155,7 +163,7 @@ app.post("/projects/:name/changes", async (c) => {
         default:
           logger.warn(
             `Unknown evaluator type "${(cfg as { type: string }).type}" in policy for project ${projectName}`,
-            { evaluatorType: (cfg as { type: string }).type, projectName }
+            { evaluatorType: (cfg as { type: string }).type, projectName },
           );
           return [];
       }
@@ -167,7 +175,9 @@ app.post("/projects/:name/changes", async (c) => {
       const result = await evaluator.evaluate(diff, policy, logger);
       return {
         evaluatorType: type,
-        result: result.success ? result.data : { score: 0, passed: false, reason: result.error.message },
+        result: result.success
+          ? result.data
+          : { score: 0, passed: false, reason: result.error.message },
       };
     }),
   );
@@ -198,7 +208,7 @@ app.post("/projects/:name/changes", async (c) => {
 
   const recordResult = await recordEvalRuns(c.env.DB, logger, change.id, evalRuns);
   if (!recordResult.success) {
-    logger.error('Failed to record eval runs', recordResult.error);
+    logger.error("Failed to record eval runs", recordResult.error);
     return badRequest(recordResult.error.message);
   }
 
@@ -208,7 +218,7 @@ app.post("/projects/:name/changes", async (c) => {
     evalReason: evalResult.reason,
   });
   if (!updateResult.success) {
-    logger.error('Failed to update change status', updateResult.error);
+    logger.error("Failed to update change status", updateResult.error);
     return badRequest(updateResult.error.message);
   }
 
@@ -227,12 +237,12 @@ app.post("/projects/:name/changes", async (c) => {
     evalReason: evalResult.reason,
   };
 
-  logger.info('Change created and evaluated', { 
-    changeId: change.id, 
-    project: projectName, 
+  logger.info("Change created and evaluated", {
+    changeId: change.id,
+    project: projectName,
     workspace: body.workspace,
     status: newStatus,
-    evalScore: evalResult.score 
+    evalScore: evalResult.score,
   });
   return created({ change: updatedChange, eval: evalResult, evalRuns: recordResult.data });
 });
@@ -240,7 +250,7 @@ app.post("/projects/:name/changes", async (c) => {
 app.get("/projects/:name/changes", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -251,10 +261,10 @@ app.get("/projects/:name/changes", async (c) => {
 
   const projectResult = await getProject(c.env.STATE, projectName, logger);
   if (!projectResult.success) {
-    if (projectResult.error.code === 'NOT_FOUND') {
+    if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", projectName);
     }
-    logger.error('Failed to get project', projectResult.error);
+    logger.error("Failed to get project", projectResult.error);
     return badRequest(projectResult.error.message);
   }
   const project = projectResult.data;
@@ -278,18 +288,18 @@ app.get("/projects/:name/changes", async (c) => {
 
   const changesResult = await listChanges(c.env.DB, logger, projectName, status);
   if (!changesResult.success) {
-    logger.error('Failed to list changes', changesResult.error);
+    logger.error("Failed to list changes", changesResult.error);
     return badRequest(changesResult.error.message);
   }
 
-  logger.info('Changes listed', { project: projectName, status, count: changesResult.data.length });
+  logger.info("Changes listed", { project: projectName, status, count: changesResult.data.length });
   return ok({ project: projectName, changes: changesResult.data });
 });
 
 app.get("/changes/:id", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -300,20 +310,20 @@ app.get("/changes/:id", async (c) => {
 
   const changeResult = await getChange(c.env.DB, logger, id);
   if (!changeResult.success) {
-    if (changeResult.error.code === 'NOT_FOUND') {
+    if (changeResult.error.code === "NOT_FOUND") {
       return notFound("Change", id);
     }
-    logger.error('Failed to get change', changeResult.error);
+    logger.error("Failed to get change", changeResult.error);
     return badRequest(changeResult.error.message);
   }
   const change = changeResult.data;
 
   const projectResult = await getProject(c.env.STATE, change.project, logger);
   if (!projectResult.success) {
-    if (projectResult.error.code === 'NOT_FOUND') {
+    if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", change.project);
     }
-    logger.error('Failed to get project', projectResult.error);
+    logger.error("Failed to get project", projectResult.error);
     return badRequest(projectResult.error.message);
   }
   const project = projectResult.data;
@@ -322,18 +332,18 @@ app.get("/changes/:id", async (c) => {
 
   const evalRunsResult = await listEvalRuns(c.env.DB, logger, id);
   if (!evalRunsResult.success) {
-    logger.error('Failed to list eval runs', evalRunsResult.error);
+    logger.error("Failed to list eval runs", evalRunsResult.error);
     return badRequest(evalRunsResult.error.message);
   }
 
-  logger.info('Change retrieved', { changeId: id });
+  logger.info("Change retrieved", { changeId: id });
   return ok({ change, evalRuns: evalRunsResult.data });
 });
 
 app.post("/changes/:id/merge", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -351,20 +361,20 @@ app.post("/changes/:id/merge", async (c) => {
 
   const changeResult = await getChange(c.env.DB, logger, id);
   if (!changeResult.success) {
-    if (changeResult.error.code === 'NOT_FOUND') {
+    if (changeResult.error.code === "NOT_FOUND") {
       return notFound("Change", id);
     }
-    logger.error('Failed to get change', changeResult.error);
+    logger.error("Failed to get change", changeResult.error);
     return badRequest(changeResult.error.message);
   }
   const change = changeResult.data;
 
   const projectResult = await getProject(c.env.STATE, change.project, logger);
   if (!projectResult.success) {
-    if (projectResult.error.code === 'NOT_FOUND') {
+    if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", change.project);
     }
-    logger.error('Failed to get project', projectResult.error);
+    logger.error("Failed to get project", projectResult.error);
     return badRequest(projectResult.error.message);
   }
   const project = projectResult.data;
@@ -395,7 +405,11 @@ app.post("/changes/:id/merge", async (c) => {
       commit: result.commit ?? "",
     });
 
-    logger.info('Change merged via queue', { changeId: id, project: change.project, commit: result.commit });
+    logger.info("Change merged via queue", {
+      changeId: id,
+      project: change.project,
+      commit: result.commit,
+    });
     return ok({
       merged: true,
       changeId: id,
@@ -407,10 +421,10 @@ app.post("/changes/:id/merge", async (c) => {
 
   const workspaceResult = await getWorkspace(c.env.STATE, project.id, change.workspace, logger);
   if (!workspaceResult.success) {
-    if (workspaceResult.error.code === 'NOT_FOUND') {
+    if (workspaceResult.error.code === "NOT_FOUND") {
       return notFound("Workspace", change.workspace);
     }
-    logger.error('Failed to get workspace', workspaceResult.error);
+    logger.error("Failed to get workspace", workspaceResult.error);
     return badRequest(workspaceResult.error.message);
   }
   const workspace = workspaceResult.data;
@@ -424,7 +438,7 @@ app.post("/changes/:id/merge", async (c) => {
     { strategy },
   );
   if (!mergeResult.success) {
-    logger.error('Failed to merge workspace into project', mergeResult.error);
+    logger.error("Failed to merge workspace into project", mergeResult.error);
     return badRequest(mergeResult.error.message);
   }
   const commit = mergeResult.data;
@@ -437,7 +451,7 @@ app.post("/changes/:id/merge", async (c) => {
     mergedAt,
   });
   if (!updateResult.success) {
-    logger.error('Failed to update change status to merged', updateResult.error);
+    logger.error("Failed to update change status to merged", updateResult.error);
     return badRequest(updateResult.error.message);
   }
 
@@ -450,7 +464,7 @@ app.post("/changes/:id/merge", async (c) => {
     ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
   });
   if (!provenanceResult.success) {
-    logger.error('Failed to record provenance', provenanceResult.error);
+    logger.error("Failed to record provenance", provenanceResult.error);
     // Don't fail the request if provenance recording fails
   }
 
@@ -461,7 +475,12 @@ app.post("/changes/:id/merge", async (c) => {
     commit,
   });
 
-  logger.info('Change merged', { changeId: id, project: change.project, workspace: change.workspace, commit });
+  logger.info("Change merged", {
+    changeId: id,
+    project: change.project,
+    workspace: change.workspace,
+    commit,
+  });
   return ok({
     merged: true,
     changeId: id,
@@ -474,7 +493,7 @@ app.post("/changes/:id/merge", async (c) => {
 app.post("/changes/:id/reject", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -486,20 +505,20 @@ app.post("/changes/:id/reject", async (c) => {
 
   const changeResult = await getChange(c.env.DB, logger, id);
   if (!changeResult.success) {
-    if (changeResult.error.code === 'NOT_FOUND') {
+    if (changeResult.error.code === "NOT_FOUND") {
       return notFound("Change", id);
     }
-    logger.error('Failed to get change', changeResult.error);
+    logger.error("Failed to get change", changeResult.error);
     return badRequest(changeResult.error.message);
   }
   const change = changeResult.data;
 
   const projectResult = await getProject(c.env.STATE, change.project, logger);
   if (!projectResult.success) {
-    if (projectResult.error.code === 'NOT_FOUND') {
+    if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", change.project);
     }
-    logger.error('Failed to get project', projectResult.error);
+    logger.error("Failed to get project", projectResult.error);
     return badRequest(projectResult.error.message);
   }
   const project = projectResult.data;
@@ -516,7 +535,7 @@ app.post("/changes/:id/reject", async (c) => {
     ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
   });
   if (!updateResult.success) {
-    logger.error('Failed to update change status to rejected', updateResult.error);
+    logger.error("Failed to update change status to rejected", updateResult.error);
     return badRequest(updateResult.error.message);
   }
 
@@ -526,14 +545,14 @@ app.post("/changes/:id/reject", async (c) => {
     project: change.project,
   });
 
-  logger.info('Change rejected', { changeId: id, project: change.project });
+  logger.info("Change rejected", { changeId: id, project: change.project });
   return ok({ rejected: true, changeId: id });
 });
 
 app.post("/changes/:id/evaluate", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -545,20 +564,20 @@ app.post("/changes/:id/evaluate", async (c) => {
 
   const changeResult = await getChange(c.env.DB, logger, id);
   if (!changeResult.success) {
-    if (changeResult.error.code === 'NOT_FOUND') {
+    if (changeResult.error.code === "NOT_FOUND") {
       return notFound("Change", id);
     }
-    logger.error('Failed to get change', changeResult.error);
+    logger.error("Failed to get change", changeResult.error);
     return badRequest(changeResult.error.message);
   }
   const change = changeResult.data;
 
   const projectResult = await getProject(c.env.STATE, change.project, logger);
   if (!projectResult.success) {
-    if (projectResult.error.code === 'NOT_FOUND') {
+    if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", change.project);
     }
-    logger.error('Failed to get project', projectResult.error);
+    logger.error("Failed to get project", projectResult.error);
     return badRequest(projectResult.error.message);
   }
   const project = projectResult.data;
@@ -571,10 +590,10 @@ app.post("/changes/:id/evaluate", async (c) => {
 
   const workspaceResult = await getWorkspace(c.env.STATE, project.id, change.workspace, logger);
   if (!workspaceResult.success) {
-    if (workspaceResult.error.code === 'NOT_FOUND') {
+    if (workspaceResult.error.code === "NOT_FOUND") {
       return badRequest("Change references missing project/workspace");
     }
-    logger.error('Failed to get workspace', workspaceResult.error);
+    logger.error("Failed to get workspace", workspaceResult.error);
     return badRequest(workspaceResult.error.message);
   }
   const workspace = workspaceResult.data;
@@ -589,7 +608,7 @@ app.post("/changes/:id/evaluate", async (c) => {
     logger,
   );
   if (!diffResult.success) {
-    logger.error('Failed to get diff between repos', diffResult.error);
+    logger.error("Failed to get diff between repos", diffResult.error);
     return badRequest(diffResult.error.message);
   }
   const diff = diffResult.data;
@@ -634,7 +653,9 @@ app.post("/changes/:id/evaluate", async (c) => {
       const result = await evaluator.evaluate(diff, policy, logger);
       return {
         evaluatorType: type,
-        result: result.success ? result.data : { score: 0, passed: false, reason: result.error.message },
+        result: result.success
+          ? result.data
+          : { score: 0, passed: false, reason: result.error.message },
       };
     }),
   );
@@ -663,28 +684,38 @@ app.post("/changes/:id/evaluate", async (c) => {
 
   const recordResult = await recordEvalRuns(c.env.DB, logger, id, evalRuns);
   if (!recordResult.success) {
-    logger.error('Failed to record eval runs', recordResult.error);
+    logger.error("Failed to record eval runs", recordResult.error);
     return badRequest(recordResult.error.message);
   }
 
-  const updateResult = await updateChangeStatus(c.env.DB, logger, id, evalResult.passed ? "accepted" : "needs_changes", {
-    evalScore: evalResult.score,
-    evalPassed: evalResult.passed,
-    evalReason: evalResult.reason,
-  });
+  const updateResult = await updateChangeStatus(
+    c.env.DB,
+    logger,
+    id,
+    evalResult.passed ? "accepted" : "needs_changes",
+    {
+      evalScore: evalResult.score,
+      evalPassed: evalResult.passed,
+      evalReason: evalResult.reason,
+    },
+  );
   if (!updateResult.success) {
-    logger.error('Failed to update change status', updateResult.error);
+    logger.error("Failed to update change status", updateResult.error);
     return badRequest(updateResult.error.message);
   }
 
-  logger.info('Change re-evaluated', { changeId: id, evalScore: evalResult.score, passed: evalResult.passed });
+  logger.info("Change re-evaluated", {
+    changeId: id,
+    evalScore: evalResult.score,
+    passed: evalResult.passed,
+  });
   return ok({ changeId: id, eval: evalResult, evalRuns: recordResult.data });
 });
 
 app.post("/changes/:id/github-pr", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -696,10 +727,10 @@ app.post("/changes/:id/github-pr", async (c) => {
 
   const changeResult = await getChange(c.env.DB, logger, id);
   if (!changeResult.success) {
-    if (changeResult.error.code === 'NOT_FOUND') {
+    if (changeResult.error.code === "NOT_FOUND") {
       return notFound("Change", id);
     }
-    logger.error('Failed to get change', changeResult.error);
+    logger.error("Failed to get change", changeResult.error);
     return badRequest(changeResult.error.message);
   }
   const change = changeResult.data;
@@ -710,10 +741,10 @@ app.post("/changes/:id/github-pr", async (c) => {
 
   const projectResult = await getProject(c.env.STATE, change.project, logger);
   if (!projectResult.success) {
-    if (projectResult.error.code === 'NOT_FOUND') {
+    if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", change.project);
     }
-    logger.error('Failed to get project', projectResult.error);
+    logger.error("Failed to get project", projectResult.error);
     return badRequest(projectResult.error.message);
   }
   const project = projectResult.data;
@@ -749,7 +780,7 @@ app.post("/changes/:id/github-pr", async (c) => {
   });
 
   if (!ghRes.ok) {
-    logger.error('GitHub PR creation failed', undefined, { status: ghRes.status, changeId: id });
+    logger.error("GitHub PR creation failed", undefined, { status: ghRes.status, changeId: id });
     return badRequest(`GitHub PR creation failed (${ghRes.status})`);
   }
 
@@ -770,14 +801,14 @@ app.post("/changes/:id/github-pr", async (c) => {
     promotedBy: userId,
   });
   if (!updateResult.success) {
-    logger.error('Failed to update change status to promoted', updateResult.error);
+    logger.error("Failed to update change status to promoted", updateResult.error);
     return badRequest(updateResult.error.message);
   }
 
-  logger.info('Change promoted to GitHub PR', { 
-    changeId: id, 
-    prNumber: pr.number, 
-    repo: `${repo.owner}/${repo.repo}` 
+  logger.info("Change promoted to GitHub PR", {
+    changeId: id,
+    prNumber: pr.number,
+    repo: `${repo.owner}/${repo.repo}`,
   });
   return ok({
     changeId: id,

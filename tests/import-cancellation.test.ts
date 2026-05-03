@@ -130,12 +130,8 @@ vi.mock("../src/storage/imports", () => ({
       ...updates,
       version: existing.version + 1,
       progress: { ...existing.progress, ...updates.progress },
-      logs: updates.logs
-        ? [...existing.logs, ...updates.logs].slice(-100)
-        : existing.logs,
-      errors: updates.errors
-        ? [...existing.errors, ...updates.errors].slice(-50)
-        : existing.errors,
+      logs: updates.logs ? [...existing.logs, ...updates.logs].slice(-100) : existing.logs,
+      errors: updates.errors ? [...existing.errors, ...updates.errors].slice(-50) : existing.errors,
     };
 
     mockImportJobs.set(key, updated);
@@ -172,9 +168,7 @@ vi.mock("../src/storage/imports", () => ({
       ...existing,
       ...updates,
       version: existing.version + 1,
-      logs: updates.logs
-        ? [...existing.logs, ...updates.logs].slice(-100)
-        : existing.logs,
+      logs: updates.logs ? [...existing.logs, ...updates.logs].slice(-100) : existing.logs,
     };
 
     mockImportJobs.set(key, updated);
@@ -198,7 +192,7 @@ vi.mock("../src/storage/imports", () => ({
         error: new AppError(
           `Cannot cancel import with status: ${existing.status}`,
           "INVALID_STATE",
-          400
+          400,
         ),
       };
     }
@@ -245,7 +239,7 @@ vi.mock("../src/storage/imports", () => ({
   listActiveImports: vi.fn(async () => {
     const activeStatuses = ["queued", "cloning", "processing", "cancelling"];
     const active = Array.from(mockImportJobs.values()).filter((job) =>
-      activeStatuses.includes(job.status)
+      activeStatuses.includes(job.status),
     );
     return { success: true, data: active };
   }),
@@ -361,7 +355,7 @@ function request(
   method: string,
   path: string,
   body?: unknown,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
 ): Request {
   const hasBody = body !== undefined;
   return new Request(`http://localhost${path}`, {
@@ -379,7 +373,7 @@ async function createTestProject(
   namespace: string,
   slug: string,
   ownerId: string,
-  visibility: "private" | "public" = "private"
+  visibility: "private" | "public" = "private",
 ): Promise<ProjectEntry> {
   const project: ProjectEntry = {
     id: crypto.randomUUID(),
@@ -405,7 +399,7 @@ async function createTestImportJob(
     slug: string;
     status: ImportProgress["status"];
     ownerId?: string;
-  }
+  },
 ): Promise<ImportProgress> {
   const { createImportJob } = await import("../src/storage/imports");
   const { createLogger } = await import("../src/utils/logger");
@@ -416,7 +410,7 @@ async function createTestImportJob(
     env,
     params.namespace,
     params.slug,
-    params.ownerId || "user_A"
+    params.ownerId || "user_A",
   );
 
   // Create the import job
@@ -430,7 +424,7 @@ async function createTestImportJob(
       sourceUrl: "https://github.com/test/repo",
       branch: "main",
     },
-    logger
+    logger,
   );
 
   if (!result.success) {
@@ -445,7 +439,7 @@ async function createTestImportJob(
       params.namespace,
       params.slug,
       params.status,
-      logger
+      logger,
     );
     if (!updateResult.success) {
       throw new Error("Failed to update import status");
@@ -488,13 +482,8 @@ describe("Import Cancellation End-to-End Tests", () => {
 
       // POST to cancel endpoint
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/test-project/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/test-project/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       // Verify response
@@ -514,18 +503,13 @@ describe("Import Cancellation End-to-End Tests", () => {
       const { getImportProgress } = await import("../src/storage/imports");
       const { createLogger } = await import("../src/utils/logger");
       const logger = createLogger({ component: "Test" });
-      const progressResult = await getImportProgress(
-        env.DB,
-        "@userA",
-        "test-project",
-        logger
-      );
+      const progressResult = await getImportProgress(env.DB, "@userA", "test-project", logger);
 
       expect(progressResult.success).toBe(true);
       expect(progressResult.data?.status).toBe("cancelling");
-      expect(progressResult.data?.logs.some((log) =>
-        log.message.includes("cancellation requested")
-      )).toBe(true);
+      expect(
+        progressResult.data?.logs.some((log) => log.message.includes("cancellation requested")),
+      ).toBe(true);
     });
 
     it("should allow queue processor to complete cancellation and remove job", async () => {
@@ -539,24 +523,15 @@ describe("Import Cancellation End-to-End Tests", () => {
 
       // Cancel the import
       const cancelRes = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/test-project/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/test-project/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       expect(cancelRes.status).toBe(200);
 
       // Simulate queue processor seeing cancellation and cleaning up
-      const {
-        isImportCancelled,
-        updateImportStatus,
-        deleteImportJob,
-        getImportProgress,
-      } = await import("../src/storage/imports");
+      const { isImportCancelled, updateImportStatus, deleteImportJob, getImportProgress } =
+        await import("../src/storage/imports");
       const { createLogger } = await import("../src/utils/logger");
       const logger = createLogger({ component: "Test" });
 
@@ -571,7 +546,7 @@ describe("Import Cancellation End-to-End Tests", () => {
         "test-project",
         "cancelled",
         logger,
-        "Import cancelled by user"
+        "Import cancelled by user",
       );
       expect(updateResult.success).toBe(true);
       expect(updateResult.data?.status).toBe("cancelled");
@@ -604,13 +579,8 @@ describe("Import Cancellation End-to-End Tests", () => {
 
       // POST to cancel endpoint
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/cloning-project/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/cloning-project/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       // Verify response
@@ -638,13 +608,8 @@ describe("Import Cancellation End-to-End Tests", () => {
 
       // Cancel it
       await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/cloning-project/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/cloning-project/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       // Verify queue can detect cancellation and stop
@@ -676,13 +641,8 @@ describe("Import Cancellation End-to-End Tests", () => {
 
       // POST to cancel endpoint
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/completed-project/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/completed-project/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       // Verify 400 error
@@ -700,13 +660,8 @@ describe("Import Cancellation End-to-End Tests", () => {
       });
 
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/completed-project/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/completed-project/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       expect(res.status).toBe(400);
@@ -730,13 +685,8 @@ describe("Import Cancellation End-to-End Tests", () => {
 
       // POST to cancel endpoint
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/failed-project/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/failed-project/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       // Verify 400 error
@@ -761,13 +711,8 @@ describe("Import Cancellation End-to-End Tests", () => {
 
       // User B tries to cancel
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/private-project/import/cancel",
-          {},
-          USER_B_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/private-project/import/cancel", {}, USER_B_HEADERS),
+        env,
       );
 
       // Verify 403 forbidden
@@ -787,13 +732,8 @@ describe("Import Cancellation End-to-End Tests", () => {
 
       // User A cancels their own import
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/my-project/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/my-project/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       // Verify success
@@ -814,13 +754,8 @@ describe("Import Cancellation End-to-End Tests", () => {
 
       // User B tries to cancel - should fail because namespace doesn't match
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/test-project/import/cancel",
-          {},
-          USER_B_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/test-project/import/cancel", {}, USER_B_HEADERS),
+        env,
       );
 
       expect(res.status).toBe(403);
@@ -848,9 +783,9 @@ describe("Import Cancellation End-to-End Tests", () => {
           "POST",
           "/api/projects/@userA/processing-project/import/cancel",
           {},
-          USER_A_HEADERS
+          USER_A_HEADERS,
         ),
-        env
+        env,
       );
 
       expect(res.status).toBe(200);
@@ -891,18 +826,13 @@ describe("Import Cancellation End-to-End Tests", () => {
             currentFile: "src/main.ts",
           },
         },
-        logger
+        logger,
       );
 
       // Cancel it
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/progress-project/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/progress-project/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       expect(res.status).toBe(200);
@@ -926,13 +856,8 @@ describe("Import Cancellation End-to-End Tests", () => {
       });
 
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/log-test-project/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/log-test-project/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       expect(res.status).toBe(200);
@@ -945,8 +870,7 @@ describe("Import Cancellation End-to-End Tests", () => {
       const progress = await getImportProgress(env.DB, "@userA", "log-test-project", logger);
 
       const hasCancellationLog = progress.data?.logs.some(
-        (log) =>
-          log.message.includes("cancellation requested") && log.level === "info"
+        (log) => log.message.includes("cancellation requested") && log.level === "info",
       );
       expect(hasCancellationLog).toBe(true);
     });
@@ -966,7 +890,7 @@ describe("Import Cancellation End-to-End Tests", () => {
 
       const res = await app.fetch(
         request("POST", "/api/projects/@userA/test-project/import/cancel"),
-        env
+        env,
       );
 
       expect(res.status).toBe(401);
@@ -976,13 +900,8 @@ describe("Import Cancellation End-to-End Tests", () => {
       await createTestProject(env, "@userA", "no-import-project", "user_A", "private");
 
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/no-import-project/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/no-import-project/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       expect(res.status).toBe(404);
@@ -1002,9 +921,9 @@ describe("Import Cancellation End-to-End Tests", () => {
           "POST",
           "/api/projects/@userA/cancelling-project/import/cancel",
           {},
-          USER_A_HEADERS
+          USER_A_HEADERS,
         ),
-        env
+        env,
       );
 
       // Should succeed (idempotent) - cancelling is not a terminal state
@@ -1020,13 +939,8 @@ describe("Import Cancellation End-to-End Tests", () => {
       });
 
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/cancelled-project/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/cancelled-project/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       // Cancelled is a terminal state
@@ -1048,27 +962,27 @@ describe("Import Cancellation End-to-End Tests", () => {
             "POST",
             "/api/projects/@userA/concurrent-project/import/cancel",
             {},
-            USER_A_HEADERS
+            USER_A_HEADERS,
           ),
-          env
+          env,
         ),
         app.fetch(
           request(
             "POST",
             "/api/projects/@userA/concurrent-project/import/cancel",
             {},
-            USER_A_HEADERS
+            USER_A_HEADERS,
           ),
-          env
+          env,
         ),
         app.fetch(
           request(
             "POST",
             "/api/projects/@userA/concurrent-project/import/cancel",
             {},
-            USER_A_HEADERS
+            USER_A_HEADERS,
           ),
-          env
+          env,
         ),
       ];
 
@@ -1098,13 +1012,8 @@ describe("Import Cancellation End-to-End Tests", () => {
       });
 
       const res = await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/queue-test/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/queue-test/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       expect(res.status).toBe(200);
@@ -1112,7 +1021,7 @@ describe("Import Cancellation End-to-End Tests", () => {
       // Queue should not have any new messages for cancellation
       // (cancellation is handled via D1 status update)
       const queueMessagesForThisJob = mockQueueMessages.filter(
-        (m) => m.namespace === "@userA" && m.slug === "queue-test"
+        (m) => m.namespace === "@userA" && m.slug === "queue-test",
       );
       expect(queueMessagesForThisJob.length).toBe(0);
     });
@@ -1127,13 +1036,8 @@ describe("Import Cancellation End-to-End Tests", () => {
       });
 
       await app.fetch(
-        request(
-          "POST",
-          "/api/projects/@userA/detect-test/import/cancel",
-          {},
-          USER_A_HEADERS
-        ),
-        env
+        request("POST", "/api/projects/@userA/detect-test/import/cancel", {}, USER_A_HEADERS),
+        env,
       );
 
       // Queue processor can detect via isImportCancelled
@@ -1167,9 +1071,9 @@ describe("Import Cancellation End-to-End Tests", () => {
             "POST",
             `/api/projects/@userA/${status}-project/import/cancel`,
             {},
-            USER_A_HEADERS
+            USER_A_HEADERS,
           ),
-          env
+          env,
         );
 
         expect(res.status).toBe(200);
@@ -1190,9 +1094,9 @@ describe("Import Cancellation End-to-End Tests", () => {
             "POST",
             `/api/projects/@userA/${status}-project/import/cancel`,
             {},
-            USER_A_HEADERS
+            USER_A_HEADERS,
           ),
-          env
+          env,
         );
 
         expect(res.status).toBe(400);

@@ -125,7 +125,10 @@ app.post("/:slug/members", async (c) => {
 
   const addResult = await addOrgMember(c.env.DB, logger, org.id, body.userId, role);
   if (!addResult.success) {
-    logger.error("Failed to add org member", addResult.error, { orgId: org.id, userId: body.userId });
+    logger.error("Failed to add org member", addResult.error, {
+      orgId: org.id,
+      userId: body.userId,
+    });
     return c.json({ error: "Failed to add organization member" }, 500);
   }
 
@@ -272,7 +275,7 @@ app.delete("/:slug/teams/:id", async (c) => {
     return notFound("Team", id);
   }
   const team = teamResult.data;
-  
+
   if (team.orgId !== org.id) {
     logger.warn("Team does not belong to org", { teamId: id, orgId: org.id });
     return notFound("Team", id);
@@ -319,7 +322,7 @@ app.post("/:slug/teams/:id/members", async (c) => {
     return notFound("Team", id);
   }
   const team = teamResult.data;
-  
+
   if (team.orgId !== org.id) {
     logger.warn("Team does not belong to org", { teamId: id, orgId: org.id });
     return notFound("Team", id);
@@ -372,7 +375,7 @@ app.delete("/:slug/teams/:id/members/:uid", async (c) => {
     return notFound("Team", id);
   }
   const team = teamResult.data;
-  
+
   if (team.orgId !== org.id) {
     logger.warn("Team does not belong to org", { teamId: id, orgId: org.id });
     return notFound("Team", id);

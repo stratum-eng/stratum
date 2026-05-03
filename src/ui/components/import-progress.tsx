@@ -38,9 +38,13 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
   const isFailed = status === "failed";
   const isCancelled = status === "cancelled";
 
-  const percent = progress.totalFiles 
+  const percent = progress.totalFiles
     ? Math.round((progress.processedFiles / progress.totalFiles) * 100)
-    : status === "cloning" ? 10 : status === "processing" ? 50 : 0;
+    : status === "cloning"
+      ? 10
+      : status === "processing"
+        ? 50
+        : 0;
 
   // Safely escape for JavaScript string interpolation
   const safeNamespace = JSON.stringify(namespace).slice(1, -1);
@@ -50,27 +54,42 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
     <div class="card import-progress-card" data-import-status={status}>
       <div class="import-header">
         <h2>
-          {isActive && <span class="spinner"></span>}
+          {isActive && <span class="spinner" />}
           {isComplete && <span class="icon-success">✓</span>}
           {isFailed && <span class="icon-error">✗</span>}
           {isCancelled && <span class="icon-cancelled">○</span>}
-          Import {isComplete ? "Complete" : isFailed ? "Failed" : isCancelled ? "Cancelled" : "in Progress"}
+          Import{" "}
+          {isComplete
+            ? "Complete"
+            : isFailed
+              ? "Failed"
+              : isCancelled
+                ? "Cancelled"
+                : "in Progress"}
         </h2>
         <span class={`badge badge-${status}`}>{status}</span>
       </div>
 
       <div class="import-source">
-        <p>From: <a href={sourceUrl} target="_blank">{sourceUrl}</a></p>
-        <p>Branch: <code>{branch}</code></p>
+        <p>
+          From:{" "}
+          <a href={sourceUrl} target="_blank" rel="noreferrer">
+            {sourceUrl}
+          </a>
+        </p>
+        <p>
+          Branch: <code>{branch}</code>
+        </p>
       </div>
 
       {(isActive || isComplete) && (
         <div class="progress-section">
           <div class="progress-bar">
-            <div class="progress-fill" style={`width: ${percent}%`}></div>
+            <div class="progress-fill" style={`width: ${percent}%`} />
           </div>
           <p class="progress-text">
-            {progress.processedFiles} {progress.totalFiles ? `/ ${progress.totalFiles}` : ""} files processed
+            {progress.processedFiles} {progress.totalFiles ? `/ ${progress.totalFiles}` : ""} files
+            processed
             {progress.currentFile && <span class="current-file">• {progress.currentFile}</span>}
           </p>
         </div>
@@ -86,9 +105,7 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
               </li>
             ))}
           </ul>
-          {errors.length > 5 && (
-            <p class="more-errors">...and {errors.length - 5} more errors</p>
-          )}
+          {errors.length > 5 && <p class="more-errors">...and {errors.length - 5} more errors</p>}
         </div>
       )}
 
@@ -110,8 +127,14 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
 
       {isActive && (
         <div class="actions-section">
-          <form method="post" action={`/api/projects/${namespace}/${slug}/import/cancel`} onsubmit="return confirm('Are you sure you want to cancel this import?');">
-            <button type="submit" class="btn btn-danger">Cancel Import</button>
+          <form
+            method="post"
+            action={`/api/projects/${namespace}/${slug}/import/cancel`}
+            onsubmit="return confirm('Are you sure you want to cancel this import?');"
+          >
+            <button type="submit" class="btn btn-danger">
+              Cancel Import
+            </button>
           </form>
         </div>
       )}
@@ -119,14 +142,17 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
       {isFailed && (
         <div class="actions-section">
           <form method="post" action={`/api/projects/${namespace}/${slug}/import/retry`}>
-            <button type="submit" class="btn btn-primary">Retry Import</button>
+            <button type="submit" class="btn btn-primary">
+              Retry Import
+            </button>
           </form>
         </div>
       )}
 
       {isActive && (
-        <script dangerouslySetInnerHTML={{
-          __html: `
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
             // Connect to SSE for real-time updates
             const evtSource = new EventSource('/api/projects/${safeNamespace}/${safeSlug}/import/stream');
             
@@ -190,8 +216,9 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
                 }
               }, 5000);
             };
-          `
-        }} />
+          `,
+          }}
+        />
       )}
     </div>
   );

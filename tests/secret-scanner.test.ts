@@ -139,7 +139,11 @@ describe("SecretScanEvaluator", () => {
   it("ignores policy configuration — always runs", async () => {
     const diff = makeDiff(['const key = "AKIAIOSFODNN7EXAMPLE";']);
     const resultWithNull = await evaluator.evaluate(diff, policy, mockLogger);
-    const resultWithPolicy = await evaluator.evaluate(diff, { evaluators: [], requireAll: false }, mockLogger);
+    const resultWithPolicy = await evaluator.evaluate(
+      diff,
+      { evaluators: [], requireAll: false },
+      mockLogger,
+    );
     expect(resultWithNull.success).toBe(true);
     expect(resultWithPolicy.success).toBe(true);
     if (resultWithNull.success && resultWithPolicy.success) {

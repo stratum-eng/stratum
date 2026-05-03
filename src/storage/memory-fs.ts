@@ -1,6 +1,5 @@
 import { AppError } from "../utils/errors";
-import type { Logger } from "../utils/logger";
-import { err, ok, type Result } from "../utils/result";
+import { type Result, err, ok } from "../utils/result";
 
 type FileEntry = { kind: "file"; data: Uint8Array; mtimeMs: number };
 type DirEntry = { kind: "dir"; children: Set<string>; mtimeMs: number };
@@ -111,7 +110,8 @@ export class MemoryFS {
     const parentPath = this.parent(target);
 
     if (!this.entries.has(parentPath)) {
-      if (!recursive) return err(fsError("ENOENT", `ENOENT: no such file or directory: ${parentPath}`));
+      if (!recursive)
+        return err(fsError("ENOENT", `ENOENT: no such file or directory: ${parentPath}`));
       const mkdirResult = await this.mkdir(parentPath, { recursive: true });
       if (!mkdirResult.success) return mkdirResult;
     }
@@ -125,7 +125,10 @@ export class MemoryFS {
     return ok(undefined);
   }
 
-  async writeFile(path: string, data: string | Uint8Array | ArrayBuffer): Promise<Result<void, AppError>> {
+  async writeFile(
+    path: string,
+    data: string | Uint8Array | ArrayBuffer,
+  ): Promise<Result<void, AppError>> {
     const target = this.normalize(path);
     const parentPath = this.parent(target);
     const mkdirResult = await this.mkdir(parentPath, { recursive: true });
@@ -212,7 +215,10 @@ export class MemoryFS {
    */
   toNodeFS(): {
     promises: {
-      readFile: (path: string, options?: string | { encoding?: string }) => Promise<string | Uint8Array>;
+      readFile: (
+        path: string,
+        options?: string | { encoding?: string },
+      ) => Promise<string | Uint8Array>;
       writeFile: (path: string, data: string | Uint8Array) => Promise<void>;
       unlink: (path: string) => Promise<void>;
       readdir: (path: string) => Promise<string[]>;

@@ -18,7 +18,7 @@ import { usersRouter } from "./routes/users";
 import { workspacesRouter } from "./routes/workspaces";
 import { createSession } from "./storage/sessions";
 import { createUser, getUserByEmail } from "./storage/users";
-import type { Env, MessageBatch, ImportJobMessage, SyncJobMessage } from "./types";
+import type { Env, ImportJobMessage, MessageBatch, SyncJobMessage } from "./types";
 import { CSS } from "./ui/styles";
 import { createLogger } from "./utils/logger";
 export { MergeQueue } from "./queue/merge-queue";
@@ -34,7 +34,7 @@ app.get("/health", (c) => c.json({ status: "ok", service: "stratum" }));
 // DEV ONLY: Quick login for local development
 app.get("/dev-login", async (c) => {
   const logger = createLogger({ path: c.req.path, method: c.req.method });
-  
+
   try {
     // Only allow in local development
     const url = new URL(c.req.url);
@@ -43,11 +43,11 @@ app.get("/dev-login", async (c) => {
     }
 
     const email = c.req.query("email") || "dev@example.com";
-    
+
     // Get or create user
     const userResult = await getUserByEmail(c.env.DB, email, logger);
     let userId: string;
-    
+
     if (!userResult.success) {
       const createResult = await createUser(c.env.DB, email, logger);
       if (!createResult.success) {
@@ -113,7 +113,7 @@ app.get("/ui/changes/:id", (c) => {
 
 app.route("/auth", authRouter);
 app.route("/auth/email", emailAuthRouter);
-app.route("/", uiRouter);  // Mount UI at root
+app.route("/", uiRouter); // Mount UI at root
 app.route("/api/projects", projectsRouter);
 app.route("/api/workspaces", workspacesRouter);
 app.route("/api/users", usersRouter);
@@ -125,9 +125,9 @@ app.route("/api", syncRouter);
 app.notFound((c) => c.json({ error: "Not found" }, 404));
 app.onError((err, c) => {
   const logger = c.get("logger") || createLogger({ path: c.req.path, method: c.req.method });
-  logger.error(`Unhandled error: ${err.message}`, err instanceof Error ? err : undefined, { 
-    path: c.req.path, 
-    method: c.req.method 
+  logger.error(`Unhandled error: ${err.message}`, err instanceof Error ? err : undefined, {
+    path: c.req.path,
+    method: c.req.method,
   });
   return c.json({ error: "Internal server error" }, 500);
 });
@@ -140,24 +140,24 @@ export default {
   },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     const logger = createLogger({ component: "queue" });
-    
+
     // Determine which queue this is based on the queue name
     const queueName = batch.queue;
-    
+
     if (queueName === "stratum-imports") {
       // Handle import queue messages
-      logger.info("Processing import queue batch", { 
-        queue: queueName, 
-        messageCount: batch.messages.length 
+      logger.info("Processing import queue batch", {
+        queue: queueName,
+        messageCount: batch.messages.length,
       });
       await handleImportQueue(batch as MessageBatch<ImportJobMessage | SyncJobMessage>, env);
     } else if (queueName === "stratum-events") {
       // Handle events queue messages
       const eventsBatch = batch as MessageBatch<StratumEvent>;
       for (const msg of eventsBatch.messages) {
-        logger.info("Processing events queue message", { 
-          type: msg.body.type, 
-          messageId: msg.id 
+        logger.info("Processing events queue message", {
+          type: msg.body.type,
+          messageId: msg.id,
         });
         msg.ack();
       }

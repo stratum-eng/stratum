@@ -1,7 +1,7 @@
+import { NotFoundError } from "../utils/errors";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
-import { ok, err, type Result } from "../utils/result";
-import { NotFoundError } from "../utils/errors";
+import { type Result, err, ok } from "../utils/result";
 
 export interface Team {
   id: string;
@@ -57,12 +57,20 @@ export async function createTeam(
     logger.info("Team created successfully", { teamId: id, orgId, slug });
     return ok(team);
   } catch (error) {
-    logger.error("Failed to create team", error instanceof Error ? error : undefined, { orgId, name, slug });
+    logger.error("Failed to create team", error instanceof Error ? error : undefined, {
+      orgId,
+      name,
+      slug,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
-export async function getTeam(db: D1Database, logger: Logger, id: string): Promise<Result<Team, NotFoundError>> {
+export async function getTeam(
+  db: D1Database,
+  logger: Logger,
+  id: string,
+): Promise<Result<Team, NotFoundError>> {
   logger.debug("Querying team by ID", { teamId: id });
 
   try {
@@ -81,7 +89,11 @@ export async function getTeam(db: D1Database, logger: Logger, id: string): Promi
   }
 }
 
-export async function listTeams(db: D1Database, logger: Logger, orgId: string): Promise<Result<Team[], Error>> {
+export async function listTeams(
+  db: D1Database,
+  logger: Logger,
+  orgId: string,
+): Promise<Result<Team[], Error>> {
   logger.debug("Listing teams", { orgId });
 
   try {
@@ -98,7 +110,12 @@ export async function listTeams(db: D1Database, logger: Logger, orgId: string): 
   }
 }
 
-export async function addTeamMember(db: D1Database, logger: Logger, teamId: string, userId: string): Promise<Result<void, Error>> {
+export async function addTeamMember(
+  db: D1Database,
+  logger: Logger,
+  teamId: string,
+  userId: string,
+): Promise<Result<void, Error>> {
   logger.info("Adding team member", { teamId, userId });
 
   try {
@@ -113,7 +130,10 @@ export async function addTeamMember(db: D1Database, logger: Logger, teamId: stri
     logger.info("Team member added successfully", { teamId, userId });
     return ok(undefined);
   } catch (error) {
-    logger.error("Failed to add team member", error instanceof Error ? error : undefined, { teamId, userId });
+    logger.error("Failed to add team member", error instanceof Error ? error : undefined, {
+      teamId,
+      userId,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }
@@ -135,12 +155,19 @@ export async function removeTeamMember(
     logger.info("Team member removed successfully", { teamId, userId });
     return ok(undefined);
   } catch (error) {
-    logger.error("Failed to remove team member", error instanceof Error ? error : undefined, { teamId, userId });
+    logger.error("Failed to remove team member", error instanceof Error ? error : undefined, {
+      teamId,
+      userId,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
-export async function listTeamMembers(db: D1Database, logger: Logger, teamId: string): Promise<Result<string[], Error>> {
+export async function listTeamMembers(
+  db: D1Database,
+  logger: Logger,
+  teamId: string,
+): Promise<Result<string[], Error>> {
   logger.debug("Listing team members", { teamId });
 
   try {
@@ -153,12 +180,18 @@ export async function listTeamMembers(db: D1Database, logger: Logger, teamId: st
     logger.debug("Team members listed", { teamId, count: members.length });
     return ok(members);
   } catch (error) {
-    logger.error("Failed to list team members", error instanceof Error ? error : undefined, { teamId });
+    logger.error("Failed to list team members", error instanceof Error ? error : undefined, {
+      teamId,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
-export async function deleteTeam(db: D1Database, logger: Logger, id: string): Promise<Result<void, Error>> {
+export async function deleteTeam(
+  db: D1Database,
+  logger: Logger,
+  id: string,
+): Promise<Result<void, Error>> {
   logger.info("Deleting team", { teamId: id });
 
   try {
@@ -168,7 +201,9 @@ export async function deleteTeam(db: D1Database, logger: Logger, id: string): Pr
     logger.info("Team deleted successfully", { teamId: id });
     return ok(undefined);
   } catch (error) {
-    logger.error("Failed to delete team", error instanceof Error ? error : undefined, { teamId: id });
+    logger.error("Failed to delete team", error instanceof Error ? error : undefined, {
+      teamId: id,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }

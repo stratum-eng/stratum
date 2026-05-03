@@ -2,9 +2,9 @@ import type { MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
 import { getAgentByToken } from "../storage/agents";
 import { deleteSession, getSession } from "../storage/sessions";
-import { getUserByToken, getUser } from "../storage/users";
-import { createLogger, type Logger } from "../utils/logger";
+import { getUser, getUserByToken } from "../storage/users";
 import type { Env } from "../types";
+import { type Logger, createLogger } from "../utils/logger";
 
 declare module "hono" {
   interface ContextVariableMap {
@@ -19,7 +19,7 @@ declare module "hono" {
 function sanitizeToken(token: string): string {
   // Only show first 8 characters of token for logging
   if (token.length <= 12) return "***";
-  return token.slice(0, 4) + "..." + token.slice(-4);
+  return `${token.slice(0, 4)}...${token.slice(-4)}`;
 }
 
 export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
@@ -55,7 +55,10 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
       }
       c.set("userId", userResult.data.id);
       c.set("username", userResult.data.username);
-      logger.debug("Auth success - user", { userId: userResult.data.id, username: userResult.data.username });
+      logger.debug("Auth success - user", {
+        userId: userResult.data.id,
+        username: userResult.data.username,
+      });
       await next();
       return;
     }
@@ -71,7 +74,10 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
       }
       c.set("agentId", agentResult.data.id);
       c.set("agentOwnerId", agentResult.data.ownerId);
-      logger.debug("Auth success - agent", { agentId: agentResult.data.id, ownerId: agentResult.data.ownerId });
+      logger.debug("Auth success - agent", {
+        agentId: agentResult.data.id,
+        ownerId: agentResult.data.ownerId,
+      });
       await next();
       return;
     }
@@ -92,16 +98,20 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         await deleteSession(c.env.DB, sessionId, logger);
       } else {
         c.set("userId", sessionResult.data.userId);
-        
+
         // Fetch username for the session user
         const userResult = await getUser(c.env.DB, sessionResult.data.userId, logger);
         if (userResult.success) {
           // Generate username from email if missing (backward compatibility)
-          const username = userResult.data.username || (userResult.data.email.split('@')[0] ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+          const username =
+            userResult.data.username ||
+            (userResult.data.email.split("@")[0] ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
           c.set("username", username);
           logger.debug("Auth success - session", { userId: sessionResult.data.userId, username });
         } else {
-          logger.debug("Auth success - session (username not found)", { userId: sessionResult.data.userId });
+          logger.debug("Auth success - session (username not found)", {
+            userId: sessionResult.data.userId,
+          });
         }
       }
     } else {

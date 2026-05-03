@@ -1,5 +1,5 @@
-import { createLogger } from "../utils/logger";
 import type { Queue } from "../types";
+import { createLogger } from "../utils/logger";
 
 export type StratumEvent =
   | { type: "change.created"; changeId: string; project: string; workspace: string }
@@ -18,13 +18,21 @@ export async function publishEvent(
     return;
   }
 
-  logger.debug("Publishing event", { eventType: event.type, changeId: 'changeId' in event ? event.changeId : undefined });
+  logger.debug("Publishing event", {
+    eventType: event.type,
+    changeId: "changeId" in event ? event.changeId : undefined,
+  });
 
   try {
     await queue.send(event);
-    logger.info("Event published successfully", { eventType: event.type, changeId: 'changeId' in event ? event.changeId : undefined });
+    logger.info("Event published successfully", {
+      eventType: event.type,
+      changeId: "changeId" in event ? event.changeId : undefined,
+    });
   } catch (err) {
-    logger.error("Failed to publish event", err instanceof Error ? err : new Error(String(err)), { eventType: event.type });
+    logger.error("Failed to publish event", err instanceof Error ? err : new Error(String(err)), {
+      eventType: event.type,
+    });
     throw err;
   }
 }

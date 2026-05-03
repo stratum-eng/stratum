@@ -1,4 +1,4 @@
-import pino from 'pino';
+import pino from "pino";
 
 export interface LoggerContext {
   requestId?: string | undefined;
@@ -8,7 +8,7 @@ export interface LoggerContext {
   [key: string]: unknown | undefined;
 }
 
-export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
 
 export interface Logger {
   trace: (msg: string, meta?: Record<string, unknown>) => void;
@@ -22,18 +22,18 @@ export interface Logger {
 
 export function createLogger(context: LoggerContext = {}): Logger {
   const logger = pino({
-    level: 'info',
+    level: "info",
     base: {
-      service: 'stratum',
+      service: "stratum",
       ...context,
     },
   });
 
   return {
-    trace: (msg, meta) => meta ? logger.trace(meta, msg) : logger.trace(msg),
-    debug: (msg, meta) => meta ? logger.debug(meta, msg) : logger.debug(msg),
-    info: (msg, meta) => meta ? logger.info(meta, msg) : logger.info(msg),
-    warn: (msg, meta) => meta ? logger.warn(meta, msg) : logger.warn(msg),
+    trace: (msg, meta) => (meta ? logger.trace(meta, msg) : logger.trace(msg)),
+    debug: (msg, meta) => (meta ? logger.debug(meta, msg) : logger.debug(msg)),
+    info: (msg, meta) => (meta ? logger.info(meta, msg) : logger.info(msg)),
+    warn: (msg, meta) => (meta ? logger.warn(meta, msg) : logger.warn(msg)),
     error: (msg, error, meta) => logger.error({ err: error, ...meta }, msg),
     fatal: (msg, error, meta) => logger.fatal({ err: error, ...meta }, msg),
     child: (childContext) => createLogger({ ...context, ...childContext }),

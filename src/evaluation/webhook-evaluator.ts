@@ -1,8 +1,8 @@
-import type { Logger } from "../utils/logger";
-import type { Result } from "../utils/result";
 import type { AppError } from "../utils/errors";
 import { ExternalServiceError } from "../utils/errors";
-import { ok, err } from "../utils/result";
+import type { Logger } from "../utils/logger";
+import type { Result } from "../utils/result";
+import { err, ok } from "../utils/result";
 import type { EvalPolicy, EvalResult, Evaluator } from "./types";
 
 async function computeHmacSha256(secret: string, body: string): Promise<string> {
@@ -21,7 +21,11 @@ async function computeHmacSha256(secret: string, body: string): Promise<string> 
 }
 
 export class WebhookEvaluator implements Evaluator {
-  async evaluate(diff: string, policy: EvalPolicy, logger: Logger): Promise<Result<EvalResult, AppError>> {
+  async evaluate(
+    diff: string,
+    policy: EvalPolicy,
+    logger: Logger,
+  ): Promise<Result<EvalResult, AppError>> {
     logger.debug("Starting webhook evaluation");
 
     const config = policy.evaluators.find((e) => e.type === "webhook");
@@ -62,8 +66,17 @@ export class WebhookEvaluator implements Evaluator {
       return ok({ score: json.score, passed: json.passed, reason: json.reason });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.error("Webhook evaluation failed", error instanceof Error ? error : new Error(message));
-      return err(new ExternalServiceError("Webhook", message, error instanceof Error ? error : undefined) as AppError);
+      logger.error(
+        "Webhook evaluation failed",
+        error instanceof Error ? error : new Error(message),
+      );
+      return err(
+        new ExternalServiceError(
+          "Webhook",
+          message,
+          error instanceof Error ? error : undefined,
+        ) as AppError,
+      );
     } finally {
       clearTimeout(timer);
     }

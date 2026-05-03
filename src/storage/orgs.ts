@@ -1,7 +1,7 @@
+import { NotFoundError } from "../utils/errors";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
-import { ok, err, type Result } from "../utils/result";
-import { NotFoundError } from "../utils/errors";
+import { type Result, err, ok } from "../utils/result";
 
 export interface Org {
   id: string;
@@ -65,12 +65,20 @@ export async function createOrg(
     logger.info("Org created successfully", { orgId: id, slug });
     return ok(org);
   } catch (error) {
-    logger.error("Failed to create org", error instanceof Error ? error : undefined, { name, slug, ownerId });
+    logger.error("Failed to create org", error instanceof Error ? error : undefined, {
+      name,
+      slug,
+      ownerId,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
-export async function getOrg(db: D1Database, logger: Logger, id: string): Promise<Result<Org, NotFoundError>> {
+export async function getOrg(
+  db: D1Database,
+  logger: Logger,
+  id: string,
+): Promise<Result<Org, NotFoundError>> {
   logger.debug("Querying org by ID", { orgId: id });
 
   try {
@@ -89,7 +97,11 @@ export async function getOrg(db: D1Database, logger: Logger, id: string): Promis
   }
 }
 
-export async function getOrgBySlug(db: D1Database, logger: Logger, slug: string): Promise<Result<Org, NotFoundError>> {
+export async function getOrgBySlug(
+  db: D1Database,
+  logger: Logger,
+  slug: string,
+): Promise<Result<Org, NotFoundError>> {
   logger.debug("Querying org by slug", { slug });
 
   try {
@@ -108,7 +120,11 @@ export async function getOrgBySlug(db: D1Database, logger: Logger, slug: string)
   }
 }
 
-export async function listOrgsForUser(db: D1Database, logger: Logger, userId: string): Promise<Result<Org[], Error>> {
+export async function listOrgsForUser(
+  db: D1Database,
+  logger: Logger,
+  userId: string,
+): Promise<Result<Org[], Error>> {
   logger.debug("Listing orgs for user", { userId });
 
   try {
@@ -120,7 +136,9 @@ export async function listOrgsForUser(db: D1Database, logger: Logger, userId: st
     logger.debug("Orgs listed for user", { userId, count: results.length });
     return ok(results.map(rowToOrg));
   } catch (error) {
-    logger.error("Failed to list orgs for user", error instanceof Error ? error : undefined, { userId });
+    logger.error("Failed to list orgs for user", error instanceof Error ? error : undefined, {
+      userId,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }
@@ -146,7 +164,11 @@ export async function addOrgMember(
     logger.info("Org member added successfully", { orgId, userId, role });
     return ok(undefined);
   } catch (error) {
-    logger.error("Failed to add org member", error instanceof Error ? error : undefined, { orgId, userId, role });
+    logger.error("Failed to add org member", error instanceof Error ? error : undefined, {
+      orgId,
+      userId,
+      role,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }
@@ -168,12 +190,20 @@ export async function removeOrgMember(
     logger.info("Org member removed successfully", { orgId, userId });
     return ok(undefined);
   } catch (error) {
-    logger.error("Failed to remove org member", error instanceof Error ? error : undefined, { orgId, userId });
+    logger.error("Failed to remove org member", error instanceof Error ? error : undefined, {
+      orgId,
+      userId,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
-export async function isOrgMember(db: D1Database, logger: Logger, orgId: string, userId: string): Promise<Result<boolean, Error>> {
+export async function isOrgMember(
+  db: D1Database,
+  logger: Logger,
+  orgId: string,
+  userId: string,
+): Promise<Result<boolean, Error>> {
   logger.debug("Checking org membership", { orgId, userId });
 
   try {
@@ -186,12 +216,20 @@ export async function isOrgMember(db: D1Database, logger: Logger, orgId: string,
     logger.debug("Org membership checked", { orgId, userId, isMember });
     return ok(isMember);
   } catch (error) {
-    logger.error("Failed to check org membership", error instanceof Error ? error : undefined, { orgId, userId });
+    logger.error("Failed to check org membership", error instanceof Error ? error : undefined, {
+      orgId,
+      userId,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
-export async function isOrgAdmin(db: D1Database, logger: Logger, orgId: string, userId: string): Promise<Result<boolean, Error>> {
+export async function isOrgAdmin(
+  db: D1Database,
+  logger: Logger,
+  orgId: string,
+  userId: string,
+): Promise<Result<boolean, Error>> {
   logger.debug("Checking org admin status", { orgId, userId });
 
   try {
@@ -204,7 +242,10 @@ export async function isOrgAdmin(db: D1Database, logger: Logger, orgId: string, 
     logger.debug("Org admin status checked", { orgId, userId, isAdmin });
     return ok(isAdmin);
   } catch (error) {
-    logger.error("Failed to check org admin status", error instanceof Error ? error : undefined, { orgId, userId });
+    logger.error("Failed to check org admin status", error instanceof Error ? error : undefined, {
+      orgId,
+      userId,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }

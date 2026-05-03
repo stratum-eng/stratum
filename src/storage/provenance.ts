@@ -1,7 +1,7 @@
+import { AppError, NotFoundError } from "../utils/errors";
 import { newId } from "../utils/ids";
-import { Result, ok, err } from "../utils/result";
-import { Logger } from "../utils/logger";
-import { NotFoundError, AppError } from "../utils/errors";
+import type { Logger } from "../utils/logger";
+import { type Result, err, ok } from "../utils/result";
 
 export interface ProvenanceRecord {
   id: string;
@@ -82,18 +82,26 @@ export async function recordProvenance(
     if (opts.agentId !== undefined) record.agentId = opts.agentId;
     if (opts.evalScore !== undefined) record.evalScore = opts.evalScore;
 
-    logger.debug("Provenance recorded", { provenanceId: id, changeId: opts.changeId, commitSha: opts.commitSha });
+    logger.debug("Provenance recorded", {
+      provenanceId: id,
+      changeId: opts.changeId,
+      commitSha: opts.commitSha,
+    });
     return ok(record);
   } catch (error) {
-    const appError = error instanceof AppError
-      ? error
-      : new AppError(
-          error instanceof Error ? error.message : "Failed to record provenance",
-          "DATABASE_ERROR",
-          500,
-          { operation: "recordProvenance", changeId: opts.changeId, commitSha: opts.commitSha }
-        );
-    logger.error("Failed to record provenance", appError, { changeId: opts.changeId, commitSha: opts.commitSha });
+    const appError =
+      error instanceof AppError
+        ? error
+        : new AppError(
+            error instanceof Error ? error.message : "Failed to record provenance",
+            "DATABASE_ERROR",
+            500,
+            { operation: "recordProvenance", changeId: opts.changeId, commitSha: opts.commitSha },
+          );
+    logger.error("Failed to record provenance", appError, {
+      changeId: opts.changeId,
+      commitSha: opts.commitSha,
+    });
     return err(appError);
   }
 }
@@ -118,14 +126,15 @@ export async function getProvenance(
     logger.debug("Provenance retrieved", { changeId, provenanceId: row.id });
     return ok(rowToRecord(row));
   } catch (error) {
-    const appError = error instanceof AppError
-      ? error
-      : new AppError(
-          error instanceof Error ? error.message : "Failed to get provenance",
-          "DATABASE_ERROR",
-          500,
-          { operation: "getProvenance", changeId }
-        );
+    const appError =
+      error instanceof AppError
+        ? error
+        : new AppError(
+            error instanceof Error ? error.message : "Failed to get provenance",
+            "DATABASE_ERROR",
+            500,
+            { operation: "getProvenance", changeId },
+          );
     logger.error("Failed to get provenance", appError, { changeId });
     return err(appError);
   }
@@ -147,14 +156,15 @@ export async function listProvenance(
     logger.debug("Provenance listed", { project, limit, count: records.length });
     return ok(records);
   } catch (error) {
-    const appError = error instanceof AppError
-      ? error
-      : new AppError(
-          error instanceof Error ? error.message : "Failed to list provenance",
-          "DATABASE_ERROR",
-          500,
-          { operation: "listProvenance", project, limit }
-        );
+    const appError =
+      error instanceof AppError
+        ? error
+        : new AppError(
+            error instanceof Error ? error.message : "Failed to list provenance",
+            "DATABASE_ERROR",
+            500,
+            { operation: "listProvenance", project, limit },
+          );
     logger.error("Failed to list provenance", appError, { project, limit });
     return err(appError);
   }

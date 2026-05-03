@@ -1,9 +1,9 @@
-import type { Logger } from "../utils/logger";
-import type { Result } from "../utils/result";
+import type { AiBinding } from "../types";
 import type { AppError } from "../utils/errors";
 import { ExternalServiceError } from "../utils/errors";
-import { ok, err } from "../utils/result";
-import type { AiBinding } from "../types";
+import type { Logger } from "../utils/logger";
+import type { Result } from "../utils/result";
+import { err, ok } from "../utils/result";
 import type { EvalPolicy, EvalResult, Evaluator, EvaluatorConfig } from "./types";
 
 function sanitizePolicy(policy: EvalPolicy): EvalPolicy {
@@ -22,7 +22,11 @@ function sanitizePolicy(policy: EvalPolicy): EvalPolicy {
 export class LLMEvaluator implements Evaluator {
   constructor(private ai: AiBinding) {}
 
-  async evaluate(diff: string, policy: EvalPolicy, logger: Logger): Promise<Result<EvalResult, AppError>> {
+  async evaluate(
+    diff: string,
+    policy: EvalPolicy,
+    logger: Logger,
+  ): Promise<Result<EvalResult, AppError>> {
     logger.debug("Starting LLM evaluation");
 
     try {
@@ -109,7 +113,13 @@ export class LLMEvaluator implements Evaluator {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error("LLM evaluation failed", error instanceof Error ? error : new Error(message));
-      return err(new ExternalServiceError("LLM", message, error instanceof Error ? error : undefined) as AppError);
+      return err(
+        new ExternalServiceError(
+          "LLM",
+          message,
+          error instanceof Error ? error : undefined,
+        ) as AppError,
+      );
     }
   }
 }

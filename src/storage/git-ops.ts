@@ -4,7 +4,7 @@ import http from "isomorphic-git/http/web";
 import type { ArtifactsCreateResult, ArtifactsNamespace, Author, CommitLogEntry } from "../types";
 import { AppError, ExternalServiceError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
-import { err, fromPromise, ok, type Result } from "../utils/result";
+import { type Result, err, fromPromise, ok } from "../utils/result";
 import { MemoryFS } from "./memory-fs";
 
 const DIR = "/";
@@ -64,11 +64,13 @@ export async function initAndPush(
 
   const rawFs = new MemoryFS();
   const fs = rawFs.toNodeFS();
-  
+
   const initResult = await fromPromise(git.init({ fs, dir: DIR, defaultBranch: "main" }));
   if (!initResult.success) {
     logger.error("Failed to initialize git repository", initResult.error, { remote });
-    return err(new ExternalServiceError("Git", "Failed to initialize repository", initResult.error));
+    return err(
+      new ExternalServiceError("Git", "Failed to initialize repository", initResult.error),
+    );
   }
 
   for (const [path, content] of Object.entries(files)) {
@@ -92,7 +94,7 @@ export async function initAndPush(
   }
 
   const pushResult = await fromPromise(
-    git.push({ fs, dir: DIR, http, url: remote, ref: "main", onAuth: makeAuth(token) })
+    git.push({ fs, dir: DIR, http, url: remote, ref: "main", onAuth: makeAuth(token) }),
   );
   if (!pushResult.success) {
     logger.error("Failed to push to remote", pushResult.error, { remote });
@@ -121,7 +123,7 @@ export async function cloneRepo(
       singleBranch: true,
       depth: 50,
       onAuth: makeAuth(token),
-    })
+    }),
   );
 
   if (!cloneResult.success) {
@@ -143,7 +145,10 @@ export async function commitAndPush(
   logger: Logger,
   author: Author = SYSTEM_AUTHOR,
 ): Promise<Result<string, AppError>> {
-  logger.debug("Committing and pushing changes", { remote, changeCount: Object.keys(changes).length });
+  logger.debug("Committing and pushing changes", {
+    remote,
+    changeCount: Object.keys(changes).length,
+  });
 
   const base = dir.endsWith("/") ? dir : `${dir}/`;
   for (const [path, content] of Object.entries(changes)) {
@@ -154,7 +159,7 @@ export async function commitAndPush(
       logger.error("Failed to write file to memory FS", appError, { path, remote });
       return err(new AppError(`Failed to write file: ${path}`, "FS_ERROR", 500));
     }
-    
+
     const addResult = await fromPromise(git.add({ fs, dir, filepath: path }));
     if (!addResult.success) {
       logger.error("Failed to stage file", addResult.error, { path, remote });
@@ -169,7 +174,7 @@ export async function commitAndPush(
   }
 
   const pushResult = await fromPromise(
-    git.push({ fs, dir, http, url: remote, ref: "main", onAuth: makeAuth(token) })
+    git.push({ fs, dir, http, url: remote, ref: "main", onAuth: makeAuth(token) }),
   );
   if (!pushResult.success) {
     logger.error("Failed to push to remote", pushResult.error, { remote });
@@ -196,7 +201,11 @@ export async function mergeWorkspaceIntoProject(
   logger: Logger,
   options: MergeWorkspaceOptions = {},
 ): Promise<Result<string, AppError>> {
-  logger.debug("Merging workspace into project", { projectRemote, workspaceRemote, strategy: options.strategy });
+  logger.debug("Merging workspace into project", {
+    projectRemote,
+    workspaceRemote,
+    strategy: options.strategy,
+  });
 
   const author = options.author ?? SYSTEM_AUTHOR;
   const cloneResult = await cloneRepo(projectRemote, projectToken, logger);
@@ -204,11 +213,16 @@ export async function mergeWorkspaceIntoProject(
   const { fs, dir } = cloneResult.data;
 
   const addRemoteResult = await fromPromise(
-    git.addRemote({ fs, dir, remote: "workspace", url: workspaceRemote })
+    git.addRemote({ fs, dir, remote: "workspace", url: workspaceRemote }),
   );
   if (!addRemoteResult.success) {
-    logger.error("Failed to add workspace remote", addRemoteResult.error, { projectRemote, workspaceRemote });
-    return err(new ExternalServiceError("Git", "Failed to add workspace remote", addRemoteResult.error));
+    logger.error("Failed to add workspace remote", addRemoteResult.error, {
+      projectRemote,
+      workspaceRemote,
+    });
+    return err(
+      new ExternalServiceError("Git", "Failed to add workspace remote", addRemoteResult.error),
+    );
   }
 
   const fetchResult = await fromPromise(
@@ -220,7 +234,7 @@ export async function mergeWorkspaceIntoProject(
       ref: "main",
       singleBranch: true,
       onAuth: makeAuth(workspaceToken),
-    })
+    }),
   );
   if (!fetchResult.success) {
     logger.error("Failed to fetch workspace", fetchResult.error, { workspaceRemote });
@@ -233,11 +247,19 @@ export async function mergeWorkspaceIntoProject(
     workspaceSha = resolveFetchResult.data;
   } else {
     const resolveRemoteResult = await fromPromise(
-      git.resolveRef({ fs, dir, ref: "refs/remotes/workspace/main" })
+      git.resolveRef({ fs, dir, ref: "refs/remotes/workspace/main" }),
     );
     if (!resolveRemoteResult.success) {
-      logger.error("Failed to resolve workspace ref", resolveRemoteResult.error, { workspaceRemote });
-      return err(new ExternalServiceError("Git", "Failed to resolve workspace ref", resolveRemoteResult.error));
+      logger.error("Failed to resolve workspace ref", resolveRemoteResult.error, {
+        workspaceRemote,
+      });
+      return err(
+        new ExternalServiceError(
+          "Git",
+          "Failed to resolve workspace ref",
+          resolveRemoteResult.error,
+        ),
+      );
     }
     workspaceSha = resolveRemoteResult.data;
   }
@@ -254,13 +276,16 @@ export async function mergeWorkspaceIntoProject(
       theirs: workspaceSha,
       author,
       message: "Merge workspace into project",
-    })
+    }),
   );
 
   if (!mergeResult.success) {
-    const message = mergeResult.error instanceof Error ? mergeResult.error.message : String(mergeResult.error);
+    const message =
+      mergeResult.error instanceof Error ? mergeResult.error.message : String(mergeResult.error);
     logger.error("Merge failed", mergeResult.error, { projectRemote, workspaceRemote, message });
-    return err(new MergeConflictError(`Merge failed; workspace may be stale or conflicting: ${message}`));
+    return err(
+      new MergeConflictError(`Merge failed; workspace may be stale or conflicting: ${message}`),
+    );
   }
 
   const pushResult = await fromPromise(
@@ -271,7 +296,7 @@ export async function mergeWorkspaceIntoProject(
       url: projectRemote,
       ref: "main",
       onAuth: makeAuth(projectToken),
-    })
+    }),
   );
   if (!pushResult.success) {
     logger.error("Failed to push merge result", pushResult.error, { projectRemote });
@@ -283,7 +308,11 @@ export async function mergeWorkspaceIntoProject(
     return err(new ExternalServiceError("Git", "Merge produced no commit OID"));
   }
 
-  logger.info("Successfully merged workspace into project", { projectRemote, workspaceRemote, sha: mergeResult.data.oid });
+  logger.info("Successfully merged workspace into project", {
+    projectRemote,
+    workspaceRemote,
+    sha: mergeResult.data.oid,
+  });
   return ok(mergeResult.data.oid);
 }
 
@@ -326,9 +355,14 @@ async function squashMerge(
       return err(new AppError(`Failed to write file: ${path}`, "FS_ERROR", 500));
     }
 
-    const addResult = await fromPromise(git.add({ fs: projectFs, dir: projectDir, filepath: path }));
+    const addResult = await fromPromise(
+      git.add({ fs: projectFs, dir: projectDir, filepath: path }),
+    );
     if (!addResult.success) {
-      logger.error("Failed to stage file during squash merge", addResult.error, { path, projectRemote });
+      logger.error("Failed to stage file during squash merge", addResult.error, {
+        path,
+        projectRemote,
+      });
       return err(new ExternalServiceError("Git", `Failed to stage file: ${path}`, addResult.error));
     }
   }
@@ -342,21 +376,30 @@ async function squashMerge(
       return err(new AppError(`Failed to unlink file: ${path}`, "FS_ERROR", 500));
     }
 
-    const removeResult = await fromPromise(git.remove({ fs: projectFs, dir: projectDir, filepath: path }));
+    const removeResult = await fromPromise(
+      git.remove({ fs: projectFs, dir: projectDir, filepath: path }),
+    );
     if (!removeResult.success) {
-      logger.error("Failed to remove file during squash merge", removeResult.error, { path, projectRemote });
-      return err(new ExternalServiceError("Git", `Failed to remove file: ${path}`, removeResult.error));
+      logger.error("Failed to remove file during squash merge", removeResult.error, {
+        path,
+        projectRemote,
+      });
+      return err(
+        new ExternalServiceError("Git", `Failed to remove file: ${path}`, removeResult.error),
+      );
     }
   }
 
   const changeCount = changed.length + deleted.length;
   if (changeCount === 0) {
     const resolveResult = await fromPromise(
-      git.resolveRef({ fs: projectFs, dir: projectDir, ref: "main" })
+      git.resolveRef({ fs: projectFs, dir: projectDir, ref: "main" }),
     );
     if (!resolveResult.success) {
       logger.error("Failed to resolve main ref", resolveResult.error, { projectRemote });
-      return err(new ExternalServiceError("Git", "Failed to resolve main ref", resolveResult.error));
+      return err(
+        new ExternalServiceError("Git", "Failed to resolve main ref", resolveResult.error),
+      );
     }
     return ok(resolveResult.data);
   }
@@ -367,11 +410,13 @@ async function squashMerge(
       dir: projectDir,
       message: `Squash merge workspace (${changeCount} file${changeCount === 1 ? "" : "s"} changed)`,
       author,
-    })
+    }),
   );
   if (!commitResult.success) {
     logger.error("Failed to commit squash merge", commitResult.error, { projectRemote });
-    return err(new ExternalServiceError("Git", "Failed to commit squash merge", commitResult.error));
+    return err(
+      new ExternalServiceError("Git", "Failed to commit squash merge", commitResult.error),
+    );
   }
 
   const pushResult = await fromPromise(
@@ -382,7 +427,7 @@ async function squashMerge(
       url: projectRemote,
       ref: "main",
       onAuth: makeAuth(projectToken),
-    })
+    }),
   );
   if (!pushResult.success) {
     logger.error("Failed to push squash merge", pushResult.error, { projectRemote });
@@ -412,12 +457,14 @@ async function listFilesAtCommit(
           files.push([filepath, oid]);
         }
       },
-    })
+    }),
   );
 
   if (!walkResult.success) {
     logger.error("Failed to walk files at commit", walkResult.error, { ref });
-    return err(new ExternalServiceError("Git", `Failed to list files at commit: ${ref}`, walkResult.error));
+    return err(
+      new ExternalServiceError("Git", `Failed to list files at commit: ${ref}`, walkResult.error),
+    );
   }
 
   return ok(files);
@@ -427,12 +474,18 @@ async function readFileAtCommit(
   fs: NodeFS,
   ref: string,
   path: string,
-  logger: Logger
+  logger: Logger,
 ): Promise<Result<string, AppError>> {
   const readResult = await fromPromise(git.readBlob({ fs, dir: DIR, oid: ref, filepath: path }));
   if (!readResult.success) {
     logger.error("Failed to read file at commit", readResult.error, { ref, path });
-    return err(new ExternalServiceError("Git", `Failed to read file: ${path} at commit: ${ref}`, readResult.error));
+    return err(
+      new ExternalServiceError(
+        "Git",
+        `Failed to read file: ${path} at commit: ${ref}`,
+        readResult.error,
+      ),
+    );
   }
 
   return ok(new TextDecoder().decode(readResult.data.blob));
@@ -450,13 +503,16 @@ export async function readFileFromRepo(
   if (!cloneResult.success) return err(cloneResult.error);
 
   const { fs } = cloneResult.data;
-  
+
   try {
     const content = await fs.promises.readFile(`/${path}`, { encoding: "utf8" });
     logger.info("Successfully read file from repo", { remote, path });
-    return ok(typeof content === 'string' ? content : new TextDecoder().decode(content));
+    return ok(typeof content === "string" ? content : new TextDecoder().decode(content));
   } catch (error) {
-    logger.error("Failed to read file from repo", error instanceof Error ? error : undefined, { remote, path });
+    logger.error("Failed to read file from repo", error instanceof Error ? error : undefined, {
+      remote,
+      path,
+    });
     return err(new AppError(`Failed to read file: ${path}`, "FS_ERROR", 500));
   }
 }
@@ -464,7 +520,7 @@ export async function readFileFromRepo(
 export async function listFilesInRepo(
   remote: string,
   token: string,
-  logger: Logger
+  logger: Logger,
 ): Promise<Result<string[], AppError>> {
   logger.debug("Listing files in repo", { remote });
 
@@ -479,10 +535,10 @@ async function walkDir(
   fs: NodeFS,
   base: string,
   prefix: string,
-  logger: Logger
+  logger: Logger,
 ): Promise<Result<string[], AppError>> {
   const dirPath = base === "/" ? "/" : base;
-  
+
   try {
     const entries = await fs.promises.readdir(dirPath);
     const files: string[] = [];
@@ -490,7 +546,7 @@ async function walkDir(
     for (const entry of entries) {
       if (entry === ".git") continue;
       const fullPath = base === "/" ? `/${entry}` : `${base}/${entry}`;
-      
+
       try {
         const stat = await fs.promises.stat(fullPath);
         if (stat.isDirectory()) {
@@ -501,14 +557,18 @@ async function walkDir(
           files.push(`${prefix}${entry}`);
         }
       } catch (error) {
-        logger.error("Failed to stat file", error instanceof Error ? error : undefined, { fullPath });
+        logger.error("Failed to stat file", error instanceof Error ? error : undefined, {
+          fullPath,
+        });
         return err(new AppError(`Failed to stat file: ${fullPath}`, "FS_ERROR", 500));
       }
     }
 
     return ok(files);
   } catch (error) {
-    logger.error("Failed to read directory", error instanceof Error ? error : undefined, { dirPath });
+    logger.error("Failed to read directory", error instanceof Error ? error : undefined, {
+      dirPath,
+    });
     return err(new AppError(`Failed to read directory: ${dirPath}`, "FS_ERROR", 500));
   }
 }
@@ -564,16 +624,22 @@ export async function importFromGitHub(
       },
     });
 
-    logger.info("Successfully imported from GitHub", { name, githubUrl, branch, remote: result.remote });
+    logger.info("Successfully imported from GitHub", {
+      name,
+      githubUrl,
+      branch,
+      remote: result.remote,
+    });
     return ok(result);
   } catch (error) {
-    const appError = error instanceof AppError
-      ? error
-      : new ExternalServiceError(
-          "Artifacts",
-          error instanceof Error ? error.message : "Import failed",
-          error instanceof Error ? error : undefined
-        );
+    const appError =
+      error instanceof AppError
+        ? error
+        : new ExternalServiceError(
+            "Artifacts",
+            error instanceof Error ? error.message : "Import failed",
+            error instanceof Error ? error : undefined,
+          );
     logger.error("Failed to import from GitHub", appError, { name, githubUrl, branch });
     return err(appError);
   }

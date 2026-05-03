@@ -1,5 +1,5 @@
-import { AppError, NotFoundError, ValidationError, AuthError, ForbiddenError } from "./errors";
 import type { ApiError } from "../types";
+import { AppError, AuthError, ForbiddenError, NotFoundError, ValidationError } from "./errors";
 import type { Logger } from "./logger";
 
 export function ok<T>(data: T, status = 200): Response {
@@ -48,7 +48,7 @@ export function appError(error: AppError): Response {
 export function handleError(
   error: Error,
   logger?: Logger,
-  context?: Record<string, unknown>
+  context?: Record<string, unknown>,
 ): Response {
   if (logger) {
     logger.error("Request error", error, context);

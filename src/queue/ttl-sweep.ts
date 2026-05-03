@@ -1,11 +1,14 @@
-import type { Logger } from "../utils/logger";
-import { createLogger } from "../utils/logger";
 import type { Env } from "../types";
 import type { WorkspaceEntry } from "../types";
+import type { Logger } from "../utils/logger";
+import { createLogger } from "../utils/logger";
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
-export async function runTtlSweep(env: Env, logger: Logger = createLogger({ component: "TtlSweep" })): Promise<{ deleted: number }> {
+export async function runTtlSweep(
+  env: Env,
+  logger: Logger = createLogger({ component: "TtlSweep" }),
+): Promise<{ deleted: number }> {
   logger.info("Starting TTL sweep");
 
   let deleted = 0;
@@ -47,9 +50,16 @@ export async function runTtlSweep(env: Env, logger: Logger = createLogger({ comp
 
         await env.STATE.delete(key.name);
         deleted++;
-        logger.info("Deleted expired workspace", { workspaceId, workspace: workspace.name, createdAt: workspace.createdAt });
+        logger.info("Deleted expired workspace", {
+          workspaceId,
+          workspace: workspace.name,
+          createdAt: workspace.createdAt,
+        });
       } catch (err) {
-        logger.warn("Error processing workspace during sweep", { key: key.name, error: err instanceof Error ? err.message : String(err) });
+        logger.warn("Error processing workspace during sweep", {
+          key: key.name,
+          error: err instanceof Error ? err.message : String(err),
+        });
         // Per-item error — continue sweep
       }
     }

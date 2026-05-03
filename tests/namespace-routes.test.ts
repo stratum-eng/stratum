@@ -62,21 +62,25 @@ vi.mock("../src/storage/users", () => ({
 
 // Mock git-ops
 vi.mock("../src/storage/git-ops", () => ({
-  initAndPush: vi.fn(
-    async (_remote: string, _token: string, _files: unknown, _msg: string) => ({ success: true, data: "sha_init" }),
-  ),
+  initAndPush: vi.fn(async (_remote: string, _token: string, _files: unknown, _msg: string) => ({
+    success: true,
+    data: "sha_init",
+  })),
   cloneRepo: vi.fn(async () => ({ fs: {}, dir: "/" })),
   commitAndPush: vi.fn(async () => "sha_commit"),
   mergeWorkspaceIntoProject: vi.fn(async () => "sha_merge"),
   listFilesInRepo: vi.fn(async () => ({ success: true, data: ["src/index.ts", "README.md"] })),
-  getCommitLog: vi.fn(async () => ({ success: true, data: [
-    {
-      sha: "abc123",
-      message: "Initial commit",
-      author: "Stratum <system@usestratum.dev>",
-      timestamp: 1000,
-    },
-  ]})),
+  getCommitLog: vi.fn(async () => ({
+    success: true,
+    data: [
+      {
+        sha: "abc123",
+        message: "Initial commit",
+        author: "Stratum <system@usestratum.dev>",
+        timestamp: 1000,
+      },
+    ],
+  })),
   readFileFromRepo: vi.fn(async () => ({ success: true, data: "# README" })),
 }));
 
@@ -88,7 +92,10 @@ vi.mock("../src/storage/changes", () => ({
 
 // Mock provenance storage
 vi.mock("../src/storage/provenance", () => ({
-  getProvenance: vi.fn(async () => ({ success: false, error: { message: "Provenance not found" } })),
+  getProvenance: vi.fn(async () => ({
+    success: false,
+    error: { message: "Provenance not found" },
+  })),
   listProvenance: vi.fn(async () => ({ success: true, data: [] })),
 }));
 
@@ -257,17 +264,14 @@ describe("Namespace Routes", () => {
     env = makeEnv();
     vi.clearAllMocks();
     // Clear import progress
-    Object.keys(mockImportProgress).forEach(key => delete mockImportProgress[key]);
+    Object.keys(mockImportProgress).forEach((key) => delete mockImportProgress[key]);
   });
 
   describe("GET /@namespace/:slug - UI Repo View", () => {
     it("renders project page for valid namespace and slug", async () => {
       await createTestProject(env, "@testuser", "my-project", "user_test", "public");
 
-      const res = await app.fetch(
-        request("GET", "/@testuser/my-project"),
-        env,
-      );
+      const res = await app.fetch(request("GET", "/@testuser/my-project"), env);
 
       expect(res.status).toBe(200);
       const html = await res.text();
@@ -275,10 +279,7 @@ describe("Namespace Routes", () => {
     });
 
     it("returns 404 for non-existent project", async () => {
-      const res = await app.fetch(
-        request("GET", "/@testuser/non-existent"),
-        env,
-      );
+      const res = await app.fetch(request("GET", "/@testuser/non-existent"), env);
 
       expect(res.status).toBe(404);
       const html = await res.text();
@@ -312,10 +313,7 @@ describe("Namespace Routes", () => {
     it("allows public access to public projects without auth", async () => {
       await createTestProject(env, "@testuser", "public-project", "user_test", "public");
 
-      const res = await app.fetch(
-        request("GET", "/@testuser/public-project"),
-        env,
-      );
+      const res = await app.fetch(request("GET", "/@testuser/public-project"), env);
 
       expect(res.status).toBe(200);
       const html = await res.text();
@@ -324,17 +322,14 @@ describe("Namespace Routes", () => {
 
     it("returns 400 for invalid namespace format (no @ prefix)", async () => {
       // Routes without @ prefix should return 400 bad request
-      const res = await app.fetch(
-        request("GET", "/invalid/test-project"),
-        env,
-      );
+      const res = await app.fetch(request("GET", "/invalid/test-project"), env);
 
       expect(res.status).toBe(400);
     });
 
     it("displays import progress when import is active", async () => {
       await createTestProject(env, "@testuser", "importing-project", "user_test", "public");
-      
+
       // Set up active import progress
       mockImportProgress["@testuser:importing-project"] = {
         id: "import_123",
@@ -347,7 +342,9 @@ describe("Namespace Routes", () => {
         startedAt: new Date().toISOString(),
         progress: { processedFiles: 10 },
         errors: [],
-        logs: [{ message: "Cloning repository", level: "info", timestamp: new Date().toISOString() }],
+        logs: [
+          { message: "Cloning repository", level: "info", timestamp: new Date().toISOString() },
+        ],
       };
 
       const res = await app.fetch(
@@ -369,10 +366,7 @@ describe("Namespace Routes", () => {
 
       await createTestProject(env, "@testuser", "project-with-readme", "user_test", "public");
 
-      const res = await app.fetch(
-        request("GET", "/@testuser/project-with-readme"),
-        env,
-      );
+      const res = await app.fetch(request("GET", "/@testuser/project-with-readme"), env);
 
       expect(res.status).toBe(200);
     });
@@ -409,7 +403,12 @@ describe("Namespace Routes", () => {
         await createTestProject(env, "@testuser", "private-project", "user_test", "private");
 
         const res = await app.fetch(
-          request("GET", "/api/projects/@testuser/private-project/files", undefined, OTHER_AUTH_HEADERS),
+          request(
+            "GET",
+            "/api/projects/@testuser/private-project/files",
+            undefined,
+            OTHER_AUTH_HEADERS,
+          ),
           env,
         );
 
@@ -420,7 +419,12 @@ describe("Namespace Routes", () => {
         await createTestProject(env, "@testuser", "my-private-project", "user_test", "private");
 
         const res = await app.fetch(
-          request("GET", "/api/projects/@testuser/my-private-project/files", undefined, AUTH_HEADERS),
+          request(
+            "GET",
+            "/api/projects/@testuser/my-private-project/files",
+            undefined,
+            AUTH_HEADERS,
+          ),
           env,
         );
 
@@ -431,7 +435,7 @@ describe("Namespace Routes", () => {
     describe("GET /api/projects/:namespace/:slug/import/status", () => {
       it("returns import progress for active import", async () => {
         await createTestProject(env, "@testuser", "importing-project", "user_test", "public");
-        
+
         mockImportProgress["@testuser:importing-project"] = {
           id: "import_123",
           projectId: "proj_123",
@@ -470,14 +474,19 @@ describe("Namespace Routes", () => {
 
       it("returns 403 for private project without access", async () => {
         await createTestProject(env, "@testuser", "private-project", "user_test", "private");
-        
+
         mockImportProgress["@testuser:private-project"] = {
           id: "import_123",
           status: "processing",
         };
 
         const res = await app.fetch(
-          request("GET", "/api/projects/@testuser/private-project/import/status", undefined, OTHER_AUTH_HEADERS),
+          request(
+            "GET",
+            "/api/projects/@testuser/private-project/import/status",
+            undefined,
+            OTHER_AUTH_HEADERS,
+          ),
           env,
         );
 
@@ -497,7 +506,7 @@ describe("Namespace Routes", () => {
     describe("POST /api/projects/:namespace/:slug/import/cancel", () => {
       it("cancels an active import", async () => {
         await createTestProject(env, "@testuser", "importing-project", "user_test", "private");
-        
+
         mockImportProgress["@testuser:importing-project"] = {
           id: "import_123",
           projectId: "proj_123",
@@ -513,7 +522,12 @@ describe("Namespace Routes", () => {
         };
 
         const res = await app.fetch(
-          request("POST", "/api/projects/@testuser/importing-project/import/cancel", {}, AUTH_HEADERS),
+          request(
+            "POST",
+            "/api/projects/@testuser/importing-project/import/cancel",
+            {},
+            AUTH_HEADERS,
+          ),
           env,
         );
 
@@ -538,7 +552,12 @@ describe("Namespace Routes", () => {
         await createTestProject(env, "@testuser", "importing-project", "user_test", "private");
 
         const res = await app.fetch(
-          request("POST", "/api/projects/@testuser/importing-project/import/cancel", {}, OTHER_AUTH_HEADERS),
+          request(
+            "POST",
+            "/api/projects/@testuser/importing-project/import/cancel",
+            {},
+            OTHER_AUTH_HEADERS,
+          ),
           env,
         );
 
@@ -560,7 +579,7 @@ describe("Namespace Routes", () => {
     describe("GET /api/projects/:namespace/:slug/import/stream - SSE", () => {
       it("returns SSE stream for import progress", async () => {
         await createTestProject(env, "@testuser", "importing-project", "user_test", "public");
-        
+
         mockImportProgress["@testuser:importing-project"] = {
           id: "import_123",
           projectId: "proj_123",
@@ -598,7 +617,12 @@ describe("Namespace Routes", () => {
         await createTestProject(env, "@testuser", "private-project", "user_test", "private");
 
         const res = await app.fetch(
-          request("GET", "/api/projects/@testuser/private-project/import/stream", undefined, OTHER_AUTH_HEADERS),
+          request(
+            "GET",
+            "/api/projects/@testuser/private-project/import/stream",
+            undefined,
+            OTHER_AUTH_HEADERS,
+          ),
           env,
         );
 
@@ -612,10 +636,7 @@ describe("Namespace Routes", () => {
       it("still works for legacy projects", async () => {
         await createLegacyProject(env, "legacy-project", "user_test", "public");
 
-        const res = await app.fetch(
-          request("GET", "/p/legacy-project"),
-          env,
-        );
+        const res = await app.fetch(request("GET", "/p/legacy-project"), env);
 
         expect(res.status).toBe(200);
         const html = await res.text();
@@ -623,10 +644,7 @@ describe("Namespace Routes", () => {
       });
 
       it("returns 404 for non-existent legacy project", async () => {
-        const res = await app.fetch(
-          request("GET", "/p/non-existent-legacy"),
-          env,
-        );
+        const res = await app.fetch(request("GET", "/p/non-existent-legacy"), env);
 
         expect(res.status).toBe(404);
       });
@@ -647,10 +665,7 @@ describe("Namespace Routes", () => {
       it("still works for legacy projects", async () => {
         await createLegacyProject(env, "legacy-project", "user_test", "public");
 
-        const res = await app.fetch(
-          request("GET", "/p/legacy-project/changes"),
-          env,
-        );
+        const res = await app.fetch(request("GET", "/p/legacy-project/changes"), env);
 
         expect(res.status).toBe(200);
       });
@@ -660,10 +675,7 @@ describe("Namespace Routes", () => {
       it("still works for legacy projects", async () => {
         await createLegacyProject(env, "legacy-project", "user_test", "public");
 
-        const res = await app.fetch(
-          request("GET", "/p/legacy-project/workspaces"),
-          env,
-        );
+        const res = await app.fetch(request("GET", "/p/legacy-project/workspaces"), env);
 
         expect(res.status).toBe(200);
       });
@@ -674,10 +686,7 @@ describe("Namespace Routes", () => {
         await createLegacyProject(env, "legacy-project", "user_test", "public");
 
         // The legacy API should still work - checking that routes.test.ts tests pass
-        const res = await app.fetch(
-          request("GET", "/api/projects/legacy-project/files"),
-          env,
-        );
+        const res = await app.fetch(request("GET", "/api/projects/legacy-project/files"), env);
 
         // This may return 404 if the legacy API route was removed
         // The important thing is that namespace routes work
@@ -690,10 +699,7 @@ describe("Namespace Routes", () => {
     it("allows public projects to be accessed without authentication", async () => {
       await createTestProject(env, "@testuser", "public-project", "user_test", "public");
 
-      const res = await app.fetch(
-        request("GET", "/@testuser/public-project"),
-        env,
-      );
+      const res = await app.fetch(request("GET", "/@testuser/public-project"), env);
 
       expect(res.status).toBe(200);
     });
@@ -701,10 +707,7 @@ describe("Namespace Routes", () => {
     it("requires authentication for private projects", async () => {
       await createTestProject(env, "@testuser", "private-project", "user_test", "private");
 
-      const res = await app.fetch(
-        request("GET", "/@testuser/private-project"),
-        env,
-      );
+      const res = await app.fetch(request("GET", "/@testuser/private-project"), env);
 
       expect(res.status).toBe(403);
     });
@@ -736,10 +739,7 @@ describe("Namespace Routes", () => {
     it("accepts valid namespace with @ prefix", async () => {
       await createTestProject(env, "@validuser", "project", "user_test", "public");
 
-      const res = await app.fetch(
-        request("GET", "/@validuser/project"),
-        env,
-      );
+      const res = await app.fetch(request("GET", "/@validuser/project"), env);
 
       expect(res.status).toBe(200);
     });
@@ -747,19 +747,13 @@ describe("Namespace Routes", () => {
     it("accepts namespace with hyphens", async () => {
       await createTestProject(env, "@valid-user", "project", "user_test", "public");
 
-      const res = await app.fetch(
-        request("GET", "/@valid-user/project"),
-        env,
-      );
+      const res = await app.fetch(request("GET", "/@valid-user/project"), env);
 
       expect(res.status).toBe(200);
     });
 
     it("rejects namespace without @ prefix via 400", async () => {
-      const res = await app.fetch(
-        request("GET", "/invalid-namespace/project"),
-        env,
-      );
+      const res = await app.fetch(request("GET", "/invalid-namespace/project"), env);
 
       expect(res.status).toBe(400);
     });
@@ -771,10 +765,7 @@ describe("Namespace Routes", () => {
       await createTestProject(env, "@otheruser", "their-project", "user_other", "public");
 
       // Try to access with a different user (even though it's public, the test validates routing)
-      const res = await app.fetch(
-        request("GET", "/@otheruser/their-project"),
-        env,
-      );
+      const res = await app.fetch(request("GET", "/@otheruser/their-project"), env);
 
       // Public projects should be accessible
       expect(res.status).toBe(200);

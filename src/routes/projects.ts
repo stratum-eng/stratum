@@ -1,16 +1,37 @@
 import { Hono } from "hono";
+import { importRateLimitMiddleware, releaseImportLock } from "../middleware/rate-limit";
 import { getCommitLog, importFromGitHub, initAndPush, listFilesInRepo } from "../storage/git-ops";
-import { createImportJob, getImportProgress, updateImportProgress, updateImportStatus, deleteImportJob, cancelImportJob, isImportCancelled } from "../storage/imports";
+import {
+  cancelImportJob,
+  createImportJob,
+  deleteImportJob,
+  getImportProgress,
+  isImportCancelled,
+  updateImportStatus,
+} from "../storage/imports";
 import { listProvenance } from "../storage/provenance";
 import { getProjectByPath, listProjectsByNamespace, setProject } from "../storage/state";
-import type { Env, ProjectEntry, ImportProgress, ArtifactsCreateResult } from "../types";
+import type { ArtifactsCreateResult, Env, ProjectEntry } from "../types";
 import { getArtifactsRepoName } from "../types";
 import { canReadProject, filterReadableProjects } from "../utils/authz";
-import { internalError, badRequest, created, forbidden, notFound, ok, unauthorized } from "../utils/response";
-import { isStringRecord, isValidGitHubUrl, isValidNamespace, isValidSlug, slugify } from "../utils/validation";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
-import { importRateLimitMiddleware, releaseImportLock } from "../middleware/rate-limit";
+import {
+  badRequest,
+  created,
+  forbidden,
+  internalError,
+  notFound,
+  ok,
+  unauthorized,
+} from "../utils/response";
+import {
+  isStringRecord,
+  isValidGitHubUrl,
+  isValidNamespace,
+  isValidSlug,
+  slugify,
+} from "../utils/validation";
 
 const DEFAULT_FILES: Record<string, string> = {
   "README.md": "# My Project\n\nCreated with Stratum.\n",
@@ -32,7 +53,7 @@ function generateProjectId(): string {
 
 // Helper to get user's namespace (username with @ prefix)
 function getUserNamespace(username: string): string {
-  return username.startsWith('@') ? username : `@${username}`;
+  return username.startsWith("@") ? username : `@${username}`;
 }
 
 // POST /projects - Create a new project
@@ -40,7 +61,7 @@ function getUserNamespace(username: string): string {
 app.post("/", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -53,7 +74,7 @@ app.post("/", async (c) => {
   if (!isValidSlug(body.name)) return badRequest("name must be a 1-64 char alphanumeric slug");
 
   const namespace = getUserNamespace(username);
-  
+
   // Validate namespace format
   if (!isValidNamespace(namespace)) {
     return badRequest("Invalid namespace format");
@@ -82,10 +103,10 @@ app.post("/", async (c) => {
     return badRequest("files must be an object of string paths to string contents");
 
   const slug = slugify(String(body.name));
-  
+
   // Validate slug length after slugification
   if (!isValidSlug(slug)) {
-    return badRequest(`Slug too long (max 100 characters)`);
+    return badRequest("Slug too long (max 100 characters)");
   }
   const projectId = generateProjectId();
 
@@ -98,10 +119,10 @@ app.post("/", async (c) => {
   // Create Artifacts repo with namespaced name
   const artifactsRepoName = getArtifactsRepoName(namespace, slug);
   const repo = await c.env.ARTIFACTS.create(artifactsRepoName);
-  
+
   const initResult = await initAndPush(repo.remote, repo.token, files, "Initial commit", logger);
   if (!initResult.success) {
-    logger.error('Failed to initialize and push repository', initResult.error);
+    logger.error("Failed to initialize and push repository", initResult.error);
     return internalError(initResult.error.message);
   }
 
@@ -111,7 +132,7 @@ app.post("/", async (c) => {
     slug,
     namespace,
     ownerId: userId,
-    ownerType: 'user',
+    ownerType: "user",
     remote: repo.remote,
     token: repo.token,
     createdAt: new Date().toISOString(),
@@ -120,26 +141,26 @@ app.post("/", async (c) => {
 
   const setResult = await setProject(c.env.STATE, project, logger);
   if (!setResult.success) {
-    logger.error('Failed to set project', setResult.error);
+    logger.error("Failed to set project", setResult.error);
     return internalError(setResult.error.message);
   }
 
-  logger.info('Project created', { 
-    projectId, 
-    namespace, 
-    slug, 
-    visibility 
+  logger.info("Project created", {
+    projectId,
+    namespace,
+    slug,
+    visibility,
   });
-  
-  return created({ 
+
+  return created({
     id: projectId,
     name: project.name,
     namespace,
     slug,
     path: `/${namespace}/${slug}`,
-    remote: repo.remote, 
-    commit: initResult.data, 
-    visibility 
+    remote: repo.remote,
+    commit: initResult.data,
+    visibility,
   });
 });
 
@@ -147,7 +168,7 @@ app.post("/", async (c) => {
 app.get("/", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -162,25 +183,25 @@ app.get("/", async (c) => {
 
   const namespace = getUserNamespace(username);
   const projectsResult = await listProjectsByNamespace(c.env.STATE, namespace, logger);
-  
+
   if (!projectsResult.success) {
-    logger.error('Failed to list projects', projectsResult.error);
+    logger.error("Failed to list projects", projectsResult.error);
     return internalError(projectsResult.error.message);
   }
 
   const projects = filterReadableProjects(projectsResult.data, userId, agentOwnerId);
-  logger.info('Projects listed', { count: projects.length });
-  
+  logger.info("Projects listed", { count: projects.length });
+
   return ok({
-    projects: projects.map(({ id, name, namespace, slug, remote, createdAt, visibility }) => ({ 
+    projects: projects.map(({ id, name, namespace, slug, remote, createdAt, visibility }) => ({
       id,
-      name, 
+      name,
       namespace,
       slug,
       path: `/${namespace}/${slug}`,
-      remote, 
-      createdAt, 
-      visibility 
+      remote,
+      createdAt,
+      visibility,
     })),
   });
 });
@@ -189,7 +210,7 @@ app.get("/", async (c) => {
 app.get("/:namespace/:slug", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -200,17 +221,17 @@ app.get("/:namespace/:slug", async (c) => {
 
   const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
   if (!projectResult.success) {
-    if (projectResult.error.code === 'NOT_FOUND') {
+    if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", `${namespace}/${slug}`);
     }
-    logger.error('Failed to get project', projectResult.error);
+    logger.error("Failed to get project", projectResult.error);
     return internalError(projectResult.error.message);
   }
   const project = projectResult.data;
 
   if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
 
-  logger.info('Project retrieved', { namespace, slug });
+  logger.info("Project retrieved", { namespace, slug });
   return ok({
     id: project.id,
     name: project.name,
@@ -230,189 +251,193 @@ app.get("/:namespace/:slug", async (c) => {
 
 // POST /projects/:namespace/:slug/import - Import from GitHub
 // Strict rate limiting: 1 import per minute per user, 1 concurrent import per project
-app.post("/:namespace/:slug/import", importRateLimitMiddleware({
-  importsPerWindow: 1,
-  windowSeconds: 60,
-  maxConcurrentPerProject: 1,
-  projectLockSeconds: 300, // 5 minutes default import timeout
-}), async (c) => {
-  const logger = createLogger({
-    requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
-    path: c.req.path,
-    method: c.req.method,
-  });
-
-  try {
-    const userId = c.get("userId");
-    const username = c.get("username");
-    if (!userId || !username) return unauthorized("Authentication required");
-
-    const { namespace, slug } = c.req.param();
-    
-    // Validate namespace format
-    if (!isValidNamespace(namespace)) {
-      return badRequest("Invalid namespace format");
-    }
-    
-    if (!isValidSlug(slug)) return badRequest("Slug too long (max 100 characters)");
-
-    const userNamespace = getUserNamespace(username);
-    
-    // Validate user namespace format
-    if (!isValidNamespace(userNamespace)) {
-      return badRequest("Invalid namespace format");
-    }
-    
-    // For now, users can only import into their own namespace
-    if (namespace !== userNamespace) {
-      return forbidden("You can only import projects into your own namespace");
-    }
-
-    // Check if project already exists
-    const existingProjectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
-    if (existingProjectResult.success) {
-      logger.info('Project already exists', { namespace, slug });
-      // Redirect to existing project if coming from web UI
-      const contentType = c.req.header("content-type") || "";
-      if (!contentType.includes("application/json")) {
-        return c.redirect(`/@${namespace.replace('@', '')}/${slug}`);
-      }
-      return ok({ 
-        namespace, 
-        slug, 
-        remote: existingProjectResult.data.remote, 
-        source: existingProjectResult.data.githubUrl 
-      });
-    }
-
-    // Handle both JSON and form data
-    let body: { url?: unknown; branch?: unknown; depth?: unknown; visibility?: unknown };
-    const contentType = c.req.header("content-type") || "";
-    
-    if (contentType.includes("application/json")) {
-      body = await c.req.json();
-    } else {
-      // Form data
-      const formData = await c.req.parseBody();
-      body = {
-        url: formData.url,
-        branch: formData.branch,
-        depth: formData.depth ? Number(formData.depth) : undefined,
-        visibility: formData.visibility,
-      };
-    }
-
-    if (!isValidGitHubUrl(body.url))
-      return badRequest("url must be a valid github.com repository URL");
-
-    const branch = typeof body.branch === "string" ? body.branch : "main";
-
-    // Validate visibility if provided
-    let visibility: "private" | "public" = "private";
-    if (body.visibility !== undefined) {
-      if (body.visibility !== "private" && body.visibility !== "public") {
-        return badRequest("visibility must be 'private' or 'public'");
-      }
-      visibility = body.visibility;
-    }
-
-    // Generate project ID
-    const projectId = generateProjectId();
-    const importId = generateProjectId();
-
-    // Create import job FIRST (before creating project)
-    const createImportResult = await createImportJob(
-      c.env.DB,
-      {
-        id: importId,
-        projectId,
-        namespace,
-        slug,
-        sourceUrl: body.url,
-        branch,
-      },
-      logger
-    );
-
-    if (!createImportResult.success) {
-      logger.error('Failed to create import job', createImportResult.error);
-      return internalError(createImportResult.error.message);
-    }
-
-    // Create the project entry immediately (marked as being imported)
-    // For now, we'll create a placeholder Artifacts repo
-    const artifactsRepoName = getArtifactsRepoName(namespace, slug);
-    let repo: ArtifactsCreateResult;
+app.post(
+  "/:namespace/:slug/import",
+  importRateLimitMiddleware({
+    importsPerWindow: 1,
+    windowSeconds: 60,
+    maxConcurrentPerProject: 1,
+    projectLockSeconds: 300, // 5 minutes default import timeout
+  }),
+  async (c) => {
+    const logger = createLogger({
+      requestId: crypto.randomUUID(),
+      userId: c.get("userId"),
+      path: c.req.path,
+      method: c.req.method,
+    });
 
     try {
-      repo = await c.env.ARTIFACTS.create(artifactsRepoName);
-    } catch (artifactsError) {
-      // If repo already exists, try to get it and create a token
-      const errorMessage = artifactsError instanceof Error ? artifactsError.message : "";
-      if (errorMessage.includes("already exists")) {
-        const existingRepo = await c.env.ARTIFACTS.get(artifactsRepoName);
-        const tokenResult = await existingRepo.createToken("write", 86400 * 30); // 30 days
-        repo = {
-          name: existingRepo.name,
-          remote: existingRepo.remote,
-          token: tokenResult.plaintext,
-        };
-      } else {
-        throw artifactsError;
+      const userId = c.get("userId");
+      const username = c.get("username");
+      if (!userId || !username) return unauthorized("Authentication required");
+
+      const { namespace, slug } = c.req.param();
+
+      // Validate namespace format
+      if (!isValidNamespace(namespace)) {
+        return badRequest("Invalid namespace format");
       }
+
+      if (!isValidSlug(slug)) return badRequest("Slug too long (max 100 characters)");
+
+      const userNamespace = getUserNamespace(username);
+
+      // Validate user namespace format
+      if (!isValidNamespace(userNamespace)) {
+        return badRequest("Invalid namespace format");
+      }
+
+      // For now, users can only import into their own namespace
+      if (namespace !== userNamespace) {
+        return forbidden("You can only import projects into your own namespace");
+      }
+
+      // Check if project already exists
+      const existingProjectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+      if (existingProjectResult.success) {
+        logger.info("Project already exists", { namespace, slug });
+        // Redirect to existing project if coming from web UI
+        const contentType = c.req.header("content-type") || "";
+        if (!contentType.includes("application/json")) {
+          return c.redirect(`/@${namespace.replace("@", "")}/${slug}`);
+        }
+        return ok({
+          namespace,
+          slug,
+          remote: existingProjectResult.data.remote,
+          source: existingProjectResult.data.githubUrl,
+        });
+      }
+
+      // Handle both JSON and form data
+      let body: { url?: unknown; branch?: unknown; depth?: unknown; visibility?: unknown };
+      const contentType = c.req.header("content-type") || "";
+
+      if (contentType.includes("application/json")) {
+        body = await c.req.json();
+      } else {
+        // Form data
+        const formData = await c.req.parseBody();
+        body = {
+          url: formData.url,
+          branch: formData.branch,
+          depth: formData.depth ? Number(formData.depth) : undefined,
+          visibility: formData.visibility,
+        };
+      }
+
+      if (!isValidGitHubUrl(body.url))
+        return badRequest("url must be a valid github.com repository URL");
+
+      const branch = typeof body.branch === "string" ? body.branch : "main";
+
+      // Validate visibility if provided
+      let visibility: "private" | "public" = "private";
+      if (body.visibility !== undefined) {
+        if (body.visibility !== "private" && body.visibility !== "public") {
+          return badRequest("visibility must be 'private' or 'public'");
+        }
+        visibility = body.visibility;
+      }
+
+      // Generate project ID
+      const projectId = generateProjectId();
+      const importId = generateProjectId();
+
+      // Create import job FIRST (before creating project)
+      const createImportResult = await createImportJob(
+        c.env.DB,
+        {
+          id: importId,
+          projectId,
+          namespace,
+          slug,
+          sourceUrl: body.url,
+          branch,
+        },
+        logger,
+      );
+
+      if (!createImportResult.success) {
+        logger.error("Failed to create import job", createImportResult.error);
+        return internalError(createImportResult.error.message);
+      }
+
+      // Create the project entry immediately (marked as being imported)
+      // For now, we'll create a placeholder Artifacts repo
+      const artifactsRepoName = getArtifactsRepoName(namespace, slug);
+      let repo: ArtifactsCreateResult;
+
+      try {
+        repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+      } catch (artifactsError) {
+        // If repo already exists, try to get it and create a token
+        const errorMessage = artifactsError instanceof Error ? artifactsError.message : "";
+        if (errorMessage.includes("already exists")) {
+          const existingRepo = await c.env.ARTIFACTS.get(artifactsRepoName);
+          const tokenResult = await existingRepo.createToken("write", 86400 * 30); // 30 days
+          repo = {
+            name: existingRepo.name,
+            remote: existingRepo.remote,
+            token: tokenResult.plaintext,
+          };
+        } else {
+          throw artifactsError;
+        }
+      }
+
+      const project: ProjectEntry = {
+        id: projectId,
+        name: slug,
+        slug,
+        namespace,
+        ownerId: userId,
+        ownerType: "user",
+        remote: repo.remote,
+        token: repo.token,
+        createdAt: new Date().toISOString(),
+        githubUrl: body.url,
+        ...(parseGitHubRepo(body.url) ?? {}),
+        githubDefaultBranch: branch,
+        githubConnectedAt: new Date().toISOString(),
+        githubConnectionStatus: "connected",
+        visibility,
+      };
+
+      const setResult = await setProject(c.env.STATE, project, logger);
+      if (!setResult.success) {
+        logger.error("Failed to set project after import", setResult.error);
+        return internalError(setResult.error.message);
+      }
+
+      // Queue the actual import job for background processing
+      // TODO: This should be queued to a background worker
+      // For now, we'll trigger it asynchronously
+      processImportJob(c.env, project, importId, body.url, branch, logger);
+
+      // Redirect to project page immediately (user will see import progress)
+      if (!contentType.includes("application/json")) {
+        return c.redirect(`/@${namespace.replace("@", "")}/${slug}?import=active`);
+      }
+
+      logger.info("Import queued", { namespace, slug, importId, url: body.url, visibility });
+      return created({
+        namespace,
+        slug,
+        importId,
+        path: `/${namespace}/${slug}`,
+        status: "queued",
+        source: body.url,
+        visibility,
+      });
+    } catch (err) {
+      logger.error("[import] Error:", err instanceof Error ? err : undefined);
+      const message = err instanceof Error ? err.message : String(err);
+      return internalError(message);
     }
-
-    const project: ProjectEntry = {
-      id: projectId,
-      name: slug,
-      slug,
-      namespace,
-      ownerId: userId,
-      ownerType: 'user',
-      remote: repo.remote,
-      token: repo.token,
-      createdAt: new Date().toISOString(),
-      githubUrl: body.url,
-      ...(parseGitHubRepo(body.url) ?? {}),
-      githubDefaultBranch: branch,
-      githubConnectedAt: new Date().toISOString(),
-      githubConnectionStatus: "connected",
-      visibility,
-    };
-
-    const setResult = await setProject(c.env.STATE, project, logger);
-    if (!setResult.success) {
-      logger.error('Failed to set project after import', setResult.error);
-      return internalError(setResult.error.message);
-    }
-
-    // Queue the actual import job for background processing
-    // TODO: This should be queued to a background worker
-    // For now, we'll trigger it asynchronously
-    processImportJob(c.env, project, importId, body.url, branch, logger);
-
-    // Redirect to project page immediately (user will see import progress)
-    if (!contentType.includes("application/json")) {
-      return c.redirect(`/@${namespace.replace('@', '')}/${slug}?import=active`);
-    }
-
-    logger.info('Import queued', { namespace, slug, importId, url: body.url, visibility });
-    return created({ 
-      namespace, 
-      slug, 
-      importId,
-      path: `/${namespace}/${slug}`,
-      status: "queued",
-      source: body.url, 
-      visibility 
-    });
-  } catch (err) {
-    logger.error("[import] Error:", err instanceof Error ? err : undefined);
-    const message = err instanceof Error ? err.message : String(err);
-    return internalError(message);
-  }
-});
+  },
+);
 
 // Background import processing (should be moved to a queue worker)
 async function processImportJob(
@@ -421,23 +446,23 @@ async function processImportJob(
   importId: string,
   githubUrl: string,
   branch: string,
-  logger: Logger
+  logger: Logger,
 ) {
   const { namespace, slug } = project;
   const artifactsRepoName = getArtifactsRepoName(namespace, slug);
-  
+
   // Helper to check for cancellation
   const checkCancelled = async (): Promise<boolean> => {
     const isCancelled = await isImportCancelled(env.DB, namespace, slug, logger);
     if (isCancelled) {
-      logger.info('Import cancelled by user', { namespace, slug });
+      logger.info("Import cancelled by user", { namespace, slug });
       await updateImportStatus(
         env.DB,
         namespace,
         slug,
         "cancelled",
         logger,
-        "Import cancelled by user"
+        "Import cancelled by user",
       );
       // Clean up partial import
       await deleteImportJob(env.DB, namespace, slug, logger);
@@ -446,7 +471,7 @@ async function processImportJob(
     }
     return isCancelled;
   };
-  
+
   try {
     // Check cancellation before starting
     if (await checkCancelled()) return;
@@ -466,7 +491,7 @@ async function processImportJob(
       githubUrl,
       logger,
       branch,
-      depth
+      depth,
     );
 
     if (!importResult.success) {
@@ -479,7 +504,7 @@ async function processImportJob(
         slug,
         "failed",
         logger,
-        `Import failed: ${importResult.error.message}`
+        `Import failed: ${importResult.error.message}`,
       );
       // Release the rate limit lock on failure
       await releaseImportLock(env.STATE, namespace, slug, logger);
@@ -508,27 +533,23 @@ async function processImportJob(
       slug,
       "completed",
       logger,
-      "Import completed successfully"
+      "Import completed successfully",
     );
 
     // Release the rate limit lock on completion
     await releaseImportLock(env.STATE, namespace, slug, logger);
 
-    logger.info('Import completed', { namespace, slug, importId });
+    logger.info("Import completed", { namespace, slug, importId });
   } catch (error) {
-    logger.error('Import job failed', error instanceof Error ? error : undefined, { namespace, slug });
+    logger.error("Import job failed", error instanceof Error ? error : undefined, {
+      namespace,
+      slug,
+    });
 
     // Check if this was a cancellation
     const isCancelled = await isImportCancelled(env.DB, namespace, slug, logger);
     if (isCancelled) {
-      await updateImportStatus(
-        env.DB,
-        namespace,
-        slug,
-        "cancelled",
-        logger,
-        "Import cancelled"
-      );
+      await updateImportStatus(env.DB, namespace, slug, "cancelled", logger, "Import cancelled");
       await deleteImportJob(env.DB, namespace, slug, logger);
     } else {
       await updateImportStatus(
@@ -537,7 +558,7 @@ async function processImportJob(
         slug,
         "failed",
         logger,
-        `Import failed: ${error instanceof Error ? error.message : String(error)}`
+        `Import failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
@@ -550,7 +571,7 @@ async function processImportJob(
 app.get("/:namespace/:slug/files", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -561,10 +582,10 @@ app.get("/:namespace/:slug/files", async (c) => {
 
   const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
   if (!projectResult.success) {
-    if (projectResult.error.code === 'NOT_FOUND') {
+    if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", `${namespace}/${slug}`);
     }
-    logger.error('Failed to get project', projectResult.error);
+    logger.error("Failed to get project", projectResult.error);
     return internalError(projectResult.error.message);
   }
   const project = projectResult.data;
@@ -573,16 +594,16 @@ app.get("/:namespace/:slug/files", async (c) => {
 
   const filesResult = await listFilesInRepo(project.remote, project.token, logger);
   if (!filesResult.success) {
-    logger.error('Failed to list files in repo', filesResult.error);
+    logger.error("Failed to list files in repo", filesResult.error);
     return internalError(filesResult.error.message);
   }
 
-  logger.info('Project files listed', { namespace, slug, fileCount: filesResult.data.length });
-  return ok({ 
+  logger.info("Project files listed", { namespace, slug, fileCount: filesResult.data.length });
+  return ok({
     namespace,
     slug,
     path: `/${namespace}/${slug}`,
-    files: filesResult.data 
+    files: filesResult.data,
   });
 });
 
@@ -590,7 +611,7 @@ app.get("/:namespace/:slug/files", async (c) => {
 app.get("/:namespace/:slug/log", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -601,10 +622,10 @@ app.get("/:namespace/:slug/log", async (c) => {
 
   const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
   if (!projectResult.success) {
-    if (projectResult.error.code === 'NOT_FOUND') {
+    if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", `${namespace}/${slug}`);
     }
-    logger.error('Failed to get project', projectResult.error);
+    logger.error("Failed to get project", projectResult.error);
     return internalError(projectResult.error.message);
   }
   const project = projectResult.data;
@@ -614,16 +635,21 @@ app.get("/:namespace/:slug/log", async (c) => {
   const depth = Number(c.req.query("depth") ?? 20);
   const logResult = await getCommitLog(project.remote, project.token, logger, depth);
   if (!logResult.success) {
-    logger.error('Failed to get commit log', logResult.error);
+    logger.error("Failed to get commit log", logResult.error);
     return internalError(logResult.error.message);
   }
 
-  logger.info('Commit log retrieved', { namespace, slug, depth, commitCount: logResult.data.length });
-  return ok({ 
+  logger.info("Commit log retrieved", {
+    namespace,
+    slug,
+    depth,
+    commitCount: logResult.data.length,
+  });
+  return ok({
     namespace,
     slug,
     path: `/${namespace}/${slug}`,
-    log: logResult.data 
+    log: logResult.data,
   });
 });
 
@@ -631,7 +657,7 @@ app.get("/:namespace/:slug/log", async (c) => {
 app.get("/:namespace/:slug/provenance", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -642,10 +668,10 @@ app.get("/:namespace/:slug/provenance", async (c) => {
 
   const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
   if (!projectResult.success) {
-    if (projectResult.error.code === 'NOT_FOUND') {
+    if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", `${namespace}/${slug}`);
     }
-    logger.error('Failed to get project', projectResult.error);
+    logger.error("Failed to get project", projectResult.error);
     return internalError(projectResult.error.message);
   }
   const project = projectResult.data;
@@ -658,16 +684,21 @@ app.get("/:namespace/:slug/provenance", async (c) => {
   // Use project ID for provenance lookup
   const recordsResult = await listProvenance(c.env.DB, logger, project.id, limit);
   if (!recordsResult.success) {
-    logger.error('Failed to list provenance', recordsResult.error);
+    logger.error("Failed to list provenance", recordsResult.error);
     return internalError(recordsResult.error.message);
   }
 
-  logger.info('Provenance listed', { namespace, slug, limit, recordCount: recordsResult.data.length });
-  return ok({ 
+  logger.info("Provenance listed", {
+    namespace,
+    slug,
+    limit,
+    recordCount: recordsResult.data.length,
+  });
+  return ok({
     namespace,
     slug,
     path: `/${namespace}/${slug}`,
-    records: recordsResult.data 
+    records: recordsResult.data,
   });
 });
 
@@ -675,7 +706,7 @@ app.get("/:namespace/:slug/provenance", async (c) => {
 app.get("/:namespace/:slug/import/status", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -696,7 +727,7 @@ app.get("/:namespace/:slug/import/status", async (c) => {
 
   const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
   if (!progressResult.success) {
-    logger.error('Failed to get import progress', progressResult.error);
+    logger.error("Failed to get import progress", progressResult.error);
     return internalError(progressResult.error.message);
   }
 
@@ -711,7 +742,7 @@ app.get("/:namespace/:slug/import/status", async (c) => {
 app.get("/:namespace/:slug/import/stream", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -740,7 +771,7 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
       const encoder = new TextEncoder();
       let interval: ReturnType<typeof setInterval> | null = null;
       let isClosed = false;
-      
+
       // Cleanup function to ensure interval is always cleared
       const cleanup = () => {
         if (interval) {
@@ -756,19 +787,19 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
           }
         }
       };
-      
+
       // Send status and check if we should continue
       const sendStatus = async (): Promise<boolean> => {
         if (isClosed) return false;
-        
+
         try {
           const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
           if (isClosed) return false; // Check again after async
-          
+
           if (progressResult.success && progressResult.data) {
             const data = `data: ${JSON.stringify(progressResult.data)}\n\n`;
             controller.enqueue(encoder.encode(data));
-            
+
             // Close stream if import is complete or failed
             if (["completed", "failed", "cancelled"].includes(progressResult.data.status)) {
               cleanup();
@@ -777,7 +808,7 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
           }
           return true;
         } catch (error) {
-          logger.error('Error sending SSE status', error instanceof Error ? error : undefined);
+          logger.error("Error sending SSE status", error instanceof Error ? error : undefined);
           cleanup();
           return false;
         }
@@ -785,14 +816,14 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
 
       // Send initial status (non-blocking)
       sendStatus().catch((error) => {
-        logger.error('Error in initial SSE status', error instanceof Error ? error : undefined);
+        logger.error("Error in initial SSE status", error instanceof Error ? error : undefined);
         cleanup();
       });
 
       // Poll every 2 seconds
       interval = setInterval(() => {
         sendStatus().catch((error) => {
-          logger.error('Error in SSE interval', error instanceof Error ? error : undefined);
+          logger.error("Error in SSE interval", error instanceof Error ? error : undefined);
           cleanup();
         });
       }, 2000);
@@ -807,74 +838,78 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
 
 // POST /projects/:namespace/:slug/import/retry - Retry failed import
 // Same rate limiting as initial import
-app.post("/:namespace/:slug/import/retry", importRateLimitMiddleware({
-  importsPerWindow: 1,
-  windowSeconds: 60,
-  maxConcurrentPerProject: 1,
-  projectLockSeconds: 300,
-}), async (c) => {
-  const logger = createLogger({
-    requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
-    path: c.req.path,
-    method: c.req.method,
-  });
+app.post(
+  "/:namespace/:slug/import/retry",
+  importRateLimitMiddleware({
+    importsPerWindow: 1,
+    windowSeconds: 60,
+    maxConcurrentPerProject: 1,
+    projectLockSeconds: 300,
+  }),
+  async (c) => {
+    const logger = createLogger({
+      requestId: crypto.randomUUID(),
+      userId: c.get("userId"),
+      path: c.req.path,
+      method: c.req.method,
+    });
 
-  const userId = c.get("userId");
-  const username = c.get("username");
-  if (!userId || !username) return unauthorized("Authentication required");
+    const userId = c.get("userId");
+    const username = c.get("username");
+    if (!userId || !username) return unauthorized("Authentication required");
 
-  const { namespace, slug } = c.req.param();
-  const userNamespace = getUserNamespace(username);
-  
-  if (namespace !== userNamespace) {
-    return forbidden("You can only retry imports in your own namespace");
-  }
+    const { namespace, slug } = c.req.param();
+    const userNamespace = getUserNamespace(username);
 
-  // Get existing import progress
-  const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
-  if (!progressResult.success) {
-    logger.error('Failed to get import progress', progressResult.error);
-    return internalError(progressResult.error.message);
-  }
+    if (namespace !== userNamespace) {
+      return forbidden("You can only retry imports in your own namespace");
+    }
 
-  if (!progressResult.data) {
-    return notFound("Import job", `${namespace}/${slug}`);
-  }
+    // Get existing import progress
+    const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
+    if (!progressResult.success) {
+      logger.error("Failed to get import progress", progressResult.error);
+      return internalError(progressResult.error.message);
+    }
 
-  const existing = progressResult.data;
+    if (!progressResult.data) {
+      return notFound("Import job", `${namespace}/${slug}`);
+    }
 
-  // Reset the import job
-  const resetResult = await updateImportStatus(
-    c.env.DB, 
-    namespace, 
-    slug, 
-    "queued", 
-    logger,
-    "Import retry requested"
-  );
+    const _existing = progressResult.data;
 
-  if (!resetResult.success) {
-    logger.error('Failed to reset import job', resetResult.error);
-    return internalError(resetResult.error.message);
-  }
+    // Reset the import job
+    const resetResult = await updateImportStatus(
+      c.env.DB,
+      namespace,
+      slug,
+      "queued",
+      logger,
+      "Import retry requested",
+    );
 
-  // TODO: Re-queue the import job for processing
+    if (!resetResult.success) {
+      logger.error("Failed to reset import job", resetResult.error);
+      return internalError(resetResult.error.message);
+    }
 
-  logger.info('Import retry initiated', { namespace, slug });
-  return ok({ 
-    message: "Import retry initiated",
-    namespace,
-    slug,
-    status: "queued"
-  });
-});
+    // TODO: Re-queue the import job for processing
+
+    logger.info("Import retry initiated", { namespace, slug });
+    return ok({
+      message: "Import retry initiated",
+      namespace,
+      slug,
+      status: "queued",
+    });
+  },
+);
 
 // POST /projects/:namespace/:slug/sync - Re-sync with GitHub
 app.post("/:namespace/:slug/sync", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
+    userId: c.get("userId"),
     path: c.req.path,
     method: c.req.method,
   });
@@ -885,17 +920,17 @@ app.post("/:namespace/:slug/sync", async (c) => {
 
   const { namespace, slug } = c.req.param();
   const userNamespace = getUserNamespace(username);
-  
+
   if (namespace !== userNamespace) {
     return forbidden("You can only sync projects in your own namespace");
   }
 
   const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
   if (!projectResult.success) {
-    if (projectResult.error.code === 'NOT_FOUND') {
+    if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", `${namespace}/${slug}`);
     }
-    logger.error('Failed to get project', projectResult.error);
+    logger.error("Failed to get project", projectResult.error);
     return internalError(projectResult.error.message);
   }
 
@@ -917,72 +952,76 @@ app.post("/:namespace/:slug/sync", async (c) => {
       sourceUrl: project.githubUrl,
       branch: project.githubDefaultBranch || "main",
     },
-    logger
+    logger,
   );
 
   if (!createResult.success) {
-    logger.error('Failed to create sync job', createResult.error);
+    logger.error("Failed to create sync job", createResult.error);
     return internalError(createResult.error.message);
   }
 
   // TODO: Queue the sync job for processing
 
-  logger.info('Sync initiated', { namespace, slug, importId });
+  logger.info("Sync initiated", { namespace, slug, importId });
   return ok({
     message: "Sync initiated",
     namespace,
     slug,
     importId,
-    status: "queued"
+    status: "queued",
   });
 });
 
 // POST /projects/:namespace/:slug/import/cancel - Cancel ongoing import
 // More lenient rate limiting: 5 cancels per minute per user
-app.post("/:namespace/:slug/import/cancel", importRateLimitMiddleware({
-  importsPerWindow: 5,
-  windowSeconds: 60,
-  maxConcurrentPerProject: 1,
-  projectLockSeconds: 60, // Shorter lock for cancel operations
-}), async (c) => {
-  const logger = createLogger({
-    requestId: crypto.randomUUID(),
-    userId: c.get('userId'),
-    path: c.req.path,
-    method: c.req.method,
-  });
+app.post(
+  "/:namespace/:slug/import/cancel",
+  importRateLimitMiddleware({
+    importsPerWindow: 5,
+    windowSeconds: 60,
+    maxConcurrentPerProject: 1,
+    projectLockSeconds: 60, // Shorter lock for cancel operations
+  }),
+  async (c) => {
+    const logger = createLogger({
+      requestId: crypto.randomUUID(),
+      userId: c.get("userId"),
+      path: c.req.path,
+      method: c.req.method,
+    });
 
-  const userId = c.get("userId");
-  const username = c.get("username");
-  if (!userId || !username) return unauthorized("Authentication required");
+    const userId = c.get("userId");
+    const username = c.get("username");
+    if (!userId || !username) return unauthorized("Authentication required");
 
-  const { namespace, slug } = c.req.param();
-  const userNamespace = getUserNamespace(username);
-  
-  if (namespace !== userNamespace) {
-    return forbidden("You can only cancel imports in your own namespace");
-  }
+    const { namespace, slug } = c.req.param();
+    const userNamespace = getUserNamespace(username);
 
-  const cancelResult = await cancelImportJob(c.env.DB, namespace, slug, logger);
-  
-  if (!cancelResult.success) {
-    if (cancelResult.error.code === 'NOT_FOUND') {
-      return notFound("Import job", `${namespace}/${slug}`);
+    if (namespace !== userNamespace) {
+      return forbidden("You can only cancel imports in your own namespace");
     }
-    if (cancelResult.error.code === 'INVALID_STATE') {
-      return c.json({ error: cancelResult.error.message }, 400);
-    }
-    logger.error('Failed to cancel import', cancelResult.error);
-    return internalError(cancelResult.error.message);
-  }
 
-  logger.info('Import cancellation requested', { namespace, slug });
-  return ok({
-    message: "Import cancellation requested",
-    namespace,
-    slug,
-    status: "cancelling"
-  });
-});
+    const cancelResult = await cancelImportJob(c.env.DB, namespace, slug, logger);
+
+    if (!cancelResult.success) {
+      if (cancelResult.error.code === "NOT_FOUND") {
+        return notFound("Import job", `${namespace}/${slug}`);
+      }
+      if (cancelResult.error.code === "INVALID_STATE") {
+        return c.json({ error: cancelResult.error.message }, 400);
+      }
+      logger.error("Failed to cancel import", cancelResult.error);
+      return internalError(cancelResult.error.message);
+    }
+
+    logger.info("Import cancellation requested", { namespace, slug });
+    return ok({
+      message: "Import cancellation requested",
+      namespace,
+      slug,
+      status: "cancelling",
+    });
+  },
+);
 
 export { app as projectsRouter };

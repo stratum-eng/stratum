@@ -35,7 +35,10 @@ app.post("/projects/:name/sync", async (c) => {
     const updated: ProjectEntry = { ...project, githubUrl };
     const setResult = await setProject(c.env.STATE, updated, logger);
     if (!setResult.success) {
-      logger.error("Failed to update project with GitHub URL", setResult.error, { name, githubUrl });
+      logger.error("Failed to update project with GitHub URL", setResult.error, {
+        name,
+        githubUrl,
+      });
       return c.json({ error: "Failed to update project" }, 500);
     }
   }
@@ -47,7 +50,7 @@ app.post("/projects/:name/sync", async (c) => {
 
   logger.info("Starting GitHub import", { name, githubUrl });
   const importResult = await importFromGitHub(c.env.ARTIFACTS, name, githubUrl, logger);
-  
+
   if (!importResult.success) {
     logger.error("GitHub import failed", importResult.error, { name, githubUrl });
     return c.json({ error: "Failed to import from GitHub" }, 500);
@@ -61,25 +64,30 @@ export { app as syncRouter };
 
 export async function syncAllProjects(env: Env): Promise<{ synced: number; failed: number }> {
   const logger = createLogger({ operation: "syncAllProjects" });
-  
+
   const projectsResult = await listProjects(env.STATE, logger);
   if (!projectsResult.success) {
     logger.error("Failed to list projects for sync", projectsResult.error);
     return { synced: 0, failed: 0 };
   }
-  
+
   const projects = projectsResult.data;
   let synced = 0;
   let failed = 0;
 
   for (const project of projects) {
     if (!project.githubUrl) continue;
-    
+
     const projectLogger = logger.child({ projectName: project.name, githubUrl: project.githubUrl });
-    
+
     try {
       projectLogger.info("Syncing project");
-      const result = await importFromGitHub(env.ARTIFACTS, project.name, project.githubUrl, projectLogger);
+      const result = await importFromGitHub(
+        env.ARTIFACTS,
+        project.name,
+        project.githubUrl,
+        projectLogger,
+      );
       if (result.success) {
         synced++;
         projectLogger.info("Project synced successfully");
@@ -89,7 +97,10 @@ export async function syncAllProjects(env: Env): Promise<{ synced: number; faile
       }
     } catch (error) {
       failed++;
-      projectLogger.error("Project sync threw exception", error instanceof Error ? error : undefined);
+      projectLogger.error(
+        "Project sync threw exception",
+        error instanceof Error ? error : undefined,
+      );
     }
   }
 

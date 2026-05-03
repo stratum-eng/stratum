@@ -1,9 +1,9 @@
-import type { LoggerContext } from './utils/logger';
+import type { LoggerContext } from "./utils/logger";
 export type { LoggerContext };
 
 // Validation constants for namespace and slug fields
-export const MAX_NAMESPACE_LENGTH = 39;  // GitHub username limit
-export const MAX_SLUG_LENGTH = 100;       // Reasonable project name limit
+export const MAX_NAMESPACE_LENGTH = 39; // GitHub username limit
+export const MAX_SLUG_LENGTH = 100; // Reasonable project name limit
 export const MAX_PROJECT_NAME_LENGTH = 100;
 
 export interface ArtifactsCreateResult {
@@ -142,12 +142,12 @@ export interface SyncJobMessage {
 }
 
 export interface ProjectEntry {
-  id: string;                          // UUID - stable agent reference
-  name: string;                        // Display name
-  slug: string;                        // URL-safe name
-  namespace: string;                   // @username or org-slug
-  ownerId: string;                     // User/Agent/Org ID
-  ownerType: 'user' | 'org' | 'agent';
+  id: string; // UUID - stable agent reference
+  name: string; // Display name
+  slug: string; // URL-safe name
+  namespace: string; // @username or org-slug
+  ownerId: string; // User/Agent/Org ID
+  ownerType: "user" | "org" | "agent";
   remote: string;
   token: string;
   createdAt: string;
@@ -170,7 +170,7 @@ export function projectPath(project: ProjectEntry): string {
 // e.g., "user-a/b" and "user/a-b" both become "user-a-b" with hyphen, but
 // "user-a__b" and "user__a-b" with double underscore
 export function getArtifactsRepoName(namespace: string, slug: string): string {
-  return `${namespace.replace('@', '')}__${slug}`;
+  return `${namespace.replace("@", "")}__${slug}`;
 }
 
 // Helper to generate Artifacts repo name from ProjectEntry
@@ -187,7 +187,14 @@ export interface WorkspaceEntry {
 }
 
 // Import progress tracking
-export type ImportStatus = "queued" | "cloning" | "processing" | "completed" | "failed" | "cancelled" | "cancelling";
+export type ImportStatus =
+  | "queued"
+  | "cloning"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "cancelling";
 
 export interface ImportProgress {
   id: string;
@@ -244,7 +251,7 @@ export interface ApiError {
 export interface User {
   id: string;
   email: string;
-  username: string;  // Username for namespace (@username)
+  username: string; // Username for namespace (@username)
   githubId?: string;
   githubUsername?: string;
   tokenHash: string;

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { createUser, getUser } from "../storage/users";
-import { createLogger } from "../utils/logger";
 import type { Env } from "../types";
+import { createLogger } from "../utils/logger";
 import { badRequest, created, ok } from "../utils/response";
 import { isValidEmail } from "../utils/validation";
 

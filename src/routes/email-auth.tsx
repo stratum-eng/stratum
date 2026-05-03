@@ -2,8 +2,8 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { createSession } from "../storage/sessions";
 import { createUser, getUserByEmail } from "../storage/users";
-import { createLogger } from "../utils/logger";
 import type { Env } from "../types";
+import { createLogger } from "../utils/logger";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -37,7 +37,7 @@ function hashEmail(email: string): string {
   let hash = 0;
   for (let i = 0; i < email.length; i++) {
     const char = email.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
+    hash = (hash << 5) - hash + char;
     hash = hash & hash;
   }
   return Math.abs(hash).toString(16).slice(0, 8);
@@ -321,7 +321,9 @@ app.post("/send", async (c) => {
 
     return emailAuthRedirect(c, "success", "email_sent");
   } catch (err) {
-    logger.error("Failed to send magic link", err instanceof Error ? err : undefined, { emailHash });
+    logger.error("Failed to send magic link", err instanceof Error ? err : undefined, {
+      emailHash,
+    });
     return emailAuthRedirect(c, "error", "send_failed");
   }
 });

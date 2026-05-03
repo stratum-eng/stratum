@@ -27,10 +27,14 @@ export const Layout: FC<LayoutProps> = ({ title, user, children }) => {
             {user ? (
               <>
                 <span class="nav-user">{user.email}</span>
-                <a href="/auth/logout" class="nav-auth-link">logout</a>
+                <a href="/auth/logout" class="nav-auth-link">
+                  logout
+                </a>
               </>
             ) : (
-              <a href="/auth/email" class="nav-auth-link">sign in</a>
+              <a href="/auth/email" class="nav-auth-link">
+                sign in
+              </a>
             )}
           </div>
         </nav>

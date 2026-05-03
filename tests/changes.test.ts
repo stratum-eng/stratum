@@ -107,12 +107,12 @@ vi.mock("../src/storage/agents", () => ({
 }));
 
 import { CompositeEvaluator, SecretScanEvaluator, loadPolicy } from "../src/evaluation";
+import { getAgentByToken } from "../src/storage/agents";
 import { createChange, getChange, listChanges, updateChangeStatus } from "../src/storage/changes";
 import { listEvalRuns, recordEvalRuns } from "../src/storage/eval-runs";
 import { getDiffBetweenRepos, mergeWorkspaceIntoProject } from "../src/storage/git-ops";
 import { getProject, getWorkspace } from "../src/storage/state";
 import { getUserByToken } from "../src/storage/users";
-import { getAgentByToken } from "../src/storage/agents";
 
 const USER_AUTH = { Authorization: "Bearer stratum_user_testtoken00000000000000000" };
 const OTHER_USER_AUTH = { Authorization: "Bearer stratum_user_othertoken000000000000000" };
@@ -150,7 +150,7 @@ function request(
   });
 }
 
-import { NotFoundError, AppError } from "../src/utils/errors";
+import { AppError, NotFoundError } from "../src/utils/errors";
 
 const mockProject = {
   id: "proj_test123",
@@ -819,7 +819,11 @@ describe("POST /api/changes/:id/merge", () => {
     });
     vi.mocked(mergeWorkspaceIntoProject).mockResolvedValue({
       success: false,
-      error: new AppError("Merge failed; workspace may be stale or conflicting", "MERGE_CONFLICT", 409),
+      error: new AppError(
+        "Merge failed; workspace may be stale or conflicting",
+        "MERGE_CONFLICT",
+        409,
+      ),
     });
 
     const res = await app.fetch(

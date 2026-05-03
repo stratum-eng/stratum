@@ -3,9 +3,9 @@ import { mergeWorkspaceIntoProject } from "../storage/git-ops";
 import { recordProvenance } from "../storage/provenance";
 import { getProject, getWorkspace } from "../storage/state";
 import type { Env } from "../types";
-import { createLogger, Logger } from "../utils/logger";
-import { err, ok, Result } from "../utils/result";
-import { AppError } from "../utils/errors";
+import type { AppError } from "../utils/errors";
+import { type Logger, createLogger } from "../utils/logger";
+import { type Result, err, ok } from "../utils/result";
 
 const MERGEABLE_STATUSES = new Set(["approved", "accepted", "promoted"]);
 
@@ -18,13 +18,16 @@ export class MergeQueue {
     this.env = env;
   }
 
-  async merge(changeId: string, logger?: Logger): Promise<Result<{ success: boolean; commit?: string; error?: string }, AppError>> {
+  async merge(
+    changeId: string,
+    logger?: Logger,
+  ): Promise<Result<{ success: boolean; commit?: string; error?: string }, AppError>> {
     const log = logger ?? createLogger({ changeId });
     const changeResult = await getChange(this.env.DB, log, changeId);
     if (!changeResult.success) {
       return err(changeResult.error);
     }
-    
+
     const change = changeResult.data;
     if (!MERGEABLE_STATUSES.has(change.status)) {
       return ok({ success: false, error: "Change not found or not ready to merge" });
@@ -49,9 +52,9 @@ export class MergeQueue {
         workspace.remote,
         workspace.token,
         log,
-        { strategy: "merge" }
+        { strategy: "merge" },
       );
-      
+
       if (!commitResult.success) {
         return err(commitResult.error);
       }
@@ -63,7 +66,7 @@ export class MergeQueue {
         ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
         mergedAt: new Date().toISOString(),
       });
-      
+
       if (!updateResult.success) {
         return err(updateResult.error);
       }

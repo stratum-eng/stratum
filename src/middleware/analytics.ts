@@ -1,7 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 import { createPostHogClient } from "../analytics/posthog";
-import { createLogger } from "../utils/logger";
 import type { Env } from "../types";
+import { createLogger } from "../utils/logger";
 
 const logger = createLogger({ component: "Analytics" });
 

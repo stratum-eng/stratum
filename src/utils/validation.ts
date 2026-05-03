@@ -1,7 +1,6 @@
-import { Result, ok, err } from "./result";
-import { ValidationError } from "./errors";
-import { createLogger, type Logger } from "./logger";
-import { MAX_NAMESPACE_LENGTH, MAX_SLUG_LENGTH, MAX_PROJECT_NAME_LENGTH } from "../types";
+import { MAX_NAMESPACE_LENGTH, MAX_SLUG_LENGTH } from "../types";
+import { type Logger, createLogger } from "./logger";
+import { type Result, err, ok } from "./result";
 
 const SLUG_RE = /^[\w-]{1,64}$/;
 const NAMESPACE_RE = /^@[a-z0-9][-a-z0-9]*[a-z0-9]$/;
@@ -35,7 +34,9 @@ export function validateSlug(value: unknown, logger?: Logger): ValidationResult<
 
   if (!SLUG_RE.test(value)) {
     log.debug("Validation failed - invalid slug format", { value });
-    return err([{ field: "slug", message: "Must be 1-64 characters, alphanumeric, hyphens, or underscores" }]);
+    return err([
+      { field: "slug", message: "Must be 1-64 characters, alphanumeric, hyphens, or underscores" },
+    ]);
   }
 
   log.debug("Validation passed - slug", { value });
@@ -57,7 +58,12 @@ export function validateNamespace(value: unknown, logger?: Logger): ValidationRe
 
   if (value.length > MAX_NAMESPACE_LENGTH) {
     log.debug("Validation failed - namespace too long", { value, length: value.length });
-    return err([{ field: "namespace", message: `Namespace too long (max ${MAX_NAMESPACE_LENGTH} characters)` }]);
+    return err([
+      {
+        field: "namespace",
+        message: `Namespace too long (max ${MAX_NAMESPACE_LENGTH} characters)`,
+      },
+    ]);
   }
 
   if (!NAMESPACE_RE.test(value)) {
@@ -102,7 +108,12 @@ export function validateGitHubUrl(value: unknown, logger?: Logger): ValidationRe
 
   if (!GITHUB_URL_RE.test(value)) {
     log.debug("Validation failed - invalid GitHub URL format", { value });
-    return err([{ field: "githubUrl", message: "Must be a valid GitHub repository URL (https://github.com/owner/repo)" }]);
+    return err([
+      {
+        field: "githubUrl",
+        message: "Must be a valid GitHub repository URL (https://github.com/owner/repo)",
+      },
+    ]);
   }
 
   log.debug("Validation passed - GitHub URL", { value });
@@ -112,7 +123,10 @@ export function validateGitHubUrl(value: unknown, logger?: Logger): ValidationRe
 /**
  * Validates that a value is a string record and returns a Result.
  */
-export function validateStringRecord(value: unknown, logger?: Logger): ValidationResult<Record<string, string>> {
+export function validateStringRecord(
+  value: unknown,
+  logger?: Logger,
+): ValidationResult<Record<string, string>> {
   const log = logger ?? defaultLogger;
 
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -147,7 +161,9 @@ export function isValidSlug(value: unknown): value is string {
  * @deprecated Use validateNamespace instead.
  */
 export function isValidNamespace(value: unknown): value is string {
-  return typeof value === "string" && value.length <= MAX_NAMESPACE_LENGTH && NAMESPACE_RE.test(value);
+  return (
+    typeof value === "string" && value.length <= MAX_NAMESPACE_LENGTH && NAMESPACE_RE.test(value)
+  );
 }
 
 /** @deprecated Use validateEmail instead. */
@@ -181,8 +197,8 @@ export function slugify(str: string): string {
   return str
     .toLowerCase()
     .trim()
-    .replace(/[^\w\s-]/g, '')  // Remove special characters
-    .replace(/[\s]+/g, '-')     // Replace spaces with hyphens
-    .replace(/-+/g, '-')        // Collapse multiple hyphens
+    .replace(/[^\w\s-]/g, "") // Remove special characters
+    .replace(/[\s]+/g, "-") // Replace spaces with hyphens
+    .replace(/-+/g, "-") // Collapse multiple hyphens
     .slice(0, MAX_SLUG_LENGTH); // Limit to MAX_SLUG_LENGTH characters
 }

@@ -98,7 +98,11 @@ describe("authMiddleware", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { agentId: string | null };
     expect(body.agentId).toBe("agt_xyz");
-    expect(getAgentByToken).toHaveBeenCalledWith(env.DB, "stratum_agent_xyz123", expect.any(Object));
+    expect(getAgentByToken).toHaveBeenCalledWith(
+      env.DB,
+      "stratum_agent_xyz123",
+      expect.any(Object),
+    );
   });
 
   it("returns 401 for token with unrecognized prefix", async () => {

@@ -1,6 +1,6 @@
+import type { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import type { Result } from "../utils/result";
-import type { AppError } from "../utils/errors";
 
 export interface EvalResult {
   score: number;
