@@ -8,6 +8,7 @@ import {
   setWorkspace,
 } from "../storage/state";
 import type { Env } from "../types";
+import { getArtifactsRepoName } from "../types";
 import { canReadProject, canWriteProject } from "../utils/authz";
 import { badRequest, created, forbidden, notFound, ok, unauthorized } from "../utils/response";
 import { isStringRecord, isValidSlug } from "../utils/validation";
@@ -47,7 +48,7 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
   const workspaceName = isValidSlug(body.name) ? body.name : `ws-${Date.now()}`;
 
   // Get the Artifacts repo using the namespaced name
-  const artifactsRepoName = `${namespace.replace('@', '')}-${slug}`;
+  const artifactsRepoName = getArtifactsRepoName(namespace, slug);
   const projectRepo = await c.env.ARTIFACTS.get(artifactsRepoName);
   const forked = await projectRepo.fork(workspaceName);
 

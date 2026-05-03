@@ -1,6 +1,11 @@
 import type { LoggerContext } from './utils/logger';
 export type { LoggerContext };
 
+// Validation constants for namespace and slug fields
+export const MAX_NAMESPACE_LENGTH = 39;  // GitHub username limit
+export const MAX_SLUG_LENGTH = 100;       // Reasonable project name limit
+export const MAX_PROJECT_NAME_LENGTH = 100;
+
 export interface ArtifactsCreateResult {
   name: string;
   remote: string;
@@ -161,8 +166,16 @@ export function projectPath(project: ProjectEntry): string {
 }
 
 // Helper to generate Artifacts repo name
+// Uses double underscore separator to avoid collisions between namespace/slug boundaries
+// e.g., "user-a/b" and "user/a-b" both become "user-a-b" with hyphen, but
+// "user-a__b" and "user__a-b" with double underscore
+export function getArtifactsRepoName(namespace: string, slug: string): string {
+  return `${namespace.replace('@', '')}__${slug}`;
+}
+
+// Helper to generate Artifacts repo name from ProjectEntry
 export function artifactsRepoName(project: ProjectEntry): string {
-  return `${project.namespace}-${project.slug}`;
+  return getArtifactsRepoName(project.namespace, project.slug);
 }
 
 export interface WorkspaceEntry {

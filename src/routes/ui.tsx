@@ -9,6 +9,7 @@ import { getUser } from "../storage/users";
 import type { Env } from "../types";
 import { canReadProject, filterReadableProjects } from "../utils/authz";
 import { createLogger } from "../utils/logger";
+import { isValidNamespace, isValidSlug } from "../utils/validation";
 import { ChangeDetailPage } from "../ui/pages/change-detail";
 import { ChangesPage } from "../ui/pages/changes";
 import { HomePage } from "../ui/pages/home";
@@ -390,9 +391,24 @@ app.get("/:namespace/:slug", async (c) => {
   const params = c.req.param();
   const { namespace, slug } = params;
   
-  // Only handle namespaces that start with @
-  if (!namespace.startsWith('@')) {
-    return c.notFound();
+  // Validate namespace format
+  if (!isValidNamespace(namespace)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Invalid namespace format. Namespaces must start with @ and contain only lowercase alphanumeric characters and hyphens.
+      </div>,
+      400,
+    );
+  }
+  
+  // Validate slug format
+  if (!isValidSlug(slug)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Invalid slug format. Slugs must be 1-64 characters, alphanumeric, hyphens, or underscores.
+      </div>,
+      400,
+    );
   }
   
   const userId = c.get("userId");

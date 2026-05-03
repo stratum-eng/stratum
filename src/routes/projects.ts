@@ -4,9 +4,10 @@ import { createImportJob, getImportProgress, updateImportProgress, updateImportS
 import { listProvenance } from "../storage/provenance";
 import { getProjectByPath, listProjectsByNamespace, setProject } from "../storage/state";
 import type { Env, ProjectEntry, ImportProgress, ArtifactsCreateResult } from "../types";
+import { getArtifactsRepoName } from "../types";
 import { canReadProject, filterReadableProjects } from "../utils/authz";
 import { internalError, badRequest, created, forbidden, notFound, ok, unauthorized } from "../utils/response";
-import { isStringRecord, isValidGitHubUrl, isValidSlug, slugify } from "../utils/validation";
+import { isStringRecord, isValidGitHubUrl, isValidNamespace, isValidSlug, slugify } from "../utils/validation";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
 import { importRateLimitMiddleware, releaseImportLock } from "../middleware/rate-limit";
@@ -51,6 +52,13 @@ app.post("/", async (c) => {
   const body = await c.req.json<{ name?: unknown; files?: unknown; visibility?: unknown }>();
   if (!isValidSlug(body.name)) return badRequest("name must be a 1-64 char alphanumeric slug");
 
+  const namespace = getUserNamespace(username);
+  
+  // Validate namespace format
+  if (!isValidNamespace(namespace)) {
+    return badRequest("Invalid namespace format");
+  }
+
   // Validate visibility if provided
   let visibility: "private" | "public" = "private";
   if (body.visibility !== undefined) {
@@ -73,8 +81,12 @@ app.post("/", async (c) => {
   if (files === null)
     return badRequest("files must be an object of string paths to string contents");
 
-  const namespace = getUserNamespace(username);
   const slug = slugify(String(body.name));
+  
+  // Validate slug length after slugification
+  if (!isValidSlug(slug)) {
+    return badRequest(`Slug too long (max 100 characters)`);
+  }
   const projectId = generateProjectId();
 
   // Check if project already exists
@@ -84,7 +96,7 @@ app.post("/", async (c) => {
   }
 
   // Create Artifacts repo with namespaced name
-  const artifactsRepoName = `${namespace.replace('@', '')}-${slug}`;
+  const artifactsRepoName = getArtifactsRepoName(namespace, slug);
   const repo = await c.env.ARTIFACTS.create(artifactsRepoName);
   
   const initResult = await initAndPush(repo.remote, repo.token, files, "Initial commit", logger);
@@ -237,9 +249,20 @@ app.post("/:namespace/:slug/import", importRateLimitMiddleware({
     if (!userId || !username) return unauthorized("Authentication required");
 
     const { namespace, slug } = c.req.param();
-    if (!isValidSlug(slug)) return badRequest("invalid project slug");
+    
+    // Validate namespace format
+    if (!isValidNamespace(namespace)) {
+      return badRequest("Invalid namespace format");
+    }
+    
+    if (!isValidSlug(slug)) return badRequest("Slug too long (max 100 characters)");
 
     const userNamespace = getUserNamespace(username);
+    
+    // Validate user namespace format
+    if (!isValidNamespace(userNamespace)) {
+      return badRequest("Invalid namespace format");
+    }
     
     // For now, users can only import into their own namespace
     if (namespace !== userNamespace) {
@@ -319,9 +342,9 @@ app.post("/:namespace/:slug/import", importRateLimitMiddleware({
 
     // Create the project entry immediately (marked as being imported)
     // For now, we'll create a placeholder Artifacts repo
-    const artifactsRepoName = `${namespace.replace('@', '')}-${slug}`;
+    const artifactsRepoName = getArtifactsRepoName(namespace, slug);
     let repo: ArtifactsCreateResult;
-    
+
     try {
       repo = await c.env.ARTIFACTS.create(artifactsRepoName);
     } catch (artifactsError) {
@@ -401,7 +424,7 @@ async function processImportJob(
   logger: Logger
 ) {
   const { namespace, slug } = project;
-  const artifactsRepoName = `${namespace.replace('@', '')}-${slug}`;
+  const artifactsRepoName = getArtifactsRepoName(namespace, slug);
   
   // Helper to check for cancellation
   const checkCancelled = async (): Promise<boolean> => {
@@ -945,6 +968,9 @@ app.post("/:namespace/:slug/import/cancel", importRateLimitMiddleware({
   if (!cancelResult.success) {
     if (cancelResult.error.code === 'NOT_FOUND') {
       return notFound("Import job", `${namespace}/${slug}`);
+    }
+    if (cancelResult.error.code === 'INVALID_STATE') {
+      return c.json({ error: cancelResult.error.message }, 400);
     }
     logger.error('Failed to cancel import', cancelResult.error);
     return internalError(cancelResult.error.message);

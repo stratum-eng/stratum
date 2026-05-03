@@ -1,8 +1,10 @@
 import { Result, ok, err } from "./result";
 import { ValidationError } from "./errors";
 import { createLogger, type Logger } from "./logger";
+import { MAX_NAMESPACE_LENGTH, MAX_SLUG_LENGTH, MAX_PROJECT_NAME_LENGTH } from "../types";
 
 const SLUG_RE = /^[\w-]{1,64}$/;
+const NAMESPACE_RE = /^@[a-z0-9][-a-z0-9]*[a-z0-9]$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const GITHUB_URL_RE = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+(\.git)?$/;
 
@@ -26,12 +28,44 @@ export function validateSlug(value: unknown, logger?: Logger): ValidationResult<
     return err([{ field: "slug", message: "Must be a string" }]);
   }
 
+  if (value.length > MAX_SLUG_LENGTH) {
+    log.debug("Validation failed - slug too long", { value, length: value.length });
+    return err([{ field: "slug", message: `Slug too long (max ${MAX_SLUG_LENGTH} characters)` }]);
+  }
+
   if (!SLUG_RE.test(value)) {
     log.debug("Validation failed - invalid slug format", { value });
     return err([{ field: "slug", message: "Must be 1-64 characters, alphanumeric, hyphens, or underscores" }]);
   }
 
   log.debug("Validation passed - slug", { value });
+  return ok(value);
+}
+
+/**
+ * Validates a namespace and returns a Result.
+ * Namespaces must start with @, contain only lowercase alphanumeric and hyphens,
+ * start/end with alphanumeric, and be within length limits.
+ */
+export function validateNamespace(value: unknown, logger?: Logger): ValidationResult<string> {
+  const log = logger ?? defaultLogger;
+
+  if (typeof value !== "string") {
+    log.debug("Validation failed - namespace is not a string", { value });
+    return err([{ field: "namespace", message: "Must be a string" }]);
+  }
+
+  if (value.length > MAX_NAMESPACE_LENGTH) {
+    log.debug("Validation failed - namespace too long", { value, length: value.length });
+    return err([{ field: "namespace", message: `Namespace too long (max ${MAX_NAMESPACE_LENGTH} characters)` }]);
+  }
+
+  if (!NAMESPACE_RE.test(value)) {
+    log.debug("Validation failed - invalid namespace format", { value });
+    return err([{ field: "namespace", message: "Invalid namespace format" }]);
+  }
+
+  log.debug("Validation passed - namespace", { value });
   return ok(value);
 }
 
@@ -105,7 +139,15 @@ export function validateStringRecord(value: unknown, logger?: Logger): Validatio
  * @deprecated Use validate* functions that return Result instead.
  */
 export function isValidSlug(value: unknown): value is string {
-  return typeof value === "string" && SLUG_RE.test(value);
+  return typeof value === "string" && value.length <= MAX_SLUG_LENGTH && SLUG_RE.test(value);
+}
+
+/**
+ * Validates namespace format (starts with @, lowercase alphanumeric and hyphens only).
+ * @deprecated Use validateNamespace instead.
+ */
+export function isValidNamespace(value: unknown): value is string {
+  return typeof value === "string" && value.length <= MAX_NAMESPACE_LENGTH && NAMESPACE_RE.test(value);
 }
 
 /** @deprecated Use validateEmail instead. */
@@ -133,7 +175,7 @@ export function isStringRecord(value: unknown): value is Record<string, string> 
  * - Lowercases the string
  * - Replaces spaces with hyphens
  * - Removes special characters
- * - Truncates to 64 characters
+ * - Truncates to MAX_SLUG_LENGTH characters
  */
 export function slugify(str: string): string {
   return str
@@ -142,5 +184,5 @@ export function slugify(str: string): string {
     .replace(/[^\w\s-]/g, '')  // Remove special characters
     .replace(/[\s]+/g, '-')     // Replace spaces with hyphens
     .replace(/-+/g, '-')        // Collapse multiple hyphens
-    .slice(0, 64);              // Limit to 64 characters
+    .slice(0, MAX_SLUG_LENGTH); // Limit to MAX_SLUG_LENGTH characters
 }

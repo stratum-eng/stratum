@@ -15,6 +15,7 @@ import {
 import { getProjectByPath, setProject } from "../storage/state";
 import type { ImportJobMessage, SyncJobMessage, ProjectEntry, Env } from "../types";
 import type { Message, MessageBatch } from "../types";
+import { getArtifactsRepoName } from "../types";
 import { createLogger } from "../utils/logger";
 
 const logger = createLogger({ component: "ImportQueue" });
@@ -149,7 +150,7 @@ async function processImportJob(
   msg: Message<ImportJobMessage>
 ): Promise<void> {
   const { importId, projectId, namespace, slug, githubUrl, branch, depth } = message;
-  const artifactsRepoName = `${namespace.replace("@", "")}-${slug}`;
+  const artifactsRepoName = getArtifactsRepoName(namespace, slug);
 
   logger.info("Processing import job", { importId, namespace, slug, githubUrl });
 
@@ -307,7 +308,7 @@ async function processSyncJob(
   msg: Message<SyncJobMessage>
 ): Promise<void> {
   const { importId, namespace, slug, githubUrl, branch, depth } = message;
-  const artifactsRepoName = `${namespace.replace("@", "")}-${slug}`;
+  const artifactsRepoName = getArtifactsRepoName(namespace, slug);
 
   logger.info("Processing sync job", { importId, namespace, slug, githubUrl });
 
