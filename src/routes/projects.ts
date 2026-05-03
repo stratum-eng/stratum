@@ -715,39 +715,67 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
   const stream = new ReadableStream({
     start(controller) {
       const encoder = new TextEncoder();
+      let interval: ReturnType<typeof setInterval> | null = null;
+      let isClosed = false;
       
-      // Send initial status
-      const sendStatus = async () => {
-        const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
-        if (progressResult.success && progressResult.data) {
-          const data = `data: ${JSON.stringify(progressResult.data)}\n\n`;
-          controller.enqueue(encoder.encode(data));
-          
-          // Close stream if import is complete or failed
-          if (["completed", "failed", "cancelled"].includes(progressResult.data.status)) {
+      // Cleanup function to ensure interval is always cleared
+      const cleanup = () => {
+        if (interval) {
+          clearInterval(interval);
+          interval = null;
+        }
+        if (!isClosed) {
+          isClosed = true;
+          try {
             controller.close();
-            return false;
+          } catch {
+            // Controller might already be closed, ignore
           }
         }
-        return true;
+      };
+      
+      // Send status and check if we should continue
+      const sendStatus = async (): Promise<boolean> => {
+        if (isClosed) return false;
+        
+        try {
+          const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
+          if (isClosed) return false; // Check again after async
+          
+          if (progressResult.success && progressResult.data) {
+            const data = `data: ${JSON.stringify(progressResult.data)}\n\n`;
+            controller.enqueue(encoder.encode(data));
+            
+            // Close stream if import is complete or failed
+            if (["completed", "failed", "cancelled"].includes(progressResult.data.status)) {
+              cleanup();
+              return false;
+            }
+          }
+          return true;
+        } catch (error) {
+          logger.error('Error sending SSE status', error instanceof Error ? error : undefined);
+          cleanup();
+          return false;
+        }
       };
 
-      // Send initial status
-      sendStatus();
+      // Send initial status (non-blocking)
+      sendStatus().catch((error) => {
+        logger.error('Error in initial SSE status', error instanceof Error ? error : undefined);
+        cleanup();
+      });
 
       // Poll every 2 seconds
-      const interval = setInterval(async () => {
-        const shouldContinue = await sendStatus();
-        if (!shouldContinue) {
-          clearInterval(interval);
-        }
+      interval = setInterval(() => {
+        sendStatus().catch((error) => {
+          logger.error('Error in SSE interval', error instanceof Error ? error : undefined);
+          cleanup();
+        });
       }, 2000);
 
-      // Cleanup on close
-      c.req.raw.signal.addEventListener("abort", () => {
-        clearInterval(interval);
-        controller.close();
-      });
+      // Cleanup on abort
+      c.req.raw.signal.addEventListener("abort", cleanup, { once: true });
     },
   });
 
