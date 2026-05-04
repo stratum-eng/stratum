@@ -106,8 +106,16 @@ export interface Env {
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
   OAUTH_REDIRECT_URI?: string;
+  // Git provider API tokens for sync
+  GITHUB_TOKEN?: string;
+  GITLAB_TOKEN?: string;
+  BITBUCKET_TOKEN?: string;
+  BITBUCKET_USERNAME?: string;
+  BITBUCKET_APP_PASSWORD?: string;
   EMAIL?: EmailBinding;
   EMAIL_FROM_ADDRESS?: string;
+  ADMIN_EMAIL?: string;
+  ADMIN_API_KEY?: string;
   ANALYTICS?: AnalyticsEngineDataset;
   SANDBOX?: SandboxBinding;
   AI?: AiBinding;
@@ -118,24 +126,31 @@ export interface Env {
 
 // Import queue message types
 export interface ImportJobMessage {
-  type: "github.import";
+  type: "github.import" | "git.import";
   importId: string;
   projectId: string;
   namespace: string;
   slug: string;
   githubUrl: string;
+  sourceUrl?: string;
+  provider?: GitProvider;
   branch: string;
   depth: number;
   timestamp: string;
 }
 
+// Git provider types
+export type GitProvider = "github" | "gitlab" | "bitbucket";
+
 export interface SyncJobMessage {
-  type: "github.sync";
+  type: "github.sync" | "git.sync";
   importId: string;
   projectId: string;
   namespace: string;
   slug: string;
-  githubUrl: string;
+  githubUrl: string; // Keep for backward compatibility
+  sourceUrl?: string; // Generic URL for any provider
+  provider?: GitProvider;
   branch: string;
   depth: number;
   timestamp: string;
@@ -151,12 +166,25 @@ export interface ProjectEntry {
   remote: string;
   token: string;
   createdAt: string;
+  // Legacy GitHub-specific fields (kept for backward compatibility)
   githubUrl?: string;
   githubOwner?: string;
   githubRepo?: string;
   githubDefaultBranch?: string;
   githubConnectedAt?: string;
   githubConnectionStatus?: "connected" | "disconnected";
+  // New generic git provider fields
+  sourceUrl?: string;
+  sourceProvider?: GitProvider;
+  sourceOwner?: string;
+  sourceRepo?: string;
+  sourceDefaultBranch?: string;
+  // Sync tracking
+  lastSyncedAt?: string;
+  lastSyncedCommit?: string;
+  lastSyncStatus?: "success" | "failed" | "in_progress" | "idle";
+  lastSyncError?: string;
+  autoSyncEnabled?: boolean;
   visibility?: "private" | "public";
 }
 
@@ -294,4 +322,43 @@ export interface Change {
   githubPrState?: string;
   promotedAt?: string;
   promotedBy?: string;
+}
+
+// Sync check result for detecting new commits
+export interface SyncCheckResult {
+  hasUpdates: boolean;
+  currentCommit?: string;
+  latestCommit?: string;
+  commitsBehind?: number;
+  lastSyncAt?: string;
+  error?: string;
+}
+
+// Bulk import job tracking
+export interface BulkImportJob {
+  id: string;
+  namespace: string;
+  ownerId: string;
+  status: "queued" | "processing" | "completed" | "failed" | "partial";
+  totalRepos: number;
+  processedRepos: number;
+  successfulRepos: number;
+  failedRepos: number;
+  createdAt: string;
+  completedAt?: string;
+  errors: Array<{
+    repo: string;
+    error: string;
+  }>;
+}
+
+// Import template definition
+export interface ImportTemplate {
+  id: string;
+  name: string;
+  description: string;
+  language: string;
+  framework?: string;
+  files: Record<string, string>;
+  postSetupHooks?: string[];
 }

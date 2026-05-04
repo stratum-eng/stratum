@@ -11,6 +11,16 @@ import {
 } from "../storage/imports";
 import { listProvenance } from "../storage/provenance";
 import { getProjectByPath, listProjectsByNamespace, setProject } from "../storage/state";
+import {
+  checkForSyncUpdates,
+  getSyncStatus,
+  getProjectSourceUrl,
+  getProjectProvider,
+  setSyncInProgress,
+  updateProjectSyncError,
+  updateProjectAfterSync,
+} from "../storage/sync";
+import { buildAuthConfig } from "../storage/git-providers";
 import type { ArtifactsCreateResult, Env, ProjectEntry } from "../types";
 import { getArtifactsRepoName } from "../types";
 import { canReadProject, filterReadableProjects } from "../utils/authz";
@@ -29,6 +39,7 @@ import {
   isStringRecord,
   isValidGitHubUrl,
   isValidNamespace,
+  isValidRepoUrl,
   isValidSlug,
   slugify,
 } from "../utils/validation";
@@ -327,8 +338,8 @@ app.post(
         };
       }
 
-      if (!isValidGitHubUrl(body.url))
-        return badRequest("url must be a valid github.com repository URL");
+      if (!isValidRepoUrl(body.url) && !isValidGitHubUrl(body.url))
+        return badRequest("url must be a valid repository URL from GitHub, GitLab, or Bitbucket");
 
       const branch = typeof body.branch === "string" ? body.branch : "main";
 
@@ -387,6 +398,11 @@ app.post(
         }
       }
 
+      // Detect provider and parse URL
+      const { detectProvider, parseRepoUrl } = await import("../storage/git-providers");
+      const provider = detectProvider(body.url);
+      const parsedUrl = parseRepoUrl(body.url);
+
       const project: ProjectEntry = {
         id: projectId,
         name: slug,
@@ -397,11 +413,18 @@ app.post(
         remote: repo.remote,
         token: repo.token,
         createdAt: new Date().toISOString(),
+        // Legacy fields for backward compatibility
         githubUrl: body.url,
         ...(parseGitHubRepo(body.url) ?? {}),
         githubDefaultBranch: branch,
         githubConnectedAt: new Date().toISOString(),
         githubConnectionStatus: "connected",
+        // New generic provider fields
+        sourceUrl: body.url,
+        sourceProvider: provider || undefined,
+        sourceOwner: parsedUrl?.info.owner,
+        sourceRepo: parsedUrl?.info.repo,
+        sourceDefaultBranch: branch,
         visibility,
       };
 
@@ -905,7 +928,7 @@ app.post(
   },
 );
 
-// POST /projects/:namespace/:slug/sync - Re-sync with GitHub
+// POST /projects/:namespace/:slug/sync - Re-sync with remote repository (GitHub/GitLab/Bitbucket)
 app.post("/:namespace/:slug/sync", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
@@ -935,13 +958,56 @@ app.post("/:namespace/:slug/sync", async (c) => {
   }
 
   const project = projectResult.data;
+  const sourceUrl = getProjectSourceUrl(project);
 
-  if (!project.githubUrl) {
-    return badRequest("Project is not connected to GitHub");
+  if (!sourceUrl) {
+    return badRequest("Project is not connected to a remote repository");
+  }
+
+  const provider = getProjectProvider(project);
+  if (!provider) {
+    return badRequest("Project source URL is not from a supported provider (GitHub, GitLab, or Bitbucket)");
+  }
+
+  // Check if there's already a sync in progress
+  const syncStatusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);
+  if (syncStatusResult.success && syncStatusResult.data?.lastSyncStatus === "in_progress") {
+    return badRequest("A sync is already in progress for this project");
+  }
+
+  // Set sync in progress
+  await setSyncInProgress(c.env.STATE, namespace, slug, logger);
+
+  // Build auth config from environment
+  const auth = buildAuthConfig(provider, {
+    GITHUB_TOKEN: c.env.GITHUB_TOKEN,
+    GITLAB_TOKEN: c.env.GITLAB_TOKEN,
+    BITBUCKET_TOKEN: c.env.BITBUCKET_TOKEN,
+    BITBUCKET_USERNAME: c.env.BITBUCKET_USERNAME,
+    BITBUCKET_APP_PASSWORD: c.env.BITBUCKET_APP_PASSWORD,
+  });
+
+  // Check for updates first
+  const checkResult = await checkForSyncUpdates(c.env.STATE, project, auth, logger);
+  if (!checkResult.success) {
+    await updateProjectSyncError(c.env.STATE, project, checkResult.error.message, logger);
+    return internalError(checkResult.error.message);
+  }
+
+  if (!checkResult.data.hasUpdates) {
+    logger.info("No updates available for project", { namespace, slug });
+    return ok({
+      message: "No updates available",
+      namespace,
+      slug,
+      hasUpdates: false,
+      lastSyncedCommit: project.lastSyncedCommit,
+    });
   }
 
   // Create a new import job for the sync
   const importId = generateProjectId();
+  const branch = project.sourceDefaultBranch || project.githubDefaultBranch || "main";
   const createResult = await createImportJob(
     c.env.DB,
     {
@@ -949,28 +1015,227 @@ app.post("/:namespace/:slug/sync", async (c) => {
       projectId: project.id,
       namespace,
       slug,
-      sourceUrl: project.githubUrl,
-      branch: project.githubDefaultBranch || "main",
+      sourceUrl,
+      branch,
     },
     logger,
   );
 
   if (!createResult.success) {
+    await updateProjectSyncError(c.env.STATE, project, createResult.error.message, logger);
     logger.error("Failed to create sync job", createResult.error);
     return internalError(createResult.error.message);
   }
 
-  // TODO: Queue the sync job for processing
+  // Queue the sync job for processing (async)
+  processSyncJob(c.env, project, importId, sourceUrl, branch, logger);
 
-  logger.info("Sync initiated", { namespace, slug, importId });
+  logger.info("Sync initiated", {
+    namespace,
+    slug,
+    importId,
+    provider,
+    commitsBehind: checkResult.data.commitsBehind,
+    latestCommit: checkResult.data.latestCommit?.slice(0, 7),
+  });
+
   return ok({
     message: "Sync initiated",
     namespace,
     slug,
     importId,
     status: "queued",
+    hasUpdates: true,
+    commitsBehind: checkResult.data.commitsBehind,
+    latestCommit: checkResult.data.latestCommit,
   });
 });
+
+// GET /projects/:namespace/:slug/sync/status - Get sync status
+app.get("/:namespace/:slug/sync/status", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const { namespace, slug } = c.req.param();
+
+  // Get project
+  const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") {
+      return notFound("Project", `${namespace}/${slug}`);
+    }
+    logger.error("Failed to get project", projectResult.error);
+    return internalError(projectResult.error.message);
+  }
+
+  const project = projectResult.data;
+
+  if (!canReadProject(project, userId, agentOwnerId)) {
+    return forbidden("Project access denied");
+  }
+
+  // Get detailed sync status
+  const syncStatusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);
+  const syncStatus = syncStatusResult.success ? syncStatusResult.data : null;
+
+  // Get import progress if there's an active sync
+  const importProgressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
+  const importProgress = importProgressResult.success ? importProgressResult.data : null;
+
+  const sourceUrl = getProjectSourceUrl(project);
+  const provider = getProjectProvider(project);
+
+  logger.debug("Sync status retrieved", { namespace, slug });
+
+  return ok({
+    namespace,
+    slug,
+    sourceUrl,
+    provider,
+    lastSyncedAt: project.lastSyncedAt,
+    lastSyncedCommit: project.lastSyncedCommit,
+    lastSyncStatus: project.lastSyncStatus || "idle",
+    lastSyncError: project.lastSyncError,
+    autoSyncEnabled: project.autoSyncEnabled || false,
+    hasUpdates: syncStatus?.hasUpdates,
+    commitsBehind: syncStatus?.commitsBehind,
+    latestCommit: syncStatus?.latestCommit,
+    lastCheckedAt: syncStatus?.lastCheckedAt,
+    importProgress: importProgress
+      ? {
+          status: importProgress.status,
+          progress: importProgress.progress,
+          logs: importProgress.logs.slice(-5), // Last 5 logs
+          errors: importProgress.errors.length > 0 ? importProgress.errors : undefined,
+        }
+      : undefined,
+  });
+});
+
+// Background sync processing
+async function processSyncJob(
+  env: Env,
+  project: ProjectEntry,
+  importId: string,
+  sourceUrl: string,
+  branch: string,
+  logger: Logger,
+) {
+  const { namespace, slug } = project;
+  const artifactsRepoName = getArtifactsRepoName(namespace, slug);
+
+  try {
+    // Update status to cloning
+    await updateImportStatus(env.DB, namespace, slug, "cloning", logger, "Fetching updates from remote");
+
+    // Perform the sync import
+    const depth = 10; // Default depth
+
+    const importResult = await importFromGitHub(
+      env.ARTIFACTS,
+      artifactsRepoName,
+      sourceUrl,
+      logger,
+      branch,
+      depth,
+    );
+
+    if (!importResult.success) {
+      await updateProjectSyncError(
+        env.STATE,
+        project,
+        `Sync failed: ${importResult.error.message}`,
+        logger,
+      );
+      await updateImportStatus(
+        env.DB,
+        namespace,
+        slug,
+        "failed",
+        logger,
+        `Sync failed: ${importResult.error.message}`,
+      );
+      return;
+    }
+
+    // Update project with new commit info
+    // Get the latest commit SHA
+    const provider = getProjectProvider(project);
+    let latestCommit = project.lastSyncedCommit;
+
+    if (provider) {
+      const auth = buildAuthConfig(provider, {
+        GITHUB_TOKEN: env.GITHUB_TOKEN,
+        GITLAB_TOKEN: env.GITLAB_TOKEN,
+        BITBUCKET_TOKEN: env.BITBUCKET_TOKEN,
+      });
+
+      try {
+        const { getProvider } = await import("../storage/git-providers");
+        const providerClient = getProvider(provider);
+        const parsed = (await import("../storage/git-providers")).parseRepoUrl(sourceUrl);
+        if (parsed) {
+          const commitResult = await providerClient.getLatestCommit(
+            parsed.info.owner,
+            parsed.info.repo,
+            branch,
+            auth,
+            logger,
+          );
+          if (commitResult.success && commitResult.data) {
+            latestCommit = commitResult.data.sha;
+          }
+        }
+      } catch (error) {
+        logger.debug("Failed to get latest commit after sync", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // Update project
+    await updateProjectAfterSync(env.STATE, project, latestCommit || "unknown", logger);
+
+    // Mark import as complete
+    await updateImportStatus(
+      env.DB,
+      namespace,
+      slug,
+      "completed",
+      logger,
+      "Sync completed successfully",
+    );
+
+    logger.info("Sync completed", { namespace, slug, importId });
+  } catch (error) {
+    logger.error("Sync job failed", error instanceof Error ? error : undefined, {
+      namespace,
+      slug,
+    });
+
+    await updateProjectSyncError(
+      env.STATE,
+      project,
+      `Sync failed: ${error instanceof Error ? error.message : String(error)}`,
+      logger,
+    );
+
+    await updateImportStatus(
+      env.DB,
+      namespace,
+      slug,
+      "failed",
+      logger,
+      `Sync failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
 
 // POST /projects/:namespace/:slug/import/cancel - Cancel ongoing import
 // More lenient rate limiting: 5 cancels per minute per user
