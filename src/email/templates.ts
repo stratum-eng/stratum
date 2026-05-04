@@ -10,6 +10,18 @@ export interface MagicLinkEmailData {
 }
 
 /**
+ * Escape HTML special characters to prevent XSS attacks
+ */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+/**
  * Magic link email template with Stratum branding
  */
 export function getMagicLinkEmail(data: MagicLinkEmailData): {
@@ -18,6 +30,10 @@ export function getMagicLinkEmail(data: MagicLinkEmailData): {
   html: string;
 } {
   const { magicLink, email } = data;
+
+  // Escape values for HTML to prevent XSS
+  const safeMagicLink = escapeHtml(magicLink);
+  const safeEmail = escapeHtml(email);
 
   const subject = "Sign in to Stratum";
 
@@ -69,7 +85,7 @@ Your code management platform`;
     }
   </style>
 </head>
-<body style="margin: 0; padding: 0; background-color: #0f0f0f;">
+<body style="margin: 0; padding: 0; background-color: #0f0f0f;" bgcolor="#0f0f0f">
   <!-- Preview text -->
   <div style="display: none; max-height: 0; overflow: hidden;">
     Sign in to Stratum - Click the magic link to access your account
@@ -121,7 +137,7 @@ Your code management platform`;
                           <table role="presentation" cellspacing="0" cellpadding="0" border="0" class="button-wrapper">
                             <tr>
                               <td class="button" style="background-color: #3b82f6; border-radius: 8px; text-align: center;">
-                                <a href="${magicLink}" style="display: inline-block; padding: 16px 32px; color: #ffffff; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 16px; font-weight: 600; border-radius: 8px;">
+                                <a href="${safeMagicLink}" style="display: inline-block; padding: 16px 32px; color: #ffffff; text-decoration: none; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 16px; font-weight: 600; border-radius: 8px;">
                                   Sign in to Stratum
                                 </a>
                               </td>
@@ -140,8 +156,8 @@ Your code management platform`;
                       </tr>
                       <tr>
                         <td style="padding-bottom: 32px; word-break: break-all;">
-                          <a href="${magicLink}" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #3b82f6; text-decoration: underline;">
-                            ${magicLink}
+                          <a href="${safeMagicLink}" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #3b82f6; text-decoration: underline;">
+                            ${safeMagicLink}
                           </a>
                         </td>
                       </tr>
@@ -182,7 +198,7 @@ Your code management platform`;
                 <tr>
                   <td style="padding-top: 16px; text-align: center;">
                     <span style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #555;">
-                      Sent to ${email}
+                      Sent to ${safeEmail}
                     </span>
                   </td>
                 </tr>
@@ -202,6 +218,8 @@ Your code management platform`;
 
 /**
  * Generic email template wrapper with Stratum branding
+ * TODO: Use this for future email templates (notifications, invites, etc.)
+ * Currently exported but unused - will be used when adding new email types
  */
 export function wrapEmail(content: { title: string; body: string }): string {
   const { title, body } = content;
@@ -223,7 +241,7 @@ export function wrapEmail(content: { title: string; body: string }): string {
     }
   </style>
 </head>
-<body style="margin: 0; padding: 0; background-color: #0f0f0f;">
+<body style="margin: 0; padding: 0; background-color: #0f0f0f;" bgcolor="#0f0f0f">
   <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
     <tr>
       <td align="center" style="padding: 40px 20px;">
