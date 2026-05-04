@@ -79,6 +79,13 @@ app.get("/api/projects/:namespace/:slug/sync/status", async (c) => {
   const statusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);
 
   if (!statusResult.success) {
+    // Storage failure - return 500
+    logger.error("Failed to get sync status", statusResult.error, { namespace, slug });
+    return c.json({ error: "Failed to get sync status", message: statusResult.error.message }, 500);
+  }
+
+  if (statusResult.data === null) {
+    // Status not found - return 404
     return notFound("Project sync status", `${namespace}/${slug}`);
   }
 
@@ -124,9 +131,15 @@ app.post("/api/projects/:namespace/:slug/sync", async (c) => {
 
   if (!checkResult.success) {
     logger.error("Sync check failed", checkResult.error, { namespace, slug });
+    // Propagate the error status code from the underlying error (e.g., 400 for INVALID_STATE)
+    const statusCode = (checkResult.error.statusCode || 500) as 400 | 401 | 403 | 404 | 500 | 502;
     return c.json(
-      { error: "Failed to check for updates", message: checkResult.error.message },
-      500,
+      {
+        error: "Failed to check for updates",
+        message: checkResult.error.message,
+        code: checkResult.error.code,
+      },
+      statusCode,
     );
   }
 
@@ -315,19 +328,51 @@ app.get("/api/projects/:namespace/:slug/sync/stream", async (c) => {
 
         const statusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);
 
-        if (statusResult.success && statusResult.data) {
-          const data = `data: ${JSON.stringify(statusResult.data)}\n\n`;
+        // Handle storage failure - stop the SSE loop
+        if (!statusResult.success) {
+          logger.error("SSE: Failed to get sync status, closing stream", statusResult.error, {
+            namespace,
+            slug,
+          });
+          const errorData = `data: ${JSON.stringify({ error: "Failed to get sync status", message: statusResult.error.message })}\n\n`;
           try {
-            controller.enqueue(new TextEncoder().encode(data));
+            controller.enqueue(new TextEncoder().encode(errorData));
           } catch {
-            // Controller might be closed, cleanup and exit
-            cleanup();
-            return;
+            // Controller might already be closed
           }
+          controller.close();
+          isClosed = true;
+          cleanup();
+          return;
+        }
+
+        // Handle not found case
+        if (statusResult.data === null) {
+          logger.warn("SSE: Sync status not found, closing stream", { namespace, slug });
+          const errorData = `data: ${JSON.stringify({ error: "Sync status not found" })}\n\n`;
+          try {
+            controller.enqueue(new TextEncoder().encode(errorData));
+          } catch {
+            // Controller might already be closed
+          }
+          controller.close();
+          isClosed = true;
+          cleanup();
+          return;
+        }
+
+        // Send the status data
+        const data = `data: ${JSON.stringify(statusResult.data)}\n\n`;
+        try {
+          controller.enqueue(new TextEncoder().encode(data));
+        } catch {
+          // Controller might be closed, cleanup and exit
+          cleanup();
+          return;
         }
 
         // Check if sync is complete or failed
-        const status = statusResult.success ? statusResult.data?.lastSyncStatus : null;
+        const status = statusResult.data.lastSyncStatus;
         if (status === "success" || status === "failed") {
           controller.close();
           isClosed = true;

@@ -144,6 +144,7 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
                   type="checkbox"
                   name="autoSyncEnabled"
                   checked={syncStatus.autoSyncEnabled}
+                  onchange="toggleSyncFrequency(this)"
                 />
                 Enable automatic sync
               </label>
@@ -154,7 +155,11 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
 
             <div class="form-group">
               <label>Sync Frequency</label>
-              <select name="syncFrequency" disabled={!syncStatus.autoSyncEnabled}>
+              <select
+                id="syncFrequency"
+                name="syncFrequency"
+                disabled={!syncStatus.autoSyncEnabled}
+              >
                 <option value="5">Every 5 minutes</option>
                 <option value="15">Every 15 minutes</option>
                 <option value="30">Every 30 minutes</option>
@@ -346,6 +351,13 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
                     button.classList.remove('btn-danger');
                     button.classList.add(originalClass);
                   }, 3000);
+                }
+              }
+              
+              function toggleSyncFrequency(checkbox) {
+                const select = document.getElementById('syncFrequency');
+                if (select) {
+                  select.disabled = !checkbox.checked;
                 }
               }
             `,
