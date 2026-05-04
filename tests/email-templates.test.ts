@@ -126,12 +126,12 @@ describe("Email Templates", () => {
     it("should wrap content with Stratum branding", () => {
       const result = wrapEmail({
         title: "Test Email",
-        body: "<p>Test content</p>",
+        body: "Test content",
       });
 
       expect(result).toContain("<!DOCTYPE html>");
       expect(result).toContain("<title>Test Email</title>");
-      expect(result).toContain("<p>Test content</p>");
+      expect(result).toContain("Test content");
       expect(result).toContain("stratum");
       expect(result).toContain("Your code management platform");
     });
@@ -161,6 +161,43 @@ describe("Email Templates", () => {
       });
 
       expect(result).toContain('bgcolor="#0f0f0f"');
+    });
+
+    it("should escape HTML in title to prevent XSS", () => {
+      const result = wrapEmail({
+        title: "</title><script>alert(1)</script>",
+        body: "<p>Test</p>",
+      });
+
+      // Should not contain unescaped script tag
+      expect(result).not.toContain("</title><script>alert(1)</script>");
+      // Should contain escaped version
+      expect(result).toContain("&lt;/title&gt;&lt;script&gt;alert(1)&lt;/script&gt;");
+      expect(result).toContain(
+        "<title>&lt;/title&gt;&lt;script&gt;alert(1)&lt;/script&gt;</title>",
+      );
+    });
+
+    it("should escape HTML in body to prevent XSS", () => {
+      const result = wrapEmail({
+        title: "Test",
+        body: "<script>alert('xss')</script>",
+      });
+
+      // Should not contain unescaped script tag
+      expect(result).not.toContain("<script>alert('xss')</script>");
+      // Should contain escaped version
+      expect(result).toContain("&lt;script&gt;alert(&#039;xss&#039;)&lt;/script&gt;");
+    });
+
+    it("should handle special characters in title and body", () => {
+      const result = wrapEmail({
+        title: "Test & Demo <Preview>",
+        body: "<p>Test & Demo</p>",
+      });
+
+      expect(result).toContain("Test &amp; Demo &lt;Preview&gt;");
+      expect(result).toContain("&lt;p&gt;Test &amp; Demo&lt;/p&gt;");
     });
   });
 });

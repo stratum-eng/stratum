@@ -4,21 +4,11 @@
  * Provides HTML and plain text email templates for various auth flows.
  */
 
+import { escapeHtml } from "../utils/html";
+
 export interface MagicLinkEmailData {
   magicLink: string;
   email: string;
-}
-
-/**
- * Escape HTML special characters to prevent XSS attacks
- */
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }
 
 /**
@@ -224,12 +214,16 @@ Your code management platform`;
 export function wrapEmail(content: { title: string; body: string }): string {
   const { title, body } = content;
 
+  // Escape values to prevent XSS
+  const safeTitle = escapeHtml(title);
+  const safeBody = escapeHtml(body);
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${title}</title>
+  <title>${safeTitle}</title>
   <style>
     @media screen and (max-width: 600px) {
       .container { width: 100% !important; }
@@ -253,7 +247,7 @@ export function wrapEmail(content: { title: string; body: string }): string {
           </tr>
           <tr>
             <td style="background-color: #1a1a1a; border-radius: 12px; border: 1px solid #333; padding: 40px;">
-              ${body}
+              ${safeBody}
             </td>
           </tr>
           <tr>
