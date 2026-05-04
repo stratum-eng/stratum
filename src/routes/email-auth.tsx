@@ -7,6 +7,23 @@ import { createLogger } from "../utils/logger";
 
 const app = new Hono<{ Bindings: Env }>();
 
+// Rate limiting constants
+const MAGIC_LINK_RATE_LIMIT = 5; // max 5 requests per hour per email
+const MAGIC_LINK_RATE_WINDOW = 60 * 60; // 1 hour in seconds
+
+// Generate a secure random token (32 bytes = 64 hex chars)
+function generateSecureToken(): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return Array.from(array, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// Get rate limit key for an email
+function getRateLimitKey(email: string): string {
+  const hour = Math.floor(Date.now() / 1000 / MAGIC_LINK_RATE_WINDOW);
+  return `magic_link_rate:${email}:${hour}`;
+}
+
 const ERROR_MESSAGES: Record<string, string> = {
   invalid_email: "Please enter a valid email address.",
   auth_config_missing: "Email authentication is not configured. Please contact the administrator.",
@@ -16,6 +33,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   invalid_link: "Invalid or expired link.",
   link_expired: "This link has expired or already been used.",
   verify_failed: "Failed to sign in. Please try again.",
+  rate_limited: "Too many requests. Please try again in an hour.",
 };
 
 const SUCCESS_MESSAGES: Record<string, string> = {
@@ -238,8 +256,10 @@ app.post("/send", async (c) => {
   const body = await c.req.parseBody();
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
 
-  if (!email || !email.includes("@")) {
-    logger.warn("Invalid email provided");
+  // Validate email format with regex
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!email || !emailRegex.test(email)) {
+    logger.warn("Invalid email provided", { emailPrefix: email.slice(0, 5) });
     return emailAuthRedirect(c, "error", "invalid_email");
   }
 
@@ -258,9 +278,23 @@ app.post("/send", async (c) => {
     return emailAuthRedirect(c, "error", "auth_config_incomplete");
   }
 
+  // Check rate limit
+  const rateLimitKey = getRateLimitKey(email);
+  const currentCount = Number.parseInt((await c.env.STATE.get(rateLimitKey)) ?? "0");
+
+  if (currentCount >= MAGIC_LINK_RATE_LIMIT) {
+    logger.warn("Magic link rate limit exceeded", { emailHash });
+    return emailAuthRedirect(c, "error", "rate_limited");
+  }
+
   try {
-    // Generate magic link token
-    const token = crypto.randomUUID();
+    // Increment rate limit counter
+    await c.env.STATE.put(rateLimitKey, String(currentCount + 1), {
+      expirationTtl: MAGIC_LINK_RATE_WINDOW,
+    });
+
+    // Generate secure magic link token (32 bytes = 64 hex chars)
+    const token = generateSecureToken();
     // Store token in KV
     await c.env.STATE.put(
       `magic_link:${token}`,
