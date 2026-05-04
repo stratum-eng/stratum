@@ -344,7 +344,7 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
             </button>
           </form>
           <a
-            href={`/docs/troubleshooting#import-errors`}
+            href={"/docs/troubleshooting#import-errors"}
             class="btn btn-link"
             target="_blank"
             rel="noreferrer"

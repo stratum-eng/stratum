@@ -4,6 +4,7 @@
  */
 
 import { importFromGitHub } from "../storage/git-ops";
+import { getProviderFromUrl } from "../storage/git-providers";
 import { deleteImportJob, isImportCancelled, updateImportStatus } from "../storage/imports";
 import {
   recordImportCancelled,
@@ -18,9 +19,6 @@ import { getArtifactsRepoName } from "../types";
 import { createLogger } from "../utils/logger";
 
 const logger = createLogger({ component: "ImportQueue" });
-
-// Store import start times for duration calculation
-const importStartTimes = new Map<string, number>();
 
 // Default clone depth for imports
 const DEFAULT_CLONE_DEPTH = 10;
@@ -163,9 +161,8 @@ async function processImportJob(
   const { importId, projectId, namespace, slug, githubUrl, branch, depth } = message;
   const artifactsRepoName = getArtifactsRepoName(namespace, slug);
 
-  // Record start time for duration tracking
-  const startedAt = Date.now();
-  importStartTimes.set(importId, startedAt);
+  // Use message timestamp for duration calculation (works across Worker isolates)
+  const startedAt = new Date(message.timestamp).getTime();
 
   logger.info("Processing import job", { importId, namespace, slug, githubUrl });
 
@@ -308,7 +305,6 @@ async function processImportJob(
     // Record completion with duration
     const duration = Date.now() - startedAt;
     await recordImportCompleted(env.DB, namespace, slug, duration, logger);
-    importStartTimes.delete(importId);
 
     logger.info("Import completed successfully", { importId, namespace, slug, duration });
     msg.ack();
@@ -321,7 +317,6 @@ async function processImportJob(
       await updateImportStatus(env.DB, namespace, slug, "cancelled", logger, "Import cancelled");
       await recordImportCancelled(env.DB, namespace, slug, logger);
       await deleteImportJob(env.DB, namespace, slug, logger);
-      importStartTimes.delete(importId);
     } else {
       // Handle failure with logging, storage, and alerting
       await handleImportFailure(env, {
@@ -363,7 +358,6 @@ async function processSyncJob(
 
   // Record start time for duration tracking
   const startedAt = Date.now();
-  importStartTimes.set(importId, startedAt);
 
   logger.info("Processing sync job", { importId, namespace, slug, githubUrl });
 
@@ -447,7 +441,6 @@ async function processSyncJob(
     }
 
     // Get latest commit info from provider
-    const { getProviderFromUrl } = await import("../storage/git-providers");
     const provider = getProviderFromUrl(githubUrl, logger);
     let latestCommitSha: string | undefined;
 
@@ -489,7 +482,6 @@ async function processSyncJob(
     // Record completion with duration
     const duration = Date.now() - startedAt;
     await recordImportCompleted(env.DB, namespace, slug, duration, logger);
-    importStartTimes.delete(importId);
 
     logger.info("Sync completed successfully", { importId, namespace, slug, duration, latestCommitSha });
     msg.ack();
@@ -502,7 +494,6 @@ async function processSyncJob(
       await updateImportStatus(env.DB, namespace, slug, "cancelled", logger, "Sync cancelled");
       await recordImportCancelled(env.DB, namespace, slug, logger);
       await deleteImportJob(env.DB, namespace, slug, logger);
-      importStartTimes.delete(importId);
     } else {
       // Handle failure with logging and metrics
       await handleImportFailure(env, {
@@ -688,16 +679,29 @@ async function storeFailedImport(
 }
 
 /**
- * Send email notification for failed import
+ * Escape HTML special characters to prevent injection
+ */
+function escapeHtml(unsafe: string): string {
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+/**
+ * Send failure notification email
  */
 async function sendFailureNotification(
   env: Env,
   params: {
     namespace: string;
     slug: string;
-    errorMessage: string;
     errorType: string;
+    errorMessage: string;
   },
+  logger: Logger,
 ): Promise<void> {
   if (!env.EMAIL) {
     logger.debug("Email binding not available, skipping notification");
@@ -713,6 +717,11 @@ async function sendFailureNotification(
   const fromAddress = env.EMAIL_FROM_ADDRESS ?? "alerts@stratum.dev";
   const projectPath = `${params.namespace}/${params.slug}`;
 
+  // Escape all dynamic content for HTML
+  const safeProjectPath = escapeHtml(projectPath);
+  const safeErrorType = escapeHtml(params.errorType);
+  const safeErrorMessage = escapeHtml(params.errorMessage);
+
   const message: EmailMessage = {
     to: toAddress,
     from: { email: fromAddress, name: "Stratum Alerts" },
@@ -720,9 +729,9 @@ async function sendFailureNotification(
     text: `Import failed for ${projectPath}\n\nError Type: ${params.errorType}\nError: ${params.errorMessage}\n\nTime: ${new Date().toISOString()}`,
     html: `
       <h2>Import Failed</h2>
-      <p><strong>Project:</strong> ${projectPath}</p>
-      <p><strong>Error Type:</strong> ${params.errorType}</p>
-      <p><strong>Error:</strong> ${params.errorMessage}</p>
+      <p><strong>Project:</strong> ${safeProjectPath}</p>
+      <p><strong>Error Type:</strong> ${safeErrorType}</p>
+      <p><strong>Error:</strong> ${safeErrorMessage}</p>
       <p><strong>Time:</strong> ${new Date().toISOString()}</p>
       <hr>
       <p><em>This is an automated alert from Stratum.</em></p>
@@ -743,7 +752,6 @@ async function sendFailureNotification(
     );
   }
 }
-
 /**
  * Classify error type from error message
  */

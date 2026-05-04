@@ -159,7 +159,7 @@ export async function recordImportFailed(
   db: D1Database,
   namespace: string,
   slug: string,
-  errorType: string,
+  _errorType: string,
   logger: Logger,
 ): Promise<Result<void, AppError>> {
   return recordMetric(
