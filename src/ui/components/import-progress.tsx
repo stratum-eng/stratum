@@ -201,10 +201,8 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
   const safeSlug = JSON.stringify(slug).slice(1, -1);
 
   // Get the main error for classification (use the last error or logs)
-  const mainError =
-    errors.length > 0
-      ? errors[errors.length - 1].error
-      : (logs.find((l) => l.level === "error")?.message ?? "");
+  const lastError = errors.length > 0 ? errors[errors.length - 1] : undefined;
+  const mainError = lastError?.error ?? logs.find((l) => l.level === "error")?.message ?? "";
 
   const errorInfo = isFailed ? classifyError(mainError) : null;
 

@@ -13,10 +13,17 @@ import {
   recordImportStarted,
 } from "../storage/metrics";
 import { getProjectByPath, setProject } from "../storage/state";
-import type { EmailMessage, Env, GitProvider, ImportJobMessage, ProjectEntry, SyncJobMessage } from "../types";
+import type {
+  EmailMessage,
+  Env,
+  GitProvider,
+  ImportJobMessage,
+  ProjectEntry,
+  SyncJobMessage,
+} from "../types";
 import type { Message, MessageBatch } from "../types";
 import { getArtifactsRepoName } from "../types";
-import { createLogger } from "../utils/logger";
+import { type Logger, createLogger } from "../utils/logger";
 
 const logger = createLogger({ component: "ImportQueue" });
 
@@ -483,7 +490,13 @@ async function processSyncJob(
     const duration = Date.now() - startedAt;
     await recordImportCompleted(env.DB, namespace, slug, duration, logger);
 
-    logger.info("Sync completed successfully", { importId, namespace, slug, duration, latestCommitSha });
+    logger.info("Sync completed successfully", {
+      importId,
+      namespace,
+      slug,
+      duration,
+      latestCommitSha,
+    });
     msg.ack();
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -646,13 +659,12 @@ async function storeFailedImport(
   },
 ): Promise<void> {
   try {
-    await env.DB
-      .prepare(
-        `INSERT INTO failed_imports (
+    await env.DB.prepare(
+      `INSERT INTO failed_imports (
           import_id, namespace, slug, error_type, error_message,
           error_details, stack_trace, source_url, branch, notified
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
+    )
       .bind(
         params.importId ?? null,
         params.namespace,
@@ -674,7 +686,10 @@ async function storeFailedImport(
       errorType: params.errorType,
     });
   } catch (error) {
-    logger.error("Failed to store failed import record", error instanceof Error ? error : undefined);
+    logger.error(
+      "Failed to store failed import record",
+      error instanceof Error ? error : undefined,
+    );
   }
 }
 
@@ -746,10 +761,7 @@ async function sendFailureNotification(
       slug: params.slug,
     });
   } catch (error) {
-    logger.error(
-      "Failed to send failure notification",
-      error instanceof Error ? error : undefined,
-    );
+    logger.error("Failed to send failure notification", error instanceof Error ? error : undefined);
   }
 }
 /**
@@ -764,7 +776,11 @@ function classifyError(error: Error): string {
   if (message.includes("timeout") || message.includes("timed out")) {
     return "TIMEOUT";
   }
-  if (message.includes("authentication") || message.includes("unauthorized") || message.includes("403")) {
+  if (
+    message.includes("authentication") ||
+    message.includes("unauthorized") ||
+    message.includes("403")
+  ) {
     return "AUTH_ERROR";
   }
   if (message.includes("not found") || message.includes("404")) {
@@ -809,19 +825,15 @@ async function handleImportFailure(
   const operation = isSync ? "sync" : "import";
 
   // Log detailed error
-  logger.error(
-    `${operation} failed for ${namespace}/${slug}`,
-    error,
-    {
-      importId,
-      namespace,
-      slug,
-      errorType,
-      duration,
-      githubUrl,
-      branch,
-    },
-  );
+  logger.error(`${operation} failed for ${namespace}/${slug}`, error, {
+    importId,
+    namespace,
+    slug,
+    errorType,
+    duration,
+    githubUrl,
+    branch,
+  });
 
   // Record metric
   await recordImportFailed(env.DB, namespace, slug, errorType, logger);
@@ -846,11 +858,15 @@ async function handleImportFailure(
 
   // Send notification (if not a cancellation)
   if (errorType !== "CANCELLED") {
-    await sendFailureNotification(env, {
-      namespace,
-      slug,
-      errorMessage: error.message,
-      errorType,
-    });
+    await sendFailureNotification(
+      env,
+      {
+        namespace,
+        slug,
+        errorMessage: error.message,
+        errorType,
+      },
+      logger,
+    );
   }
 }

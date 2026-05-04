@@ -55,7 +55,7 @@ async function checkDatabase(db: D1Database): Promise<HealthCheckResult> {
     const { results } = await db
       .prepare("SELECT 1 as health_check")
       .all<{ health_check: number }>();
-    if (!results || results.length === 0 || results[0].health_check !== 1) {
+    if (!results || results.length === 0 || !results[0] || results[0].health_check !== 1) {
       throw new Error("Unexpected query result");
     }
   });
