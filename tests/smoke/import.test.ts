@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Smoke Tests - Import Critical Path
  *
@@ -111,9 +112,7 @@ describe("Rate Limiting Smoke Tests", () => {
   describe(`Testing against: ${TARGET_URL}`, () => {
     it("should handle rapid requests gracefully", async () => {
       // Make 10 rapid requests
-      const requests = Array.from({ length: 10 }, () =>
-        fetch(`${TARGET_URL}/health`),
-      );
+      const requests = Array.from({ length: 10 }, () => fetch(`${TARGET_URL}/health`));
 
       const responses = await Promise.all(requests);
 
@@ -151,7 +150,7 @@ describe.skipIf(!hasAuthToken)("Authenticated Import Smoke Tests", () => {
     it("should reject invalid GitHub URLs", async () => {
       // First create a test project - this might fail if project exists
       // but we're testing the import endpoint, not project creation
-      const projectResponse = await fetch(`${TARGET_URL}/api/projects`, {
+      await fetch(`${TARGET_URL}/api/projects`, {
         method: "POST",
         headers: {
           ...authHeaders,

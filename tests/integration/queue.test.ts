@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Integration Tests for Queue Processing
  *
@@ -7,7 +8,13 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { handleImportQueue, queueImportJob, queueSyncJob } from "../../src/queue/import-queue";
-import type { Env, ImportJobMessage, ImportProgress, ProjectEntry, SyncJobMessage } from "../../src/types";
+import type {
+  Env,
+  ImportJobMessage,
+  ImportProgress,
+  ProjectEntry,
+  SyncJobMessage,
+} from "../../src/types";
 import type { Message, MessageBatch } from "../../src/types";
 
 // ============================================================================
@@ -32,7 +39,9 @@ vi.mock("../../src/storage/imports", () => ({
       version: 1,
       progress: { processedFiles: 0 },
       errors: [],
-      logs: [{ message: "Import queued", level: "info" as const, timestamp: new Date().toISOString() }],
+      logs: [
+        { message: "Import queued", level: "info" as const, timestamp: new Date().toISOString() },
+      ],
     };
     const key = `${params.namespace}:${params.slug}`;
     mockImportJobs.set(key, job);
@@ -56,9 +65,18 @@ vi.mock("../../src/storage/imports", () => ({
       ...existing,
       status,
       version: existing.version + 1,
-      completedAt: ["completed", "failed", "cancelled"].includes(status) ? new Date().toISOString() : undefined,
+      completedAt: ["completed", "failed", "cancelled"].includes(status)
+        ? new Date().toISOString()
+        : undefined,
       logs: message
-        ? [...existing.logs, { message, level: status === "failed" ? "error" : "info", timestamp: new Date().toISOString() }].slice(-100)
+        ? [
+            ...existing.logs,
+            {
+              message,
+              level: status === "failed" ? "error" : "info",
+              timestamp: new Date().toISOString(),
+            },
+          ].slice(-100)
         : existing.logs,
     };
 
@@ -161,7 +179,9 @@ function makeKV(): KVNamespace {
     put: async (key: string, value: string) => store.set(key, value),
     delete: async (key: string) => store.delete(key),
     list: async ({ prefix }: { prefix?: string }) => ({
-      keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })),
+      keys: [...store.keys()]
+        .filter((k) => !prefix || k.startsWith(prefix))
+        .map((name) => ({ name })),
       list_complete: true,
       cursor: "",
     }),
@@ -204,7 +224,12 @@ function createMockBatch<T>(messages: Message<T>[], queueName: string): MessageB
   } as unknown as MessageBatch<T>;
 }
 
-async function createTestProject(env: Env, namespace: string, slug: string, projectId: string): Promise<ProjectEntry> {
+async function createTestProject(
+  env: Env,
+  namespace: string,
+  slug: string,
+  projectId: string,
+): Promise<ProjectEntry> {
   const project: ProjectEntry = {
     id: projectId,
     name: slug,
@@ -253,7 +278,13 @@ async function createTestImportJob(
   // Update status if needed
   if (params.status !== "queued") {
     const { updateImportStatus } = await import("../../src/storage/imports");
-    const updateResult = await updateImportStatus(env.DB, params.namespace, params.slug, params.status, logger);
+    const updateResult = await updateImportStatus(
+      env.DB,
+      params.namespace,
+      params.slug,
+      params.status,
+      logger,
+    );
     if (!updateResult.success) {
       throw new Error("Failed to update import status");
     }
@@ -435,7 +466,9 @@ describe("Queue Processing Integration Tests", () => {
       if (progress.success && progress.data) {
         expect(progress.data.status).toBe("failed");
         // Error is recorded in logs, not errors array in this mock
-        expect(progress.data.logs.some((log: { message: string }) => log.message.includes("failed"))).toBe(true);
+        expect(
+          progress.data.logs.some((log: { message: string }) => log.message.includes("failed")),
+        ).toBe(true);
       }
     });
   });

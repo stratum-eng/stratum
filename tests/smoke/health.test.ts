@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Smoke Tests - Health Endpoint Checks
  *

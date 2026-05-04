@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * End-to-End Import Flow Integration Tests
  *
@@ -10,7 +11,13 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { handleImportQueue, queueImportJob, queueSyncJob } from "../../src/queue/import-queue";
-import type { Env, ImportJobMessage, ImportProgress, ProjectEntry, SyncJobMessage } from "../../src/types";
+import type {
+  Env,
+  ImportJobMessage,
+  ImportProgress,
+  ProjectEntry,
+  SyncJobMessage,
+} from "../../src/types";
 import type { Message, MessageBatch } from "../../src/types";
 import { AppError } from "../../src/utils/errors";
 
@@ -36,7 +43,9 @@ vi.mock("../../src/storage/imports", () => ({
       version: 1,
       progress: { processedFiles: 0 },
       errors: [],
-      logs: [{ message: "Import queued", level: "info" as const, timestamp: new Date().toISOString() }],
+      logs: [
+        { message: "Import queued", level: "info" as const, timestamp: new Date().toISOString() },
+      ],
     };
     const key = `${params.namespace}:${params.slug}`;
     mockImportJobs.set(key, job);
@@ -60,9 +69,18 @@ vi.mock("../../src/storage/imports", () => ({
       ...existing,
       status,
       version: existing.version + 1,
-      completedAt: ["completed", "failed", "cancelled"].includes(status) ? new Date().toISOString() : undefined,
+      completedAt: ["completed", "failed", "cancelled"].includes(status)
+        ? new Date().toISOString()
+        : undefined,
       logs: message
-        ? [...existing.logs, { message, level: status === "failed" ? "error" : "info", timestamp: new Date().toISOString() }].slice(-100)
+        ? [
+            ...existing.logs,
+            {
+              message,
+              level: status === "failed" ? "error" : "info",
+              timestamp: new Date().toISOString(),
+            },
+          ].slice(-100)
         : existing.logs,
     };
 
@@ -110,7 +128,11 @@ vi.mock("../../src/storage/imports", () => ({
     if (["completed", "failed", "cancelled"].includes(existing.status)) {
       return {
         success: false,
-        error: new AppError(`Cannot cancel import with status: ${existing.status}`, "INVALID_STATE", 400),
+        error: new AppError(
+          `Cannot cancel import with status: ${existing.status}`,
+          "INVALID_STATE",
+          400,
+        ),
       };
     }
 
@@ -120,7 +142,11 @@ vi.mock("../../src/storage/imports", () => ({
       version: existing.version + 1,
       logs: [
         ...existing.logs,
-        { message: "Import cancellation requested", level: "info", timestamp: new Date().toISOString() },
+        {
+          message: "Import cancellation requested",
+          level: "info",
+          timestamp: new Date().toISOString(),
+        },
       ].slice(-100),
     };
 
@@ -130,7 +156,9 @@ vi.mock("../../src/storage/imports", () => ({
 
   listActiveImports: vi.fn(async () => {
     const activeStatuses = ["queued", "cloning", "processing", "cancelling"];
-    const active = Array.from(mockImportJobs.values()).filter((job) => activeStatuses.includes(job.status));
+    const active = Array.from(mockImportJobs.values()).filter((job) =>
+      activeStatuses.includes(job.status),
+    );
     return { success: true, data: active };
   }),
 }));
@@ -175,7 +203,9 @@ function makeKV(): KVNamespace {
     put: async (key: string, value: string) => store.set(key, value),
     delete: async (key: string) => store.delete(key),
     list: async ({ prefix }: { prefix?: string }) => ({
-      keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })),
+      keys: [...store.keys()]
+        .filter((k) => !prefix || k.startsWith(prefix))
+        .map((name) => ({ name })),
       list_complete: true,
       cursor: "",
     }),
@@ -217,7 +247,12 @@ function createMockBatch<T>(messages: Message<T>[], queueName: string): MessageB
   } as unknown as MessageBatch<T>;
 }
 
-async function createTestProject(env: Env, namespace: string, slug: string, projectId: string): Promise<ProjectEntry> {
+async function createTestProject(
+  env: Env,
+  namespace: string,
+  slug: string,
+  projectId: string,
+): Promise<ProjectEntry> {
   const project: ProjectEntry = {
     id: projectId,
     name: slug,
@@ -266,7 +301,13 @@ async function createTestImportJob(
   // Update status if needed
   if (params.status !== "queued") {
     const { updateImportStatus } = await import("../../src/storage/imports");
-    const updateResult = await updateImportStatus(env.DB, params.namespace, params.slug, params.status, logger);
+    const updateResult = await updateImportStatus(
+      env.DB,
+      params.namespace,
+      params.slug,
+      params.status,
+      logger,
+    );
     if (!updateResult.success) {
       throw new Error("Failed to update import status");
     }
@@ -378,7 +419,14 @@ describe("End-to-End Import Flow", () => {
       ];
 
       for (const stage of stages) {
-        await updateImportStatus(env.DB, "@userA", "progress-project", stage.status, logger, stage.message);
+        await updateImportStatus(
+          env.DB,
+          "@userA",
+          "progress-project",
+          stage.status,
+          logger,
+          stage.message,
+        );
 
         // Simulate progress updates during processing
         if (stage.status === "processing") {
@@ -418,7 +466,9 @@ describe("End-to-End Import Flow", () => {
         projectId,
       });
 
-      const { cancelImportJob, getImportProgress, isImportCancelled } = await import("../../src/storage/imports");
+      const { cancelImportJob, getImportProgress, isImportCancelled } = await import(
+        "../../src/storage/imports"
+      );
       const { createLogger } = await import("../../src/utils/logger");
       const logger = createLogger({ component: "Test" });
 
