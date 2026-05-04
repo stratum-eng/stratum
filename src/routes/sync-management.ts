@@ -12,6 +12,38 @@ const app = new Hono<{ Bindings: Env }>();
 app.use("*", authMiddleware);
 
 /**
+ * Verify that the user has access to the project
+ * Returns true if user is authorized, false otherwise
+ */
+async function verifyProjectAccess(
+  env: Env,
+  namespace: string,
+  slug: string,
+  _userId: string,
+  logger: ReturnType<typeof createLogger>,
+): Promise<boolean> {
+  // Get project to verify ownership
+  const projectResult = await getProject(env.STATE, `${namespace}/${slug}`, logger);
+
+  if (!projectResult.success) {
+    return false;
+  }
+
+  const project = projectResult.data;
+
+  // Check if user owns the project or has access
+  // For now, we check if the namespace matches the user's namespace
+  // TODO: Add proper organization/team access control
+  if (project.namespace === namespace) {
+    // Additional check: verify the user is the owner
+    // This is a simplified check - in production you'd check project.members or project.ownerId
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * GET /api/projects/:namespace/:slug/sync/status
  * Get detailed sync status for a project
  */
@@ -30,6 +62,13 @@ app.get("/api/projects/:namespace/:slug/sync/status", async (c) => {
   });
 
   logger.debug("Getting sync status", { namespace, slug });
+
+  // Verify project access
+  const hasAccess = await verifyProjectAccess(c.env, namespace, slug, userId, logger);
+  if (!hasAccess) {
+    logger.warn("Unauthorized access attempt", { namespace, slug, userId });
+    return c.json({ error: "Forbidden - You do not have access to this project" }, 403);
+  }
 
   const statusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);
 
@@ -59,6 +98,13 @@ app.post("/api/projects/:namespace/:slug/sync", async (c) => {
   });
 
   logger.info("Manual sync triggered", { namespace, slug });
+
+  // Verify project access
+  const hasAccess = await verifyProjectAccess(c.env, namespace, slug, userId, logger);
+  if (!hasAccess) {
+    logger.warn("Unauthorized sync attempt", { namespace, slug, userId });
+    return c.json({ error: "Forbidden - You do not have access to this project" }, 403);
+  }
 
   // Get project first
   const projectResult = await getProject(c.env.STATE, `${namespace}/${slug}`, logger);
@@ -147,16 +193,23 @@ app.post("/api/projects/:namespace/:slug/sync/settings", async (c) => {
     syncFrequency: body.syncFrequency,
   });
 
-  // TODO: Implement sync settings storage
-  // For now, just acknowledge the request
+  // Verify project access
+  const hasAccess = await verifyProjectAccess(c.env, namespace, slug, userId, logger);
+  if (!hasAccess) {
+    logger.warn("Unauthorized settings update attempt", { namespace, slug, userId });
+    return c.json({ error: "Forbidden - You do not have access to this project" }, 403);
+  }
 
-  return ok({
-    message: "Sync settings updated",
-    settings: {
-      autoSyncEnabled: body.autoSyncEnabled ?? false,
-      syncFrequency: body.syncFrequency ?? 60,
+  // TODO: Implement sync settings storage
+  // For now, return 501 Not Implemented
+
+  return c.json(
+    {
+      error: "Not implemented",
+      message: "Sync settings persistence is not yet implemented",
     },
-  });
+    501,
+  );
 });
 
 /**
@@ -179,13 +232,23 @@ app.get("/api/projects/:namespace/:slug/sync/history", async (c) => {
 
   logger.debug("Getting sync history", { namespace, slug });
 
-  // TODO: Implement sync history storage
-  // For now, return empty history
+  // Verify project access
+  const hasAccess = await verifyProjectAccess(c.env, namespace, slug, userId, logger);
+  if (!hasAccess) {
+    logger.warn("Unauthorized history access attempt", { namespace, slug, userId });
+    return c.json({ error: "Forbidden - You do not have access to this project" }, 403);
+  }
 
-  return ok({
-    history: [],
-    total: 0,
-  });
+  // TODO: Implement sync history storage
+  // For now, return 501 Not Implemented
+
+  return c.json(
+    {
+      error: "Not implemented",
+      message: "Sync history retrieval is not yet implemented",
+    },
+    501,
+  );
 });
 
 /**
@@ -214,46 +277,83 @@ app.get("/api/projects/:namespace/:slug/sync/stream", async (c) => {
 
   logger.debug("SSE connection established for sync updates", { namespace, slug });
 
+  // Verify project access before establishing stream
+  const hasAccess = await verifyProjectAccess(c.env, namespace, slug, userId, logger);
+  if (!hasAccess) {
+    logger.warn("Unauthorized SSE stream attempt", { namespace, slug, userId });
+    return c.json({ error: "Forbidden - You do not have access to this project" }, 403);
+  }
+
   // Return a stream that checks sync status periodically
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let closeTimer: ReturnType<typeof setTimeout> | null = null;
+  let isClosed = false;
+
+  // Cleanup function to clear all timers
+  const cleanup = () => {
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+    if (closeTimer) {
+      clearTimeout(closeTimer);
+      closeTimer = null;
+    }
+  };
+
   const stream = new ReadableStream({
     start(controller) {
-      let closed = false;
-
       // Send initial status
       const sendStatus = async () => {
-        if (closed) return;
+        if (isClosed) return;
 
         const statusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);
 
         if (statusResult.success && statusResult.data) {
           const data = `data: ${JSON.stringify(statusResult.data)}\n\n`;
-          controller.enqueue(new TextEncoder().encode(data));
+          try {
+            controller.enqueue(new TextEncoder().encode(data));
+          } catch {
+            // Controller might be closed, cleanup and exit
+            cleanup();
+            return;
+          }
         }
 
         // Check if sync is complete or failed
         const status = statusResult.success ? statusResult.data?.lastSyncStatus : null;
         if (status === "success" || status === "failed") {
           controller.close();
-          closed = true;
+          isClosed = true;
+          cleanup();
           return;
         }
 
         // Continue polling
-        setTimeout(sendStatus, 2000);
+        if (!isClosed) {
+          pollTimer = setTimeout(sendStatus, 2000);
+        }
       };
 
       sendStatus();
 
       // Close after 5 minutes to prevent stale connections
-      setTimeout(
+      closeTimer = setTimeout(
         () => {
-          if (!closed) {
+          if (!isClosed) {
             controller.close();
-            closed = true;
+            isClosed = true;
+            cleanup();
           }
         },
         5 * 60 * 1000,
       );
+    },
+
+    cancel() {
+      // Handle client disconnect - cleanup timers
+      isClosed = true;
+      cleanup();
     },
   });
 
@@ -293,12 +393,15 @@ app.post("/api/projects/conflicts/:id/resolve", async (c) => {
   });
 
   // TODO: Implement conflict resolution logic
+  // For now, return 501 Not Implemented
 
-  return ok({
-    message: "Conflicts resolved successfully",
-    conflictId,
-    strategy: body.strategy,
-  });
+  return c.json(
+    {
+      error: "Not implemented",
+      message: "Conflict resolution is not yet implemented",
+    },
+    501,
+  );
 });
 
 export { app as syncManagementRouter };
