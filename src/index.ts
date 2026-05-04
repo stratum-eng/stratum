@@ -11,6 +11,8 @@ import { authRouter } from "./routes/auth";
 import { bulkImportRouter } from "./routes/bulk-import";
 import { changesRouter } from "./routes/changes";
 import { emailAuthRouter } from "./routes/email-auth";
+import { healthRouter } from "./routes/health";
+import { metricsRouter } from "./routes/metrics";
 import { orgsRouter } from "./routes/orgs";
 import { projectsRouter } from "./routes/projects";
 import { syncAllProjects, syncRouter } from "./routes/sync";
@@ -91,6 +93,12 @@ app.get("/dev-login", async (c) => {
 app.get("/ui.css", (c) => {
   return c.text(CSS, 200, { "Content-Type": "text/css; charset=UTF-8" });
 });
+
+// Health check endpoint
+app.route("/api/health", healthRouter);
+
+// Admin metrics endpoint
+app.route("/api/admin/metrics", metricsRouter);
 
 // Redirects from old /ui/* URLs to new paths (backward compatibility)
 app.get("/ui", (c) => c.redirect("/", 301));
