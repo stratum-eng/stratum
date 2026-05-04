@@ -2,26 +2,30 @@
 
 ## 🔐 Authentication & Authorization
 
-### 1. Magic Link Authentication (HIGH PRIORITY - In Progress)
+### 1. Magic Link Authentication (HIGH PRIORITY - ✅ COMPLETE)
 - [x] Research current auth system
-- [ ] Create `/auth/email` endpoint to request magic link
-  - [ ] Accept email address from user
-  - [ ] Generate unique magic link token (JWT or random token)
-  - [ ] Store token in KV with expiration (15 min)
-  - [ ] Send email via Cloudflare Email binding
-  - [ ] Create email template for magic link
-- [ ] Create `/auth/email/callback` endpoint to verify magic link
-  - [ ] Validate token from URL
-  - [ ] Look up user by email or create new user
-  - [ ] Create session
-  - [ ] Set session cookie
-  - [ ] Redirect to dashboard
-- [ ] Create `/auth/email` UI page
-  - [ ] Email input form
-  - [ ] "Check your email" confirmation page
-  - [ ] Error handling
-- [ ] Add rate limiting for magic link requests (5 per hour per email)
-- [ ] Write tests for magic link flow
+- [x] Create `/auth/email` endpoint to request magic link
+  - [x] Accept email address from user
+  - [x] Generate unique magic link token (32-byte secure random)
+  - [x] Store token in KV with expiration (15 min)
+  - [x] Send email via Cloudflare Email binding
+  - [x] Create email template for magic link (built into endpoint)
+- [x] Create `/auth/email/verify` endpoint to verify magic link
+  - [x] Validate token from URL
+  - [x] Look up user by email or create new user
+  - [x] Create session
+  - [x] Set session cookie
+  - [x] Redirect to dashboard
+- [x] Create `/auth/email` UI page
+  - [x] Email input form
+  - [x] "Check your email" confirmation state
+  - [x] Error handling
+- [x] Add rate limiting for magic link requests (5 per hour per email)
+- [x] Write tests for magic link flow
+- [x] Address CodeRabbit security review comments
+  - [x] Hash email in rate limit key (PII protection)
+  - [x] Add try/catch around rate limit KV read (fail open)
+  - [x] Validate redirect cookie (prevent open redirect)
 
 ### 2. Session Management Improvements
 - [ ] Add session refresh endpoint
