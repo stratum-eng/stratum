@@ -8,6 +8,7 @@ import { handleImportQueue } from "./queue/import-queue";
 import { runTtlSweep } from "./queue/ttl-sweep";
 import { agentsRouter } from "./routes/agents";
 import { authRouter } from "./routes/auth";
+import { bulkImportRouter } from "./routes/bulk-import";
 import { changesRouter } from "./routes/changes";
 import { emailAuthRouter } from "./routes/email-auth";
 import { healthRouter } from "./routes/health";
@@ -129,6 +130,7 @@ app.route("/api/agents", agentsRouter);
 app.route("/api", changesRouter);
 app.route("/api/orgs", orgsRouter);
 app.route("/api", syncRouter);
+app.route("/api/bulk-import", bulkImportRouter);
 
 app.notFound((c) => c.json({ error: "Not found" }, 404));
 app.onError((err, c) => {
