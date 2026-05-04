@@ -18,10 +18,11 @@ function generateSecureToken(): string {
   return Array.from(array, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-// Get rate limit key for an email
+// Get rate limit key for an email (uses hashed email for privacy)
 function getRateLimitKey(email: string): string {
   const hour = Math.floor(Date.now() / 1000 / MAGIC_LINK_RATE_WINDOW);
-  return `magic_link_rate:${email}:${hour}`;
+  const emailHash = hashEmail(email);
+  return `magic_link_rate:${emailHash}:${hour}`;
 }
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -278,9 +279,14 @@ app.post("/send", async (c) => {
     return emailAuthRedirect(c, "error", "auth_config_incomplete");
   }
 
-  // Check rate limit
+  // Check rate limit (fail open if KV fails)
   const rateLimitKey = getRateLimitKey(email);
-  const currentCount = Number.parseInt((await c.env.STATE.get(rateLimitKey)) ?? "0");
+  let currentCount = 0;
+  try {
+    currentCount = Number.parseInt((await c.env.STATE.get(rateLimitKey)) ?? "0");
+  } catch (err) {
+    logger.warn("Failed to check rate limit, allowing request", { emailHash, error: err });
+  }
 
   if (currentCount >= MAGIC_LINK_RATE_LIMIT) {
     logger.warn("Magic link rate limit exceeded", { emailHash });
@@ -433,7 +439,10 @@ app.get("/verify", async (c) => {
     sessionLogger.info("User signed in via magic link");
 
     // Redirect to home or the page they were trying to access
-    const redirectTo = getCookie(c, "redirect_after_login") || "/";
+    // Validate redirect to prevent open redirects - only allow same-origin relative paths
+    const rawRedirect = getCookie(c, "redirect_after_login") ?? "";
+    const redirectTo =
+      rawRedirect.startsWith("/") && !rawRedirect.startsWith("//") ? rawRedirect : "/";
     deleteCookie(c, "redirect_after_login", { path: "/" });
 
     return c.redirect(redirectTo);
