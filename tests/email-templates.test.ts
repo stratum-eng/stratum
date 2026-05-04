@@ -60,6 +60,44 @@ describe("Email Templates", () => {
       expect(result.html).toContain("&amp;foo");
     });
 
+    it("should reject javascript: URLs and use fallback", () => {
+      const result = getMagicLinkEmail({
+        magicLink: "javascript:alert('xss')",
+        email: "user@example.com",
+      });
+
+      // Should not contain javascript: protocol
+      expect(result.html).not.toContain('href="javascript:');
+      // Should use fallback "#" URL
+      expect(result.html).toContain('href="#');
+    });
+
+    it("should reject data: URLs and use fallback", () => {
+      const result = getMagicLinkEmail({
+        magicLink: "data:text/html,<script>alert('xss')</script>",
+        email: "user@example.com",
+      });
+
+      // Should not contain data: protocol
+      expect(result.html).not.toContain('href="data:');
+      // Should use fallback "#" URL
+      expect(result.html).toContain('href="#');
+    });
+
+    it("should accept http: and https: URLs", () => {
+      const httpsResult = getMagicLinkEmail({
+        magicLink: "https://example.com/verify?token=abc",
+        email: "user@example.com",
+      });
+      expect(httpsResult.html).toContain('href="https://example.com/verify?token=abc"');
+
+      const httpResult = getMagicLinkEmail({
+        magicLink: "http://example.com/verify?token=abc",
+        email: "user@example.com",
+      });
+      expect(httpResult.html).toContain('href="http://example.com/verify?token=abc"');
+    });
+
     it("should include security warning section", () => {
       const result = getMagicLinkEmail({
         magicLink: "https://example.com/verify?token=abc",
@@ -178,26 +216,28 @@ describe("Email Templates", () => {
       );
     });
 
-    it("should escape HTML in body to prevent XSS", () => {
+    it("should NOT escape HTML in body (callers must provide safe HTML)", () => {
       const result = wrapEmail({
         title: "Test",
-        body: "<script>alert('xss')</script>",
+        body: "<p>Safe HTML content</p>",
       });
 
-      // Should not contain unescaped script tag
-      expect(result).not.toContain("<script>alert('xss')</script>");
-      // Should contain escaped version
-      expect(result).toContain("&lt;script&gt;alert(&#039;xss&#039;)&lt;/script&gt;");
+      // Body should remain as raw HTML (not escaped)
+      expect(result).toContain("<p>Safe HTML content</p>");
+      expect(result).not.toContain("&lt;p&gt;Safe HTML content&lt;/p&gt;");
     });
 
-    it("should handle special characters in title and body", () => {
+    it("should escape HTML in title but not body", () => {
       const result = wrapEmail({
         title: "Test & Demo <Preview>",
         body: "<p>Test & Demo</p>",
       });
 
+      // Title should be escaped
       expect(result).toContain("Test &amp; Demo &lt;Preview&gt;");
-      expect(result).toContain("&lt;p&gt;Test &amp; Demo&lt;/p&gt;");
+      // Body should NOT be escaped
+      expect(result).toContain("<p>Test & Demo</p>");
+      expect(result).not.toContain("&lt;p&gt;Test &amp; Demo&lt;/p&gt;");
     });
   });
 });

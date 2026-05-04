@@ -12,6 +12,28 @@ export interface MagicLinkEmailData {
 }
 
 /**
+ * Validate URL scheme to prevent javascript: and other dangerous protocols
+ * Only allows http: and https: schemes
+ */
+function validateUrl(url: string): { isValid: boolean; safeUrl: string } {
+  try {
+    const parsed = new URL(url);
+    const allowedSchemes = ["http:", "https:"];
+
+    if (!allowedSchemes.includes(parsed.protocol)) {
+      console.warn(`Invalid URL scheme detected: ${parsed.protocol}`);
+      return { isValid: false, safeUrl: "#" };
+    }
+
+    return { isValid: true, safeUrl: url };
+  } catch {
+    // Invalid URL format
+    console.warn(`Invalid URL format: ${url}`);
+    return { isValid: false, safeUrl: "#" };
+  }
+}
+
+/**
  * Magic link email template with Stratum branding
  */
 export function getMagicLinkEmail(data: MagicLinkEmailData): {
@@ -21,8 +43,14 @@ export function getMagicLinkEmail(data: MagicLinkEmailData): {
 } {
   const { magicLink, email } = data;
 
+  // Validate URL scheme to prevent javascript: and other dangerous protocols
+  const { isValid, safeUrl: validatedMagicLink } = validateUrl(magicLink);
+  if (!isValid) {
+    console.warn("Invalid magic link URL detected, using fallback");
+  }
+
   // Escape values for HTML to prevent XSS
-  const safeMagicLink = escapeHtml(magicLink);
+  const safeMagicLink = escapeHtml(validatedMagicLink);
   const safeEmail = escapeHtml(email);
 
   const subject = "Sign in to Stratum";
@@ -214,9 +242,9 @@ Your code management platform`;
 export function wrapEmail(content: { title: string; body: string }): string {
   const { title, body } = content;
 
-  // Escape values to prevent XSS
+  // Escape title to prevent XSS (body is expected to be safe HTML)
   const safeTitle = escapeHtml(title);
-  const safeBody = escapeHtml(body);
+  // Note: body is intentionally NOT escaped - callers must provide safe HTML
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -247,7 +275,7 @@ export function wrapEmail(content: { title: string; body: string }): string {
           </tr>
           <tr>
             <td style="background-color: #1a1a1a; border-radius: 12px; border: 1px solid #333; padding: 40px;">
-              ${safeBody}
+              ${body}
             </td>
           </tr>
           <tr>
