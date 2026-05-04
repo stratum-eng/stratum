@@ -2,6 +2,7 @@
  * GitHub provider implementation
  */
 
+import type { Logger } from "../../utils/logger";
 import type {
   CommitInfo,
   GitProviderClient,
@@ -11,7 +12,6 @@ import type {
   RepoMetadata,
   UpdateCheckResult,
 } from "./types";
-import type { Logger } from "../../utils/logger";
 
 const GITHUB_API_BASE = "https://api.github.com";
 
@@ -28,7 +28,7 @@ export class GitHubProvider implements GitProviderClient {
     const httpsMatch = url.match(
       /^https?:\/\/github\.com\/([^/]+)\/([^/\s]+?)(?:\.git)?(?:\/tree\/([^/\s]+))?\/?$/i,
     );
-    if (httpsMatch && httpsMatch[1] && httpsMatch[2]) {
+    if (httpsMatch?.[1] && httpsMatch[2]) {
       return {
         owner: httpsMatch[1],
         repo: httpsMatch[2].replace(/\.git$/i, ""),
@@ -38,7 +38,7 @@ export class GitHubProvider implements GitProviderClient {
     }
 
     const sshMatch = url.match(/^git@github\.com:([^/]+)\/([^/\s]+?)(?:\.git)?$/i);
-    if (sshMatch && sshMatch[1] && sshMatch[2]) {
+    if (sshMatch?.[1] && sshMatch[2]) {
       return {
         owner: sshMatch[1],
         repo: sshMatch[2].replace(/\.git$/i, ""),
@@ -128,7 +128,10 @@ export class GitHubProvider implements GitProviderClient {
         },
       };
     } catch (error) {
-      logger.error("Failed to get latest commit from GitHub", error instanceof Error ? error : undefined);
+      logger.error(
+        "Failed to get latest commit from GitHub",
+        error instanceof Error ? error : undefined,
+      );
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
@@ -178,7 +181,9 @@ export class GitHubProvider implements GitProviderClient {
 
       // Compare commits to count how far behind we are
       try {
-        const compareUrl = this.buildApiUrl(`/repos/${owner}/${repo}/compare/${currentCommit}...${latestCommit}`);
+        const compareUrl = this.buildApiUrl(
+          `/repos/${owner}/${repo}/compare/${currentCommit}...${latestCommit}`,
+        );
         const compareResponse = await fetch(compareUrl, {
           method: "GET",
           headers: this.buildHeaders(auth),

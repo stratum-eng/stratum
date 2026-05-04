@@ -4,21 +4,13 @@
  */
 
 import { Hono } from "hono";
-import type { BulkImportJob, Env, ProjectEntry } from "../types";
-import { getArtifactsRepoName } from "../types";
+import { detectProvider, isValidRepoUrl, parseRepoUrl } from "../storage/git-providers";
 import { createImportJob, updateImportStatus } from "../storage/imports";
 import { getProjectByPath, setProject } from "../storage/state";
-import { isValidRepoUrl, parseRepoUrl, detectProvider } from "../storage/git-providers";
+import type { ArtifactsCreateResult, BulkImportJob, Env, ProjectEntry } from "../types";
+import { getArtifactsRepoName } from "../types";
 import { createLogger } from "../utils/logger";
-import {
-  badRequest,
-  created,
-  forbidden,
-  internalError,
-  notFound,
-  ok,
-  unauthorized,
-} from "../utils/response";
+import { badRequest, created, forbidden, notFound, ok, unauthorized } from "../utils/response";
 import { isValidNamespace, isValidSlug } from "../utils/validation";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -142,7 +134,7 @@ async function processRepoImport(
 
     // Create Artifacts repo
     const artifactsRepoName = getArtifactsRepoName(namespace, slug);
-    let repo;
+    let repo: ArtifactsCreateResult;
 
     try {
       repo = await env.ARTIFACTS.create(artifactsRepoName);
@@ -300,7 +292,7 @@ app.post("/", async (c) => {
 
   // Wait for all imports to complete
   Promise.all(importPromises)
-    .then((results) => {
+    .then(() => {
       const finalJob = bulkImportJobs.get(jobId);
       if (finalJob) {
         finalJob.completedAt = new Date().toISOString();

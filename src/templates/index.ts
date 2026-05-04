@@ -827,11 +827,7 @@ dmypy.json
 /**
  * All available templates
  */
-export const templates: ImportTemplate[] = [
-  reactTemplate,
-  nodeTemplate,
-  pythonTemplate,
-];
+export const templates: ImportTemplate[] = [reactTemplate, nodeTemplate, pythonTemplate];
 
 /**
  * Get a template by ID

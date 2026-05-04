@@ -161,11 +161,7 @@ export interface GitProviderClient {
    * @param auth - Authentication config (for token-based auth)
    * @returns Clone URL
    */
-  buildCloneUrl(
-    owner: string,
-    repo: string,
-    auth?: ProviderAuthConfig,
-  ): string;
+  buildCloneUrl(owner: string, repo: string, auth?: ProviderAuthConfig): string;
 
   /**
    * Get the web URL for a commit

@@ -2,6 +2,7 @@
  * Bitbucket provider implementation
  */
 
+import type { Logger } from "../../utils/logger";
 import type {
   CommitInfo,
   GitProviderClient,
@@ -11,7 +12,6 @@ import type {
   RepoMetadata,
   UpdateCheckResult,
 } from "./types";
-import type { Logger } from "../../utils/logger";
 
 const BITBUCKET_API_BASE = "https://api.bitbucket.org/2.0";
 
@@ -29,7 +29,7 @@ export class BitbucketProvider implements GitProviderClient {
     const httpsMatch = url.match(
       /^https?:\/\/bitbucket\.org\/([^/]+)\/([^/\s]+?)(?:\.git)?(?:\/src\/([^/\s]+))?\/?$/i,
     );
-    if (httpsMatch && httpsMatch[1] && httpsMatch[2]) {
+    if (httpsMatch?.[1] && httpsMatch[2]) {
       return {
         owner: httpsMatch[1],
         repo: httpsMatch[2].replace(/\.git$/i, ""),
@@ -40,7 +40,7 @@ export class BitbucketProvider implements GitProviderClient {
 
     // SSH URL
     const sshMatch = url.match(/^git@bitbucket\.org:([^/]+)\/([^/\s]+?)(?:\.git)?$/i);
-    if (sshMatch && sshMatch[1] && sshMatch[2]) {
+    if (sshMatch?.[1] && sshMatch[2]) {
       return {
         owner: sshMatch[1],
         repo: sshMatch[2].replace(/\.git$/i, ""),
@@ -85,9 +85,7 @@ export class BitbucketProvider implements GitProviderClient {
   ): Promise<ProviderApiResponse<CommitInfo>> {
     try {
       // Bitbucket uses workspace/repo-slug format
-      const url = this.buildApiUrl(
-        `/repositories/${owner}/${repo}/commits/${branch}?limit=1`,
-      );
+      const url = this.buildApiUrl(`/repositories/${owner}/${repo}/commits/${branch}?limit=1`);
       logger.debug("Fetching latest commit from Bitbucket", { owner, repo, branch });
 
       const response = await fetch(url, {
@@ -150,7 +148,10 @@ export class BitbucketProvider implements GitProviderClient {
         },
       };
     } catch (error) {
-      logger.error("Failed to get latest commit from Bitbucket", error instanceof Error ? error : undefined);
+      logger.error(
+        "Failed to get latest commit from Bitbucket",
+        error instanceof Error ? error : undefined,
+      );
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",

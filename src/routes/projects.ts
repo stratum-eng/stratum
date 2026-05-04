@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { importRateLimitMiddleware, releaseImportLock } from "../middleware/rate-limit";
 import { getCommitLog, importFromGitHub, initAndPush, listFilesInRepo } from "../storage/git-ops";
+import { buildAuthConfig } from "../storage/git-providers";
 import {
   cancelImportJob,
   createImportJob,
@@ -13,14 +14,13 @@ import { listProvenance } from "../storage/provenance";
 import { getProjectByPath, listProjectsByNamespace, setProject } from "../storage/state";
 import {
   checkForSyncUpdates,
-  getSyncStatus,
-  getProjectSourceUrl,
   getProjectProvider,
+  getProjectSourceUrl,
+  getSyncStatus,
   setSyncInProgress,
-  updateProjectSyncError,
   updateProjectAfterSync,
+  updateProjectSyncError,
 } from "../storage/sync";
-import { buildAuthConfig } from "../storage/git-providers";
 import type { ArtifactsCreateResult, Env, ProjectEntry } from "../types";
 import { getArtifactsRepoName } from "../types";
 import { canReadProject, filterReadableProjects } from "../utils/authz";
@@ -966,7 +966,9 @@ app.post("/:namespace/:slug/sync", async (c) => {
 
   const provider = getProjectProvider(project);
   if (!provider) {
-    return badRequest("Project source URL is not from a supported provider (GitHub, GitLab, or Bitbucket)");
+    return badRequest(
+      "Project source URL is not from a supported provider (GitHub, GitLab, or Bitbucket)",
+    );
   }
 
   // Check if there's already a sync in progress
@@ -1132,7 +1134,14 @@ async function processSyncJob(
 
   try {
     // Update status to cloning
-    await updateImportStatus(env.DB, namespace, slug, "cloning", logger, "Fetching updates from remote");
+    await updateImportStatus(
+      env.DB,
+      namespace,
+      slug,
+      "cloning",
+      logger,
+      "Fetching updates from remote",
+    );
 
     // Perform the sync import
     const depth = 10; // Default depth

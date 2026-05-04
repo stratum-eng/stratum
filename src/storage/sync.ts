@@ -6,9 +6,9 @@ import type { ProjectEntry, SyncCheckResult } from "../types";
 import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
-import { getProjectByPath, setProject } from "./state";
-import { detectProvider, getProvider, parseRepoUrl, buildAuthConfig } from "./git-providers";
+import { detectProvider, getProvider, parseRepoUrl } from "./git-providers";
 import type { ProviderAuthConfig } from "./git-providers";
+import { setProject } from "./state";
 
 // Sync job tracking in KV (for quick lookup)
 const SYNC_STATUS_PREFIX = "sync-status:";
@@ -51,8 +51,10 @@ function parseSyncStatus(raw: string | null): SyncStatus | null {
  */
 export function hasSyncCapabilities(project: ProjectEntry): boolean {
   return !!(
-    project.githubUrl || // Legacy field
-    project.sourceUrl // New generic field
+    (
+      project.githubUrl || // Legacy field
+      project.sourceUrl
+    ) // New generic field
   );
 }
 

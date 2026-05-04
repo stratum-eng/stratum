@@ -198,11 +198,7 @@ const BITBUCKET_REPO_RE = /^https?:\/\/bitbucket\.org\/[^/]+\/[^/\s]+/i;
  */
 export function isValidRepoUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
-  return (
-    GITHUB_REPO_RE.test(value) ||
-    GITLAB_REPO_RE.test(value) ||
-    BITBUCKET_REPO_RE.test(value)
-  );
+  return GITHUB_REPO_RE.test(value) || GITLAB_REPO_RE.test(value) || BITBUCKET_REPO_RE.test(value);
 }
 
 /**

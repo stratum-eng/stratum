@@ -454,9 +454,15 @@ async function processSyncJob(
     if (provider) {
       const parsed = provider.parseUrl(githubUrl);
       if (parsed) {
-        const commitResult = await provider.getLatestCommit(parsed.owner, parsed.repo, branch);
-        if (commitResult.success) {
-          latestCommitSha = commitResult.data;
+        const commitResult = await provider.getLatestCommit(
+          parsed.owner,
+          parsed.repo,
+          branch,
+          undefined, // auth - could be enhanced to use env tokens
+          logger,
+        );
+        if (commitResult.success && commitResult.data) {
+          latestCommitSha = commitResult.data.sha;
         }
       }
     }
