@@ -20,6 +20,8 @@ const VALID_STATUSES: ImportStatus[] = [
   "failed",
   "cancelled",
   "cancelling",
+  "syncing",
+  "checking",
 ];
 
 interface ImportJobRow {

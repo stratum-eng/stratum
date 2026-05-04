@@ -222,7 +222,9 @@ export type ImportStatus =
   | "completed"
   | "failed"
   | "cancelled"
-  | "cancelling";
+  | "cancelling"
+  | "syncing"
+  | "checking";
 
 export interface ImportProgress {
   id: string;

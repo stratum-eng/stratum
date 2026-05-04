@@ -122,9 +122,7 @@ export const RepoPage: FC<RepoProps> = ({
                       : ""}
                   </>
                 ) : (
-                  <>
-                    {getProviderIcon(project.sourceProvider)} Sync Now
-                  </>
+                  <>{getProviderIcon(project.sourceProvider)} Sync Now</>
                 )}
               </button>
             </form>

@@ -2,6 +2,7 @@
  * GitLab provider implementation
  */
 
+import type { Logger } from "../../utils/logger";
 import type {
   CommitInfo,
   GitProviderClient,
@@ -11,7 +12,6 @@ import type {
   RepoMetadata,
   UpdateCheckResult,
 } from "./types";
-import type { Logger } from "../../utils/logger";
 
 const GITLAB_API_BASE = "https://gitlab.com/api/v4";
 
@@ -153,7 +153,10 @@ export class GitLabProvider implements GitProviderClient {
         },
       };
     } catch (error) {
-      logger.error("Failed to get latest commit from GitLab", error instanceof Error ? error : undefined);
+      logger.error(
+        "Failed to get latest commit from GitLab",
+        error instanceof Error ? error : undefined,
+      );
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",

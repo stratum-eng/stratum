@@ -4,10 +4,10 @@
  */
 
 import type { GitProvider } from "../../types";
-import type { GitProviderClient, ParsedRepoInfo, ProviderAuthConfig } from "./types";
+import { bitbucketProvider } from "./bitbucket";
 import { githubProvider } from "./github";
 import { gitlabProvider } from "./gitlab";
-import { bitbucketProvider } from "./bitbucket";
+import type { GitProviderClient, ParsedRepoInfo, ProviderAuthConfig } from "./types";
 
 // Registry of all available providers
 const providers: Record<GitProvider, GitProviderClient> = {
@@ -115,6 +115,22 @@ export function buildAuthConfig(
       break;
   }
   return undefined;
+}
+
+/**
+ * Get provider from URL (legacy compatibility function)
+ * @param url - Repository URL
+ * @param _logger - Logger instance (optional, for compatibility)
+ * @returns Provider client or null
+ */
+export function getProviderFromUrl(url: string, _logger?: unknown): GitProviderClient | null {
+  const detected = detectProvider(url);
+  if (!detected) return null;
+  try {
+    return getProvider(detected);
+  } catch {
+    return null;
+  }
 }
 
 // Re-export types
