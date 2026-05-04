@@ -7,7 +7,7 @@ import { Hono } from "hono";
 import { detectProvider, isValidRepoUrl, parseRepoUrl } from "../storage/git-providers";
 import { createImportJob, updateImportStatus } from "../storage/imports";
 import { getProjectByPath, setProject } from "../storage/state";
-import type { BulkImportJob, Env, ProjectEntry } from "../types";
+import type { ArtifactsCreateResult, BulkImportJob, Env, ProjectEntry } from "../types";
 import { getArtifactsRepoName } from "../types";
 import { createLogger } from "../utils/logger";
 import { badRequest, created, forbidden, notFound, ok, unauthorized } from "../utils/response";
