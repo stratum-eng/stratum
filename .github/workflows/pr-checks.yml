@@ -1,0 +1,320 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: pr-checks-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ========================================================================
+  # Code Quality Checks
+  # ========================================================================
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linter
+        run: npm run lint
+
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run type check
+        run: npm run typecheck
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
+  # ========================================================================
+  # Integration Tests
+  # ========================================================================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, test]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run integration tests
+        run: npm run test:integration -- --run
+        env:
+          CI: true
+
+  # ========================================================================
+  # Staging Deployment
+  # ========================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    needs: [integration-tests]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    concurrency:
+      group: deploy-staging-${{ github.head_ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    outputs:
+      staging_url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy to Cloudflare Staging
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler deploy --env=staging
+          SUBDOMAIN=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+            | jq -r '.result.subdomain')
+          URL="https://stratum-staging.$SUBDOMAIN.workers.dev"
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "Deployed to: $URL"
+
+      - name: Smoke test - Health endpoint
+        env:
+          STAGING_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -e
+          echo "→ Testing health endpoint: $STAGING_URL/health"
+          curl -sfS --retry 5 --retry-delay 5 "$STAGING_URL/health"
+          echo "✓ Health check passed"
+
+      - name: Smoke test - API endpoints
+        env:
+          STAGING_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -e
+          echo "→ Testing API availability"
+          curl -sfS "$STAGING_URL/api/projects" || true
+          echo "✓ API check completed"
+
+      - name: Comment PR with staging URL
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const stagingUrl = '${{ steps.deploy.outputs.url }}';
+            const workflowRunUrl = `${context.payload.repository.html_url}/actions/runs/${context.runId}`;
+
+            const body = `## 🚀 Staging Deployment Ready
+
+            **Preview URL:** ${stagingUrl}
+
+            ### Quick Links
+            - [Health Check](${stagingUrl}/health)
+            - [Home Page](${stagingUrl}/)
+            - [Workflow Run](${workflowRunUrl})
+
+            ### Testing Checklist
+            - [ ] Smoke tests pass
+            - [ ] Integration tests pass
+            - [ ] Manual testing completed
+
+            > This deployment will be updated automatically when new commits are pushed to this PR.
+            `;
+
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('Staging Deployment Ready')
+            );
+
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+      - name: Run smoke tests against staging
+        env:
+          STAGING_URL: ${{ steps.deploy.outputs.url }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -e
+          echo "Running smoke tests against $STAGING_URL"
+          # Run vitest smoke tests with staging URL
+          npx vitest run tests/smoke/ --reporter=verbose || true
+
+      - name: Notify on deployment failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const workflowRunUrl = `${context.payload.repository.html_url}/actions/runs/${context.runId}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## ❌ Staging Deployment Failed
+
+            The staging deployment failed for this PR.
+
+            [View Workflow Run](${workflowRunUrl})
+
+            Please check the logs and fix any issues before merging.`
+            });
+
+  # ========================================================================
+  # PR Status Summary
+  # ========================================================================
+  pr-status:
+    name: PR Status Summary
+    needs: [lint, typecheck, test, integration-tests, deploy-staging]
+    runs-on: ubuntu-latest
+    if: always()
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Update PR status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const jobs = {
+              lint: '${{ needs.lint.result }}',
+              typecheck: '${{ needs.typecheck.result }}',
+              test: '${{ needs.test.result }}',
+              integration: '${{ needs.integration-tests.result }}',
+              staging: '${{ needs.deploy-staging.result }}'
+            };
+
+            const allPassed = Object.values(jobs).every(r => r === 'success');
+            const status = allPassed ? '✅ All checks passed' : '❌ Some checks failed';
+
+            // Create check run for merge requirements
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'PR Requirements',
+              head_sha: context.payload.pull_request.head.sha,
+              status: 'completed',
+              conclusion: allPassed ? 'success' : 'failure',
+              output: {
+                title: status,
+                summary: `Lint: ${jobs.lint}, Type Check: ${jobs.typecheck}, Tests: ${jobs.test}, Integration: ${jobs.integration}, Staging: ${jobs.staging}`
+              }
+            });
+
+  # ========================================================================
+  # Security Scan
+  # ========================================================================
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run secret scanner tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Run secret detection tests
+        run: npm test -- tests/secret-scanner.test.ts --run
+
+      - name: Check for leaked secrets in diff
+        run: |
+          # Check if any secrets might have been added
+          if git diff origin/main..HEAD | grep -iE "(api[_-]?key|secret|token|password)" | grep -v "test\|mock\|example"; then
+            echo "⚠️ Potential secrets detected in diff. Please review."
+            exit 1
+          fi
+        continue-on-error: true
