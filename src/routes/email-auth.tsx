@@ -7,6 +7,24 @@ import { createLogger } from "../utils/logger";
 
 const app = new Hono<{ Bindings: Env }>();
 
+// Rate limiting constants
+const MAGIC_LINK_RATE_LIMIT = 5; // max 5 requests per hour per email
+const MAGIC_LINK_RATE_WINDOW = 60 * 60; // 1 hour in seconds
+
+// Generate a secure random token (32 bytes = 64 hex chars)
+function generateSecureToken(): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return Array.from(array, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// Get rate limit key for an email (uses hashed email for privacy)
+function getRateLimitKey(email: string): string {
+  const hour = Math.floor(Date.now() / 1000 / MAGIC_LINK_RATE_WINDOW);
+  const emailHash = hashEmail(email);
+  return `magic_link_rate:${emailHash}:${hour}`;
+}
+
 const ERROR_MESSAGES: Record<string, string> = {
   invalid_email: "Please enter a valid email address.",
   auth_config_missing: "Email authentication is not configured. Please contact the administrator.",
@@ -16,6 +34,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   invalid_link: "Invalid or expired link.",
   link_expired: "This link has expired or already been used.",
   verify_failed: "Failed to sign in. Please try again.",
+  rate_limited: "Too many requests. Please try again in an hour.",
 };
 
 const SUCCESS_MESSAGES: Record<string, string> = {
@@ -238,8 +257,10 @@ app.post("/send", async (c) => {
   const body = await c.req.parseBody();
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
 
-  if (!email || !email.includes("@")) {
-    logger.warn("Invalid email provided");
+  // Validate email format with regex
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!email || !emailRegex.test(email)) {
+    logger.warn("Invalid email provided", { emailPrefix: email.slice(0, 5) });
     return emailAuthRedirect(c, "error", "invalid_email");
   }
 
@@ -258,9 +279,28 @@ app.post("/send", async (c) => {
     return emailAuthRedirect(c, "error", "auth_config_incomplete");
   }
 
+  // Check rate limit (fail open if KV fails)
+  const rateLimitKey = getRateLimitKey(email);
+  let currentCount = 0;
   try {
-    // Generate magic link token
-    const token = crypto.randomUUID();
+    currentCount = Number.parseInt((await c.env.STATE.get(rateLimitKey)) ?? "0");
+  } catch (err) {
+    logger.warn("Failed to check rate limit, allowing request", { emailHash, error: err });
+  }
+
+  if (currentCount >= MAGIC_LINK_RATE_LIMIT) {
+    logger.warn("Magic link rate limit exceeded", { emailHash });
+    return emailAuthRedirect(c, "error", "rate_limited");
+  }
+
+  try {
+    // Increment rate limit counter
+    await c.env.STATE.put(rateLimitKey, String(currentCount + 1), {
+      expirationTtl: MAGIC_LINK_RATE_WINDOW,
+    });
+
+    // Generate secure magic link token (32 bytes = 64 hex chars)
+    const token = generateSecureToken();
     // Store token in KV
     await c.env.STATE.put(
       `magic_link:${token}`,
@@ -399,7 +439,10 @@ app.get("/verify", async (c) => {
     sessionLogger.info("User signed in via magic link");
 
     // Redirect to home or the page they were trying to access
-    const redirectTo = getCookie(c, "redirect_after_login") || "/";
+    // Validate redirect to prevent open redirects - only allow same-origin relative paths
+    const rawRedirect = getCookie(c, "redirect_after_login") ?? "";
+    const redirectTo =
+      rawRedirect.startsWith("/") && !rawRedirect.startsWith("//") ? rawRedirect : "/";
     deleteCookie(c, "redirect_after_login", { path: "/" });
 
     return c.redirect(redirectTo);
