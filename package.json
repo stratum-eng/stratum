@@ -8,6 +8,8 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
+    "test:integration": "vitest run tests/integration/",
+    "test:smoke": "vitest run tests/smoke/ --reporter=verbose",
     "lint": "biome check src tests",
     "lint:fix": "biome check --write src tests",
     "typecheck": "tsc --noEmit",

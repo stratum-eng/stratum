@@ -110,13 +110,14 @@ queue = "stratum-events"
 binding = "IMPORT_QUEUE"
 queue = "stratum-imports"
 
-# Note: Only production should consume from the queues in production
-# Staging can consume from its own queues for testing
+# Staging queue consumers for testing
+# These are disabled by default to prevent staging from competing with production
+# Enable when running integration tests: wrangler deploy --env=staging
 # [[env.staging.queues.consumers]]
-# queue = "stratum-events"
+# queue = "stratum-events-staging"
 # 
 # [[env.staging.queues.consumers]]
-# queue = "stratum-imports"
+# queue = "stratum-imports-staging"
 # max_batch_size = 1
 # max_retries = 3
 # retry_delay = 30
