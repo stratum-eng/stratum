@@ -23,6 +23,7 @@ import type {
 } from "../types";
 import type { Message, MessageBatch } from "../types";
 import { getArtifactsRepoName } from "../types";
+import { escapeHtml } from "../utils/html";
 import { type Logger, createLogger } from "../utils/logger";
 
 const logger = createLogger({ component: "ImportQueue" });
@@ -697,18 +698,6 @@ async function storeFailedImport(
       error instanceof Error ? error : undefined,
     );
   }
-}
-
-/**
- * Escape HTML special characters to prevent injection
- */
-function escapeHtml(unsafe: string): string {
-  return unsafe
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
 }
 
 /**

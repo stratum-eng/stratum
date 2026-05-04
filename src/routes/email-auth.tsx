@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { getMagicLinkEmail } from "../email/templates";
 import { createSession } from "../storage/sessions";
 import { createUser, getUserByEmail } from "../storage/users";
 import type { Env } from "../types";
@@ -335,48 +336,14 @@ app.post("/send", async (c) => {
     const baseUrl = `${url.protocol}//${url.host}`;
     const magicLink = `${baseUrl}/auth/email/verify?token=${token}`;
 
-    // Send email
+    // Send email using template
+    const emailContent = getMagicLinkEmail({ magicLink, email });
     await c.env.EMAIL.send({
       to: email,
       from: { email: fromAddress, name: "Stratum" },
-      subject: "Sign in to Stratum",
-      text: `Click this link to sign in to Stratum:\n\n${magicLink}\n\nThis link expires in 15 minutes.\n\nIf you didn't request this, you can safely ignore this email.`,
-      html: `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sign in to Stratum</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; background: #0f0f0f; color: #e5e5e5;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background: #0f0f0f;">
-    <tr>
-      <td align="center" style="padding: 40px 20px;">
-        <table width="100%" max-width="400" cellpadding="0" cellspacing="0" style="max-width: 400px; background: #1a1a1a; border-radius: 8px; border: 1px solid #333;">
-          <tr>
-            <td style="padding: 40px 30px; text-align: center;">
-              <h1 style="margin: 0 0 10px; font-size: 24px; color: #e5e5e5;">Sign in to Stratum</h1>
-              <p style="margin: 0 0 30px; color: #888; font-size: 14px;">Click the button below to sign in instantly.</p>
-              
-              <a href="${magicLink}" style="display: inline-block; padding: 14px 28px; background: #3b82f6; color: white; text-decoration: none; border-radius: 4px; font-weight: 500; font-size: 16px;">Sign In to Stratum</a>
-              
-              <p style="margin: 30px 0 0; color: #666; font-size: 12px; line-height: 1.5;">
-                This link expires in 15 minutes.<br>
-                If you didn't request this, you can safely ignore this email.
-              </p>
-              
-              <p style="margin: 20px 0 0; color: #444; font-size: 11px;">
-                Or copy and paste this URL:<br>
-                <code style="color: #666; word-break: break-all;">${magicLink}</code>
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`,
+      subject: emailContent.subject,
+      text: emailContent.text,
+      html: emailContent.html,
     });
 
     logger.info("Magic link sent", { emailHash });
