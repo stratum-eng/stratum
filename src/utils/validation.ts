@@ -186,6 +186,25 @@ export function isStringRecord(value: unknown): value is Record<string, string> 
   );
 }
 
+// Multi-provider URL patterns
+const GITHUB_REPO_RE = /^https?:\/\/github\.com\/[^/]+\/[^/\s]+/i;
+const GITLAB_REPO_RE = /^https?:\/\/gitlab\.com\/.+\/[^/\s]+/i;
+const BITBUCKET_REPO_RE = /^https?:\/\/bitbucket\.org\/[^/]+\/[^/\s]+/i;
+
+/**
+ * Validates a repository URL from any supported provider (GitHub, GitLab, Bitbucket).
+ * @param value - URL to validate
+ * @returns Whether the URL is valid for any supported provider
+ */
+export function isValidRepoUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  return (
+    GITHUB_REPO_RE.test(value) ||
+    GITLAB_REPO_RE.test(value) ||
+    BITBUCKET_REPO_RE.test(value)
+  );
+}
+
 /**
  * Converts a string to a URL-safe slug.
  * - Lowercases the string

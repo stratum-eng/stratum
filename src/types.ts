@@ -106,6 +106,12 @@ export interface Env {
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
   OAUTH_REDIRECT_URI?: string;
+  // Git provider API tokens for sync
+  GITHUB_TOKEN?: string;
+  GITLAB_TOKEN?: string;
+  BITBUCKET_TOKEN?: string;
+  BITBUCKET_USERNAME?: string;
+  BITBUCKET_APP_PASSWORD?: string;
   EMAIL?: EmailBinding;
   EMAIL_FROM_ADDRESS?: string;
   ADMIN_EMAIL?: string;
@@ -120,16 +126,21 @@ export interface Env {
 
 // Import queue message types
 export interface ImportJobMessage {
-  type: "github.import";
+  type: "github.import" | "git.import";
   importId: string;
   projectId: string;
   namespace: string;
   slug: string;
   githubUrl: string;
+  sourceUrl?: string;
+  provider?: GitProvider;
   branch: string;
   depth: number;
   timestamp: string;
 }
+
+// Git provider types
+export type GitProvider = "github" | "gitlab" | "bitbucket";
 
 export interface SyncJobMessage {
   type: "github.sync" | "git.sync";
@@ -145,9 +156,6 @@ export interface SyncJobMessage {
   timestamp: string;
 }
 
-// Git provider types
-export type GitProvider = "github" | "gitlab" | "bitbucket";
-
 export interface ProjectEntry {
   id: string; // UUID - stable agent reference
   name: string; // Display name
@@ -158,7 +166,7 @@ export interface ProjectEntry {
   remote: string;
   token: string;
   createdAt: string;
-  // Git connection info (legacy - kept for backward compatibility)
+  // Legacy GitHub-specific fields (kept for backward compatibility)
   githubUrl?: string;
   githubOwner?: string;
   githubRepo?: string;
@@ -174,7 +182,7 @@ export interface ProjectEntry {
   // Sync tracking
   lastSyncedAt?: string;
   lastSyncedCommit?: string;
-  lastSyncStatus?: "success" | "failed" | "in_progress";
+  lastSyncStatus?: "success" | "failed" | "in_progress" | "idle";
   lastSyncError?: string;
   autoSyncEnabled?: boolean;
   visibility?: "private" | "public";
@@ -214,9 +222,7 @@ export type ImportStatus =
   | "completed"
   | "failed"
   | "cancelled"
-  | "cancelling"
-  | "syncing"
-  | "checking"; // For checking if updates are available
+  | "cancelling";
 
 export interface ImportProgress {
   id: string;
@@ -355,14 +361,4 @@ export interface ImportTemplate {
   framework?: string;
   files: Record<string, string>;
   postSetupHooks?: string[];
-}
-
-// Provider-specific import parameters
-export interface ProviderImportParams {
-  provider: GitProvider;
-  owner: string;
-  repo: string;
-  url: string;
-  branch?: string;
-  token?: string;
 }
