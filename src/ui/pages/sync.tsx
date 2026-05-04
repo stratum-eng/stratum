@@ -1,6 +1,23 @@
 import type { FC } from "hono/jsx";
 import { Layout } from "../layout";
 
+/**
+ * Validates that a URL uses a safe scheme (http or https)
+ * Returns the URL if valid, null otherwise
+ */
+function validateSafeUrl(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return url;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 interface SyncStatus {
   namespace: string;
   slug: string;
@@ -110,9 +127,17 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
           <div class="info-grid">
             <div class="info-item">
               <label>URL</label>
-              <a href={syncStatus.sourceUrl} target="_blank" rel="noreferrer">
-                {syncStatus.sourceUrl}
-              </a>
+              {(() => {
+                const safeUrl = validateSafeUrl(syncStatus.sourceUrl);
+                if (safeUrl) {
+                  return (
+                    <a href={safeUrl} target="_blank" rel="noreferrer">
+                      {syncStatus.sourceUrl}
+                    </a>
+                  );
+                }
+                return <span class="text-muted">{syncStatus.sourceUrl || "Not available"}</span>;
+              })()}
             </div>
             <div class="info-item">
               <label>Branch</label>
@@ -288,10 +313,17 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
                 const originalText = button.textContent;
                 const originalClass = button.getAttribute('data-original-class') || 'btn-secondary';
                 const formData = new FormData(form);
+                const autoSyncEnabled = formData.get('autoSyncEnabled') === 'on';
                 const data = {
-                  autoSyncEnabled: formData.get('autoSyncEnabled') === 'on',
-                  syncFrequency: parseInt(formData.get('syncFrequency')),
+                  autoSyncEnabled,
                 };
+                // Only include syncFrequency when autoSyncEnabled is true
+                if (autoSyncEnabled) {
+                  const frequencyValue = formData.get('syncFrequency');
+                  if (frequencyValue) {
+                    data.syncFrequency = parseInt(frequencyValue);
+                  }
+                }
                 
                 button.disabled = true;
                 button.textContent = 'Saving...';
