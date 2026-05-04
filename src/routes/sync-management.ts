@@ -34,6 +34,12 @@ async function verifyProjectAccess(
   // Check if user owns the project or has access
   // For now, we check if the namespace matches the user's namespace
   // TODO: Add proper organization/team access control
+  // IMPORTANT: This is a placeholder implementation. In production, you must:
+  // 1. Check project.ownerId against the authenticated userId
+  // 2. Check project.members array for userId
+  // 3. Implement organization/team-based permissions
+  // 4. Add role-based access control (owner, admin, member, etc.)
+  // The current implementation only validates the project exists and namespace matches.
   if (project.namespace === namespace) {
     // Additional check: verify the user is the owner
     // This is a simplified check - in production you'd check project.members or project.ownerId

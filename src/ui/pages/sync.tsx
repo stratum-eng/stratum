@@ -79,9 +79,11 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
                 <form
                   method="post"
                   action={`/api/projects/${project.namespace}/${project.slug}/sync`}
+                  onsubmit="event.preventDefault(); handleSyncSubmit(this);"
                 >
                   <button
                     type="submit"
+                    id="sync-button"
                     class={`btn ${hasUpdates ? "btn-primary" : "btn-secondary"}`}
                     disabled={isSyncing}
                   >
@@ -133,6 +135,7 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
             method="post"
             action={`/api/projects/${project.namespace}/${project.slug}/sync/settings`}
             class="auto-sync-form"
+            onsubmit="event.preventDefault(); handleSettingsSubmit(this);"
           >
             <div class="form-group">
               <label class="checkbox-label">
@@ -209,6 +212,152 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
             </table>
           )}
         </div>
+
+        {/* Client-side JavaScript for form handling */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              async function handleSyncSubmit(form) {
+                const button = form.querySelector('button[type="submit"]');
+                const originalText = button.textContent;
+                
+                // Disable button and show loading state
+                button.disabled = true;
+                button.textContent = 'Syncing...';
+                
+                try {
+                  const response = await fetch(form.action, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                    },
+                  });
+                  
+                  if (response.ok) {
+                    const data = await response.json();
+                    
+                    // Show success message
+                    if (data.synced) {
+                      button.textContent = '✓ ' + data.message;
+                      button.classList.remove('btn-primary', 'btn-secondary');
+                      button.classList.add('btn-success');
+                    } else {
+                      button.textContent = data.message || 'Up to date';
+                    }
+                    
+                    // Reload page after 2 seconds to show updated status
+                    setTimeout(() => window.location.reload(), 2000);
+                  } else {
+                    const error = await response.json();
+                    button.textContent = 'Error: ' + (error.message || 'Sync failed');
+                    button.classList.remove('btn-primary', 'btn-secondary');
+                    button.classList.add('btn-danger');
+                    
+                    // Re-enable button after 3 seconds
+                    setTimeout(() => {
+                      button.disabled = false;
+                      button.textContent = originalText;
+                      button.classList.remove('btn-danger');
+                      // Restore original button class based on what it had before
+                      if (originalText.includes('Sync Now')) {
+                        button.classList.add('btn-primary');
+                      } else {
+                        button.classList.add('btn-secondary');
+                      }
+                    }, 3000);
+                  }
+                } catch (err) {
+                  button.textContent = 'Network error';
+                  button.classList.remove('btn-primary', 'btn-secondary');
+                  button.classList.add('btn-danger');
+                  
+                  // Re-enable button after 3 seconds
+                  setTimeout(() => {
+                    button.disabled = false;
+                    button.textContent = originalText;
+                    button.classList.remove('btn-danger');
+                    // Restore original button class based on what it had before
+                    if (originalText.includes('Sync Now')) {
+                      button.classList.add('btn-primary');
+                    } else {
+                      button.classList.add('btn-secondary');
+                    }
+                  }, 3000);
+                }
+              }
+              
+              async function handleSettingsSubmit(form) {
+                const button = form.querySelector('button[type="submit"]');
+                const originalText = button.textContent;
+                const formData = new FormData(form);
+                const data = {
+                  autoSyncEnabled: formData.get('autoSyncEnabled') === 'on',
+                  syncFrequency: parseInt(formData.get('syncFrequency')),
+                };
+                
+                button.disabled = true;
+                button.textContent = 'Saving...';
+                
+                try {
+                  const response = await fetch(form.action, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(data),
+                  });
+                  
+                  if (response.status === 501) {
+                    button.textContent = 'Feature coming soon!';
+                    button.classList.remove('btn-secondary');
+                    button.classList.add('btn-info');
+                    
+                    setTimeout(() => {
+                      button.disabled = false;
+                      button.textContent = originalText;
+                      button.classList.remove('btn-info');
+                      button.classList.add('btn-secondary');
+                    }, 3000);
+                  } else if (response.ok) {
+                    button.textContent = '✓ Settings saved!';
+                    button.classList.remove('btn-secondary');
+                    button.classList.add('btn-success');
+                    
+                    setTimeout(() => {
+                      button.disabled = false;
+                      button.textContent = originalText;
+                      button.classList.remove('btn-success');
+                      button.classList.add('btn-secondary');
+                    }, 3000);
+                  } else {
+                    const error = await response.json();
+                    button.textContent = 'Error: ' + (error.message || 'Save failed');
+                    button.classList.remove('btn-secondary');
+                    button.classList.add('btn-danger');
+                    
+                    setTimeout(() => {
+                      button.disabled = false;
+                      button.textContent = originalText;
+                      button.classList.remove('btn-danger');
+                      button.classList.add('btn-secondary');
+                    }, 3000);
+                  }
+                } catch (err) {
+                  button.textContent = 'Network error';
+                  button.classList.remove('btn-secondary');
+                  button.classList.add('btn-danger');
+                  
+                  setTimeout(() => {
+                    button.disabled = false;
+                    button.textContent = originalText;
+                    button.classList.remove('btn-danger');
+                    button.classList.add('btn-secondary');
+                  }, 3000);
+                }
+              }
+            `,
+          }}
+        />
       </div>
     </Layout>
   );

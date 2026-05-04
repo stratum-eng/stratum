@@ -148,6 +148,18 @@ interface ConflictFileViewerProps {
   disabled?: boolean;
 }
 
+/**
+ * NOTE: This component is SERVER-RENDERED using Hono JSX.
+ * The useState implementation below is NOT real React hooks - it's a stub
+ * that only works for initial render values. Interactive features
+ * (manual editing, state changes) require either:
+ * 1. Client-side hydration with real React/Vue/etc.
+ * 2. Form-based POST submission to server
+ * 3. Client-side JavaScript to handle interactions
+ *
+ * TODO: Add client-side JavaScript for interactive features or
+ * convert to a proper client component framework.
+ */
 const ConflictFileViewer: FC<ConflictFileViewerProps> = ({ file, onResolve, disabled }) => {
   const [showOurs] = useState(true);
   const [showTheirs] = useState(true);
