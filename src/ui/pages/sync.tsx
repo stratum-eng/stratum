@@ -1,0 +1,215 @@
+import type { FC } from "hono/jsx";
+import { Layout } from "../layout";
+
+interface SyncStatus {
+  namespace: string;
+  slug: string;
+  sourceUrl: string;
+  sourceBranch: string;
+  lastSyncedAt?: string;
+  lastSyncedCommit?: string;
+  lastSyncStatus: "success" | "failed" | "in_progress" | "idle";
+  lastSyncError?: string;
+  hasUpdates: boolean;
+  commitsBehind?: number;
+  latestCommit?: string;
+  autoSyncEnabled: boolean;
+  lastCheckedAt: string;
+}
+
+interface SyncPageProps {
+  project: {
+    namespace: string;
+    slug: string;
+    name: string;
+  };
+  syncStatus: SyncStatus;
+  syncHistory: Array<{
+    id: string;
+    startedAt: string;
+    completedAt?: string;
+    status: "success" | "failed" | "cancelled";
+    commitsSynced: number;
+    error?: string;
+  }>;
+}
+
+export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }) => {
+  const isSyncing = syncStatus.lastSyncStatus === "in_progress";
+  const hasError = syncStatus.lastSyncStatus === "failed";
+  const hasUpdates =
+    syncStatus.hasUpdates && syncStatus.commitsBehind && syncStatus.commitsBehind > 0;
+
+  return (
+    <Layout title={`Sync - ${project.name}`}>
+      <div class="container">
+        <div class="page-header">
+          <h1>Sync Status</h1>
+          <div class="header-actions">
+            <a href={`/p/${project.namespace}/${project.slug}`} class="btn btn-secondary">
+              ← Back to Project
+            </a>
+          </div>
+        </div>
+
+        {/* Status Card */}
+        <div class={`card sync-status-card status-${syncStatus.lastSyncStatus}`}>
+          <div class="status-header">
+            <div class="status-indicator">
+              {isSyncing && <span class="spinner" />}
+              {syncStatus.lastSyncStatus === "success" && <span class="icon-success">✓</span>}
+              {hasError && <span class="icon-error">✗</span>}
+              {syncStatus.lastSyncStatus === "idle" && <span class="icon-idle">○</span>}
+            </div>
+            <div class="status-info">
+              <h2>
+                {isSyncing && "Syncing..."}
+                {syncStatus.lastSyncStatus === "success" && "Up to Date"}
+                {hasError && "Sync Failed"}
+                {syncStatus.lastSyncStatus === "idle" && "Not Synced"}
+              </h2>
+              <p class="status-meta">
+                {syncStatus.lastSyncedAt
+                  ? `Last synced: ${new Date(syncStatus.lastSyncedAt).toLocaleString()}`
+                  : "Never synced"}
+              </p>
+            </div>
+            <div class="status-actions">
+              {!isSyncing && (
+                <form
+                  method="post"
+                  action={`/api/projects/${project.namespace}/${project.slug}/sync`}
+                >
+                  <button
+                    type="submit"
+                    class={`btn ${hasUpdates ? "btn-primary" : "btn-secondary"}`}
+                    disabled={isSyncing}
+                  >
+                    {hasUpdates
+                      ? `Sync Now (${syncStatus.commitsBehind} commit${syncStatus.commitsBehind === 1 ? "" : "s"} behind)`
+                      : "Check for Updates"}
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+
+          {hasError && syncStatus.lastSyncError && (
+            <div class="error-message">
+              <strong>Error:</strong> {syncStatus.lastSyncError}
+            </div>
+          )}
+        </div>
+
+        {/* Source Info */}
+        <div class="card source-info-card">
+          <h3>Source Repository</h3>
+          <div class="info-grid">
+            <div class="info-item">
+              <label>URL</label>
+              <a href={syncStatus.sourceUrl} target="_blank" rel="noreferrer">
+                {syncStatus.sourceUrl}
+              </a>
+            </div>
+            <div class="info-item">
+              <label>Branch</label>
+              <code>{syncStatus.sourceBranch}</code>
+            </div>
+            <div class="info-item">
+              <label>Latest Commit</label>
+              <code>{syncStatus.latestCommit?.slice(0, 7) || "N/A"}</code>
+            </div>
+            <div class="info-item">
+              <label>Last Checked</label>
+              <span>{new Date(syncStatus.lastCheckedAt).toLocaleString()}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Auto-Sync Settings */}
+        <div class="card auto-sync-card">
+          <h3>Auto-Sync Settings</h3>
+          <form
+            method="post"
+            action={`/api/projects/${project.namespace}/${project.slug}/sync/settings`}
+            class="auto-sync-form"
+          >
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input
+                  type="checkbox"
+                  name="autoSyncEnabled"
+                  checked={syncStatus.autoSyncEnabled}
+                />
+                Enable automatic sync
+              </label>
+              <p class="help-text">
+                When enabled, the project will automatically sync when new commits are detected.
+              </p>
+            </div>
+
+            <div class="form-group">
+              <label>Sync Frequency</label>
+              <select name="syncFrequency" disabled={!syncStatus.autoSyncEnabled}>
+                <option value="5">Every 5 minutes</option>
+                <option value="15">Every 15 minutes</option>
+                <option value="30">Every 30 minutes</option>
+                <option value="60">Every hour</option>
+                <option value="360">Every 6 hours</option>
+                <option value="720">Every 12 hours</option>
+                <option value="1440">Every 24 hours</option>
+              </select>
+            </div>
+
+            <button type="submit" class="btn btn-secondary">
+              Save Settings
+            </button>
+          </form>
+        </div>
+
+        {/* Sync History */}
+        <div class="card sync-history-card">
+          <h3>Sync History</h3>
+          {syncHistory.length === 0 ? (
+            <p class="empty-state">No sync history yet.</p>
+          ) : (
+            <table class="table sync-history-table">
+              <thead>
+                <tr>
+                  <th>Started</th>
+                  <th>Status</th>
+                  <th>Commits</th>
+                  <th>Duration</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {syncHistory.map((sync) => (
+                  <tr key={sync.id} class={`sync-row status-${sync.status}`}>
+                    <td>{new Date(sync.startedAt).toLocaleString()}</td>
+                    <td>
+                      <span class={`badge badge-${sync.status}`}>{sync.status}</span>
+                    </td>
+                    <td>{sync.commitsSynced}</td>
+                    <td>
+                      {sync.completedAt
+                        ? `${Math.round((new Date(sync.completedAt).getTime() - new Date(sync.startedAt).getTime()) / 1000)}s`
+                        : "-"}
+                    </td>
+                    <td>
+                      {sync.error && (
+                        <span class="error-hint" title={sync.error}>
+                          Error details
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </Layout>
+  );
+};
