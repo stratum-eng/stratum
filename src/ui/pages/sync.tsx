@@ -85,6 +85,7 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
                     type="submit"
                     id="sync-button"
                     class={`btn ${hasUpdates ? "btn-primary" : "btn-secondary"}`}
+                    data-original-class={hasUpdates ? "btn-primary" : "btn-secondary"}
                     disabled={isSyncing}
                   >
                     {hasUpdates
@@ -164,7 +165,7 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
               </select>
             </div>
 
-            <button type="submit" class="btn btn-secondary">
+            <button type="submit" class="btn btn-secondary" data-original-class="btn-secondary">
               Save Settings
             </button>
           </form>
@@ -220,8 +221,7 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
               async function handleSyncSubmit(form) {
                 const button = form.querySelector('button[type="submit"]');
                 const originalText = button.textContent;
-                
-                // Disable button and show loading state
+                const originalClass = button.getAttribute('data-original-class') || 'btn-secondary';
                 button.disabled = true;
                 button.textContent = 'Syncing...';
                 
@@ -258,12 +258,8 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
                       button.disabled = false;
                       button.textContent = originalText;
                       button.classList.remove('btn-danger');
-                      // Restore original button class based on what it had before
-                      if (originalText.includes('Sync Now')) {
-                        button.classList.add('btn-primary');
-                      } else {
-                        button.classList.add('btn-secondary');
-                      }
+                      // Restore original button class from data attribute
+                      button.classList.add(originalClass);
                     }, 3000);
                   }
                 } catch (err) {
@@ -276,12 +272,8 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
                     button.disabled = false;
                     button.textContent = originalText;
                     button.classList.remove('btn-danger');
-                    // Restore original button class based on what it had before
-                    if (originalText.includes('Sync Now')) {
-                      button.classList.add('btn-primary');
-                    } else {
-                      button.classList.add('btn-secondary');
-                    }
+                    // Restore original button class from data attribute
+                    button.classList.add(originalClass);
                   }, 3000);
                 }
               }
@@ -289,6 +281,7 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
               async function handleSettingsSubmit(form) {
                 const button = form.querySelector('button[type="submit"]');
                 const originalText = button.textContent;
+                const originalClass = button.getAttribute('data-original-class') || 'btn-secondary';
                 const formData = new FormData(form);
                 const data = {
                   autoSyncEnabled: formData.get('autoSyncEnabled') === 'on',
@@ -309,49 +302,49 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
                   
                   if (response.status === 501) {
                     button.textContent = 'Feature coming soon!';
-                    button.classList.remove('btn-secondary');
+                    button.classList.remove(originalClass);
                     button.classList.add('btn-info');
                     
                     setTimeout(() => {
                       button.disabled = false;
                       button.textContent = originalText;
                       button.classList.remove('btn-info');
-                      button.classList.add('btn-secondary');
+                      button.classList.add(originalClass);
                     }, 3000);
                   } else if (response.ok) {
                     button.textContent = '✓ Settings saved!';
-                    button.classList.remove('btn-secondary');
+                    button.classList.remove(originalClass);
                     button.classList.add('btn-success');
                     
                     setTimeout(() => {
                       button.disabled = false;
                       button.textContent = originalText;
                       button.classList.remove('btn-success');
-                      button.classList.add('btn-secondary');
+                      button.classList.add(originalClass);
                     }, 3000);
                   } else {
                     const error = await response.json();
                     button.textContent = 'Error: ' + (error.message || 'Save failed');
-                    button.classList.remove('btn-secondary');
+                    button.classList.remove(originalClass);
                     button.classList.add('btn-danger');
                     
                     setTimeout(() => {
                       button.disabled = false;
                       button.textContent = originalText;
                       button.classList.remove('btn-danger');
-                      button.classList.add('btn-secondary');
+                      button.classList.add(originalClass);
                     }, 3000);
                   }
                 } catch (err) {
                   button.textContent = 'Network error';
-                  button.classList.remove('btn-secondary');
+                  button.classList.remove(originalClass);
                   button.classList.add('btn-danger');
                   
                   setTimeout(() => {
                     button.disabled = false;
                     button.textContent = originalText;
                     button.classList.remove('btn-danger');
-                    button.classList.add('btn-secondary');
+                    button.classList.add(originalClass);
                   }, 3000);
                 }
               }
