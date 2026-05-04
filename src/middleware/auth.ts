@@ -93,9 +93,10 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
   if (sessionId) {
     const sessionResult = await getSession(c.env.DB, sessionId, logger);
     if (sessionResult.success) {
+      const userId = sessionResult.data.userId;
       if (new Date(sessionResult.data.expiresAt) <= new Date()) {
-        logger.debug("Session expired, deleting", { userId: sessionResult.data.userId });
-        await deleteSession(c.env.DB, sessionId, logger);
+        logger.debug("Session expired, deleting", { userId });
+        await deleteSession(c.env.DB, sessionId, userId, logger);
       } else {
         c.set("userId", sessionResult.data.userId);
 
