@@ -215,7 +215,28 @@ app.get("/", (c) => {
                   required
                 />
               </div>
-              <button type="submit" class="btn">
+              <div class="form-group" style={{ marginTop: "1rem" }}>
+                <label
+                  class="form-label"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.5rem",
+                    fontWeight: "normal",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    name="rememberMe"
+                    value="true"
+                    checked
+                    style={{ width: "auto", cursor: "pointer" }}
+                  />
+                  Keep me signed in for 30 days
+                </label>
+              </div>
+              <button type="submit" class="btn" style={{ marginTop: "1rem" }}>
                 Send Magic Link
               </button>
             </form>
@@ -256,6 +277,7 @@ app.post("/send", async (c) => {
 
   const body = await c.req.parseBody();
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const rememberMe = body.rememberMe === "true";
 
   // Validate email format with regex
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -301,10 +323,10 @@ app.post("/send", async (c) => {
 
     // Generate secure magic link token (32 bytes = 64 hex chars)
     const token = generateSecureToken();
-    // Store token in KV
+    // Store token in KV with remember me preference
     await c.env.STATE.put(
       `magic_link:${token}`,
-      JSON.stringify({ email, createdAt: Date.now() }),
+      JSON.stringify({ email, createdAt: Date.now(), rememberMe }),
       { expirationTtl: 15 * 60 }, // 15 minutes TTL
     );
 
@@ -392,7 +414,7 @@ app.get("/verify", async (c) => {
       return emailAuthRedirect(c, "error", "link_expired");
     }
 
-    const { email } = JSON.parse(tokenData);
+    const { email, rememberMe = true } = JSON.parse(tokenData);
     const emailHash = hashEmail(email);
 
     // Delete the token so it can't be reused
@@ -416,9 +438,9 @@ app.get("/verify", async (c) => {
       logger.info("Existing user signed in", { userId, emailHash });
     }
 
-    // Create session
+    // Create session with remember me preference
     const sessionLogger = logger.child({ userId });
-    const sessionResult = await createSession(c.env.DB, userId, sessionLogger);
+    const sessionResult = await createSession(c.env.DB, userId, sessionLogger, rememberMe);
 
     if (!sessionResult.success) {
       sessionLogger.error("Failed to create session");
@@ -427,12 +449,13 @@ app.get("/verify", async (c) => {
 
     const session = sessionResult.data;
 
-    // Set session cookie
+    // Set session cookie with appropriate expiration
+    const cookieMaxAge = rememberMe ? 2592000 : 86400; // 30 days or 1 day
     setCookie(c, "stratum_session", session.id, {
       httpOnly: true,
       secure: true,
       sameSite: "Lax",
-      maxAge: 2592000, // 30 days
+      maxAge: cookieMaxAge,
       path: "/",
     });
 
