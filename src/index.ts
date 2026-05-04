@@ -15,6 +15,7 @@ import { healthRouter } from "./routes/health";
 import { metricsRouter } from "./routes/metrics";
 import { orgsRouter } from "./routes/orgs";
 import { projectsRouter } from "./routes/projects";
+import { sessionRouter } from "./routes/sessions";
 import { syncAllProjects, syncRouter } from "./routes/sync";
 import { uiRouter } from "./routes/ui";
 import { usersRouter } from "./routes/users";
@@ -122,6 +123,7 @@ app.get("/ui/changes/:id", (c) => {
 
 app.route("/auth", authRouter);
 app.route("/auth/email", emailAuthRouter);
+app.route("/auth/sessions", sessionRouter);
 app.route("/", uiRouter); // Mount UI at root
 app.route("/api/projects", projectsRouter);
 app.route("/api/workspaces", workspacesRouter);
