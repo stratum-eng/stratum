@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { createSession, deleteSession } from "../storage/sessions";
+import { createSession, deleteSession, getSession } from "../storage/sessions";
 import { upsertGitHubUser } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
@@ -201,7 +201,13 @@ app.get("/logout", async (c) => {
 
   if (sessionId) {
     logger.debug("Deleting session", { sessionId: `${sessionId.slice(0, 8)}...` });
-    await deleteSession(c.env.DB, sessionId, logger);
+
+    // Get session to verify ownership and get userId
+    const sessionResult = await getSession(c.env.DB, sessionId, logger);
+    if (sessionResult.success) {
+      const userId = sessionResult.data.userId;
+      await deleteSession(c.env.DB, sessionId, userId, logger);
+    }
   }
 
   deleteCookie(c, "stratum_session", { path: "/" });

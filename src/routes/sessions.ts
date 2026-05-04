@@ -186,9 +186,14 @@ app.delete("/:id", async (c) => {
 
   logger.debug("Deleting specific session", { sessionId: sessionIdToDelete });
 
-  const result = await deleteSession(c.env.DB, sessionIdToDelete, logger);
+  const result = await deleteSession(c.env.DB, sessionIdToDelete, userId, logger);
 
   if (!result.success) {
+    return c.json({ error: "Failed to delete session" }, 500);
+  }
+
+  if (!result.data) {
+    // No rows deleted - session not found or doesn't belong to user
     return c.json({ error: "Session not found" }, 404);
   }
 

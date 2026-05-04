@@ -76,15 +76,30 @@ export async function getSession(
 export async function deleteSession(
   db: D1Database,
   id: string,
+  userId: string,
   logger: Logger,
-): Promise<Result<void, AppError>> {
-  logger.debug("Deleting session", { id });
+): Promise<Result<boolean, AppError>> {
+  logger.debug("Deleting session", { id, userId });
   try {
-    await db.prepare("DELETE FROM sessions WHERE id = ?").bind(id).run();
-    logger.info("Session deleted", { sessionId: id });
-    return ok(undefined);
+    const result = await db
+      .prepare("DELETE FROM sessions WHERE id = ? AND user_id = ?")
+      .bind(id, userId)
+      .run();
+
+    const deleted = (result.meta?.changes ?? 0) > 0;
+
+    if (deleted) {
+      logger.info("Session deleted", { sessionId: id, userId });
+    } else {
+      logger.warn("Session not found or not owned by user", { sessionId: id, userId });
+    }
+
+    return ok(deleted);
   } catch (error) {
-    logger.error("Failed to delete session", error instanceof Error ? error : undefined, { id });
+    logger.error("Failed to delete session", error instanceof Error ? error : undefined, {
+      id,
+      userId,
+    });
     return err(
       new AppError(`Failed to delete session '${id}'`, "STORAGE_ERROR", 500, { sessionId: id }),
     );
