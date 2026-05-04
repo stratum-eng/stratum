@@ -134,7 +134,7 @@ async function processRepoImport(
 
     // Create Artifacts repo
     const artifactsRepoName = getArtifactsRepoName(namespace, slug);
-    let repo;
+    let repo: ArtifactsCreateResult;
 
     try {
       repo = await env.ARTIFACTS.create(artifactsRepoName);
@@ -292,7 +292,7 @@ app.post("/", async (c) => {
 
   // Wait for all imports to complete
   Promise.all(importPromises)
-    .then((results) => {
+    .then(() => {
       const finalJob = bulkImportJobs.get(jobId);
       if (finalJob) {
         finalJob.completedAt = new Date().toISOString();

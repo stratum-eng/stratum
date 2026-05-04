@@ -29,7 +29,7 @@ export class BitbucketProvider implements GitProviderClient {
     const httpsMatch = url.match(
       /^https?:\/\/bitbucket\.org\/([^/]+)\/([^/\s]+?)(?:\.git)?(?:\/src\/([^/\s]+))?\/?$/i,
     );
-    if (httpsMatch && httpsMatch[1] && httpsMatch[2]) {
+    if (httpsMatch?.[1] && httpsMatch[2]) {
       return {
         owner: httpsMatch[1],
         repo: httpsMatch[2].replace(/\.git$/i, ""),
@@ -40,7 +40,7 @@ export class BitbucketProvider implements GitProviderClient {
 
     // SSH URL
     const sshMatch = url.match(/^git@bitbucket\.org:([^/]+)\/([^/\s]+?)(?:\.git)?$/i);
-    if (sshMatch && sshMatch[1] && sshMatch[2]) {
+    if (sshMatch?.[1] && sshMatch[2]) {
       return {
         owner: sshMatch[1],
         repo: sshMatch[2].replace(/\.git$/i, ""),

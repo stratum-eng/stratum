@@ -30,7 +30,7 @@ export class GitLabProvider implements GitProviderClient {
     const httpsMatch = url.match(
       /^https?:\/\/gitlab\.com\/(.+?)\/([^/\s]+?)(?:\.git)?(?:\/-\/tree\/([^/\s]+))?\/?$/i,
     );
-    if (httpsMatch && httpsMatch[1] && httpsMatch[2]) {
+    if (httpsMatch?.[1] && httpsMatch[2]) {
       const path = httpsMatch[1];
       const repo = httpsMatch[2].replace(/\.git$/i, "");
       const branch = httpsMatch[3];
@@ -44,7 +44,7 @@ export class GitLabProvider implements GitProviderClient {
 
     // SSH URL
     const sshMatch = url.match(/^git@gitlab\.com:(.+)\/([^/\s]+?)(?:\.git)?$/i);
-    if (sshMatch && sshMatch[1] && sshMatch[2]) {
+    if (sshMatch?.[1] && sshMatch[2]) {
       const path = sshMatch[1];
       const repo = sshMatch[2].replace(/\.git$/i, "");
       return {
