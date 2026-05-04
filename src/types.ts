@@ -108,6 +108,8 @@ export interface Env {
   OAUTH_REDIRECT_URI?: string;
   EMAIL?: EmailBinding;
   EMAIL_FROM_ADDRESS?: string;
+  ADMIN_EMAIL?: string;
+  ADMIN_API_KEY?: string;
   ANALYTICS?: AnalyticsEngineDataset;
   SANDBOX?: SandboxBinding;
   AI?: AiBinding;
@@ -130,16 +132,21 @@ export interface ImportJobMessage {
 }
 
 export interface SyncJobMessage {
-  type: "github.sync";
+  type: "github.sync" | "git.sync";
   importId: string;
   projectId: string;
   namespace: string;
   slug: string;
-  githubUrl: string;
+  githubUrl: string; // Keep for backward compatibility
+  sourceUrl?: string; // Generic URL for any provider
+  provider?: GitProvider;
   branch: string;
   depth: number;
   timestamp: string;
 }
+
+// Git provider types
+export type GitProvider = "github" | "gitlab" | "bitbucket";
 
 export interface ProjectEntry {
   id: string; // UUID - stable agent reference
@@ -151,12 +158,25 @@ export interface ProjectEntry {
   remote: string;
   token: string;
   createdAt: string;
+  // Git connection info (legacy - kept for backward compatibility)
   githubUrl?: string;
   githubOwner?: string;
   githubRepo?: string;
   githubDefaultBranch?: string;
   githubConnectedAt?: string;
   githubConnectionStatus?: "connected" | "disconnected";
+  // New generic git provider fields
+  sourceUrl?: string;
+  sourceProvider?: GitProvider;
+  sourceOwner?: string;
+  sourceRepo?: string;
+  sourceDefaultBranch?: string;
+  // Sync tracking
+  lastSyncedAt?: string;
+  lastSyncedCommit?: string;
+  lastSyncStatus?: "success" | "failed" | "in_progress";
+  lastSyncError?: string;
+  autoSyncEnabled?: boolean;
   visibility?: "private" | "public";
 }
 
@@ -194,7 +214,9 @@ export type ImportStatus =
   | "completed"
   | "failed"
   | "cancelled"
-  | "cancelling";
+  | "cancelling"
+  | "syncing"
+  | "checking"; // For checking if updates are available
 
 export interface ImportProgress {
   id: string;
@@ -294,4 +316,53 @@ export interface Change {
   githubPrState?: string;
   promotedAt?: string;
   promotedBy?: string;
+}
+
+// Sync check result for detecting new commits
+export interface SyncCheckResult {
+  hasUpdates: boolean;
+  currentCommit?: string;
+  latestCommit?: string;
+  commitsBehind?: number;
+  lastSyncAt?: string;
+  error?: string;
+}
+
+// Bulk import job tracking
+export interface BulkImportJob {
+  id: string;
+  namespace: string;
+  ownerId: string;
+  status: "queued" | "processing" | "completed" | "failed" | "partial";
+  totalRepos: number;
+  processedRepos: number;
+  successfulRepos: number;
+  failedRepos: number;
+  createdAt: string;
+  completedAt?: string;
+  errors: Array<{
+    repo: string;
+    error: string;
+  }>;
+}
+
+// Import template definition
+export interface ImportTemplate {
+  id: string;
+  name: string;
+  description: string;
+  language: string;
+  framework?: string;
+  files: Record<string, string>;
+  postSetupHooks?: string[];
+}
+
+// Provider-specific import parameters
+export interface ProviderImportParams {
+  provider: GitProvider;
+  owner: string;
+  repo: string;
+  url: string;
+  branch?: string;
+  token?: string;
 }
