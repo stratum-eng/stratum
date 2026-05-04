@@ -95,7 +95,7 @@ To run smoke tests, start the dev server or set STAGING_URL/PRODUCTION_URL:
   });
 });
 
-describe("Queue Health Smoke Tests", () => {
+describe.skipIf(!targetReachable)("Queue Health Smoke Tests", () => {
   describe(`Testing against: ${TARGET_URL}`, () => {
     it("should not show queue processing errors", async () => {
       // Health endpoint should indicate service is ok even if queues are busy
@@ -108,7 +108,7 @@ describe("Queue Health Smoke Tests", () => {
   });
 });
 
-describe("Rate Limiting Smoke Tests", () => {
+describe.skipIf(!targetReachable)("Rate Limiting Smoke Tests", () => {
   describe(`Testing against: ${TARGET_URL}`, () => {
     it("should handle rapid requests gracefully", async () => {
       // Make 10 rapid requests

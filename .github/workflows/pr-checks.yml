@@ -259,6 +259,7 @@ jobs:
     if: always()
     permissions:
       pull-requests: write
+      checks: write
     steps:
       - name: Update PR status
         uses: actions/github-script@v7
