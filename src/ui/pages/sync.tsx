@@ -265,18 +265,29 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
                   
                   if (response.ok) {
                     const data = await response.json();
-                    
+
                     // Show success message
                     if (data.synced) {
                       button.textContent = '✓ ' + data.message;
                       button.classList.remove('btn-primary', 'btn-secondary');
                       button.classList.add('btn-success');
+
+                      // Reload page after 2 seconds to show updated status
+                      setTimeout(() => window.location.reload(), 2000);
+                      // Fallback: re-enable button if reload is blocked
+                      setTimeout(() => {
+                        button.disabled = false;
+                      }, 2500);
                     } else {
                       button.textContent = data.message || 'Up to date';
+
+                      // Reload page after 2 seconds to show updated status
+                      setTimeout(() => window.location.reload(), 2000);
+                      // Fallback: re-enable button if reload is blocked
+                      setTimeout(() => {
+                        button.disabled = false;
+                      }, 2500);
                     }
-                    
-                    // Reload page after 2 seconds to show updated status
-                    setTimeout(() => window.location.reload(), 2000);
                   } else {
                     const error = await response.json();
                     button.textContent = 'Error: ' + (error.message || 'Sync failed');
