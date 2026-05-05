@@ -17,6 +17,7 @@ import { orgsRouter } from "./routes/orgs";
 import { projectsRouter } from "./routes/projects";
 import { sessionRouter } from "./routes/sessions";
 import { syncAllProjects, syncRouter } from "./routes/sync";
+import { syncManagementRouter } from "./routes/sync-management";
 import { uiRouter } from "./routes/ui";
 import { usersRouter } from "./routes/users";
 import { workspacesRouter } from "./routes/workspaces";
@@ -132,6 +133,7 @@ app.route("/api/agents", agentsRouter);
 app.route("/api", changesRouter);
 app.route("/api/orgs", orgsRouter);
 app.route("/api", syncRouter);
+app.route("/api", syncManagementRouter);
 app.route("/api/bulk-import", bulkImportRouter);
 
 app.notFound((c) => c.json({ error: "Not found" }, 404));
