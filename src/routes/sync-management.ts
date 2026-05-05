@@ -12,8 +12,12 @@ const app = new Hono<{ Bindings: Env }>();
 app.use("*", authMiddleware);
 
 /**
- * Verify that the user has access to the project
- * Returns true if user is authorized, false otherwise
+ * Determines whether the caller is authorized to access the project identified by `namespace/slug`.
+ *
+ * Currently authorization succeeds only when the project exists and its `namespace` equals the requested `namespace`; storage failures or missing projects result in `false`.
+ *
+ * @param _userId - The authenticated user's ID (currently unused; reserved for future permission checks)
+ * @returns `true` if access is allowed, `false` otherwise.
  */
 async function verifyProjectAccess(
   env: Env,

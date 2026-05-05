@@ -271,7 +271,15 @@ const ConflictFileViewer: FC<ConflictFileViewerProps> = ({ file, onResolve, disa
   );
 };
 
-// Simple useState implementation for JSX components
+/**
+ * Minimal state holder intended for server-rendered JSX components.
+ *
+ * Provides a stored value initialized from `initialValue` and a setter that replaces that stored value.
+ * The setter updates the internal value but does not trigger reactive updates, re-renders, or client-side hydration.
+ *
+ * @param initialValue - Initial state value to store
+ * @returns A tuple of `[value, setValue]` where `value` is the stored state and `setValue` replaces it
+ */
 function useState<T>(initialValue: T): [T, (value: T) => void] {
   let value = initialValue;
   const setValue = (newValue: T) => {

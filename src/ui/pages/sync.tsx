@@ -2,8 +2,10 @@ import type { FC } from "hono/jsx";
 import { Layout } from "../layout";
 
 /**
- * Validates that a URL uses a safe scheme (http or https)
- * Returns the URL if valid, null otherwise
+ * Return the input string if it is a valid `http:` or `https:` URL, otherwise `null`.
+ *
+ * @param url - The URL string to validate; may be `undefined`
+ * @returns `url` when its scheme is exactly `http:` or `https:`, `null` otherwise
  */
 function validateSafeUrl(url: string | undefined): string | null {
   if (!url) return null;
