@@ -21,6 +21,8 @@ interface ChangeRow {
   github_pr_number: number | null;
   github_pr_url: string | null;
   github_pr_state: string | null;
+  github_head_sha: string | null;
+  github_comment_id: number | null;
   promoted_at: string | null;
   promoted_by: string | null;
 }
@@ -44,6 +46,8 @@ function rowToChange(row: ChangeRow): Change {
   if (row.github_pr_number !== null) change.githubPrNumber = row.github_pr_number;
   if (row.github_pr_url !== null) change.githubPrUrl = row.github_pr_url;
   if (row.github_pr_state !== null) change.githubPrState = row.github_pr_state;
+  if (row.github_head_sha !== null) change.githubHeadSha = row.github_head_sha;
+  if (row.github_comment_id !== null) change.githubCommentId = row.github_comment_id;
   if (row.promoted_at !== null) change.promotedAt = row.promoted_at;
   if (row.promoted_by !== null) change.promotedBy = row.promoted_by;
   return change;

@@ -152,7 +152,7 @@ export async function upsertChangeFromGitHubPR(
   db: D1Database,
   projectId: string,
   workspaceId: string,
-  userId: string,
+  _userId: string,
   owner: string,
   repo: string,
   prData: {
@@ -172,7 +172,7 @@ export async function upsertChangeFromGitHubPR(
   try {
     // Check if Change already exists for this PR
     const existing = await db
-      .prepare("SELECT id FROM changes WHERE project_id = ? AND github_pr_number = ?")
+      .prepare("SELECT id FROM changes WHERE project = ? AND github_pr_number = ?")
       .bind(projectId, prData.number)
       .first<{ id: string }>();
 
@@ -181,24 +181,13 @@ export async function upsertChangeFromGitHubPR(
       await db
         .prepare(
           `UPDATE changes
-           SET title = ?,
-               description = ?,
-               github_pr_state = ?,
+           SET github_pr_state = ?,
                github_pr_url = ?,
                github_branch = ?,
-               github_head_sha = ?,
-               updated_at = CURRENT_TIMESTAMP
+               github_head_sha = ?
            WHERE id = ?`,
         )
-        .bind(
-          prData.title,
-          prData.body,
-          prData.state,
-          prData.html_url,
-          prData.head_branch,
-          prData.head_sha,
-          existing.id,
-        )
+        .bind(prData.state, prData.html_url, prData.head_branch, prData.head_sha, existing.id)
         .run();
 
       logger.info("Updated Change from GitHub PR", {
@@ -213,18 +202,14 @@ export async function upsertChangeFromGitHubPR(
     await db
       .prepare(
         `INSERT INTO changes (
-          id, project_id, workspace_id, title, description,
-          author_type, author_id, status,
+          id, project, workspace, status,
           github_owner, github_repo, github_branch, github_pr_number, github_pr_url, github_pr_state, github_head_sha
-        ) VALUES (?, ?, ?, ?, ?, 'human', ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         id,
         projectId,
         workspaceId,
-        prData.title,
-        prData.body,
-        userId,
         owner,
         repo,
         prData.head_branch,
@@ -263,6 +248,7 @@ export async function storeChangeGitHubComment(
       .bind(commentId, changeId)
       .run();
 
+    logger.info("GitHub comment ID stored", { changeId, commentId });
     return ok(undefined);
   } catch (error) {
     logger.error("Failed to store GitHub comment ID", error instanceof Error ? error : undefined, {
@@ -285,15 +271,15 @@ export async function getChangeByGitHubPR(
 
   try {
     const row = await db
-      .prepare("SELECT id, workspace_id FROM changes WHERE project_id = ? AND github_pr_number = ?")
+      .prepare("SELECT id, workspace FROM changes WHERE project = ? AND github_pr_number = ?")
       .bind(projectId, prNumber)
-      .first<{ id: string; workspace_id: string }>();
+      .first<{ id: string; workspace: string }>();
 
     if (!row) {
       return err(new NotFoundError("Change", `PR #${prNumber}`));
     }
 
-    return ok({ id: row.id, workspaceId: row.workspace_id });
+    return ok({ id: row.id, workspaceId: row.workspace });
   } catch (error) {
     logger.error("Failed to get Change by PR", error instanceof Error ? error : undefined, {
       projectId,
