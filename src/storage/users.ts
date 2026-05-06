@@ -4,6 +4,7 @@ import { AppError, NotFoundError } from "../utils/errors";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+import { validateUsername } from "../utils/username-validation";
 
 export interface CreateUserResult {
   user: User;
@@ -56,10 +57,42 @@ export async function createUser(
     const plaintext = await generateApiKey("stratum_user");
     const tokenHash = await hashToken(plaintext);
 
-    // Use preferred username if provided, otherwise generate from email
-    const username = preferredUsername
-      ? preferredUsername.toLowerCase().replace(/[^a-z0-9]/g, "")
-      : (email.split("@")[0] ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    // Validate and use preferred username if provided, otherwise generate from email
+    let username: string;
+    if (preferredUsername) {
+      const validation = validateUsername(preferredUsername, logger);
+      if (!validation.success) {
+        return err(
+          new AppError(
+            validation.error[0]?.message ?? "Invalid username",
+            "VALIDATION_ERROR",
+            400,
+            { preferredUsername },
+          ),
+        );
+      }
+      username = validation.data;
+    } else {
+      // Generate from email and validate
+      const candidate = (email.split("@")[0] ?? "")
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, "")
+        .replace(/-+/g, "-")
+        .replace(/^[-0-9]+/, "")
+        .replace(/-+$/, "");
+      const validation = validateUsername(candidate, logger);
+      if (!validation.success) {
+        return err(
+          new AppError(
+            "Could not generate valid username from email. Please provide a preferred username.",
+            "VALIDATION_ERROR",
+            400,
+            { email },
+          ),
+        );
+      }
+      username = validation.data;
+    }
 
     await db
       .prepare("INSERT INTO users (id, email, username, token_hash) VALUES (?, ?, ?, ?)")

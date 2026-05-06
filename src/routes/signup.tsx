@@ -410,7 +410,7 @@ app.get("/", (c) => {
                       autocomplete="username"
                       minLength={3}
                       maxLength={39}
-                      pattern="^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,38}$"
+                      pattern="^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){2,38}$"
                       title="3-39 characters, lowercase letters, numbers, and hyphens only. Cannot start or end with a hyphen."
                     />
                     <div class="input-hint" id="usernameHint">
@@ -481,6 +481,8 @@ const SIGNUP_SCRIPT = `
 	let debounceTimer = null;
 	let lastCheckedUsername = null;
 	let isUsernameAvailable = false;
+	let debounceTimer = null;
+	let activeRequestId = 0;
 
 	// Username validation regex: 3-39 chars, lowercase alphanumeric + hyphens, no start/end hyphen, no consecutive hyphens
 	const USERNAME_REGEX = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -547,10 +549,14 @@ const SIGNUP_SCRIPT = `
 		}
 
 		debounceTimer = setTimeout(async () => {
+			const requestId = ++activeRequestId;
 			try {
 				// Check username availability via API
 				const response = await fetch('/api/users/check-username?username=' + encodeURIComponent(username));
 				const data = await response.json();
+
+				// Ignore stale responses
+				if (requestId !== activeRequestId || usernameInput.value.trim().toLowerCase() !== username) return;
 
 				if (data.available) {
 					isUsernameAvailable = true;
@@ -562,6 +568,8 @@ const SIGNUP_SCRIPT = `
 					setUsernameInputState('error');
 				}
 			} catch (error) {
+				// Ignore stale responses
+				if (requestId !== activeRequestId) return;
 				// If API fails, allow submission anyway (server will validate)
 				isUsernameAvailable = true;
 				updateUsernameStatus('available', 'Looks good!');
@@ -579,9 +587,9 @@ const SIGNUP_SCRIPT = `
 		// Enable submit button only if:
 		// 1. Email is provided and valid
 		// 2. Username passes format validation
-		// 3. Username is available (or we haven't checked yet but format is valid)
+		// 3. Username is available
 		const isEmailValid = email.length > 0 && email.includes('@');
-		const canSubmit = isEmailValid && formatValidation.valid;
+		const canSubmit = isEmailValid && formatValidation.valid && isUsernameAvailable;
 		
 		submitBtn.disabled = !canSubmit;
 	}

@@ -3,6 +3,7 @@ import { createUser, getUser, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 import { badRequest, created, ok } from "../utils/response";
+import { validateUsername } from "../utils/username-validation";
 import { isValidEmail } from "../utils/validation";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -77,15 +78,11 @@ app.get("/check-username", async (c) => {
 
   const normalizedUsername = username.toLowerCase().trim();
 
-  // Validate username format
-  const USERNAME_REGEX = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
-  if (
-    normalizedUsername.length < 3 ||
-    normalizedUsername.length > 39 ||
-    !USERNAME_REGEX.test(normalizedUsername) ||
-    normalizedUsername.includes("--")
-  ) {
-    return c.json({ available: false, message: "Invalid username format" }, 400);
+  // Validate username using shared validator (includes reserved name check)
+  const validation = validateUsername(normalizedUsername, logger);
+  if (!validation.success) {
+    const message = validation.error[0]?.message ?? "Invalid username format";
+    return c.json({ available: false, message }, 400);
   }
 
   // Check if username exists

@@ -117,7 +117,7 @@ describe("Magic Link Authentication", () => {
     it("should reject when email service not configured", async () => {
       const envWithoutEmail = { ...env, EMAIL: undefined };
       const formData = new FormData();
-      formData.append("email", "test@example.com");
+      formData.append("email", "johndoe@example.com");
 
       const res = await emailAuthRouter.fetch(
         request("/send", {
@@ -134,7 +134,7 @@ describe("Magic Link Authentication", () => {
     it("should reject when EMAIL_FROM_ADDRESS not set", async () => {
       const envWithoutFrom = { ...env, EMAIL_FROM_ADDRESS: undefined };
       const formData = new FormData();
-      formData.append("email", "test@example.com");
+      formData.append("email", "johndoe@example.com");
 
       const res = await emailAuthRouter.fetch(
         request("/send", {
@@ -150,7 +150,7 @@ describe("Magic Link Authentication", () => {
 
     it("should send magic link for valid email", async () => {
       const formData = new FormData();
-      formData.append("email", "test@example.com");
+      formData.append("email", "johndoe@example.com");
 
       const res = await emailAuthRouter.fetch(
         request("/send", {
@@ -164,7 +164,7 @@ describe("Magic Link Authentication", () => {
       expect(res.headers.get("location")).toContain("success=email_sent");
       expect(env.EMAIL?.send).toHaveBeenCalledWith(
         expect.objectContaining({
-          to: "test@example.com",
+          to: "johndoe@example.com",
           subject: "Sign in to Stratum",
         }),
       );
@@ -184,7 +184,7 @@ describe("Magic Link Authentication", () => {
       // Make 5 requests (the limit)
       for (let i = 0; i < 5; i++) {
         const formData = new FormData();
-        formData.append("email", "test@example.com");
+        formData.append("email", "johndoe@example.com");
         await emailAuthRouter.fetch(
           request("/send", {
             method: "POST",
@@ -196,7 +196,7 @@ describe("Magic Link Authentication", () => {
 
       // 6th request should be rate limited
       const formData = new FormData();
-      formData.append("email", "test@example.com");
+      formData.append("email", "johndoe@example.com");
       const res = await emailAuthRouter.fetch(
         request("/send", {
           method: "POST",

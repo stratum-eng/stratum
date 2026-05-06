@@ -533,9 +533,22 @@ app.post("/send", async (c) => {
     // Check if user exists to determine intent
     const existingUser = await getUserByEmail(c.env.DB, email, logger);
     const intent = existingUser.success ? "login" : "signup";
-    const username = existingUser.success
-      ? undefined
-      : (email.split("@")[0] ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    let username: string | undefined;
+    if (!existingUser.success) {
+      // Generate and validate username from email
+      const candidate = (email.split("@")[0] ?? "")
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, "")
+        .replace(/-+/g, "-")
+        .replace(/^[-0-9]+/, "")
+        .replace(/-+$/, "");
+      const validation = validateUsername(candidate, logger);
+      if (!validation.success) {
+        // Fall through to explicit signup so the user can choose a valid name
+        return emailAuthRedirect(c, "error", "invalid_username", "/auth/signup");
+      }
+      username = validation.data;
+    }
 
     // Generate secure magic link token
     const token = generateSecureToken();
@@ -705,8 +718,18 @@ async function createSessionAndRedirect(
 
   // Validate redirect to prevent open redirects - only allow same-origin relative paths
   const rawRedirect = getCookie(c, "redirect_after_login") ?? "";
-  const redirectTo =
-    rawRedirect.startsWith("/") && !rawRedirect.startsWith("//") ? rawRedirect : defaultRedirect;
+  let redirectTo = defaultRedirect;
+  try {
+    const candidate = new URL(rawRedirect, new URL(c.req.url).origin);
+    if (
+      candidate.origin === new URL(c.req.url).origin &&
+      /^\/[^/\\]/.test(rawRedirect) // disallow //, /\, etc.
+    ) {
+      redirectTo = candidate.pathname + candidate.search + candidate.hash;
+    }
+  } catch {
+    // ignore, use defaultRedirect
+  }
   deleteCookie(c, "redirect_after_login", { path: "/" });
 
   return c.redirect(redirectTo);
