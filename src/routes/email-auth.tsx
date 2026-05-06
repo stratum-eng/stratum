@@ -1,10 +1,13 @@
+import type { Context } from "hono";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { getMagicLinkEmail } from "../email/templates";
 import { createSession } from "../storage/sessions";
-import { createUser, getUserByEmail } from "../storage/users";
+import { createUser, getUserByEmail, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
+import { validateUsername } from "../utils/username-validation";
+import { validateEmail } from "../utils/validation";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -28,6 +31,11 @@ function getRateLimitKey(email: string): string {
 
 const ERROR_MESSAGES: Record<string, string> = {
   invalid_email: "Please enter a valid email address.",
+  invalid_username:
+    "Please enter a valid username (2-39 characters, lowercase alphanumeric with hyphens).",
+  username_taken: "This username is already taken. Please choose another.",
+  email_exists: "An account with this email already exists. Please sign in instead.",
+  email_not_found: "No account found with this email. Please sign up first.",
   auth_config_missing: "Email authentication is not configured. Please contact the administrator.",
   auth_config_incomplete:
     "Email authentication is not fully configured. Please contact the administrator.",
@@ -35,6 +43,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   invalid_link: "Invalid or expired link.",
   link_expired: "This link has expired or already been used.",
   verify_failed: "Failed to sign in. Please try again.",
+  signup_failed: "Failed to create account. Please try again.",
   rate_limited: "Too many requests. Please try again in an hour.",
 };
 
@@ -46,9 +55,10 @@ function emailAuthRedirect(
   c: { redirect(path: string): Response },
   kind: "error" | "success",
   code: string,
+  redirectPath = "/auth/email",
 ): Response {
   const params = new URLSearchParams({ [kind]: code });
-  return c.redirect(`/auth/email?${params.toString()}`);
+  return c.redirect(`${redirectPath}?${params.toString()}`);
 }
 
 // Helper function to hash email for logging (privacy)
@@ -63,7 +73,7 @@ function hashEmail(email: string): string {
   return Math.abs(hash).toString(16).slice(0, 8);
 }
 
-// GET /auth/email - Show login form
+// GET /auth/email - Show auth choice page (Sign Up or Sign In)
 app.get("/", (c) => {
   const errorCode = c.req.query("error");
   const successCode = c.req.query("success");
@@ -99,28 +109,26 @@ app.get("/", (c) => {
             margin-bottom: 2rem;
             font-size: 0.9rem;
           }
-          .form-group {
-            margin-bottom: 1.5rem;
+          .auth-sections {
+            display: grid;
+            gap: 1.5rem;
           }
-          .form-label {
-            display: block;
-            margin-bottom: 0.5rem;
-            color: var(--text-secondary);
-            font-size: 0.9rem;
-          }
-          .form-input {
-            width: 100%;
-            padding: 0.75rem;
+          .auth-section {
+            padding: 1.5rem;
             background: var(--bg-primary);
             border: 1px solid var(--border);
-            border-radius: 4px;
-            color: var(--text-primary);
-            font-size: 1rem;
-            box-sizing: border-box;
+            border-radius: 6px;
+            text-align: center;
           }
-          .form-input:focus {
-            outline: none;
-            border-color: var(--accent);
+          .auth-section-title {
+            font-size: 1.1rem;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+          }
+          .auth-section-desc {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
           }
           .btn {
             width: 100%;
@@ -132,9 +140,20 @@ app.get("/", (c) => {
             font-size: 1rem;
             cursor: pointer;
             font-weight: 500;
+            text-decoration: none;
+            display: inline-block;
+            box-sizing: border-box;
           }
           .btn:hover {
             opacity: 0.9;
+          }
+          .btn-secondary {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+          }
+          .btn-secondary:hover {
+            background: var(--bg-secondary);
           }
           .alert {
             padding: 1rem;
@@ -170,13 +189,6 @@ app.get("/", (c) => {
           }
           .auth-divider::before { left: 0; }
           .auth-divider::after { right: 0; }
-          .auth-link {
-            color: var(--accent);
-            text-decoration: none;
-          }
-          .auth-link:hover {
-            text-decoration: underline;
-          }
           .auth-note {
             margin-top: 1.5rem;
             padding-top: 1.5rem;
@@ -195,52 +207,29 @@ app.get("/", (c) => {
         </nav>
         <main class="main">
           <div class="auth-container">
-            <h1 class="auth-title">Sign in to Stratum</h1>
-            <p class="auth-subtitle">Enter your email to receive a magic link</p>
+            <h1 class="auth-title">Welcome to Stratum</h1>
+            <p class="auth-subtitle">Choose an option to continue</p>
 
             {error && <div class="alert alert-error">{error}</div>}
-
             {success && <div class="alert alert-success">{success}</div>}
 
-            <form method="post" action="/auth/email/send">
-              <div class="form-group">
-                <label class="form-label" for="email">
-                  Email address
-                </label>
-                <input
-                  class="form-input"
-                  type="email"
-                  id="email"
-                  name="email"
-                  placeholder="you@example.com"
-                  required
-                />
+            <div class="auth-sections">
+              <div class="auth-section">
+                <h2 class="auth-section-title">Create Account</h2>
+                <p class="auth-section-desc">New here? Sign up to get started with Stratum.</p>
+                <a href="/auth/signup" class="btn">
+                  Sign Up
+                </a>
               </div>
-              <div class="form-group" style={{ marginTop: "1rem" }}>
-                <label
-                  class="form-label"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "0.5rem",
-                    fontWeight: "normal",
-                    cursor: "pointer",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    name="rememberMe"
-                    value="true"
-                    checked
-                    style={{ width: "auto", cursor: "pointer" }}
-                  />
-                  Keep me signed in for 30 days
-                </label>
+
+              <div class="auth-section">
+                <h2 class="auth-section-title">Sign In</h2>
+                <p class="auth-section-desc">Already have an account? Sign in to continue.</p>
+                <a href="/auth/login" class="btn btn-secondary">
+                  Sign In
+                </a>
               </div>
-              <button type="submit" class="btn" style={{ marginTop: "1rem" }}>
-                Send Magic Link
-              </button>
-            </form>
+            </div>
 
             <div class="auth-divider">or</div>
 
@@ -258,7 +247,7 @@ app.get("/", (c) => {
             </a>
 
             <div class="auth-note">
-              <strong>No password required.</strong> We'll send you a secure link to sign in
+              <strong>No password required.</strong> We'll send you a secure magic link to sign in
               instantly. The link expires in 15 minutes.
             </div>
           </div>
@@ -268,7 +257,226 @@ app.get("/", (c) => {
   );
 });
 
-// POST /auth/email/send - Send magic link
+// POST /auth/email/send-signup - Send magic link for signup
+app.post("/send-signup", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const body = await c.req.parseBody();
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const username = typeof body.username === "string" ? body.username.trim().toLowerCase() : "";
+  const rememberMe = body.rememberMe === "true";
+
+  // Validate email format
+  const emailValidation = validateEmail(email, logger);
+  if (!emailValidation.success) {
+    logger.warn("Invalid email provided", { emailPrefix: email.slice(0, 5) });
+    return emailAuthRedirect(c, "error", "invalid_email", "/auth/signup");
+  }
+
+  // Validate username format
+  const usernameValidation = validateUsername(username, logger);
+  if (!usernameValidation.success) {
+    logger.warn("Invalid username provided", { username });
+    return emailAuthRedirect(c, "error", "invalid_username", "/auth/signup");
+  }
+
+  const emailHash = hashEmail(email);
+  logger.info("Processing signup request", { emailHash, username });
+
+  // Check if email sending is configured
+  if (!c.env.EMAIL) {
+    logger.error("Email sending not configured");
+    return emailAuthRedirect(c, "error", "auth_config_missing", "/auth/signup");
+  }
+
+  const fromAddress = c.env.EMAIL_FROM_ADDRESS;
+  if (!fromAddress) {
+    logger.error("EMAIL_FROM_ADDRESS secret not set");
+    return emailAuthRedirect(c, "error", "auth_config_incomplete", "/auth/signup");
+  }
+
+  // Check if email already exists
+  const existingUserByEmail = await getUserByEmail(c.env.DB, email, logger);
+  if (existingUserByEmail.success) {
+    logger.warn("Email already exists", { emailHash });
+    return emailAuthRedirect(c, "error", "email_exists", "/auth/signup");
+  }
+
+  // Check if username is available
+  const existingUserByUsername = await getUserByUsername(c.env.DB, username, logger);
+  if (existingUserByUsername.success) {
+    logger.warn("Username already taken", { username });
+    return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
+  }
+
+  // Check rate limit (fail open if KV fails)
+  const rateLimitKey = getRateLimitKey(email);
+  let currentCount = 0;
+  try {
+    currentCount = Number.parseInt((await c.env.STATE.get(rateLimitKey)) ?? "0");
+  } catch (err) {
+    logger.warn("Failed to check rate limit, allowing request", { emailHash, error: err });
+  }
+
+  if (currentCount >= MAGIC_LINK_RATE_LIMIT) {
+    logger.warn("Magic link rate limit exceeded", { emailHash });
+    return emailAuthRedirect(c, "error", "rate_limited", "/auth/signup");
+  }
+
+  try {
+    // Increment rate limit counter
+    await c.env.STATE.put(rateLimitKey, String(currentCount + 1), {
+      expirationTtl: MAGIC_LINK_RATE_WINDOW,
+    });
+
+    // Generate secure magic link token
+    const token = generateSecureToken();
+    // Store token in KV with signup intent
+    await c.env.STATE.put(
+      `magic_link:${token}`,
+      JSON.stringify({
+        email,
+        username,
+        intent: "signup",
+        createdAt: Date.now(),
+        rememberMe,
+      }),
+      { expirationTtl: 15 * 60 }, // 15 minutes TTL
+    );
+
+    // Build magic link URL
+    const url = new URL(c.req.url);
+    const baseUrl = `${url.protocol}//${url.host}`;
+    const magicLink = `${baseUrl}/auth/email/verify?token=${token}`;
+
+    // Send email using template
+    const emailContent = getMagicLinkEmail({ magicLink, email });
+    await c.env.EMAIL.send({
+      to: email,
+      from: { email: fromAddress, name: "Stratum" },
+      subject: emailContent.subject,
+      text: emailContent.text,
+      html: emailContent.html,
+    });
+
+    logger.info("Signup magic link sent", { emailHash, username });
+
+    return emailAuthRedirect(c, "success", "email_sent", "/auth/signup");
+  } catch (err) {
+    logger.error("Failed to send signup magic link", err instanceof Error ? err : undefined, {
+      emailHash,
+      username,
+    });
+    return emailAuthRedirect(c, "error", "send_failed", "/auth/signup");
+  }
+});
+
+// POST /auth/email/send-login - Send magic link for login
+app.post("/send-login", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const body = await c.req.parseBody();
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const rememberMe = body.rememberMe === "true";
+
+  // Validate email format
+  const emailValidation = validateEmail(email, logger);
+  if (!emailValidation.success) {
+    logger.warn("Invalid email provided", { emailPrefix: email.slice(0, 5) });
+    return emailAuthRedirect(c, "error", "invalid_email", "/auth/login");
+  }
+
+  const emailHash = hashEmail(email);
+  logger.info("Processing login request", { emailHash });
+
+  // Check if email sending is configured
+  if (!c.env.EMAIL) {
+    logger.error("Email sending not configured");
+    return emailAuthRedirect(c, "error", "auth_config_missing", "/auth/login");
+  }
+
+  const fromAddress = c.env.EMAIL_FROM_ADDRESS;
+  if (!fromAddress) {
+    logger.error("EMAIL_FROM_ADDRESS secret not set");
+    return emailAuthRedirect(c, "error", "auth_config_incomplete", "/auth/login");
+  }
+
+  // Check if email exists in database
+  const existingUser = await getUserByEmail(c.env.DB, email, logger);
+  if (!existingUser.success) {
+    logger.warn("Email not found for login", { emailHash });
+    return emailAuthRedirect(c, "error", "email_not_found", "/auth/login");
+  }
+
+  // Check rate limit (fail open if KV fails)
+  const rateLimitKey = getRateLimitKey(email);
+  let currentCount = 0;
+  try {
+    currentCount = Number.parseInt((await c.env.STATE.get(rateLimitKey)) ?? "0");
+  } catch (err) {
+    logger.warn("Failed to check rate limit, allowing request", { emailHash, error: err });
+  }
+
+  if (currentCount >= MAGIC_LINK_RATE_LIMIT) {
+    logger.warn("Magic link rate limit exceeded", { emailHash });
+    return emailAuthRedirect(c, "error", "rate_limited", "/auth/login");
+  }
+
+  try {
+    // Increment rate limit counter
+    await c.env.STATE.put(rateLimitKey, String(currentCount + 1), {
+      expirationTtl: MAGIC_LINK_RATE_WINDOW,
+    });
+
+    // Generate secure magic link token
+    const token = generateSecureToken();
+    // Store token in KV with login intent
+    await c.env.STATE.put(
+      `magic_link:${token}`,
+      JSON.stringify({
+        email,
+        intent: "login",
+        createdAt: Date.now(),
+        rememberMe,
+      }),
+      { expirationTtl: 15 * 60 }, // 15 minutes TTL
+    );
+
+    // Build magic link URL
+    const url = new URL(c.req.url);
+    const baseUrl = `${url.protocol}//${url.host}`;
+    const magicLink = `${baseUrl}/auth/email/verify?token=${token}`;
+
+    // Send email using template
+    const emailContent = getMagicLinkEmail({ magicLink, email });
+    await c.env.EMAIL.send({
+      to: email,
+      from: { email: fromAddress, name: "Stratum" },
+      subject: emailContent.subject,
+      text: emailContent.text,
+      html: emailContent.html,
+    });
+
+    logger.info("Login magic link sent", { emailHash });
+
+    return emailAuthRedirect(c, "success", "email_sent", "/auth/login");
+  } catch (err) {
+    logger.error("Failed to send login magic link", err instanceof Error ? err : undefined, {
+      emailHash,
+    });
+    return emailAuthRedirect(c, "error", "send_failed", "/auth/login");
+  }
+});
+
+// Legacy POST /auth/email/send - Redirect to login flow for backward compatibility
 app.post("/send", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
@@ -280,15 +488,15 @@ app.post("/send", async (c) => {
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const rememberMe = body.rememberMe === "true";
 
-  // Validate email format with regex
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!email || !emailRegex.test(email)) {
+  // Validate email format
+  const emailValidation = validateEmail(email, logger);
+  if (!emailValidation.success) {
     logger.warn("Invalid email provided", { emailPrefix: email.slice(0, 5) });
     return emailAuthRedirect(c, "error", "invalid_email");
   }
 
   const emailHash = hashEmail(email);
-  logger.info("Processing magic link request", { emailHash });
+  logger.info("Processing legacy magic link request", { emailHash });
 
   // Check if email sending is configured
   if (!c.env.EMAIL) {
@@ -322,14 +530,28 @@ app.post("/send", async (c) => {
       expirationTtl: MAGIC_LINK_RATE_WINDOW,
     });
 
-    // Generate secure magic link token (32 bytes = 64 hex chars)
+    // Check if user exists to determine intent
+    const existingUser = await getUserByEmail(c.env.DB, email, logger);
+    const intent = existingUser.success ? "login" : "signup";
+    const username = existingUser.success
+      ? undefined
+      : (email.split("@")[0] ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    // Generate secure magic link token
     const token = generateSecureToken();
-    // Store token in KV with remember me preference
-    await c.env.STATE.put(
-      `magic_link:${token}`,
-      JSON.stringify({ email, createdAt: Date.now(), rememberMe }),
-      { expirationTtl: 15 * 60 }, // 15 minutes TTL
-    );
+    // Store token in KV
+    const tokenData: Record<string, unknown> = {
+      email,
+      intent,
+      createdAt: Date.now(),
+      rememberMe,
+    };
+    if (username) {
+      tokenData.username = username;
+    }
+    await c.env.STATE.put(`magic_link:${token}`, JSON.stringify(tokenData), {
+      expirationTtl: 15 * 60, // 15 minutes TTL
+    });
 
     // Build magic link URL
     const url = new URL(c.req.url);
@@ -346,18 +568,18 @@ app.post("/send", async (c) => {
       html: emailContent.html,
     });
 
-    logger.info("Magic link sent", { emailHash });
+    logger.info("Legacy magic link sent", { emailHash, intent });
 
     return emailAuthRedirect(c, "success", "email_sent");
   } catch (err) {
-    logger.error("Failed to send magic link", err instanceof Error ? err : undefined, {
+    logger.error("Failed to send legacy magic link", err instanceof Error ? err : undefined, {
       emailHash,
     });
     return emailAuthRedirect(c, "error", "send_failed");
   }
 });
 
-// GET /auth/email/verify - Verify magic link and create session
+// GET /auth/email/verify - Verify magic link and handle signup/login
 app.get("/verify", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
@@ -374,72 +596,120 @@ app.get("/verify", async (c) => {
 
   try {
     // Retrieve token data from KV
-    const tokenData = await c.env.STATE.get(`magic_link:${token}`);
+    const tokenDataRaw = await c.env.STATE.get(`magic_link:${token}`);
 
-    if (!tokenData) {
+    if (!tokenDataRaw) {
       logger.warn("Token not found or expired", { tokenPrefix: token.slice(0, 8) });
       return emailAuthRedirect(c, "error", "link_expired");
     }
 
-    const { email, rememberMe = true } = JSON.parse(tokenData);
+    const tokenData = JSON.parse(tokenDataRaw);
+    const { email, intent, rememberMe = true } = tokenData;
     const emailHash = hashEmail(email);
 
     // Delete the token so it can't be reused
     await c.env.STATE.delete(`magic_link:${token}`);
 
-    // Get or create user
-    const userResult = await getUserByEmail(c.env.DB, email, logger);
+    if (intent === "signup") {
+      // Signup flow
+      const { username } = tokenData;
+      logger.info("Processing signup verification", { emailHash, username });
 
-    let userId: string;
-    if (!userResult.success) {
-      // Create new user
-      const createResult = await createUser(c.env.DB, email, logger);
-      if (!createResult.success) {
-        logger.error("Failed to create user", undefined, { emailHash });
-        return emailAuthRedirect(c, "error", "verify_failed");
+      // Double-check email doesn't already exist (race condition protection)
+      const existingUserByEmail = await getUserByEmail(c.env.DB, email, logger);
+      if (existingUserByEmail.success) {
+        logger.warn("Email already exists during signup verification", { emailHash });
+        // User already exists, treat as login
+        const userId = existingUserByEmail.data.id;
+        return await createSessionAndRedirect(c, userId, emailHash, rememberMe, logger);
       }
-      userId = createResult.data.user.id;
-      logger.info("Created new user", { userId, emailHash });
-    } else {
-      userId = userResult.data.id;
-      logger.info("Existing user signed in", { userId, emailHash });
+
+      // Double-check username is still available (race condition protection)
+      const existingUserByUsername = await getUserByUsername(c.env.DB, username, logger);
+      if (existingUserByUsername.success) {
+        logger.error("Username taken during signup verification", undefined, { username });
+        return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
+      }
+
+      // Create new user with selected username
+      const createResult = await createUser(c.env.DB, email, logger, username);
+      if (!createResult.success) {
+        logger.error("Failed to create user", undefined, { emailHash, username });
+        return emailAuthRedirect(c, "error", "signup_failed", "/auth/signup");
+      }
+
+      const userId = createResult.data.user.id;
+      logger.info("New user created via signup", { userId, emailHash, username });
+
+      // Create session and redirect to welcome/onboarding
+      return await createSessionAndRedirect(c, userId, emailHash, rememberMe, logger, "/welcome");
     }
 
-    // Create session with remember me preference
-    const sessionLogger = logger.child({ userId });
-    const sessionResult = await createSession(c.env.DB, userId, sessionLogger, rememberMe);
+    if (intent === "login") {
+      // Login flow
+      logger.info("Processing login verification", { emailHash });
 
-    if (!sessionResult.success) {
-      sessionLogger.error("Failed to create session");
-      return emailAuthRedirect(c, "error", "verify_failed");
+      // Verify email exists
+      const existingUser = await getUserByEmail(c.env.DB, email, logger);
+      if (!existingUser.success) {
+        logger.warn("Email not found during login verification", { emailHash });
+        return emailAuthRedirect(c, "error", "email_not_found", "/auth/login");
+      }
+
+      const userId = existingUser.data.id;
+      logger.info("User signed in via login", { userId, emailHash });
+
+      // Create session and redirect to dashboard
+      return await createSessionAndRedirect(c, userId, emailHash, rememberMe, logger, "/");
     }
 
-    const session = sessionResult.data;
-
-    // Set session cookie with appropriate expiration
-    const cookieMaxAge = rememberMe ? 2592000 : 86400; // 30 days or 1 day
-    setCookie(c, "stratum_session", session.id, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "Lax",
-      maxAge: cookieMaxAge,
-      path: "/",
-    });
-
-    sessionLogger.info("User signed in via magic link");
-
-    // Redirect to home or the page they were trying to access
-    // Validate redirect to prevent open redirects - only allow same-origin relative paths
-    const rawRedirect = getCookie(c, "redirect_after_login") ?? "";
-    const redirectTo =
-      rawRedirect.startsWith("/") && !rawRedirect.startsWith("//") ? rawRedirect : "/";
-    deleteCookie(c, "redirect_after_login", { path: "/" });
-
-    return c.redirect(redirectTo);
+    // Unknown intent
+    logger.error("Unknown intent in token", undefined, { intent });
+    return emailAuthRedirect(c, "error", "invalid_link");
   } catch (err) {
     logger.error("Failed to verify magic link", err instanceof Error ? err : undefined);
     return emailAuthRedirect(c, "error", "verify_failed");
   }
 });
+
+// Helper function to create session and redirect
+async function createSessionAndRedirect(
+  c: Context<{ Bindings: Env }>,
+  userId: string,
+  _emailHash: string,
+  rememberMe: boolean,
+  logger: ReturnType<typeof createLogger>,
+  defaultRedirect = "/",
+): Promise<Response> {
+  const sessionLogger = logger.child({ userId });
+  const sessionResult = await createSession(c.env.DB, userId, sessionLogger, rememberMe);
+
+  if (!sessionResult.success) {
+    sessionLogger.error("Failed to create session");
+    return emailAuthRedirect(c, "error", "verify_failed");
+  }
+
+  const session = sessionResult.data;
+
+  // Set session cookie with appropriate expiration
+  const cookieMaxAge = rememberMe ? 2592000 : 86400; // 30 days or 1 day
+  setCookie(c, "stratum_session", session.id, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "Lax",
+    maxAge: cookieMaxAge,
+    path: "/",
+  });
+
+  sessionLogger.info("Session created, redirecting user");
+
+  // Validate redirect to prevent open redirects - only allow same-origin relative paths
+  const rawRedirect = getCookie(c, "redirect_after_login") ?? "";
+  const redirectTo =
+    rawRedirect.startsWith("/") && !rawRedirect.startsWith("//") ? rawRedirect : defaultRedirect;
+  deleteCookie(c, "redirect_after_login", { path: "/" });
+
+  return c.redirect(redirectTo);
+}
 
 export { app as emailAuthRouter };

@@ -1,15 +1,48 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { emailAuthRouter } from "../src/routes/email-auth";
 import type { Env } from "../src/types";
+import { NotFoundError } from "../src/utils/errors";
+
+// Mock the users storage module
+vi.mock("../src/storage/users", () => ({
+  getUserByEmail: vi.fn(async () => ({
+    success: false,
+    error: new NotFoundError("User", "test"),
+  })),
+  createUser: vi.fn(),
+  getUserByUsername: vi.fn(),
+  upsertGitHubUser: vi.fn(),
+  getUserByToken: vi.fn(),
+  getUser: vi.fn(),
+  linkGitHub: vi.fn(),
+}));
+
+// Simple in-memory KV store for tests
+function makeKV(): KVNamespace {
+  const store = new Map<string, string>();
+  return {
+    get: async (key: string) => store.get(key) ?? null,
+    put: async (key: string, value: string) => {
+      store.set(key, value);
+    },
+    delete: async (key: string) => {
+      store.delete(key);
+    },
+    list: async ({ prefix }: { prefix?: string }) => ({
+      keys: [...store.keys()]
+        .filter((k) => !prefix || k.startsWith(prefix))
+        .map((name) => ({ name })),
+      list_complete: true,
+      cursor: "",
+    }),
+    getWithMetadata: async () => ({ value: null, metadata: null }),
+  } as unknown as KVNamespace;
+}
 
 function makeEnv(): Env {
   return {
     ARTIFACTS: {} as Env["ARTIFACTS"],
-    STATE: {
-      get: vi.fn(),
-      put: vi.fn(),
-      delete: vi.fn(),
-    } as unknown as KVNamespace,
+    STATE: makeKV(),
     DB: {} as D1Database,
     EMAIL: {
       send: vi.fn().mockResolvedValue({ messageId: "test-message-id" }),
@@ -30,13 +63,14 @@ describe("Magic Link Authentication", () => {
     vi.clearAllMocks();
   });
 
-  describe("GET / (login form)", () => {
-    it("should show login form", async () => {
+  describe("GET / (auth choice page)", () => {
+    it("should show auth choice page", async () => {
       const res = await emailAuthRouter.fetch(request("/"), env);
       expect(res.status).toBe(200);
       const text = await res.text();
-      expect(text).toContain("Sign in to Stratum");
-      expect(text).toContain('name="email"');
+      expect(text).toContain("Welcome to Stratum");
+      expect(text).toContain("Create Account");
+      expect(text).toContain("Sign In");
     });
 
     it("should show error message when error param provided", async () => {
@@ -184,8 +218,7 @@ describe("Magic Link Authentication", () => {
     });
 
     it("should reject invalid token", async () => {
-      (env.STATE.get as ReturnType<typeof vi.fn>).mockResolvedValue(null);
-
+      // No token stored in KV, so it will return null
       const res = await emailAuthRouter.fetch(request("/verify?token=invalid-token"), env);
 
       expect(res.status).toBe(302);
@@ -193,13 +226,13 @@ describe("Magic Link Authentication", () => {
     });
 
     it("should process valid token and delete it", async () => {
-      // Mock KV token data (valid token)
+      // Store valid token in KV
       const tokenData = JSON.stringify({
         email: "test@example.com",
+        intent: "login",
         createdAt: Date.now(),
       });
-      (env.STATE.get as ReturnType<typeof vi.fn>).mockResolvedValue(tokenData);
-      (env.STATE.delete as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+      await env.STATE.put("magic_link:valid-token-123", tokenData);
 
       const res = await emailAuthRouter.fetch(request("/verify?token=valid-token-123"), env);
 
@@ -210,8 +243,9 @@ describe("Magic Link Authentication", () => {
       const location = res.headers.get("location");
       expect(location).toContain("error=");
 
-      // Token should be deleted after use (attempted)
-      expect(env.STATE.delete).toHaveBeenCalledWith("magic_link:valid-token-123");
+      // Token should be deleted after use
+      const storedToken = await env.STATE.get("magic_link:valid-token-123");
+      expect(storedToken).toBeNull();
     });
   });
 });

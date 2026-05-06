@@ -48,15 +48,18 @@ export async function createUser(
   db: D1Database,
   email: string,
   logger: Logger,
+  preferredUsername?: string,
 ): Promise<Result<CreateUserResult, AppError>> {
-  logger.debug("Creating user", { emailHash: hashEmail(email) });
+  logger.debug("Creating user", { emailHash: hashEmail(email), preferredUsername });
   try {
     const id = newId("usr");
     const plaintext = await generateApiKey("stratum_user");
     const tokenHash = await hashToken(plaintext);
 
-    // Generate username from email (part before @, sanitized)
-    const username = (email.split("@")[0] ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    // Use preferred username if provided, otherwise generate from email
+    const username = preferredUsername
+      ? preferredUsername.toLowerCase().replace(/[^a-z0-9]/g, "")
+      : (email.split("@")[0] ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
     await db
       .prepare("INSERT INTO users (id, email, username, token_hash) VALUES (?, ?, ?, ?)")
@@ -145,6 +148,24 @@ export async function getUserByEmail(
 
   if (!row) {
     return err(new NotFoundError("User", email));
+  }
+
+  return ok(rowToUser(row));
+}
+
+export async function getUserByUsername(
+  db: D1Database,
+  username: string,
+  logger: Logger,
+): Promise<Result<User, NotFoundError>> {
+  logger.debug("Fetching user by username", { username });
+  const row = await db
+    .prepare("SELECT * FROM users WHERE username = ?")
+    .bind(username)
+    .first<UserRow>();
+
+  if (!row) {
+    return err(new NotFoundError("User", username));
   }
 
   return ok(rowToUser(row));

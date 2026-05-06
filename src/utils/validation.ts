@@ -75,6 +75,52 @@ export function validateNamespace(value: unknown, logger?: Logger): ValidationRe
   return ok(value);
 }
 
+// Username regex: lowercase alphanumeric, starts/ends with alphanumeric, allows hyphens in middle
+const USERNAME_RE = /^[a-z0-9][-a-z0-9]*[a-z0-9]$/;
+
+/**
+ * Validates a username and returns a Result.
+ * Usernames must contain only lowercase alphanumeric and hyphens,
+ * start/end with alphanumeric, and be within length limits (2-39 chars).
+ */
+export function validateUsername(value: unknown, logger?: Logger): ValidationResult<string> {
+  const log = logger ?? defaultLogger;
+
+  if (typeof value !== "string") {
+    log.debug("Validation failed - username is not a string", { value });
+    return err([{ field: "username", message: "Must be a string" }]);
+  }
+
+  if (value.length < 2) {
+    log.debug("Validation failed - username too short", { value, length: value.length });
+    return err([{ field: "username", message: "Username must be at least 2 characters" }]);
+  }
+
+  if (value.length > MAX_NAMESPACE_LENGTH) {
+    log.debug("Validation failed - username too long", { value, length: value.length });
+    return err([
+      {
+        field: "username",
+        message: `Username too long (max ${MAX_NAMESPACE_LENGTH} characters)`,
+      },
+    ]);
+  }
+
+  if (!USERNAME_RE.test(value)) {
+    log.debug("Validation failed - invalid username format", { value });
+    return err([
+      {
+        field: "username",
+        message:
+          "Username must be lowercase alphanumeric with hyphens, starting and ending with alphanumeric",
+      },
+    ]);
+  }
+
+  log.debug("Validation passed - username", { value });
+  return ok(value);
+}
+
 /**
  * Validates an email address and returns a Result.
  */

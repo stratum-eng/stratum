@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { createUser, getUser } from "../storage/users";
+import { createUser, getUser, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 import { badRequest, created, ok } from "../utils/response";
@@ -59,6 +59,46 @@ app.get("/me", async (c) => {
   logger.debug("User retrieved", { userId });
 
   return ok({ id: user.id, email: user.email, createdAt: user.createdAt });
+});
+
+// GET /api/users/check-username - Check if username is available
+app.get("/check-username", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const username = c.req.query("username");
+
+  if (!username || typeof username !== "string") {
+    return c.json({ available: false, message: "Username is required" }, 400);
+  }
+
+  const normalizedUsername = username.toLowerCase().trim();
+
+  // Validate username format
+  const USERNAME_REGEX = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+  if (
+    normalizedUsername.length < 3 ||
+    normalizedUsername.length > 39 ||
+    !USERNAME_REGEX.test(normalizedUsername) ||
+    normalizedUsername.includes("--")
+  ) {
+    return c.json({ available: false, message: "Invalid username format" }, 400);
+  }
+
+  // Check if username exists
+  const existingUser = await getUserByUsername(c.env.DB, normalizedUsername, logger);
+
+  if (existingUser.success) {
+    return c.json({
+      available: false,
+      message: "This username is already taken",
+    });
+  }
+
+  return c.json({ available: true, message: "Username is available" });
 });
 
 export { app as usersRouter };
