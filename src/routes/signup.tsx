@@ -521,11 +521,14 @@ const SIGNUP_SCRIPT = `
 		if (status === 'checking') {
 			usernameStatus.innerHTML = '<span class="spinner"></span> Checking availability...';
 		} else if (status === 'available') {
-			usernameStatus.innerHTML = '<span class="status-icon">&#10003;</span> ' + message;
+			usernameStatus.innerHTML = '<span class="status-icon">&#10003;</span> ';
+			usernameStatus.appendChild(document.createTextNode(message));
 		} else if (status === 'taken') {
-			usernameStatus.innerHTML = '<span class="status-icon">&#10007;</span> ' + message;
+			usernameStatus.innerHTML = '<span class="status-icon">&#10007;</span> ';
+			usernameStatus.appendChild(document.createTextNode(message));
 		} else if (status === 'error') {
-			usernameStatus.innerHTML = '<span class="status-icon">&#10007;</span> ' + message;
+			usernameStatus.innerHTML = '<span class="status-icon">&#10007;</span> ';
+			usernameStatus.appendChild(document.createTextNode(message));
 		} else {
 			usernameStatus.innerHTML = '';
 		}

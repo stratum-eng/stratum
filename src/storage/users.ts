@@ -267,8 +267,11 @@ export async function upsertGitHubUser(
     return ok(updated.data);
   }
 
-  logger.debug("Creating new user for GitHub account", { emailHash: hashEmail(opts.email) });
-  const createResult = await createUser(db, opts.email, logger);
+  logger.debug("Creating new user for GitHub account", {
+    emailHash: hashEmail(opts.email),
+    username: opts.username,
+  });
+  const createResult = await createUser(db, opts.email, logger, opts.username);
   if (!createResult.success) {
     return err(createResult.error);
   }
