@@ -5,6 +5,7 @@
 
 import type { D1Database, KVNamespace } from "@cloudflare/workers-types";
 import type { ProjectEntry } from "../types";
+import { decryptToken, encryptToken } from "../utils/crypto";
 import { AppError, NotFoundError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
@@ -66,11 +67,12 @@ export async function getProjectByGitHubRepo(
 }
 
 /**
- * Get user's GitHub access token
+ * Get user's GitHub access token (decrypted)
  */
 export async function getGitHubAccessToken(
   db: D1Database,
   userId: string,
+  encryptionSecret: string,
   logger: Logger,
 ): Promise<Result<string, AppError>> {
   logger.debug("Fetching GitHub access token", { userId });
@@ -87,7 +89,14 @@ export async function getGitHubAccessToken(
       return err(new NotFoundError("GitHub token", userId));
     }
 
-    return ok(row.github_access_token);
+    // Decrypt the token
+    const decryptedToken = await decryptToken(row.github_access_token, encryptionSecret);
+    if (!decryptedToken) {
+      logger.error("Failed to decrypt GitHub token", undefined, { userId });
+      return err(new AppError("Failed to decrypt GitHub token", "STORAGE_ERROR", 500));
+    }
+
+    return ok(decryptedToken);
   } catch (error) {
     logger.error("Failed to get GitHub token", error instanceof Error ? error : undefined, {
       userId,
@@ -97,7 +106,7 @@ export async function getGitHubAccessToken(
 }
 
 /**
- * Store user's GitHub access token
+ * Store user's GitHub access token (encrypted)
  */
 export async function storeGitHubAccessToken(
   db: D1Database,
@@ -105,11 +114,15 @@ export async function storeGitHubAccessToken(
   accessToken: string,
   githubUserId: string,
   githubUsername: string,
+  encryptionSecret: string,
   logger: Logger,
 ): Promise<Result<void, AppError>> {
   logger.debug("Storing GitHub access token", { userId, githubUsername });
 
   try {
+    // Encrypt the token before storing
+    const encryptedToken = await encryptToken(accessToken, encryptionSecret);
+
     await db
       .prepare(
         `UPDATE users
@@ -118,7 +131,7 @@ export async function storeGitHubAccessToken(
              github_username = ?
          WHERE id = ?`,
       )
-      .bind(accessToken, githubUserId, githubUsername, userId)
+      .bind(encryptedToken, githubUserId, githubUsername, userId)
       .run();
 
     logger.info("GitHub access token stored", { userId, githubUsername });

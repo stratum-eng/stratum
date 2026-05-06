@@ -26,7 +26,7 @@ The same codebase supports both modes. Users choose their level of adoption.
 
 ## Request Flow
 
-```
+```text
 Client Request
     ↓
 Cloudflare Worker
@@ -175,7 +175,7 @@ CREATE TABLE github_pr_mappings (
 
 ### KV Structure
 
-```
+```text
 session:{sessionId} → { userId, expiresAt }
 rate_limit:magic_link:{emailHash} → { count, resetAt }
 sync_status:{namespace}:{slug} → { lastCheckedAt, hasUpdates, commitsBehind }
@@ -478,8 +478,8 @@ Producer (API route) → Queue → Consumer Worker
 
 ### Magic Link (Current)
 
-```
-POST /auth/email/request
+```text
+POST /auth/email
   ↓
 Generate token → Store in KV (15 min TTL)
   ↓
@@ -492,7 +492,7 @@ Validate token → Create session → Set cookie
 
 ### GitHub OAuth (For GitHub Bridge)
 
-```
+```text
 GET /auth/github
   ↓
 Redirect to GitHub OAuth
@@ -508,45 +508,62 @@ Redirect to dashboard
 
 ## File Structure
 
-```
+```text
 src/
 ├── index.ts                 # Hono app entry
 ├── types.ts                 # Shared types
-├── auth/
-│   ├── middleware.ts        # Session validation
-│   ├── magic-link.ts        # Magic link routes
-│   └── github-oauth.ts      # GitHub OAuth routes
 ├── routes/
+│   ├── auth.ts              # Main auth routes
+│   ├── email-auth.ts        # Magic link authentication
+│   ├── sessions.ts          # Session management
 │   ├── projects.ts          # Project CRUD
 │   ├── workspaces.ts        # Workspace management
 │   ├── changes.ts           # Change lifecycle
-│   ├── evaluations.ts       # Evaluation triggers
-│   ├── sync-management.ts   # Git sync operations
-│   └── webhooks.ts          # GitHub webhooks
+│   ├── sync.ts              # Sync operations
+│   ├── sync-management.ts   # Git sync management
+│   ├── bulk-import.ts       # Bulk import functionality
+│   ├── agents.ts            # Agent management
+│   ├── users.ts             # User management
+│   ├── orgs.ts              # Organization management
+│   ├── health.ts            # Health check endpoints
+│   ├── metrics.ts           # Admin metrics
+│   ├── ui.ts                # UI routes
+│   └── webhooks.ts          # Webhook handlers
 ├── storage/
+│   ├── state.ts             # KV state management
 │   ├── db.ts                # D1 query helpers
-│   ├── kv.ts                # KV operations
-│   ├── git-ops.ts           # Git operations
-│   └── sync.ts              # Sync status tracking
-├── evaluation/
-│   ├── engine.ts            # Evaluation orchestrator
-│   ├── diff.ts              # DiffEvaluator
-│   ├── webhook.ts           # WebhookEvaluator
-│   ├── llm.ts               # LLMEvaluator
-│   └── sandbox.ts           # SandboxEvaluator
-├── queue/
-│   ├── import.ts            # Import job processor
-│   ├── sync.ts              # Sync job processor
-│   └── evaluate.ts          # Evaluation job processor
+│   ├── users.ts             # User storage operations
+│   ├── sessions.ts          # Session storage operations
+│   ├── sync.ts              # Sync status tracking
+│   └── github-bridge.ts     # GitHub integration storage
 ├── github/
 │   ├── client.ts            # GitHub API client
 │   ├── webhooks.ts          # Webhook handlers
 │   └── sync.ts              # Bidirectional sync logic
-├── merge/
-│   └── queue.ts             # Durable Object merge queue
+├── queue/
+│   ├── events.ts            # Event definitions
+│   ├── import-queue.ts      # Import job processor
+│   ├── merge-queue.ts       # Merge queue durable object
+│   └── ttl-sweep.ts         # TTL cleanup
+├── middleware/
+│   ├── auth.ts              # Auth middleware
+│   ├── rate-limit.ts        # Rate limiting
+│   └── analytics.ts         # Analytics tracking
+├── ui/
+│   ├── layout.tsx           # Base layout component
+│   ├── styles.ts            # CSS styles
+│   ├── components/          # UI components
+│   │   ├── conflict-resolution.tsx
+│   │   └── ...
+│   └── pages/               # Page components
+│       ├── sync.tsx
+│       └── ...
 └── utils/
     ├── errors.ts            # Error classes
-    ├── logging.ts           # Logger setup
+    ├── logger.ts            # Logger setup
+    ├── result.ts            # Result type
+    ├── response.ts          # Response helpers
+    ├── crypto.ts            # Encryption utilities
     └── validation.ts        # Input validation
 ```
 

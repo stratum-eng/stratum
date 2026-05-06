@@ -149,36 +149,14 @@ interface ConflictFileViewerProps {
 }
 
 /**
- * NOTE: This component is SERVER-RENDERED using Hono JSX.
- * The useState implementation below is NOT real React hooks - it's a stub
- * that only works for initial render values. Interactive features
- * (manual editing, state changes) require either:
- * 1. Client-side hydration with real React/Vue/etc.
- * 2. Form-based POST submission to server
- * 3. Client-side JavaScript to handle interactions
- *
- * TODO: Add client-side JavaScript for interactive features or
- * convert to a proper client component framework.
+ * Server-rendered conflict file viewer with client-side JavaScript for interactivity.
+ * Uses data attributes and inline scripts for state management instead of React hooks.
  */
-const ConflictFileViewer: FC<ConflictFileViewerProps> = ({ file, onResolve, disabled }) => {
-  const [showOurs] = useState(true);
-  const [showTheirs] = useState(true);
-  const [manualContent, setManualContent] = useState("");
-  const [resolution, setResolution] = useState<"ours" | "theirs" | "manual" | null>(null);
-
-  const handleResolve = (strategy: "ours" | "theirs" | "manual") => {
-    setResolution(strategy);
-    if (onResolve) {
-      onResolve({
-        file: file.path,
-        strategy,
-        content: strategy === "manual" ? manualContent : undefined,
-      });
-    }
-  };
+const ConflictFileViewer: FC<ConflictFileViewerProps> = ({ file, disabled }) => {
+  const fileId = file.path.replace(/[^a-zA-Z0-9]/g, "_");
 
   return (
-    <div class="conflict-file" data-file-path={file.path}>
+    <div class="conflict-file" data-file-path={file.path} data-file-id={fileId}>
       <div class="file-header">
         <code class="file-path">{file.path}</code>
         <div class="file-actions">
@@ -188,22 +166,28 @@ const ConflictFileViewer: FC<ConflictFileViewerProps> = ({ file, onResolve, disa
             <>
               <button
                 type="button"
-                class={`btn btn-sm ${resolution === "ours" ? "btn-primary" : "btn-secondary"}`}
-                onClick={() => handleResolve("ours")}
+                class="btn btn-sm btn-secondary"
+                data-resolution="ours"
+                data-file-id={fileId}
+                onclick={`handleFileResolve('${fileId}', 'ours')`}
               >
                 Accept Ours
               </button>
               <button
                 type="button"
-                class={`btn btn-sm ${resolution === "theirs" ? "btn-primary" : "btn-secondary"}`}
-                onClick={() => handleResolve("theirs")}
+                class="btn btn-sm btn-secondary"
+                data-resolution="theirs"
+                data-file-id={fileId}
+                onclick={`handleFileResolve('${fileId}', 'theirs')`}
               >
                 Accept Theirs
               </button>
               <button
                 type="button"
-                class={`btn btn-sm ${resolution === "manual" ? "btn-primary" : "btn-secondary"}`}
-                onClick={() => handleResolve("manual")}
+                class="btn btn-sm btn-secondary"
+                data-resolution="manual"
+                data-file-id={fileId}
+                onclick={`handleFileResolve('${fileId}', 'manual')`}
               >
                 Manual Edit
               </button>
@@ -213,34 +197,30 @@ const ConflictFileViewer: FC<ConflictFileViewerProps> = ({ file, onResolve, disa
       </div>
 
       <div class="diff-viewer">
-        {showOurs && (
-          <div class="diff-section diff-ours">
-            <div class="diff-header">
-              <span class="diff-label">Ours ({file.ours.branch})</span>
-              <span class="diff-commit">{file.ours.commit.slice(0, 7)}</span>
-              <span class="diff-time">{new Date(file.ours.timestamp).toLocaleString()}</span>
-            </div>
-            <pre class="diff-content">
-              <code>{file.ours.content}</code>
-            </pre>
+        <div class="diff-section diff-ours" id={`diff-ours-${fileId}`}>
+          <div class="diff-header">
+            <span class="diff-label">Ours ({file.ours.branch})</span>
+            <span class="diff-commit">{file.ours.commit.slice(0, 7)}</span>
+            <span class="diff-time">{new Date(file.ours.timestamp).toLocaleString()}</span>
           </div>
-        )}
+          <pre class="diff-content">
+            <code>{file.ours.content}</code>
+          </pre>
+        </div>
 
-        {showTheirs && (
-          <div class="diff-section diff-theirs">
-            <div class="diff-header">
-              <span class="diff-label">Theirs ({file.theirs.branch})</span>
-              <span class="diff-commit">{file.theirs.commit.slice(0, 7)}</span>
-              <span class="diff-time">{new Date(file.theirs.timestamp).toLocaleString()}</span>
-            </div>
-            <pre class="diff-content">
-              <code>{file.theirs.content}</code>
-            </pre>
+        <div class="diff-section diff-theirs" id={`diff-theirs-${fileId}`}>
+          <div class="diff-header">
+            <span class="diff-label">Theirs ({file.theirs.branch})</span>
+            <span class="diff-commit">{file.theirs.commit.slice(0, 7)}</span>
+            <span class="diff-time">{new Date(file.theirs.timestamp).toLocaleString()}</span>
           </div>
-        )}
+          <pre class="diff-content">
+            <code>{file.theirs.content}</code>
+          </pre>
+        </div>
 
         {file.base && (
-          <div class="diff-section diff-base">
+          <div class="diff-section diff-base" id={`diff-base-${fileId}`}>
             <div class="diff-header">
               <span class="diff-label">Base (common ancestor)</span>
               <span class="diff-commit">{file.base.commit.slice(0, 7)}</span>
@@ -252,38 +232,70 @@ const ConflictFileViewer: FC<ConflictFileViewerProps> = ({ file, onResolve, disa
         )}
       </div>
 
-      {resolution === "manual" && !disabled && (
-        <div class="manual-edit">
+      {!disabled && (
+        <div class="manual-edit" id={`manual-edit-${fileId}`} style="display: none;">
           <label>Edit the file content manually:</label>
           <textarea
             class="manual-editor"
+            id={`manual-textarea-${fileId}`}
             rows={10}
-            value={manualContent}
-            onInput={(e) => {
-              const target = e.target as { value: string };
-              setManualContent(target.value);
-            }}
             placeholder="Enter the resolved file content here..."
           />
+          <button
+            type="button"
+            class="btn btn-sm btn-primary"
+            onclick={`submitManualResolution('${fileId}')`}
+          >
+            Save Manual Resolution
+          </button>
         </div>
+      )}
+
+      {!disabled && (
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+            // Track resolutions for this file
+            if (!window.fileResolutions) window.fileResolutions = {};
+            window.fileResolutions['${fileId}'] = {
+              path: '${file.path.replace(/'/g, "\\'")}',
+              strategy: null,
+              content: null
+            };
+
+            function handleFileResolve(fileId, strategy) {
+              // Update button styles
+              document.querySelectorAll('[data-file-id="' + fileId + '"]').forEach(btn => {
+                btn.classList.remove('btn-primary');
+                btn.classList.add('btn-secondary');
+              });
+              document.querySelector('[data-file-id="' + fileId + '"][data-resolution="' + strategy + '"]').classList.remove('btn-secondary');
+              document.querySelector('[data-file-id="' + fileId + '"][data-resolution="' + strategy + '"]').classList.add('btn-primary');
+
+              // Show/hide manual edit textarea
+              const manualEdit = document.getElementById('manual-edit-' + fileId);
+              if (strategy === 'manual') {
+                manualEdit.style.display = 'block';
+              } else {
+                manualEdit.style.display = 'none';
+                // Store resolution immediately for ours/theirs
+                window.fileResolutions[fileId].strategy = strategy;
+                console.log('File resolution:', fileId, strategy);
+              }
+            }
+
+            function submitManualResolution(fileId) {
+              const textarea = document.getElementById('manual-textarea-' + fileId);
+              const content = textarea.value;
+              window.fileResolutions[fileId].strategy = 'manual';
+              window.fileResolutions[fileId].content = content;
+              console.log('Manual resolution saved:', fileId, content);
+              alert('Manual resolution saved for ' + window.fileResolutions[fileId].path);
+            }
+          `,
+          }}
+        />
       )}
     </div>
   );
 };
-
-/**
- * Minimal state holder intended for server-rendered JSX components.
- *
- * Provides a stored value initialized from `initialValue` and a setter that replaces that stored value.
- * The setter updates the internal value but does not trigger reactive updates, re-renders, or client-side hydration.
- *
- * @param initialValue - Initial state value to store
- * @returns A tuple of `[value, setValue]` where `value` is the stored state and `setValue` replaces it
- */
-function useState<T>(initialValue: T): [T, (value: T) => void] {
-  let value = initialValue;
-  const setValue = (newValue: T) => {
-    value = newValue;
-  };
-  return [value, setValue];
-}

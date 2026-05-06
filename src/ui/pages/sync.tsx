@@ -33,6 +33,7 @@ interface SyncStatus {
   commitsBehind?: number;
   latestCommit?: string;
   autoSyncEnabled: boolean;
+  syncFrequency?: number; // Minutes between auto-syncs
   lastCheckedAt: string;
 }
 
@@ -187,13 +188,33 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
                 name="syncFrequency"
                 disabled={!syncStatus.autoSyncEnabled}
               >
-                <option value="5">Every 5 minutes</option>
-                <option value="15">Every 15 minutes</option>
-                <option value="30">Every 30 minutes</option>
-                <option value="60">Every hour</option>
-                <option value="360">Every 6 hours</option>
-                <option value="720">Every 12 hours</option>
-                <option value="1440">Every 24 hours</option>
+                <option
+                  value="5"
+                  selected={
+                    syncStatus.syncFrequency === 5 ||
+                    (!syncStatus.syncFrequency && syncStatus.autoSyncEnabled)
+                  }
+                >
+                  Every 5 minutes
+                </option>
+                <option value="15" selected={syncStatus.syncFrequency === 15}>
+                  Every 15 minutes
+                </option>
+                <option value="30" selected={syncStatus.syncFrequency === 30}>
+                  Every 30 minutes
+                </option>
+                <option value="60" selected={syncStatus.syncFrequency === 60}>
+                  Every hour
+                </option>
+                <option value="360" selected={syncStatus.syncFrequency === 360}>
+                  Every 6 hours
+                </option>
+                <option value="720" selected={syncStatus.syncFrequency === 720}>
+                  Every 12 hours
+                </option>
+                <option value="1440" selected={syncStatus.syncFrequency === 1440}>
+                  Every 24 hours
+                </option>
               </select>
             </div>
 

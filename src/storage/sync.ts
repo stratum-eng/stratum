@@ -25,6 +25,7 @@ interface SyncStatus {
   commitsBehind?: number;
   latestCommit?: string;
   autoSyncEnabled: boolean;
+  syncFrequency?: number; // Minutes between auto-syncs
 }
 
 /**

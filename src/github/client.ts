@@ -94,10 +94,10 @@ function recordCircuitResult(endpoint: string, success: boolean): void {
   const key = endpoint.split("/").slice(0, 3).join("/");
   const cb = circuitBreakers.get(key) || { failures: 0, lastFailure: 0, state: "closed" };
   if (success) {
-    if (cb.state === "half-open") {
-      cb.state = "closed";
-      cb.failures = 0;
-    }
+    // Reset on ANY success, not just when half-open
+    cb.state = "closed";
+    cb.failures = 0;
+    cb.lastFailure = 0;
   } else {
     cb.failures++;
     cb.lastFailure = Date.now();
@@ -141,9 +141,16 @@ export async function getGitHubToken(
       return null;
     }
 
+    // Decrypt refresh token if present
+    let decryptedRefreshToken: string | undefined;
+    if (result.github_refresh_token) {
+      decryptedRefreshToken =
+        (await decryptToken(result.github_refresh_token, encryptionSecret)) ?? undefined;
+    }
+
     return {
       accessToken: decryptedToken,
-      refreshToken: result.github_refresh_token ?? undefined,
+      refreshToken: decryptedRefreshToken,
       expiresAt: result.github_token_expires_at ?? undefined,
     };
   } catch (error) {
@@ -165,6 +172,10 @@ export async function storeGitHubToken(
 ): Promise<boolean> {
   try {
     const encryptedToken = await encryptToken(token.accessToken, encryptionSecret);
+    // Encrypt refresh token if present
+    const encryptedRefreshToken = token.refreshToken
+      ? await encryptToken(token.refreshToken, encryptionSecret)
+      : null;
     await db
       .prepare(
         `UPDATE users SET github_access_token = ?, github_refresh_token = ?,
@@ -172,7 +183,7 @@ export async function storeGitHubToken(
       )
       .bind(
         encryptedToken,
-        token.refreshToken ?? null,
+        encryptedRefreshToken,
         token.expiresAt ?? null,
         githubUserId,
         githubUsername,
