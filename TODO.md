@@ -120,6 +120,9 @@
 - [ ] Loading states for all async operations
 - [ ] Error boundary for crash recovery
 - [ ] Keyboard shortcuts
+- [ ] **Diff viewer with client-side view toggle** (unified ↔ split view without page reload)
+  - See: docs/research/master-plan-alignment.md (UX requirements)
+  - Avoid GitLab/GitHub pattern of full page reload on toggle
 
 ## 🔄 DevOps
 

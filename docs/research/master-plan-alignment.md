@@ -128,8 +128,17 @@ The GitHub/alternatives pain points analysis **strongly validates** Stratum's cu
 **Recommendation:**
 - Integrate or build proper diff rendering
 - Support large diffs without pagination
-- Side-by-side split view without page reload
+- **Side-by-side split view toggle without page reload** (GitLab/GitHub require full page reload for this)
 - Fast, client-side diff navigation
+
+**Important UX Note:**
+Theo's video specifically highlights this as a pain point:
+> "Does split view require a page reload? Cuz the GitHub one has for a long time. It does. It has a full page reload when you switch from split view to the normal view."
+
+**Stratum Requirement:**
+- Toggle between unified and split view should be client-side only
+- No page reload, no content refetch
+- Instant toggle using CSS/JS state
 
 ### 4. **Git Import (Not Replacement)** (STRATEGIC POSITIONING)
 
