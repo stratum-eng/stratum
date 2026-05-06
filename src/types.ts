@@ -186,6 +186,7 @@ export interface ProjectEntry {
   lastSyncStatus?: "success" | "failed" | "in_progress" | "idle";
   lastSyncError?: string;
   autoSyncEnabled?: boolean;
+  syncFrequency?: number; // Minutes between auto-syncs
   visibility?: "private" | "public";
 }
 
