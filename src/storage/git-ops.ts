@@ -609,20 +609,35 @@ export async function importFromGitHub(
   logger: Logger,
   branch = "main",
   depth = 10,
+  timeoutMs = 120000, // 2 minute default timeout
 ): Promise<Result<ArtifactsCreateResult, AppError>> {
-  logger.debug("Importing from GitHub", { name, githubUrl, branch, depth });
+  logger.debug("Importing from GitHub", { name, githubUrl, branch, depth, timeoutMs });
+
+  // Create timeout handle outside try so finally can access it
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
   try {
-    const result = await artifacts.import({
-      source: {
-        url: githubUrl,
-        branch,
-        depth,
-      },
-      target: {
-        name,
-      },
+    // Create a timeout promise
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(new Error(`Import operation timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
     });
+
+    // Race between import and timeout
+    const result = await Promise.race([
+      artifacts.import({
+        source: {
+          url: githubUrl,
+          branch,
+          depth,
+        },
+        target: {
+          name,
+        },
+      }),
+      timeoutPromise,
+    ]);
 
     logger.info("Successfully imported from GitHub", {
       name,
@@ -642,6 +657,11 @@ export async function importFromGitHub(
           );
     logger.error("Failed to import from GitHub", appError, { name, githubUrl, branch });
     return err(appError);
+  } finally {
+    // Always clear the timeout to prevent memory leaks
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
   }
 }
 

@@ -80,6 +80,7 @@ let mockJobIdCounter = 0;
 vi.mock("../src/storage/imports", () => ({
   createImportJob: vi.fn(async (_db, params, _logger) => {
     mockJobIdCounter++;
+    const now = new Date().toISOString();
     const job: ImportProgress = {
       id: `import_${mockJobIdCounter}`,
       projectId: params.projectId,
@@ -88,7 +89,8 @@ vi.mock("../src/storage/imports", () => ({
       status: "queued",
       sourceUrl: params.sourceUrl,
       branch: params.branch,
-      startedAt: new Date().toISOString(),
+      startedAt: now,
+      updatedAt: now,
       version: 1,
       progress: { processedFiles: 0 },
       errors: [],
@@ -96,7 +98,7 @@ vi.mock("../src/storage/imports", () => ({
         {
           message: "Import queued",
           level: "info",
-          timestamp: new Date().toISOString(),
+          timestamp: now,
         },
       ],
     };

@@ -8,6 +8,7 @@ import {
   deleteImportJob,
   getImportProgress,
   isImportCancelled,
+  recoverStalledImport,
   updateImportStatus,
 } from "../storage/imports";
 import { listProvenance } from "../storage/provenance";
@@ -403,6 +404,9 @@ app.post(
       const provider = detectProvider(body.url);
       const parsedUrl = parseRepoUrl(body.url);
 
+      // Parse GitHub repo for legacy field compatibility
+      const parsedGitHub = parseGitHubRepo(body.url);
+
       const project: ProjectEntry = {
         id: projectId,
         name: slug,
@@ -415,7 +419,8 @@ app.post(
         createdAt: new Date().toISOString(),
         // Legacy fields for backward compatibility
         githubUrl: body.url,
-        ...(parseGitHubRepo(body.url) ?? {}),
+        githubOwner: parsedGitHub?.owner,
+        githubRepo: parsedGitHub?.repo,
         githubDefaultBranch: branch,
         githubConnectedAt: new Date().toISOString(),
         githubConnectionStatus: "connected",
@@ -434,10 +439,63 @@ app.post(
         return internalError(setResult.error.message);
       }
 
-      // Queue the actual import job for background processing
-      // TODO: This should be queued to a background worker
-      // For now, we'll trigger it asynchronously
-      processImportJob(c.env, project, importId, body.url, branch, logger);
+      // Queue the actual import job for background processing using the queue if available
+      if (c.env.IMPORT_QUEUE) {
+        try {
+          const { queueImportJob } = await import("../queue/import-queue");
+          await queueImportJob(c.env.IMPORT_QUEUE, {
+            importId,
+            projectId,
+            namespace,
+            slug,
+            githubUrl: body.url,
+            branch,
+            depth: 10,
+          });
+        } catch (queueError) {
+          // Log queue error but don't fall back - queue exists but send() failed
+          logger.error(
+            "Failed to queue import job",
+            queueError instanceof Error ? queueError : undefined,
+            {
+              namespace,
+              slug,
+              importId,
+            },
+          );
+          // Update import status to failed before rethrowing
+          await updateImportStatus(
+            c.env.DB,
+            namespace,
+            slug,
+            "failed",
+            logger,
+            `Failed to enqueue import job: ${queueError instanceof Error ? queueError.message : String(queueError)}`,
+          );
+          // Don't fall back to direct processing here - the queue exists but send failed,
+          // which could lead to duplicate work. Let the client retry instead.
+          throw queueError;
+        }
+      } else {
+        // Queue not configured - fall back to direct processing
+        logger.warn("IMPORT_QUEUE not configured, falling back to direct processing", {
+          namespace,
+          slug,
+        });
+        c.executionCtx.waitUntil(
+          processImportJob(c.env, project, importId, body.url, branch, logger).catch((error) => {
+            logger.error(
+              "Unhandled error in background import job",
+              error instanceof Error ? error : undefined,
+              {
+                namespace,
+                slug,
+                importId,
+              },
+            );
+          }),
+        );
+      }
 
       // Redirect to project page immediately (user will see import progress)
       if (!contentType.includes("application/json")) {
@@ -758,6 +816,40 @@ app.get("/:namespace/:slug/import/status", async (c) => {
     return notFound("Import job", `${namespace}/${slug}`);
   }
 
+  // Check for stalled imports (5 minute threshold)
+  // Note: 'queued' is not included because it's a valid initial state that doesn't indicate progress
+  const STALLED_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+  if (["cloning", "processing", "syncing"].includes(progressResult.data.status)) {
+    const lastUpdatedAt = new Date(progressResult.data.updatedAt).getTime();
+    const elapsedMs = Date.now() - lastUpdatedAt;
+
+    if (elapsedMs > STALLED_THRESHOLD_MS) {
+      logger.warn("Import appears stalled, attempting recovery", {
+        namespace,
+        slug,
+        importId: progressResult.data.id,
+        status: progressResult.data.status,
+        elapsedMs,
+      });
+
+      const recoverResult = await recoverStalledImport(
+        c.env.DB,
+        namespace,
+        slug,
+        STALLED_THRESHOLD_MS,
+        logger,
+      );
+
+      if (recoverResult.success && recoverResult.data) {
+        // Re-fetch the progress after recovery
+        const updatedResult = await getImportProgress(c.env.DB, namespace, slug, logger);
+        if (updatedResult.success && updatedResult.data) {
+          return ok(updatedResult.data);
+        }
+      }
+    }
+  }
+
   return ok(progressResult.data);
 });
 
@@ -1029,8 +1121,70 @@ app.post("/:namespace/:slug/sync", async (c) => {
     return internalError(createResult.error.message);
   }
 
-  // Queue the sync job for processing (async)
-  processSyncJob(c.env, project, importId, sourceUrl, branch, logger);
+  // Queue the sync job for processing using the queue if available
+  if (c.env.IMPORT_QUEUE) {
+    try {
+      const { queueSyncJob } = await import("../queue/import-queue");
+      await queueSyncJob(c.env.IMPORT_QUEUE, {
+        importId,
+        projectId: project.id,
+        namespace,
+        slug,
+        githubUrl: sourceUrl,
+        branch,
+        depth: 10,
+        provider: provider ?? undefined,
+      });
+    } catch (queueError) {
+      // Log queue error but don't fall back - queue exists but send() failed
+      logger.error(
+        "Failed to queue sync job",
+        queueError instanceof Error ? queueError : undefined,
+        {
+          namespace,
+          slug,
+          importId,
+        },
+      );
+      // Clear sync in-progress state and mark import as failed before rethrowing
+      await updateProjectSyncError(
+        c.env.STATE,
+        project,
+        `Failed to enqueue sync job: ${queueError instanceof Error ? queueError.message : String(queueError)}`,
+        logger,
+      );
+      await updateImportStatus(
+        c.env.DB,
+        namespace,
+        slug,
+        "failed",
+        logger,
+        `Failed to enqueue sync job: ${queueError instanceof Error ? queueError.message : String(queueError)}`,
+      );
+      // Don't fall back to direct processing here - the queue exists but send failed,
+      // which could lead to duplicate work. Let the client retry instead.
+      throw queueError;
+    }
+  } else {
+    // Queue not configured - fall back to direct processing
+    logger.warn("IMPORT_QUEUE not configured for sync, falling back to direct processing", {
+      namespace,
+      slug,
+    });
+    c.executionCtx.waitUntil(
+      processSyncJob(c.env, project, importId, sourceUrl, branch, logger).catch((error) => {
+        logger.error(
+          "Unhandled error in background sync job",
+          error instanceof Error ? error : undefined,
+          {
+            namespace,
+            slug,
+            importId,
+          },
+        );
+      }),
+    );
+  }
 
   logger.info("Sync initiated", {
     namespace,
