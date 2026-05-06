@@ -27,20 +27,26 @@
   - [x] Add try/catch around rate limit KV read (fail open)
   - [x] Validate redirect cookie (prevent open redirect)
 
-### 2. Session Management Improvements (IN PROGRESS)
+### 2. Session Management Improvements (✅ COMPLETE)
 - [x] Add session refresh endpoint
 - [x] Implement session invalidation on logout from all devices
 - [x] Add "Remember me" option (30 days vs 1 day session)
 - [x] Add session listing endpoint
 - [x] Add individual session deletion endpoint
-- [ ] Write comprehensive tests for session management
+- [x] Write tests for session management
+
+**PR**: #24
 
 ## 📧 Email System
 
-### 3. Email Templates
-- [ ] Create HTML email template for magic links
-- [ ] Create plain text fallback
-- [ ] Style with Stratum branding
+### 3. Email Templates (IN PROGRESS)
+- [x] Create HTML email template for magic links
+- [x] Create plain text fallback
+- [x] Style with Stratum branding
+- [x] Dark mode support
+- [x] Mobile responsive
+- [x] Security warning section
+- [ ] Extract other email templates (optional)
 
 ## 🎯 Core Features
 
