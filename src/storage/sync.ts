@@ -147,6 +147,7 @@ export async function checkForSyncUpdates(
       commitsBehind: updateResult.commitsBehind,
       latestCommit: updateResult.latestCommit,
       autoSyncEnabled: project.autoSyncEnabled || false,
+      syncFrequency: project.syncFrequency,
     };
 
     await kv.put(syncStatusKey(namespace, slug), JSON.stringify(status));
@@ -219,6 +220,7 @@ export async function updateProjectAfterSync(
     hasUpdates: false,
     commitsBehind: 0,
     autoSyncEnabled: existingStatus?.autoSyncEnabled || false,
+    syncFrequency: existingStatus?.syncFrequency,
   };
 
   await kv.put(statusKey, JSON.stringify(status));
@@ -276,6 +278,7 @@ export async function updateProjectSyncError(
     hasUpdates: existingStatus?.hasUpdates || false,
     commitsBehind: existingStatus?.commitsBehind,
     autoSyncEnabled: existingStatus?.autoSyncEnabled || false,
+    syncFrequency: existingStatus?.syncFrequency,
   };
 
   await kv.put(statusKey, JSON.stringify(status));
@@ -309,6 +312,7 @@ export async function setSyncInProgress(
       hasUpdates: existingStatus?.hasUpdates || false,
       commitsBehind: existingStatus?.commitsBehind,
       autoSyncEnabled: existingStatus?.autoSyncEnabled || false,
+      syncFrequency: existingStatus?.syncFrequency,
     };
 
     await kv.put(statusKey, JSON.stringify(status));
@@ -363,6 +367,7 @@ export async function setAutoSyncEnabled(
       hasUpdates: existingStatus?.hasUpdates || false,
       commitsBehind: existingStatus?.commitsBehind,
       autoSyncEnabled: enabled,
+      syncFrequency: existingStatus?.syncFrequency,
     };
 
     await kv.put(statusKey, JSON.stringify(status));

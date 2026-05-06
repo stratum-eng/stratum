@@ -76,6 +76,7 @@ export const ConflictResolution: FC<ConflictResolutionProps> = ({ conflict, onRe
           <ConflictFileViewer
             key={file.path}
             file={file}
+            conflictId={conflict.id}
             onResolve={onResolve}
             disabled={isResolved}
           />
@@ -140,6 +141,7 @@ export const ConflictResolution: FC<ConflictResolutionProps> = ({ conflict, onRe
 
 interface ConflictFileViewerProps {
   file: ConflictFile;
+  conflictId: string;
   onResolve?: (resolution: {
     file: string;
     strategy: "ours" | "theirs" | "manual";
@@ -152,7 +154,7 @@ interface ConflictFileViewerProps {
  * Server-rendered conflict file viewer with client-side JavaScript for interactivity.
  * Uses data attributes and inline scripts for state management instead of React hooks.
  */
-const ConflictFileViewer: FC<ConflictFileViewerProps> = ({ file, disabled }) => {
+const ConflictFileViewer: FC<ConflictFileViewerProps> = ({ file, conflictId, disabled }) => {
   const fileId = file.path.replace(/[^a-zA-Z0-9]/g, "_");
 
   return (
@@ -257,8 +259,8 @@ const ConflictFileViewer: FC<ConflictFileViewerProps> = ({ file, disabled }) => 
             __html: `
             // Track resolutions for this file
             if (!window.fileResolutions) window.fileResolutions = {};
-            window.fileResolutions['${fileId}'] = {
-              path: '${file.path.replace(/'/g, "\\'")}',
+            window.fileResolutions[${JSON.stringify(fileId)}] = {
+              path: ${JSON.stringify(file.path)},
               strategy: null,
               content: null
             };
@@ -284,13 +286,37 @@ const ConflictFileViewer: FC<ConflictFileViewerProps> = ({ file, disabled }) => 
               }
             }
 
-            function submitManualResolution(fileId) {
+            async function submitManualResolution(fileId) {
               const textarea = document.getElementById('manual-textarea-' + fileId);
               const content = textarea.value;
               window.fileResolutions[fileId].strategy = 'manual';
               window.fileResolutions[fileId].content = content;
-              console.log('Manual resolution saved:', fileId, content);
-              alert('Manual resolution saved for ' + window.fileResolutions[fileId].path);
+
+              const conflictId = ${JSON.stringify(conflictId)};
+              const filePath = window.fileResolutions[fileId].path;
+
+              try {
+                const res = await fetch('/api/projects/conflicts/' + conflictId + '/resolve', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    strategy: 'manual',
+                    resolutions: [{
+                      file: filePath,
+                      content: content
+                    }]
+                  })
+                });
+
+                if (res.ok) {
+                  alert('Manual resolution saved for ' + filePath);
+                } else {
+                  const error = await res.json();
+                  alert('Failed to save resolution: ' + (error.message || 'Unknown error'));
+                }
+              } catch (err) {
+                alert('Network error: ' + err.message);
+              }
             }
           `,
           }}

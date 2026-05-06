@@ -41,7 +41,8 @@ export async function getProjectByGitHubRepo(
       if (!sourceUrl) return false;
 
       // Parse source URL to extract owner/repo
-      const match = sourceUrl.match(/github\.com\/([^\/]+)\/([^\/\.]+)/);
+      // Allow dots inside repo names; handle various URL formats
+      const match = sourceUrl.match(/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?(?:\/|$)/i);
       if (!match) return false;
 
       const [, projectOwner, projectRepo] = match;
