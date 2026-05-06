@@ -206,13 +206,19 @@ app.get("/", (c) => {
 						background: #1f4a8e;
 						border-color: #3a6abe;
 					}
-					.submit-btn:disabled {
-						opacity: 0.5;
-						cursor: not-allowed;
-						background: #1a1a1a;
-						border-color: #333;
-					}
-					.auth-divider {
+				.submit-btn:disabled {
+					opacity: 0.5;
+					cursor: not-allowed;
+					background: #1a1a1a;
+					border-color: #333;
+				}
+				.submit-status {
+					font-size: 0.85rem;
+					color: #888;
+					min-height: 1.25rem;
+					text-align: center;
+				}
+				.auth-divider {
 						text-align: center;
 						margin: 1.5rem 0;
 						color: #666;
@@ -366,7 +372,6 @@ app.get("/", (c) => {
               <>
                 <div class="signup-header">
                   <div class="signup-badge">New Account</div>
-                  <h1 class="signup-title">Create your account</h1>
                   <p class="signup-subtitle">
                     Join Stratum to start managing your projects with AI-powered workflows.
                   </p>
@@ -433,6 +438,7 @@ app.get("/", (c) => {
                     </label>
                   </div>
 
+                  <div class="submit-status" id="submitStatus" />
                   <button type="submit" class="submit-btn" id="submitBtn" disabled>
                     Create Account
                   </button>
@@ -475,13 +481,13 @@ const SIGNUP_SCRIPT = `
 	const usernameInput = document.getElementById('username');
 	const emailInput = document.getElementById('email');
 	const submitBtn = document.getElementById('submitBtn');
+	const submitStatus = document.getElementById('submitStatus');
 	const usernameHint = document.getElementById('usernameHint');
 	const usernameStatus = document.getElementById('usernameStatus');
 
 	let debounceTimer = null;
 	let lastCheckedUsername = null;
 	let isUsernameAvailable = false;
-	let debounceTimer = null;
 	let activeRequestId = 0;
 
 	// Username validation regex: 3-39 chars, lowercase alphanumeric + hyphens, no start/end hyphen, no consecutive hyphens
@@ -592,6 +598,21 @@ const SIGNUP_SCRIPT = `
 		const canSubmit = isEmailValid && formatValidation.valid && isUsernameAvailable;
 		
 		submitBtn.disabled = !canSubmit;
+		
+		// Show status message explaining why button is disabled
+		if (canSubmit) {
+			submitStatus.textContent = '';
+		} else if (!email) {
+			submitStatus.textContent = 'Please enter your email address';
+		} else if (!isEmailValid) {
+			submitStatus.textContent = 'Please enter a valid email address';
+		} else if (!username) {
+			submitStatus.textContent = 'Please enter a username';
+		} else if (!formatValidation.valid) {
+			submitStatus.textContent = formatValidation.message;
+		} else if (!isUsernameAvailable) {
+			submitStatus.textContent = 'Username is not available';
+		}
 	}
 
 	// Real-time username validation
