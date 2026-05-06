@@ -7,6 +7,7 @@ Welcome to the Stratum documentation. This directory contains comprehensive guid
 ```
 docs/
 ├── README.md                           # This file
+├── PIVOT_SUMMARY.md                    # Strategic pivot explanation
 ├── api/                                # API Documentation
 │   ├── openapi.yml                     # OpenAPI 3.1.0 specification
 │   ├── authentication.md               # Authentication methods
@@ -27,19 +28,27 @@ docs/
 │   └── faq.md                          # Frequently asked questions
 ├── developer/                          # Developer Documentation
 │   ├── README.md                       # Developer guide overview
-│   ├── architecture.md                 # System architecture
+│   ├── architecture.md                 # System architecture (comprehensive)
 │   ├── local-setup.md                  # Development environment
 │   ├── database.md                     # Database schema
 │   ├── queues.md                       # Queue system
 │   ├── testing.md                      # Testing guide
 │   └── deployment.md                   # Deployment procedures
-└── adr/                                # Architecture Decision Records
-    ├── 001-namespace-support.md
-    ├── 002-queue-based-imports.md
-    └── 003-d1-for-import-state.md
+├── adr/                                # Architecture Decision Records
+│   ├── 001-namespace-support.md
+│   ├── 002-queue-based-imports.md
+│   └── 003-d1-for-import-state.md
+└── archive/                            # Historical documents
+    └── README.md                       # Archive index
 ```
 
 ## Quick Navigation
+
+### For Everyone
+
+**Current Priorities & Roadmap:**
+- [TODO.md](/TODO.md) - Current priorities and what's being worked on
+- [PIVOT_SUMMARY.md](/docs/PIVOT_SUMMARY.md) - Strategic direction and adoption model
 
 ### For Users
 
@@ -72,7 +81,7 @@ docs/
 **Getting Started:**
 1. [Developer Guide Overview](developer/README.md)
 2. [Local Setup](developer/local-setup.md)
-3. [Architecture](developer/architecture.md)
+3. [Architecture](developer/architecture.md) - Comprehensive technical reference
 
 **Development:**
 - [Database Schema](developer/database.md)
@@ -80,15 +89,20 @@ docs/
 - [Testing](developer/testing.md)
 - [Deployment](developer/deployment.md)
 
-**Architecture:**
+**Architecture Decisions:**
 - [ADR 001: Namespace Support](adr/001-namespace-support.md)
 - [ADR 002: Queue-Based Imports](adr/002-queue-based-imports.md)
 - [ADR 003: D1 for Import State](adr/003-d1-for-import-state.md)
+
+**Historical Reference:**
+- [Archived Documents](archive/README.md) - Code reviews, audits, etc.
 
 ## Documentation Status
 
 | Document | Status | Priority | Last Updated |
 |----------|--------|----------|--------------|
+| TODO.md (Priorities) | ✅ Complete | Critical | 2026-05-05 |
+| PIVOT_SUMMARY.md | ✅ Complete | Critical | 2026-05-05 |
 | API OpenAPI Spec | ✅ Complete | High | 2024-01-15 |
 | API Authentication | ✅ Complete | High | 2024-01-15 |
 | API Endpoints | ✅ Complete | High | 2024-01-15 |
@@ -97,7 +111,7 @@ docs/
 | User Guide - Importing | ✅ Complete | High | 2024-01-15 |
 | User Guide - Troubleshooting | ✅ Complete | Medium | 2024-01-15 |
 | User Guide - FAQ | ✅ Complete | Medium | 2024-01-15 |
-| Developer - Architecture | ✅ Complete | High | 2024-01-15 |
+| Developer - Architecture | ✅ Complete | High | 2026-05-05 |
 | Developer - Local Setup | ✅ Complete | High | 2024-01-15 |
 | Developer - Database | ✅ Complete | High | 2024-01-15 |
 | Developer - Queues | ✅ Complete | Medium | 2024-01-15 |

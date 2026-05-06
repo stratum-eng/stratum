@@ -105,6 +105,7 @@ export interface Env {
   STRATUM_TELEMETRY_DISABLED?: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
+  GITHUB_WEBHOOK_SECRET?: string;
   OAUTH_REDIRECT_URI?: string;
   // Git provider API tokens for sync
   GITHUB_TOKEN?: string;
@@ -185,6 +186,7 @@ export interface ProjectEntry {
   lastSyncStatus?: "success" | "failed" | "in_progress" | "idle";
   lastSyncError?: string;
   autoSyncEnabled?: boolean;
+  syncFrequency?: number; // Minutes between auto-syncs
   visibility?: "private" | "public";
 }
 
@@ -322,6 +324,8 @@ export interface Change {
   githubPrNumber?: number;
   githubPrUrl?: string;
   githubPrState?: string;
+  githubHeadSha?: string;
+  githubCommentId?: number;
   promotedAt?: string;
   promotedBy?: string;
 }

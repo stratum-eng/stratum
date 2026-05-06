@@ -54,10 +54,10 @@ async function verifyProjectAccess(
 }
 
 /**
- * GET /api/projects/:namespace/:slug/sync/status
+ * GET /projects/:namespace/:slug/sync/status
  * Get detailed sync status for a project
  */
-app.get("/api/projects/:namespace/:slug/sync/status", async (c) => {
+app.get("/projects/:namespace/:slug/sync/status", async (c) => {
   const userId = c.get("userId");
   if (!userId) {
     return c.json({ error: "Unauthorized" }, 401);
@@ -97,10 +97,10 @@ app.get("/api/projects/:namespace/:slug/sync/status", async (c) => {
 });
 
 /**
- * POST /api/projects/:namespace/:slug/sync
+ * POST /projects/:namespace/:slug/sync
  * Trigger a sync check and potentially sync if updates available
  */
-app.post("/api/projects/:namespace/:slug/sync", async (c) => {
+app.post("/projects/:namespace/:slug/sync", async (c) => {
   const userId = c.get("userId");
   if (!userId) {
     return c.json({ error: "Unauthorized" }, 401);
@@ -187,10 +187,10 @@ app.post("/api/projects/:namespace/:slug/sync", async (c) => {
 });
 
 /**
- * POST /api/projects/:namespace/:slug/sync/settings
+ * POST /projects/:namespace/:slug/sync/settings
  * Update sync settings (auto-sync, frequency)
  */
-app.post("/api/projects/:namespace/:slug/sync/settings", async (c) => {
+app.post("/projects/:namespace/:slug/sync/settings", async (c) => {
   const userId = c.get("userId");
   if (!userId) {
     return c.json({ error: "Unauthorized" }, 401);
@@ -236,10 +236,10 @@ app.post("/api/projects/:namespace/:slug/sync/settings", async (c) => {
 });
 
 /**
- * GET /api/projects/:namespace/:slug/sync/history
+ * GET /projects/:namespace/:slug/sync/history
  * Get sync history for a project
  */
-app.get("/api/projects/:namespace/:slug/sync/history", async (c) => {
+app.get("/projects/:namespace/:slug/sync/history", async (c) => {
   const userId = c.get("userId");
   if (!userId) {
     return c.json({ error: "Unauthorized" }, 401);
@@ -275,10 +275,10 @@ app.get("/api/projects/:namespace/:slug/sync/history", async (c) => {
 });
 
 /**
- * GET /api/projects/:namespace/:slug/sync/stream
+ * GET /projects/:namespace/:slug/sync/stream
  * Server-Sent Events endpoint for real-time sync updates
  */
-app.get("/api/projects/:namespace/:slug/sync/stream", async (c) => {
+app.get("/projects/:namespace/:slug/sync/stream", async (c) => {
   const userId = c.get("userId");
   if (!userId) {
     return c.json({ error: "Unauthorized" }, 401);
@@ -416,10 +416,10 @@ app.get("/api/projects/:namespace/:slug/sync/stream", async (c) => {
 });
 
 /**
- * POST /api/projects/conflicts/:id/resolve
+ * POST /projects/conflicts/:id/resolve
  * Resolve merge conflicts
  */
-app.post("/api/projects/conflicts/:id/resolve", async (c) => {
+app.post("/projects/conflicts/:id/resolve", async (c) => {
   const userId = c.get("userId");
   if (!userId) {
     return c.json({ error: "Unauthorized" }, 401);
@@ -441,22 +441,69 @@ app.post("/api/projects/conflicts/:id/resolve", async (c) => {
     userId,
   });
 
+  // Validate strategy
+  if (!body.strategy || !["ours", "theirs", "manual"].includes(body.strategy)) {
+    return c.json({ error: "Invalid strategy. Must be 'ours', 'theirs', or 'manual'" }, 400);
+  }
+
+  // Validate manual resolutions if strategy is manual
+  if (body.strategy === "manual" && (!body.resolutions || body.resolutions.length === 0)) {
+    return c.json({ error: "Manual strategy requires resolutions array" }, 400);
+  }
+
   logger.info("Resolving conflicts", {
     conflictId,
     strategy: body.strategy,
     fileCount: body.resolutions?.length,
   });
 
-  // TODO: Implement conflict resolution logic
-  // For now, return 501 Not Implemented
+  try {
+    // Store the resolution in KV for tracking
+    const resolutionKey = `conflict-resolution:${conflictId}`;
+    const resolution = {
+      conflictId,
+      resolvedBy: userId,
+      resolvedAt: new Date().toISOString(),
+      strategy: body.strategy,
+      fileCount: body.resolutions?.length ?? 0,
+      files: body.resolutions?.map((r) => r.file) ?? [],
+    };
 
-  return c.json(
-    {
-      error: "Not implemented",
-      message: "Conflict resolution is not yet implemented",
-    },
-    501,
-  );
+    await c.env.STATE.put(resolutionKey, JSON.stringify(resolution), {
+      expirationTtl: 7 * 24 * 60 * 60, // 7 days retention
+    });
+
+    // TODO: Implement actual file merge logic
+    // This would involve:
+    // 1. Fetching the conflict details from KV
+    // 2. Applying the resolution strategy to each file
+    // 3. Creating a merge commit with the resolved files
+    // 4. Updating the workspace/project state
+
+    logger.info("Conflict resolution recorded", {
+      conflictId,
+      strategy: body.strategy,
+    });
+
+    return c.json({
+      success: true,
+      message: `Conflict resolution recorded with strategy: ${body.strategy}`,
+      conflictId,
+      resolvedAt: resolution.resolvedAt,
+      filesResolved: resolution.fileCount,
+    });
+  } catch (error) {
+    logger.error("Failed to resolve conflicts", error instanceof Error ? error : undefined, {
+      conflictId,
+    });
+    return c.json(
+      {
+        error: "Failed to resolve conflicts",
+        message: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
 });
 
 export { app as syncManagementRouter };

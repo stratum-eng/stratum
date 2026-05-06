@@ -36,11 +36,75 @@ jobs:
           path: coverage/
 
   # ========================================================================
+  # Staging Deployment with Automatic Migration
+  # ========================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.url }}
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: true
+    permissions:
+      issues: write
+      contents: read
+    outputs:
+      deployment_url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply D1 Migrations (Staging)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Applying D1 migrations for staging..."
+          npx wrangler d1 migrations apply stratum-staging --env=staging
+          echo "✓ Migrations applied successfully"
+
+      - name: Deploy to Cloudflare Staging
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler deploy --env=staging
+          SUBDOMAIN=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+            | jq -r '.result.subdomain')
+          URL="https://stratum-staging.$SUBDOMAIN.workers.dev"
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "Deployed to: $URL"
+
+      - name: Smoke test - Health endpoint
+        env:
+          STAGING_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -e
+          echo "→ Testing health endpoint: $STAGING_URL/health"
+          curl -sfS --retry 5 --retry-delay 5 "$STAGING_URL/health"
+          echo "✓ Health check passed"
+
+  # ========================================================================
   # Production Deployment with Manual Approval
   # ========================================================================
   deploy-production:
     name: Deploy to Production
-    needs: test
+    needs: [test, deploy-staging]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment:
@@ -67,8 +131,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run production build check
-        run: npm run typecheck
+      - name: Apply D1 Migrations (Production)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Applying D1 migrations for production..."
+          npx wrangler d1 migrations apply stratum
+          echo "✓ Migrations applied successfully"
 
       - name: Deploy to Cloudflare Production
         id: deploy
@@ -122,6 +192,7 @@ jobs:
             **URL:** ${deploymentUrl}
 
             ### Deployment Checklist
+            - [x] D1 migrations applied
             - [x] Build successful
             - [x] Health checks passed
             - [x] Smoke tests completed
@@ -140,6 +211,6 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: "🚨 Production deploy failed",
-              body: `The production deployment workflow failed on \`${context.ref}\`.\n\n[View run](${context.payload.repository.html_url}/actions/runs/${context.runId})`,
+              body: `The production deployment workflow failed on \`${context.ref}\`.\n\n[View Workflow Run](${context.payload.repository.html_url}/actions/runs/${context.runId})`,
               labels: ['deployment', 'production', 'failure']
             });
