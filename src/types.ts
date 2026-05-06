@@ -323,6 +323,8 @@ export interface Change {
   githubPrNumber?: number;
   githubPrUrl?: string;
   githubPrState?: string;
+  githubHeadSha?: string;
+  githubCommentId?: number;
   promotedAt?: string;
   promotedBy?: string;
 }

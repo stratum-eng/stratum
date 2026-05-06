@@ -139,6 +139,8 @@ export async function upsertChangeFromGitHubPR(
   projectId: string,
   workspaceId: string,
   userId: string,
+  owner: string,
+  repo: string,
   prData: {
     number: number;
     title: string;
@@ -170,6 +172,7 @@ export async function upsertChangeFromGitHubPR(
                github_pr_state = ?,
                github_pr_url = ?,
                github_branch = ?,
+               github_head_sha = ?,
                updated_at = CURRENT_TIMESTAMP
            WHERE id = ?`,
         )
@@ -179,6 +182,7 @@ export async function upsertChangeFromGitHubPR(
           prData.state,
           prData.html_url,
           prData.head_branch,
+          prData.head_sha,
           existing.id,
         )
         .run();
@@ -197,8 +201,8 @@ export async function upsertChangeFromGitHubPR(
         `INSERT INTO changes (
           id, project_id, workspace_id, title, description,
           author_type, author_id, status,
-          github_owner, github_repo, github_branch, github_pr_number, github_pr_url, github_pr_state
-        ) VALUES (?, ?, ?, ?, ?, 'human', ?, 'open', ?, ?, ?, ?, ?, ?)`,
+          github_owner, github_repo, github_branch, github_pr_number, github_pr_url, github_pr_state, github_head_sha
+        ) VALUES (?, ?, ?, ?, ?, 'human', ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         id,
@@ -207,12 +211,13 @@ export async function upsertChangeFromGitHubPR(
         prData.title,
         prData.body,
         userId,
-        prData.title.split("/")[0], // Extract owner from title or need to pass separately
-        prData.title.split("/")[1] || "", // Extract repo
+        owner,
+        repo,
         prData.head_branch,
         prData.number,
         prData.html_url,
         prData.state,
+        prData.head_sha,
       )
       .run();
 

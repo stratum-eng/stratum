@@ -3,7 +3,7 @@
  * Processes GitHub webhook events for bidirectional sync
  */
 
-import type { KVNamespace } from "@cloudflare/workers-types";
+import type { D1Database, KVNamespace } from "@cloudflare/workers-types";
 import { Hono } from "hono";
 import { getProjectByGitHubRepo } from "../storage/github-bridge";
 import type { Env } from "../types";
@@ -59,6 +59,7 @@ function hexToBytes(hex: string): ArrayBuffer {
  * Handle push event from GitHub
  */
 async function handlePush(
+  _db: D1Database,
   kv: KVNamespace,
   payload: {
     repository: { owner: { login: string }; name: string };
@@ -101,6 +102,7 @@ async function handlePush(
  * Handle pull request event from GitHub
  */
 async function handlePullRequest(
+  _db: D1Database,
   kv: KVNamespace,
   payload: {
     action: string;
@@ -132,14 +134,25 @@ async function handlePullRequest(
     return;
   }
 
-  // TODO: Sync PR state to Stratum Change
-  logger.info("GitHub PR event detected, would sync to Change", { prNumber, action });
+  const project = projectResult.data;
+  const pr = payload.pull_request;
+
+  // TODO: Implement workspace lookup from branch and user mapping
+  // For now, we log that this would sync PR to Change
+  logger.info("Would sync GitHub PR to Stratum Change", {
+    projectId: project.id,
+    prNumber,
+    headBranch: pr.head.ref,
+    headSha: pr.head.sha,
+    baseBranch: pr.base.ref,
+  });
 }
 
 /**
  * Handle pull request review event from GitHub
  */
 async function handlePullRequestReview(
+  _db: D1Database,
   _kv: KVNamespace,
   payload: {
     action: string;
@@ -159,6 +172,28 @@ async function handlePullRequestReview(
 
   // TODO: Update evaluation/approval status in Stratum
   // This would integrate with the approval workflow
+}
+
+/**
+ * Track webhook failure for monitoring
+ */
+async function trackWebhookFailure(
+  kv: KVNamespace,
+  eventType: string,
+  deliveryId: string,
+  error: string,
+): Promise<void> {
+  const key = `webhook_failure:${Date.now()}:${deliveryId}`;
+  await kv.put(
+    key,
+    JSON.stringify({ eventType, deliveryId, error, timestamp: Date.now() }),
+    { expirationTtl: 604800 }, // 7 day retention
+  );
+
+  // Also increment failure counter for this event type
+  const counterKey = `webhook_failures:${eventType}:${new Date().toISOString().slice(0, 10)}`; // Daily counter
+  const current = Number.parseInt((await kv.get(counterKey)) ?? "0");
+  await kv.put(counterKey, String(current + 1), { expirationTtl: 604800 });
 }
 
 // POST /api/webhooks/github - Main webhook endpoint
@@ -197,6 +232,17 @@ app.post("/", async (c) => {
 
   logger.info("Received valid GitHub webhook", { eventType, deliveryId });
 
+  // Check for duplicate delivery (idempotency)
+  const deliveryKey = `webhook_delivery:${deliveryId}`;
+  const existingDelivery = await c.env.STATE.get(deliveryKey);
+  if (existingDelivery) {
+    logger.info("Duplicate webhook delivery detected, skipping", { deliveryId });
+    return c.json({ received: true, duplicate: true });
+  }
+
+  // Record delivery immediately to prevent race conditions
+  await c.env.STATE.put(deliveryKey, Date.now().toString(), { expirationTtl: 86400 }); // 24 hour retention
+
   // Parse payload
   let data: Record<string, unknown>;
   try {
@@ -210,21 +256,51 @@ app.post("/", async (c) => {
   try {
     switch (eventType) {
       case "push":
-        await handlePush(c.env.STATE, data as Parameters<typeof handlePush>[1], logger);
+        await handlePush(
+          c.env.DB,
+          c.env.STATE,
+          data as {
+            repository: { owner: { login: string }; name: string };
+            ref: string;
+            after: string;
+            pusher: { email: string };
+          },
+          logger,
+        );
         break;
 
       case "pull_request":
         await handlePullRequest(
+          c.env.DB,
           c.env.STATE,
-          data as Parameters<typeof handlePullRequest>[1],
+          data as {
+            action: string;
+            number: number;
+            pull_request: {
+              title: string;
+              body: string;
+              state: string;
+              html_url: string;
+              head: { ref: string; sha: string };
+              base: { ref: string };
+              user: { login: string };
+            };
+            repository: { owner: { login: string }; name: string };
+          },
           logger,
         );
         break;
 
       case "pull_request_review":
         await handlePullRequestReview(
+          c.env.DB,
           c.env.STATE,
-          data as Parameters<typeof handlePullRequestReview>[1],
+          data as {
+            action: string;
+            pull_request: { number: number };
+            review: { state: string; user: { login: string } };
+            repository: { owner: { login: string }; name: string };
+          },
           logger,
         );
         break;
@@ -240,10 +316,20 @@ app.post("/", async (c) => {
     // Return 200 quickly - processing is async
     return c.json({ received: true });
   } catch (error) {
+    // Log error with full context
     logger.error("Error processing webhook", error instanceof Error ? error : undefined, {
       eventType,
       deliveryId,
     });
+
+    // Track webhook failure for monitoring
+    await trackWebhookFailure(
+      c.env.STATE,
+      eventType,
+      deliveryId,
+      error instanceof Error ? error.message : "Unknown error",
+    );
+
     // Still return 200 to prevent GitHub from retrying
     return c.json({ received: true, error: "Processing error logged" });
   }

@@ -226,19 +226,23 @@ export async function postEvaluationComment(
     .bind(commentResult.id, changeId)
     .run();
 
-  // Set commit status
-  // TODO: Get actual HEAD SHA from workspace
-  const statusResult = await client.setStatus({
-    owner: changeResult.githubOwner,
-    repo: changeResult.githubRepo,
-    sha: "HEAD",
-    state: evaluationResults.passed ? "success" : "failure",
-    description: `Stratum evaluation: ${evaluationResults.compositeScore.toFixed(2)}`,
-    context: "stratum/evaluation",
-  });
+  // Set commit status using the head SHA from the PR
+  const headSha = changeResult.githubHeadSha;
+  if (!headSha) {
+    logger.warn("Cannot set commit status: no head SHA available", { changeId });
+  } else {
+    const statusResult = await client.setStatus({
+      owner: changeResult.githubOwner,
+      repo: changeResult.githubRepo,
+      sha: headSha,
+      state: evaluationResults.passed ? "success" : "failure",
+      description: `Stratum evaluation: ${evaluationResults.compositeScore.toFixed(2)}`,
+      context: "stratum/evaluation",
+    });
 
-  if (!statusResult.success) {
-    logger.warn("Failed to set commit status", { error: statusResult.error });
+    if (!statusResult.success) {
+      logger.warn("Failed to set commit status", { error: statusResult.error });
+    }
   }
 
   logger.info("Posted evaluation comment", { changeId, commentId: commentResult.id });
