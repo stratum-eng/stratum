@@ -160,13 +160,15 @@ export async function createImportJob(
     },
   ];
 
+  const now = new Date().toISOString();
+
   try {
     await db
       .prepare(
         `INSERT INTO import_jobs (
           id, project_id, namespace, slug, status, source_url, branch,
-          progress_processed_files, logs, errors, version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          progress_processed_files, logs, errors, version, started_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         params.id,
@@ -180,10 +182,11 @@ export async function createImportJob(
         JSON.stringify(initialLog),
         "[]",
         1, // Initial version for optimistic locking
+        now,
+        now,
       )
       .run();
 
-    const now = new Date().toISOString();
     const progress: ImportProgress = {
       id: params.id,
       projectId: params.projectId,
@@ -274,6 +277,7 @@ async function atomicUpdateImportProgress(
 
   // Perform atomic update with version check
   // The WHERE clause ensures we only update if version hasn't changed
+  const now = new Date().toISOString();
   const result = await db
     .prepare(
       `UPDATE import_jobs SET
@@ -285,7 +289,7 @@ async function atomicUpdateImportProgress(
         errors = ?,
         completed_at = ?,
         version = version + 1,
-        updated_at = CURRENT_TIMESTAMP
+        updated_at = ?
       WHERE namespace = ? AND slug = ? AND version = ?`,
     )
     .bind(
@@ -296,6 +300,7 @@ async function atomicUpdateImportProgress(
       JSON.stringify(updatedLogs),
       JSON.stringify(updatedErrors),
       updates.completedAt ?? null,
+      now,
       namespace,
       slug,
       expectedVersion,
@@ -661,31 +666,27 @@ export async function recoverStalledImport(
       updatedAt: row.updated_at,
     });
 
-    // Mark as failed with stall error using optimistic locking
-    const result = await db
-      .prepare(
-        `UPDATE import_jobs SET
-          status = 'failed',
-          errors = json_insert(errors, '$[#]', json(?)),
-          completed_at = CURRENT_TIMESTAMP,
-          version = version + 1,
-          updated_at = CURRENT_TIMESTAMP
-         WHERE namespace = ? AND slug = ? AND id = ? AND version = ?`,
-      )
-      .bind(
-        JSON.stringify({
-          file: "_import",
-          error: `Import stalled: no progress for longer than ${Math.round(maxStallMs / 1000)} seconds. This may indicate a network issue or timeout with the git provider.`,
-          timestamp: new Date().toISOString(),
-        }),
-        namespace,
-        slug,
-        row.id,
-        row.version,
-      )
-      .run();
+    // Use updateImportProgress to properly handle MAX_ERRORS and timestamps
+    const now = new Date().toISOString();
+    const updateResult = await updateImportProgress(
+      db,
+      namespace,
+      slug,
+      {
+        status: "failed",
+        completedAt: now,
+        errors: [
+          {
+            file: "_import",
+            error: `Import stalled: no progress for longer than ${Math.round(maxStallMs / 1000)} seconds. This may indicate a network issue or timeout with the git provider.`,
+            timestamp: now,
+          },
+        ],
+      },
+      logger,
+    );
 
-    if ((result.meta?.changes ?? 0) > 0) {
+    if (updateResult.success) {
       logger.info("Successfully recovered stalled import", {
         namespace,
         slug,
@@ -694,13 +695,18 @@ export async function recoverStalledImport(
       return ok(true);
     }
 
-    // If no rows changed, version mismatch - import was updated elsewhere
-    logger.debug("Stalled import was updated elsewhere, skipping recovery", {
-      namespace,
-      slug,
-      importId: row.id,
-    });
-    return ok(false);
+    // If update failed due to version conflict, the import was updated elsewhere
+    if (updateResult.error.code === "CONFLICT") {
+      logger.debug("Stalled import was updated elsewhere, skipping recovery", {
+        namespace,
+        slug,
+        importId: row.id,
+      });
+      return ok(false);
+    }
+
+    // Other error
+    return err(updateResult.error);
   } catch (error) {
     logger.error("Failed to recover stalled import", error instanceof Error ? error : undefined, {
       namespace,

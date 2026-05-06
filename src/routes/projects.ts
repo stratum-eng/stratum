@@ -463,6 +463,15 @@ app.post(
               importId,
             },
           );
+          // Update import status to failed before rethrowing
+          await updateImportStatus(
+            c.env.DB,
+            namespace,
+            slug,
+            "failed",
+            logger,
+            `Failed to enqueue import job: ${queueError instanceof Error ? queueError.message : String(queueError)}`,
+          );
           // Don't fall back to direct processing here - the queue exists but send failed,
           // which could lead to duplicate work. Let the client retry instead.
           throw queueError;
@@ -1136,6 +1145,21 @@ app.post("/:namespace/:slug/sync", async (c) => {
           slug,
           importId,
         },
+      );
+      // Clear sync in-progress state and mark import as failed before rethrowing
+      await updateProjectSyncError(
+        c.env.STATE,
+        project,
+        `Failed to enqueue sync job: ${queueError instanceof Error ? queueError.message : String(queueError)}`,
+        logger,
+      );
+      await updateImportStatus(
+        c.env.DB,
+        namespace,
+        slug,
+        "failed",
+        logger,
+        `Failed to enqueue sync job: ${queueError instanceof Error ? queueError.message : String(queueError)}`,
       );
       // Don't fall back to direct processing here - the queue exists but send failed,
       // which could lead to duplicate work. Let the client retry instead.
