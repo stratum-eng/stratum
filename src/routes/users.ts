@@ -70,32 +70,40 @@ app.get("/check-username", async (c) => {
     method: c.req.method,
   });
 
-  const username = c.req.query("username");
+  try {
+    const username = c.req.query("username");
 
-  if (!username || typeof username !== "string") {
-    return c.json({ available: false, message: "Username is required" }, 400);
+    if (!username || typeof username !== "string") {
+      return c.json({ available: false, message: "Username is required" }, 400);
+    }
+
+    const normalizedUsername = username.toLowerCase().trim();
+
+    // Validate username using shared validator (includes reserved name check)
+    const validation = validateUsername(normalizedUsername, logger);
+    if (!validation.success) {
+      const message = validation.error[0]?.message ?? "Invalid username format";
+      return c.json({ available: false, message }, 400);
+    }
+
+    // Check if username exists
+    const existingUser = await getUserByUsername(c.env.DB, normalizedUsername, logger);
+
+    if (existingUser.success) {
+      return c.json({
+        available: false,
+        message: "This username is already taken",
+      });
+    }
+
+    return c.json({ available: true, message: "Username is available" });
+  } catch (error) {
+    logger.error(
+      "Error checking username availability",
+      error instanceof Error ? error : undefined,
+    );
+    return c.json({ available: false, message: "Unable to check username availability" }, 500);
   }
-
-  const normalizedUsername = username.toLowerCase().trim();
-
-  // Validate username using shared validator (includes reserved name check)
-  const validation = validateUsername(normalizedUsername, logger);
-  if (!validation.success) {
-    const message = validation.error[0]?.message ?? "Invalid username format";
-    return c.json({ available: false, message }, 400);
-  }
-
-  // Check if username exists
-  const existingUser = await getUserByUsername(c.env.DB, normalizedUsername, logger);
-
-  if (existingUser.success) {
-    return c.json({
-      available: false,
-      message: "This username is already taken",
-    });
-  }
-
-  return c.json({ available: true, message: "Username is available" });
 });
 
 export { app as usersRouter };
