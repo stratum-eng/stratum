@@ -3,6 +3,15 @@ main = "src/index.ts"
 compatibility_date = "2026-04-29"
 compatibility_flags = ["nodejs_compat"]
 
+# Observability - Workers Logs and Traces
+[observability]
+enabled = true
+head_sampling_rate = 1.0  # 100% sampling for full visibility
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.1  # 10% sampling for traces to manage cost
+
 [[artifacts]]
 binding = "ARTIFACTS"
 namespace = "stratum-prod"
@@ -71,6 +80,15 @@ name = "EMAIL"
 # Staging environment
 [env.staging]
 name = "stratum-staging"
+
+# Observability for staging - full sampling for debugging
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[env.staging.observability.traces]
+enabled = true
+head_sampling_rate = 1.0  # 100% sampling in staging for debugging
 
 [[migrations]]
 tag = "v1"

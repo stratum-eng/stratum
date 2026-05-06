@@ -238,6 +238,7 @@ export interface ImportProgress {
   branch: string;
   startedAt: string;
   completedAt?: string;
+  updatedAt: string; // For stall detection
   /**
    * Version field for optimistic locking.
    * Incremented on each update to prevent race conditions (TOCTOU).

@@ -112,6 +112,7 @@ function rowToImportProgress(row: ImportJobRow): ImportProgress {
     sourceUrl: row.source_url,
     branch: row.branch,
     startedAt: row.started_at,
+    updatedAt: row.updated_at,
     version: row.version,
     progress,
     errors: parseErrors(row.errors),
@@ -182,6 +183,7 @@ export async function createImportJob(
       )
       .run();
 
+    const now = new Date().toISOString();
     const progress: ImportProgress = {
       id: params.id,
       projectId: params.projectId,
@@ -190,7 +192,8 @@ export async function createImportJob(
       status: "queued",
       sourceUrl: params.sourceUrl,
       branch: params.branch,
-      startedAt: new Date().toISOString(),
+      startedAt: now,
+      updatedAt: now,
       version: 1, // Initial version for optimistic locking
       progress: {
         processedFiles: 0,
@@ -612,5 +615,97 @@ export async function getImportById(
   } catch (error) {
     logger.error("Failed to get import by ID", error instanceof Error ? error : undefined);
     return err(new AppError("Failed to get import by ID", "STORAGE_ERROR", 500));
+  }
+}
+
+/**
+ * Detect and recover from stalled imports.
+ * Imports that have been in 'cloning' or 'processing' state for too long
+ * are likely stuck and should be marked as failed.
+ *
+ * @param db D1 database instance
+ * @param namespace Project namespace
+ * @param slug Project slug
+ * @param maxStallMs Maximum time allowed in active state before considered stalled (default: 5 minutes)
+ * @param logger Logger instance
+ * @returns Result indicating if the import was recovered (marked as failed)
+ */
+export async function recoverStalledImport(
+  db: D1Database,
+  namespace: string,
+  slug: string,
+  maxStallMs: number,
+  logger: Logger,
+): Promise<Result<boolean, AppError>> {
+  try {
+    const row = await db
+      .prepare(
+        `SELECT * FROM import_jobs 
+         WHERE namespace = ? AND slug = ? 
+         AND status IN ('cloning', 'processing', 'syncing')
+         AND updated_at < datetime('now', ?)
+         ORDER BY updated_at DESC LIMIT 1`,
+      )
+      .bind(namespace, slug, `-${Math.ceil(maxStallMs / 1000)} seconds`)
+      .first<ImportJobRow>();
+
+    if (!row) {
+      return ok(false); // No stalled import found
+    }
+
+    logger.warn("Detected stalled import, marking as failed", {
+      namespace,
+      slug,
+      importId: row.id,
+      status: row.status,
+      updatedAt: row.updated_at,
+    });
+
+    // Mark as failed with stall error using optimistic locking
+    const result = await db
+      .prepare(
+        `UPDATE import_jobs SET
+          status = 'failed',
+          errors = json_insert(errors, '$[#]', json(?)),
+          completed_at = CURRENT_TIMESTAMP,
+          version = version + 1,
+          updated_at = CURRENT_TIMESTAMP
+         WHERE namespace = ? AND slug = ? AND id = ? AND version = ?`,
+      )
+      .bind(
+        JSON.stringify({
+          file: "_import",
+          error: `Import stalled: no progress for longer than ${Math.round(maxStallMs / 1000)} seconds. This may indicate a network issue or timeout with the git provider.`,
+          timestamp: new Date().toISOString(),
+        }),
+        namespace,
+        slug,
+        row.id,
+        row.version,
+      )
+      .run();
+
+    if ((result.meta?.changes ?? 0) > 0) {
+      logger.info("Successfully recovered stalled import", {
+        namespace,
+        slug,
+        importId: row.id,
+      });
+      return ok(true);
+    }
+
+    // If no rows changed, version mismatch - import was updated elsewhere
+    logger.debug("Stalled import was updated elsewhere, skipping recovery", {
+      namespace,
+      slug,
+      importId: row.id,
+    });
+    return ok(false);
+  } catch (error) {
+    logger.error("Failed to recover stalled import", error instanceof Error ? error : undefined, {
+      namespace,
+      slug,
+    });
+    return err(new AppError("Failed to recover stalled import", "STORAGE_ERROR", 500));
   }
 }
