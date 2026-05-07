@@ -288,6 +288,11 @@ jobs:
           [[send_email]]
           name = "EMAIL"
 
+          # Add custom domain - wrangler will create this automatically on deploy
+          [[routes]]
+          pattern = "${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev"
+          custom_domain = true
+
           [vars]
           POSTHOG_HOST = "https://app.posthog.com"
           OAUTH_REDIRECT_URI = "https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev/auth/github/callback"
@@ -395,53 +400,18 @@ jobs:
           
           echo "✓ DNS record created/updated successfully"
 
-      - name: Add Custom Domain to Worker
+      - name: Verify Custom Domain
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
           SUBDOMAIN: ${{ env.PREVIEW_SUBDOMAIN }}
         run: |
-          echo "Adding custom domain to Worker..."
+          echo "Verifying custom domain was added by wrangler deploy..."
           HOSTNAME="${SUBDOMAIN}.staging.app.usestratum.dev"
           echo "Hostname: $HOSTNAME"
-          
-          # Try to add custom domain via Workers API
-          DOMAIN_RESPONSE=$(curl -s -X POST \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"environment\": \"production\",
-              \"hostname\": \"${HOSTNAME}\",
-              \"service\": \"${{ env.WORKER_NAME }}\",
-              \"zone_id\": \"${CLOUDFLARE_ZONE_ID}\"
-            }")
-          
-          echo "API Response: $DOMAIN_RESPONSE"
-          
-          DOMAIN_SUCCESS=$(echo "$DOMAIN_RESPONSE" | jq -r '.success // false')
-          DOMAIN_RESULT=$(echo "$DOMAIN_RESPONSE" | jq -r '.result.id // empty')
-          
-          if [ "$DOMAIN_SUCCESS" = "true" ] && [ -n "$DOMAIN_RESULT" ]; then
-            echo "✓ Custom domain added to Worker"
-            echo "Domain ID: $DOMAIN_RESULT"
-            echo "Note: SSL certificate provisioning may take 2-3 minutes"
-          else
-            # Check if the error is that the domain already exists
-            ERROR_MSG=$(echo "$DOMAIN_RESPONSE" | jq -r '.errors[0].message // empty')
-            if [[ "$ERROR_MSG" == *"already exists"* ]] || [[ "$ERROR_MSG" == *"already associated"* ]]; then
-              echo "✓ Custom domain already exists on this Worker"
-            else
-              echo "⚠️ Could not add custom domain via API: $ERROR_MSG"
-              echo ""
-              echo "The Worker is still accessible via workers.dev URL."
-              echo "To add the custom domain manually:"
-              echo "Workers & Pages → ${{ env.WORKER_NAME }} → Triggers → Add Custom Domain"
-              echo "Domain: ${HOSTNAME}"
-              # Don't fail the workflow - workers.dev URL will still work
-            fi
-          fi
+          echo ""
+          echo "Note: The custom domain was added via wrangler.preview.toml routes config."
+          echo "SSL certificate provisioning may take 2-3 minutes."
 
       - name: Smoke Tests
         env:
