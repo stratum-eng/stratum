@@ -22,6 +22,9 @@ jobs:
     name: Cleanup Preview Environment
     runs-on: ubuntu-latest
     if: github.event.action == 'closed'
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Delete D1 Database
         env:
@@ -38,11 +41,19 @@ jobs:
           
           if [ -n "$DB_ID" ] && [ "$DB_ID" != "null" ]; then
             echo "Found database ID: $DB_ID"
-            curl -s -X DELETE \
+            DELETE_RESPONSE=$(curl -s -X DELETE \
               "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${DB_ID}" \
               -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-              -H "Content-Type: application/json"
-            echo "✓ Database deleted"
+              -H "Content-Type: application/json")
+            
+            DELETE_SUCCESS=$(echo "$DELETE_RESPONSE" | jq -r '.success // false')
+            if [ "$DELETE_SUCCESS" = "true" ]; then
+              echo "✓ Database deleted"
+            else
+              echo "❌ Failed to delete database"
+              echo "Response: $DELETE_RESPONSE"
+              exit 1
+            fi
           else
             echo "Database not found, may have been already deleted"
           fi
@@ -480,11 +491,12 @@ jobs:
 
             > 💡 **Note:** This environment will be automatically deleted when the PR is closed or merged.`;
 
-            // Find existing comment
-            const { data: comments } = await github.rest.issues.listComments({
+            // Find existing comment (paginate to get all comments)
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number
+              issue_number: context.issue.number,
+              per_page: 100
             });
 
             const botComment = comments.find(comment =>

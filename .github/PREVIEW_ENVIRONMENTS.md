@@ -53,5 +53,5 @@ Ensure you have a wildcard DNS record:
 ## Limitations
 
 - D1 databases have a limit (free tier: 500MB per DB, 10GB total)
-- Preview environments don't persist data between PR syncs
+- Preview environment databases persist data between PR syncs (databases are reused when the deploy job's "Create D1 Database" step finds an existing database by name), and are only deleted when the PR is closed or merged
 - Old/unused databases should be manually cleaned if you hit limits
