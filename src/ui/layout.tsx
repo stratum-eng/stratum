@@ -2,7 +2,7 @@ import type { FC } from "hono/jsx";
 
 interface LayoutProps {
   title: string;
-  user?: { id: string; email: string; username?: string } | null | undefined;
+  user?: { id: string; email: string; username: string } | null | undefined;
   children?: unknown;
 }
 

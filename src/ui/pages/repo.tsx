@@ -21,7 +21,7 @@ interface RepoProps {
   files: string[];
   log: Array<{ sha: string; message: string; author: string; timestamp: number }>;
   readme?: string | null;
-  user?: { id: string; email: string; username?: string } | null;
+  user?: { id: string; email: string; username: string } | null;
   importProgress?: ImportProgress | null;
   syncStatus?: {
     hasUpdates?: boolean;

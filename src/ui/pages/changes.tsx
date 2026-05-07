@@ -15,7 +15,7 @@ interface ChangesProps {
     evalPassed?: boolean;
     createdAt: string;
   }>;
-  user?: { id: string; email: string; username?: string } | null;
+  user?: { id: string; email: string; username: string } | null;
 }
 
 function statusBadgeClass(status: string): string {
