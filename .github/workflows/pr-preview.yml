@@ -406,8 +406,7 @@ jobs:
           HOSTNAME="${SUBDOMAIN}.staging.app.usestratum.dev"
           echo "Hostname: $HOSTNAME"
           
-          # Add custom domain via Workers API
-          # Note: Using POST to /workers/domains (not PUT to /workers/scripts/.../domains/records)
+          # Try to add custom domain via Workers API
           DOMAIN_RESPONSE=$(curl -s -X POST \
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
@@ -422,7 +421,6 @@ jobs:
           echo "API Response: $DOMAIN_RESPONSE"
           
           DOMAIN_SUCCESS=$(echo "$DOMAIN_RESPONSE" | jq -r '.success // false')
-          # Check if the response contains a result with an id (success) or errors
           DOMAIN_RESULT=$(echo "$DOMAIN_RESPONSE" | jq -r '.result.id // empty')
           
           if [ "$DOMAIN_SUCCESS" = "true" ] && [ -n "$DOMAIN_RESULT" ]; then
@@ -435,12 +433,13 @@ jobs:
             if [[ "$ERROR_MSG" == *"already exists"* ]] || [[ "$ERROR_MSG" == *"already associated"* ]]; then
               echo "✓ Custom domain already exists on this Worker"
             else
-              echo "⚠️ Could not add custom domain via API"
-              echo "Response: $DOMAIN_RESPONSE"
+              echo "⚠️ Could not add custom domain via API: $ERROR_MSG"
               echo ""
-              echo "You may need to manually add the custom domain in Cloudflare dashboard:"
+              echo "The Worker is still accessible via workers.dev URL."
+              echo "To add the custom domain manually:"
               echo "Workers & Pages → ${{ env.WORKER_NAME }} → Triggers → Add Custom Domain"
-              exit 1
+              echo "Domain: ${HOSTNAME}"
+              # Don't fail the workflow - workers.dev URL will still work
             fi
           fi
 
