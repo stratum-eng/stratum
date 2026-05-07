@@ -70,30 +70,6 @@ jobs:
             -H "Content-Type: application/json" || true
           echo "✓ Worker deletion attempted"
 
-      - name: Delete DNS Record
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-        run: |
-          echo "Deleting DNS record: ${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev"
-          # Get record ID
-          RECORD_ID=$(curl -s -X GET \
-            "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records?name=${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            | jq -r ".result[0]?.id")
-          
-          if [ -n "$RECORD_ID" ] && [ "$RECORD_ID" != "null" ]; then
-            echo "Found record ID: $RECORD_ID"
-            curl -s -X DELETE \
-              "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${RECORD_ID}" \
-              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-              -H "Content-Type: application/json"
-            echo "✓ DNS record deleted"
-          else
-            echo "DNS record not found"
-          fi
-
       - name: Comment on PR
         uses: actions/github-script@v7
         with:
@@ -259,6 +235,9 @@ jobs:
           compatibility_date = "2026-04-29"
           compatibility_flags = ["nodejs_compat"]
 
+          # Keep workers.dev URL enabled
+          workers_dev = true
+
           [observability]
           enabled = true
           head_sampling_rate = 1.0
@@ -289,9 +268,11 @@ jobs:
           name = "EMAIL"
 
           # Add custom domain - wrangler will create this automatically on deploy
+          # override_existing_dns_record allows wrangler to take over the DNS record we created
           [[routes]]
           pattern = "${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev"
           custom_domain = true
+          zone_name = "staging.app.usestratum.dev"
 
           [vars]
           POSTHOG_HOST = "https://app.posthog.com"
@@ -316,102 +297,12 @@ jobs:
           echo "preview_url=$PREVIEW_URL" >> $GITHUB_OUTPUT
           echo "Deployed to: $PREVIEW_URL"
 
-      - name: Create DNS Record
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-          SUBDOMAIN: ${{ env.PREVIEW_SUBDOMAIN }}
+      - name: Wait for SSL
         run: |
-          echo "Creating DNS record: ${SUBDOMAIN}.staging.app.usestratum.dev"
-          echo "Zone ID: ${CLOUDFLARE_ZONE_ID:0:8}... (truncated)"
-          echo "Account ID: ${CLOUDFLARE_ACCOUNT_ID:0:8}... (truncated)"
-          
-          # Get Worker subdomain for CNAME target
-          echo "Fetching workers subdomain..."
-          WORKER_RESPONSE=$(curl -s -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain")
-          
-          WORKER_SUCCESS=$(echo "$WORKER_RESPONSE" | jq -r '.success')
-          if [ "$WORKER_SUCCESS" != "true" ]; then
-            echo "❌ Failed to get workers subdomain"
-            echo "Response: $WORKER_RESPONSE"
-            exit 1
-          fi
-          
-          WORKER_SUBDOMAIN=$(echo "$WORKER_RESPONSE" | jq -r '.result.subdomain')
-          CNAME_TARGET="${{ env.WORKER_NAME }}.${WORKER_SUBDOMAIN}.workers.dev"
-          echo "CNAME target: $CNAME_TARGET"
-          
-          # Check if record exists
-          echo "Checking for existing DNS record..."
-          LIST_RESPONSE=$(curl -s -X GET \
-            "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records?name=${SUBDOMAIN}.staging.app.usestratum.dev" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json")
-          
-          LIST_SUCCESS=$(echo "$LIST_RESPONSE" | jq -r '.success')
-          if [ "$LIST_SUCCESS" != "true" ]; then
-            echo "❌ Failed to list DNS records"
-            echo "Response: $LIST_RESPONSE"
-            echo ""
-            echo "This usually means:"
-            echo "1. The CLOUDFLARE_ZONE_ID secret is incorrect"
-            echo "2. The API token doesn't have DNS:Edit permission for this zone"
-            exit 1
-          fi
-          
-          EXISTING_RECORD=$(echo "$LIST_RESPONSE" | jq -r '.result[0]?.id // empty')
-          
-          # Create or update DNS record
-          if [ -n "$EXISTING_RECORD" ]; then
-            echo "Updating existing DNS record: $EXISTING_RECORD"
-            DNS_RESPONSE=$(curl -s -X PUT \
-              "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${EXISTING_RECORD}" \
-              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "{
-                \"type\": \"CNAME\",
-                \"name\": \"${SUBDOMAIN}.staging.app.usestratum.dev\",
-                \"content\": \"${CNAME_TARGET}\",
-                \"proxied\": true
-              }")
-          else
-            echo "Creating new DNS record"
-            DNS_RESPONSE=$(curl -s -X POST \
-              "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records" \
-              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "{
-                \"type\": \"CNAME\",
-                \"name\": \"${SUBDOMAIN}.staging.app.usestratum.dev\",
-                \"content\": \"${CNAME_TARGET}\",
-                \"proxied\": true
-              }")
-          fi
-          
-          # Check response
-          DNS_SUCCESS=$(echo "$DNS_RESPONSE" | jq -r '.success')
-          if [ "$DNS_SUCCESS" != "true" ]; then
-            echo "❌ Failed to create/update DNS record"
-            echo "Response: $DNS_RESPONSE"
-            exit 1
-          fi
-          
-          echo "✓ DNS record created/updated successfully"
-
-      - name: Verify Custom Domain
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          SUBDOMAIN: ${{ env.PREVIEW_SUBDOMAIN }}
-        run: |
-          echo "Verifying custom domain was added by wrangler deploy..."
-          HOSTNAME="${SUBDOMAIN}.staging.app.usestratum.dev"
-          echo "Hostname: $HOSTNAME"
+          echo "⏳ Waiting for SSL certificate provisioning..."
+          echo "Custom domain: https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev"
           echo ""
-          echo "Note: The custom domain was added via wrangler.preview.toml routes config."
-          echo "SSL certificate provisioning may take 2-3 minutes."
+          echo "Note: SSL certificate provisioning typically takes 30-60 seconds."
 
       - name: Smoke Tests
         env:
