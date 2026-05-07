@@ -13,13 +13,30 @@ const http = {
     url,
     method = "GET",
     headers = {},
-    body,
+    body: requestBody,
   }: {
     url: string;
     method?: string;
     headers?: Record<string, string>;
-    body?: Uint8Array;
+    body?: AsyncIterableIterator<Uint8Array>;
   }) {
+    // Convert AsyncIterableIterator to Uint8Array if present
+    let body: Uint8Array | undefined;
+    if (requestBody) {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of requestBody) {
+        chunks.push(chunk);
+      }
+      // Concatenate chunks
+      const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      body = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        body.set(chunk, offset);
+        offset += chunk.length;
+      }
+    }
+
     const response = await fetch(url, {
       method,
       headers,
@@ -31,12 +48,18 @@ const http = {
       resHeaders[key] = value;
     });
 
+    // Return body as async iterable to match expected interface
+    const responseBody = new Uint8Array(await response.arrayBuffer());
+    async function* bodyGenerator(): AsyncIterableIterator<Uint8Array> {
+      yield responseBody;
+    }
+
     return {
       url: response.url,
       statusCode: response.status,
       statusMessage: response.statusText,
       headers: resHeaders,
-      body: new Uint8Array(await response.arrayBuffer()),
+      body: bodyGenerator(),
     };
   },
 };
