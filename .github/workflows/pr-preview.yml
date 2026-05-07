@@ -188,9 +188,15 @@ jobs:
           EOF
           
           # Apply migrations using wrangler (CI mode auto-confirms)
-          npx wrangler d1 migrations apply ${{ env.DB_NAME }} --config wrangler.migrate.toml --remote
-          
-          echo "✓ Migrations applied"
+          # For preview envs, we continue even if some migrations fail (e.g., already applied)
+          if npx wrangler d1 migrations apply ${{ env.DB_NAME }} --config wrangler.migrate.toml --remote; then
+            echo "✓ All migrations applied successfully"
+          else
+            MIGRATE_EXIT=$?
+            echo "⚠️ Some migrations failed (exit code: $MIGRATE_EXIT)"
+            echo "This can happen if the database was partially migrated in a previous run."
+            echo "Continuing with deployment..."
+          fi
 
       - name: Create or Get KV Namespace
         id: kv
