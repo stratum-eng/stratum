@@ -1,11 +1,45 @@
 import { createPatch } from "diff";
 import git from "isomorphic-git";
-import http from "isomorphic-git/http/web";
 import type { ArtifactsCreateResult, ArtifactsNamespace, Author, CommitLogEntry } from "../types";
 import { AppError, ExternalServiceError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, fromPromise, ok } from "../utils/result";
 import { MemoryFS } from "./memory-fs";
+
+// Custom HTTP client for Cloudflare Workers
+// isomorphic-git/http/web expects browser APIs that don't exist in Workers
+const http = {
+  async request({
+    url,
+    method = "GET",
+    headers = {},
+    body,
+  }: {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: Uint8Array;
+  }) {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body,
+    });
+
+    const resHeaders: Record<string, string> = {};
+    response.headers.forEach((value, key) => {
+      resHeaders[key] = value;
+    });
+
+    return {
+      url: response.url,
+      statusCode: response.status,
+      statusMessage: response.statusText,
+      headers: resHeaders,
+      body: new Uint8Array(await response.arrayBuffer()),
+    };
+  },
+};
 
 const DIR = "/";
 
