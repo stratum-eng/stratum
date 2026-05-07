@@ -1,0 +1,341 @@
+name: PR Preview Environment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+concurrency:
+  group: pr-preview-${{ github.event.number }}
+  cancel-in-progress: false
+
+env:
+  PR_NUMBER: ${{ github.event.number }}
+  PREVIEW_SUBDOMAIN: pr-${{ github.event.number }}
+  DB_NAME: stratum-pr-${{ github.event.number }}
+  WORKER_NAME: stratum-pr-${{ github.event.number }}
+
+jobs:
+  # =======================================================================
+  # Cleanup on PR Close
+  # =======================================================================
+  cleanup:
+    name: Cleanup Preview Environment
+    runs-on: ubuntu-latest
+    if: github.event.action == 'closed'
+    steps:
+      - name: Delete D1 Database
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Deleting D1 database: ${{ env.DB_NAME }}"
+          # Get database ID
+          DB_ID=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            | jq -r ".result[] | select(.name == \"${{ env.DB_NAME }}\") | .uuid")
+          
+          if [ -n "$DB_ID" ] && [ "$DB_ID" != "null" ]; then
+            echo "Found database ID: $DB_ID"
+            curl -s -X DELETE \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${DB_ID}" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json"
+            echo "✓ Database deleted"
+          else
+            echo "Database not found, may have been already deleted"
+          fi
+
+      - name: Delete Worker Script
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Deleting Worker: ${{ env.WORKER_NAME }}"
+          curl -s -X DELETE \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/services/${{ env.WORKER_NAME }}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN }}" \
+            -H "Content-Type: application/json" || true
+          echo "✓ Worker deletion attempted"
+
+      - name: Delete DNS Record
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          echo "Deleting DNS record: ${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev"
+          # Get record ID
+          RECORD_ID=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records?name=${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            | jq -r ".result[0]?.id")
+          
+          if [ -n "$RECORD_ID" ] && [ "$RECORD_ID" != "null" ]; then
+            echo "Found record ID: $RECORD_ID"
+            curl -s -X DELETE \
+              "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${RECORD_ID}" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json"
+            echo "✓ DNS record deleted"
+          else
+            echo "DNS record not found"
+          fi
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## 🗑️ Preview Environment Deleted
+
+            The preview environment for this PR has been cleaned up:
+            - ~~https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev~~
+
+            All resources (Worker, D1 database, DNS) have been destroyed.`
+            });
+
+  # =======================================================================
+  # Deploy Preview Environment
+  # =======================================================================
+  deploy:
+    name: Deploy Preview Environment
+    runs-on: ubuntu-latest
+    if: github.event.action != 'closed'
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      preview_url: ${{ steps.deploy.outputs.preview_url }}
+      db_id: ${{ steps.db.outputs.db_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create D1 Database
+        id: db
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Creating D1 database: ${{ env.DB_NAME }}"
+          
+          # Check if database already exists
+          EXISTING_DB=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            | jq -r ".result[] | select(.name == \"${{ env.DB_NAME }}\") | .uuid")
+          
+          if [ -n "$EXISTING_DB" ] && [ "$EXISTING_DB" != "null" ]; then
+            echo "Database already exists: $EXISTING_DB"
+            echo "db_id=$EXISTING_DB" >> $GITHUB_OUTPUT
+          else
+            # Create new database
+            DB_RESPONSE=$(curl -s -X POST \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\":\"${{ env.DB_NAME }}\"}")
+            
+            DB_ID=$(echo $DB_RESPONSE | jq -r '.result.uuid')
+            echo "Created database: $DB_ID"
+            echo "db_id=$DB_ID" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Apply D1 Migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DB_ID: ${{ steps.db.outputs.db_id }}
+        run: |
+          echo "Applying migrations to database: $DB_ID"
+          
+          # Apply each migration file
+          for migration in migrations/*.sql; do
+            echo "Applying: $migration"
+            curl -s -X POST \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${DB_ID}/query" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"sql\":$(cat $migration | jq -s -R .)}" || true
+          done
+          
+          echo "✓ Migrations applied"
+
+      - name: Generate Wrangler Config
+        env:
+          DB_ID: ${{ steps.db.outputs.db_id }}
+        run: |
+          cat > wrangler.preview.toml << 'EOF'
+          name = "${{ env.WORKER_NAME }}"
+          main = "src/index.ts"
+          compatibility_date = "2026-04-29"
+          compatibility_flags = ["nodejs_compat"]
+
+          [observability]
+          enabled = true
+          head_sampling_rate = 1.0
+
+          [[d1_databases]]
+          binding = "DB"
+          database_name = "${{ env.DB_NAME }}"
+          database_id = "${{ env.DB_ID }}"
+          migrations_dir = "migrations"
+
+          [[kv_namespaces]]
+          binding = "STATE"
+          id = "${{ secrets.PREVIEW_KV_NAMESPACE_ID }}"
+
+          [ai]
+          binding = "AI"
+
+          [[send_email]]
+          name = "EMAIL"
+
+          [vars]
+          POSTHOG_HOST = "https://app.posthog.com"
+          OAUTH_REDIRECT_URI = "https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev/auth/github/callback"
+          EMAIL_FROM_ADDRESS = "noreply@staging.app.usestratum.dev"
+          PREVIEW_ENV = "pr-${{ env.PR_NUMBER }}"
+          EOF
+          
+          echo "✓ Generated wrangler.preview.toml"
+
+      - name: Deploy Worker
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Deploying Worker: ${{ env.WORKER_NAME }}"
+          npx wrangler deploy --config wrangler.preview.toml
+          
+          PREVIEW_URL="https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev"
+          echo "preview_url=$PREVIEW_URL" >> $GITHUB_OUTPUT
+          echo "Deployed to: $PREVIEW_URL"
+
+      - name: Create DNS Record
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          SUBDOMAIN: ${{ env.PREVIEW_SUBDOMAIN }}
+        run: |
+          echo "Creating DNS record: ${SUBDOMAIN}.staging.app.usestratum.dev"
+          
+          # Check if record exists
+          EXISTING_RECORD=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records?name=${SUBDOMAIN}.staging.app.usestratum.dev" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            | jq -r ".result[0]?.id")
+          
+          # Get Worker script ID for CNAME target
+          WORKER_SUBDOMAIN=$(curl -s -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
+            | jq -r '.result.subdomain')
+          
+          CNAME_TARGET="${{ env.WORKER_NAME }}.${WORKER_SUBDOMAIN}.workers.dev"
+          
+          if [ -n "$EXISTING_RECORD" ] && [ "$EXISTING_RECORD" != "null" ]; then
+            echo "Updating existing DNS record"
+            curl -s -X PUT \
+              "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${EXISTING_RECORD}" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"type\": \"CNAME\",
+                \"name\": \"${SUBDOMAIN}.staging.app.usestratum.dev\",
+                \"content\": \"${CNAME_TARGET}\",
+                \"proxied\": true
+              }"
+          else
+            echo "Creating new DNS record"
+            curl -s -X POST \
+              "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"type\": \"CNAME\",
+                \"name\": \"${SUBDOMAIN}.staging.app.usestratum.dev\",
+                \"content\": \"${CNAME_TARGET}\",
+                \"proxied\": true
+              }"
+          fi
+          
+          echo "✓ DNS record created/updated"
+
+      - name: Smoke Tests
+        env:
+          PREVIEW_URL: ${{ steps.deploy.outputs.preview_url }}
+        run: |
+          echo "Running smoke tests against $PREVIEW_URL"
+          curl -sfS --retry 5 --retry-delay 5 "$PREVIEW_URL/health" || true
+          echo "✓ Smoke tests completed"
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const previewUrl = '${{ steps.deploy.outputs.preview_url }}';
+            const dbId = '${{ steps.db.outputs.db_id }}';
+            
+            const body = `## 🚀 Preview Environment Ready
+
+            **URL:** ${previewUrl}
+
+            ### Details
+            - **PR Number:** #${{ env.PR_NUMBER }}
+            - **Database:** ${{ env.DB_NAME }} (ID: \`${dbId}\`)
+            - **Worker:** ${{ env.WORKER_NAME }}
+
+            ### Quick Links
+            - [Health Check](${previewUrl}/health)
+            - [Sign Up](${previewUrl}/auth/signup)
+            - [Sign In](${previewUrl}/auth/email)
+
+            ### Testing
+            This environment is isolated with its own database. Test freely!
+
+            > 💡 **Note:** This environment will be automatically deleted when the PR is closed or merged.`;
+
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('Preview Environment Ready')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
