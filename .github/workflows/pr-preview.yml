@@ -268,11 +268,11 @@ jobs:
           name = "EMAIL"
 
           # Add custom domain - wrangler will create this automatically on deploy
-          # override_existing_dns_record allows wrangler to take over the DNS record we created
+          # Note: zone_name must be the actual Cloudflare zone (usestratum.dev), not the subdomain
           [[routes]]
           pattern = "${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev"
           custom_domain = true
-          zone_name = "staging.app.usestratum.dev"
+          zone_name = "usestratum.dev"
 
           [vars]
           POSTHOG_HOST = "https://app.posthog.com"
