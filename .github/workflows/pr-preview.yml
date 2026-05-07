@@ -187,10 +187,10 @@ jobs:
           migrations_dir = "migrations"
           EOF
           
-          # Apply migrations using wrangler
-          npx wrangler d1 migrations apply ${{ env.DB_NAME }} --config wrangler.migrate.toml --remote --yes || true
+          # Apply migrations using wrangler (CI mode auto-confirms)
+          npx wrangler d1 migrations apply ${{ env.DB_NAME }} --config wrangler.migrate.toml --remote || echo "Migrations may have already been applied or failed"
           
-          echo "✓ Migrations applied"
+          echo "✓ Migrations applied (or already up to date)"
 
       - name: Create or Get KV Namespace
         id: kv
@@ -263,13 +263,18 @@ jobs:
           EOF
           fi
           
-          cat >> wrangler.preview.toml << 'EOF'
+          cat >> wrangler.preview.toml << EOF
 
           [ai]
           binding = "AI"
 
           [[send_email]]
           name = "EMAIL"
+
+          # Routes for custom domain
+          [[routes]]
+          pattern = "${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev/*"
+          custom_domain = true
 
           [vars]
           POSTHOG_HOST = "https://app.posthog.com"
