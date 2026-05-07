@@ -271,11 +271,6 @@ jobs:
           [[send_email]]
           name = "EMAIL"
 
-          # Routes for custom domain
-          [[routes]]
-          pattern = "${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev/*"
-          custom_domain = true
-
           [vars]
           POSTHOG_HOST = "https://app.posthog.com"
           OAUTH_REDIRECT_URI = "https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev/auth/github/callback"
