@@ -55,7 +55,7 @@ jobs:
           echo "Deleting Worker: ${{ env.WORKER_NAME }}"
           curl -s -X DELETE \
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/services/${{ env.WORKER_NAME }}" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN }}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
             -H "Content-Type: application/json" || true
           echo "✓ Worker deletion attempted"
 
@@ -188,9 +188,9 @@ jobs:
           EOF
           
           # Apply migrations using wrangler (CI mode auto-confirms)
-          npx wrangler d1 migrations apply ${{ env.DB_NAME }} --config wrangler.migrate.toml --remote || echo "Migrations may have already been applied or failed"
+          npx wrangler d1 migrations apply ${{ env.DB_NAME }} --config wrangler.migrate.toml --remote
           
-          echo "✓ Migrations applied (or already up to date)"
+          echo "✓ Migrations applied"
 
       - name: Create or Get KV Namespace
         id: kv
@@ -415,7 +415,7 @@ jobs:
           PREVIEW_URL: ${{ steps.deploy.outputs.preview_url }}
         run: |
           echo "Running smoke tests against $PREVIEW_URL"
-          curl -sfS --retry 5 --retry-delay 5 "$PREVIEW_URL/health" || true
+          curl -sfS --retry 5 --retry-delay 5 "$PREVIEW_URL/health"
           echo "✓ Smoke tests completed"
 
       - name: Comment on PR

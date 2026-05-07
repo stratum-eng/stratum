@@ -56,6 +56,7 @@ const http = {
 
     return {
       url: response.url,
+      method,
       statusCode: response.status,
       statusMessage: response.statusText,
       headers: resHeaders,

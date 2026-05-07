@@ -33,13 +33,12 @@ Add these secrets to your GitHub repository:
 
 - `CLOUDFLARE_ZONE_ID` - Zone ID for `usestratum.dev`
 
-- `PREVIEW_KV_NAMESPACE_ID` - A shared KV namespace for preview environments
-  (Create once: `wrangler kv:namespace create "stratum-preview-state"`)
+- `PREVIEW_KV_NAMESPACE_ID` - (Optional) The workflow automatically creates/reuses a shared KV namespace called `stratum-preview-state`
 
 ## DNS Configuration
 
 Ensure you have a wildcard DNS record:
-```
+```txt
 *.staging.app.usestratum.dev → CNAME → your-workers-subdomain.workers.dev
 ```
 

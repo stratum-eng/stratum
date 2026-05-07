@@ -285,7 +285,7 @@ jobs:
               conclusion: allPassed ? 'success' : 'failure',
               output: {
                 title: status,
-                summary: `Lint: ${jobs.lint}, Type Check: ${jobs.typecheck}, Tests: ${jobs.test}, Integration: ${jobs.integration}, Staging: ${jobs.staging}`
+                summary: `Lint: ${jobs.lint}, Type Check: ${jobs.typecheck}, Tests: ${jobs.test}, Integration: ${jobs.integration}`
               }
             });
 
