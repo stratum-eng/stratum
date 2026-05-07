@@ -30,7 +30,7 @@ interface ChangeDetailProps {
     evalScore?: number;
     mergedAt: string;
   } | null;
-  user?: { id: string; email: string } | null;
+  user?: { id: string; email: string; username?: string } | null;
 }
 
 function statusBadgeClass(status: string): string {

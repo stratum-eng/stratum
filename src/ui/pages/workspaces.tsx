@@ -8,7 +8,7 @@ interface WorkspacesProps {
     slug: string;
   };
   workspaces: Array<{ name: string; parent: string; createdAt: string }>;
-  user?: { id: string; email: string } | null;
+  user?: { id: string; email: string; username?: string } | null;
 }
 
 export const WorkspacesPage: FC<WorkspacesProps> = ({ project, workspaces, user }) => {
