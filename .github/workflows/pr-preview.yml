@@ -378,6 +378,38 @@ jobs:
           
           echo "✓ DNS record created/updated successfully"
 
+      - name: Add Custom Domain to Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          SUBDOMAIN: ${{ env.PREVIEW_SUBDOMAIN }}
+        run: |
+          echo "Adding custom domain to Worker..."
+          
+          # Add custom domain via Workers API
+          DOMAIN_RESPONSE=$(curl -s -X PUT \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${{ env.WORKER_NAME }}/domains/records" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"environment\": \"production\",
+              \"hostname\": \"${SUBDOMAIN}.staging.app.usestratum.dev\",
+              \"service\": \"${{ env.WORKER_NAME }}\",
+              \"zone_id\": \"${CLOUDFLARE_ZONE_ID}\"
+            }")
+          
+          DOMAIN_SUCCESS=$(echo "$DOMAIN_RESPONSE" | jq -r '.success // false')
+          if [ "$DOMAIN_SUCCESS" = "true" ]; then
+            echo "✓ Custom domain added to Worker"
+          else
+            echo "⚠️ Could not add custom domain via API (may already exist or need manual setup)"
+            echo "Response: $DOMAIN_RESPONSE"
+            echo ""
+            echo "You may need to manually add the custom domain in Cloudflare dashboard:"
+            echo "Workers & Pages → ${{ env.WORKER_NAME }} → Triggers → Add Custom Domain"
+          fi
+
       - name: Smoke Tests
         env:
           PREVIEW_URL: ${{ steps.deploy.outputs.preview_url }}
