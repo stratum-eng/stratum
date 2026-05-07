@@ -133,17 +133,21 @@ jobs:
         run: |
           echo "Creating D1 database: ${{ env.DB_NAME }}"
           
-          # Check if database already exists
-          EXISTING_DB=$(curl -s -X GET \
+          # Check if database already exists (handle null/empty results)
+          DB_LIST=$(curl -s -X GET \
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            | jq -r ".result[] | select(.name == \"${{ env.DB_NAME }}\") | .uuid")
+            -H "Content-Type: application/json")
+          
+          echo "Database list response: $DB_LIST"
+          
+          EXISTING_DB=$(echo "$DB_LIST" | jq -r "[.result[]? // empty | select(.name == \"${{ env.DB_NAME }}\") | .uuid] | first // empty")
           
           if [ -n "$EXISTING_DB" ] && [ "$EXISTING_DB" != "null" ]; then
             echo "Database already exists: $EXISTING_DB"
             echo "db_id=$EXISTING_DB" >> $GITHUB_OUTPUT
           else
+            echo "Creating new database..."
             # Create new database
             DB_RESPONSE=$(curl -s -X POST \
               "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database" \
@@ -151,7 +155,16 @@ jobs:
               -H "Content-Type: application/json" \
               -d "{\"name\":\"${{ env.DB_NAME }}\"}")
             
-            DB_ID=$(echo $DB_RESPONSE | jq -r '.result.uuid')
+            echo "Create response: $DB_RESPONSE"
+            
+            DB_ID=$(echo "$DB_RESPONSE" | jq -r '.result.uuid // empty')
+            
+            if [ -z "$DB_ID" ] || [ "$DB_ID" = "null" ]; then
+              echo "Error: Failed to create database"
+              echo "Response: $DB_RESPONSE"
+              exit 1
+            fi
+            
             echo "Created database: $DB_ID"
             echo "db_id=$DB_ID" >> $GITHUB_OUTPUT
           fi
@@ -164,15 +177,18 @@ jobs:
         run: |
           echo "Applying migrations to database: $DB_ID"
           
-          # Apply each migration file
-          for migration in migrations/*.sql; do
-            echo "Applying: $migration"
-            curl -s -X POST \
-              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${DB_ID}/query" \
-              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "{\"sql\":$(cat $migration | jq -s -R .)}" || true
-          done
+          # Create temporary wrangler.toml for migrations
+          cat > wrangler.migrate.toml << EOF
+          name = "temp-migrate-${{ env.PR_NUMBER }}"
+          [[d1_databases]]
+          binding = "DB"
+          database_name = "${{ env.DB_NAME }}"
+          database_id = "${DB_ID}"
+          migrations_dir = "migrations"
+          EOF
+          
+          # Apply migrations using wrangler
+          npx wrangler d1 migrations apply ${{ env.DB_NAME }} --config wrangler.migrate.toml --remote --yes || true
           
           echo "✓ Migrations applied"
 
