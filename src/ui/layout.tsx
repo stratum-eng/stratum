@@ -2,7 +2,7 @@ import type { FC } from "hono/jsx";
 
 interface LayoutProps {
   title: string;
-  user?: { id: string; email: string } | null | undefined;
+  user?: { id: string; email: string; username?: string } | null | undefined;
   children?: unknown;
 }
 
@@ -26,7 +26,7 @@ export const Layout: FC<LayoutProps> = ({ title, user, children }) => {
           <div class="nav-auth">
             {user ? (
               <>
-                <span class="nav-user">{user.email}</span>
+                <span class="nav-user">{user.username}</span>
                 <a href="/auth/logout" class="nav-auth-link">
                   logout
                 </a>
