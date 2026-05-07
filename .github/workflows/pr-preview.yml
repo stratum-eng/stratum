@@ -305,23 +305,46 @@ jobs:
           echo "Zone ID: ${CLOUDFLARE_ZONE_ID:0:8}... (truncated)"
           echo "Account ID: ${CLOUDFLARE_ACCOUNT_ID:0:8}... (truncated)"
           
+          # Get Worker subdomain for CNAME target
+          echo "Fetching workers subdomain..."
+          WORKER_RESPONSE=$(curl -s -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain")
+          
+          WORKER_SUCCESS=$(echo "$WORKER_RESPONSE" | jq -r '.success')
+          if [ "$WORKER_SUCCESS" != "true" ]; then
+            echo "❌ Failed to get workers subdomain"
+            echo "Response: $WORKER_RESPONSE"
+            exit 1
+          fi
+          
+          WORKER_SUBDOMAIN=$(echo "$WORKER_RESPONSE" | jq -r '.result.subdomain')
+          CNAME_TARGET="${{ env.WORKER_NAME }}.${WORKER_SUBDOMAIN}.workers.dev"
+          echo "CNAME target: $CNAME_TARGET"
+          
           # Check if record exists
-          EXISTING_RECORD=$(curl -s -X GET \
+          echo "Checking for existing DNS record..."
+          LIST_RESPONSE=$(curl -s -X GET \
             "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records?name=${SUBDOMAIN}.staging.app.usestratum.dev" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json" \
-            | jq -r ".result[0]?.id")
+            -H "Content-Type: application/json")
           
-          # Get Worker script ID for CNAME target
-          WORKER_SUBDOMAIN=$(curl -s -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
-            | jq -r '.result.subdomain')
+          LIST_SUCCESS=$(echo "$LIST_RESPONSE" | jq -r '.success')
+          if [ "$LIST_SUCCESS" != "true" ]; then
+            echo "❌ Failed to list DNS records"
+            echo "Response: $LIST_RESPONSE"
+            echo ""
+            echo "This usually means:"
+            echo "1. The CLOUDFLARE_ZONE_ID secret is incorrect"
+            echo "2. The API token doesn't have DNS:Edit permission for this zone"
+            exit 1
+          fi
           
-          CNAME_TARGET="${{ env.WORKER_NAME }}.${WORKER_SUBDOMAIN}.workers.dev"
+          EXISTING_RECORD=$(echo "$LIST_RESPONSE" | jq -r '.result[0]?.id // empty')
           
-          if [ -n "$EXISTING_RECORD" ] && [ "$EXISTING_RECORD" != "null" ]; then
-            echo "Updating existing DNS record"
-            curl -s -X PUT \
+          # Create or update DNS record
+          if [ -n "$EXISTING_RECORD" ]; then
+            echo "Updating existing DNS record: $EXISTING_RECORD"
+            DNS_RESPONSE=$(curl -s -X PUT \
               "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${EXISTING_RECORD}" \
               -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
               -H "Content-Type: application/json" \
@@ -330,10 +353,10 @@ jobs:
                 \"name\": \"${SUBDOMAIN}.staging.app.usestratum.dev\",
                 \"content\": \"${CNAME_TARGET}\",
                 \"proxied\": true
-              }"
+              }")
           else
             echo "Creating new DNS record"
-            curl -s -X POST \
+            DNS_RESPONSE=$(curl -s -X POST \
               "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records" \
               -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
               -H "Content-Type: application/json" \
@@ -342,10 +365,18 @@ jobs:
                 \"name\": \"${SUBDOMAIN}.staging.app.usestratum.dev\",
                 \"content\": \"${CNAME_TARGET}\",
                 \"proxied\": true
-              }"
+              }")
           fi
           
-          echo "✓ DNS record created/updated"
+          # Check response
+          DNS_SUCCESS=$(echo "$DNS_RESPONSE" | jq -r '.success')
+          if [ "$DNS_SUCCESS" != "true" ]; then
+            echo "❌ Failed to create/update DNS record"
+            echo "Response: $DNS_RESPONSE"
+            exit 1
+          fi
+          
+          echo "✓ DNS record created/updated successfully"
 
       - name: Smoke Tests
         env:
