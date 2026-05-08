@@ -362,7 +362,7 @@ Before changing `[[artifacts]]` / `[[env.staging.artifacts]]` namespace values i
 
 See [docs/stratum-master-plan-v2.md](docs/stratum-master-plan-v2.md) for the full implementation plan.
 
-### Phase 0 🚧
+### Phase 0 ✅
 - Basic fork/commit/merge loop on Artifacts
 - GitHub import
 
