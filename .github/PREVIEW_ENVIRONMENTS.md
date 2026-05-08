@@ -29,6 +29,7 @@ Add these secrets to your GitHub repository:
   - Zone:Read, Zone:Edit (for DNS management)
   - Cloudflare Workers:Edit, Cloudflare Workers Scripts:Edit
   - D1:Read, D1:Edit (for database management)
+  - Workers KV:Edit (for creating/listing/deleting per-PR KV namespaces)
 
 - `CLOUDFLARE_ACCOUNT_ID` - Your Cloudflare account ID
 

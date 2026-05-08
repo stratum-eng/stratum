@@ -64,11 +64,23 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           echo "Deleting Worker: ${{ env.WORKER_NAME }}"
-          curl -s -X DELETE \
+          DELETE_RESPONSE=$(curl -s -X DELETE \
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/services/${{ env.WORKER_NAME }}" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json" || true
-          echo "✓ Worker deletion attempted"
+            -H "Content-Type: application/json")
+          DELETE_SUCCESS=$(echo "$DELETE_RESPONSE" | jq -r '.success // false')
+          if [ "$DELETE_SUCCESS" = "true" ]; then
+            echo "✓ Worker deleted"
+          else
+            ERROR_CODE=$(echo "$DELETE_RESPONSE" | jq -r '.errors[0].code // 0')
+            if [ "$ERROR_CODE" = "10007" ]; then
+              echo "Worker not found, may have been already deleted"
+            else
+              echo "❌ Failed to delete Worker"
+              echo "Response: $DELETE_RESPONSE"
+              exit 1
+            fi
+          fi
 
       - name: Delete KV Namespace
         env:
@@ -112,7 +124,7 @@ jobs:
             The preview environment for this PR has been cleaned up:
             - ~~https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev~~
 
-            All resources (Worker, D1 database, DNS) have been destroyed.`
+            All resources (Worker, D1 database, KV namespace) have been destroyed.`
             });
 
   # =======================================================================
@@ -323,7 +335,7 @@ jobs:
           DEPLOY_OUTPUT=$(npx wrangler deploy --config wrangler.preview.toml 2>&1)
           echo "$DEPLOY_OUTPUT"
 
-          WORKERS_DEV_URL=$(echo "$DEPLOY_OUTPUT" | grep -oE 'https://[a-zA-Z0-9-]+\.workers\.dev' | head -1)
+          WORKERS_DEV_URL=$(echo "$DEPLOY_OUTPUT" | grep -oE 'https://[a-zA-Z0-9-]+\.[a-zA-Z0-9-]+\.workers\.dev' | head -1)
           if [ -z "$WORKERS_DEV_URL" ]; then
             echo "Warning: could not parse workers.dev URL from deploy output"
           fi
