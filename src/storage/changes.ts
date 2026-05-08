@@ -174,6 +174,30 @@ export async function listChanges(
   }
 }
 
+export async function getChangeByGitHubBranch(
+  db: D1Database,
+  logger: Logger,
+  projectId: string,
+  branchName: string,
+): Promise<Change | null> {
+  try {
+    const row = await db
+      .prepare("SELECT * FROM changes WHERE project = ? AND github_branch = ? LIMIT 1")
+      .bind(projectId, branchName)
+      .first<ChangeRow>();
+    if (!row) return null;
+    logger.debug("Change found by GitHub branch", { projectId, branchName, changeId: row.id });
+    return rowToChange(row);
+  } catch (error) {
+    logger.error(
+      "Failed to look up change by GitHub branch",
+      error instanceof Error ? error : undefined,
+      { projectId, branchName },
+    );
+    return null;
+  }
+}
+
 export async function updateChangeStatus(
   db: D1Database,
   logger: Logger,
@@ -190,6 +214,7 @@ export async function updateChangeStatus(
     githubPrNumber?: number;
     githubPrUrl?: string;
     githubPrState?: string;
+    githubHeadSha?: string;
     promotedAt?: string;
     promotedBy?: string;
   },
@@ -228,6 +253,7 @@ export async function updateChangeStatus(
     addOptional("github_pr_number", opts?.githubPrNumber);
     addOptional("github_pr_url", opts?.githubPrUrl);
     addOptional("github_pr_state", opts?.githubPrState);
+    addOptional("github_head_sha", opts?.githubHeadSha);
     addOptional("promoted_at", opts?.promotedAt);
     addOptional("promoted_by", opts?.promotedBy);
 

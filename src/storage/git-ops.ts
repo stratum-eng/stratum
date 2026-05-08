@@ -98,9 +98,11 @@ export interface MergeWorkspaceOptions {
 }
 
 export class MergeConflictError extends AppError {
-  constructor(message: string) {
+  readonly conflictingFiles: string[];
+  constructor(message: string, conflictingFiles: string[] = []) {
     super(message, "MERGE_CONFLICT", 409);
     this.name = "MergeConflictError";
+    this.conflictingFiles = conflictingFiles;
   }
 }
 
@@ -501,6 +503,226 @@ async function squashMerge(
 
   logger.info("Successfully completed squash merge", { projectRemote, sha: commitResult.data });
   return ok(commitResult.data);
+}
+
+const MAX_REPO_FILES = 500;
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+
+export interface ResolveConflictOpts {
+  projectRemote: string;
+  projectToken: string;
+  workspaceRemote: string;
+  workspaceToken: string;
+  strategy: "accept-project" | "accept-workspace" | "manual";
+  manualResolutions?: { file: string; content: string }[];
+  conflictingFiles?: string[];
+}
+
+/**
+ * Resolve a merge conflict by applying a strategy and producing a new commit.
+ * Returns { commitSha } on success, or a structured error — never throws.
+ */
+export async function resolveConflict(
+  opts: ResolveConflictOpts,
+  logger: Logger,
+): Promise<Result<{ commitSha: string }, AppError>> {
+  const { projectRemote, projectToken, workspaceRemote, workspaceToken, strategy } = opts;
+
+  logger.info("Resolving conflict", { strategy, projectRemote });
+
+  if (strategy === "manual") {
+    const resolutions = opts.manualResolutions ?? [];
+    if (resolutions.length === 0) {
+      return err(
+        new AppError("manual strategy requires at least one resolution", "INVALID_INPUT", 400),
+      );
+    }
+
+    // Validate paths — no ../ traversal
+    for (const { file } of resolutions) {
+      if (file.includes("../") || file.startsWith("/")) {
+        return err(
+          new AppError(
+            `Invalid file path: ${file} — path traversal is not allowed`,
+            "INVALID_INPUT",
+            422,
+          ),
+        );
+      }
+    }
+
+    // Validate content sizes
+    for (const { file, content } of resolutions) {
+      if (new TextEncoder().encode(content).length > MAX_FILE_BYTES) {
+        return err(
+          new AppError(`File ${file} exceeds maximum size of 10 MB`, "INVALID_INPUT", 422),
+        );
+      }
+    }
+
+    const cloneResult = await cloneRepo(projectRemote, projectToken, logger);
+    if (!cloneResult.success) return err(cloneResult.error);
+    const { fs, dir } = cloneResult.data;
+
+    // Guard: total file count
+    const filesResult = await listFilesAtCommit(fs, "main", logger);
+    if (!filesResult.success) return err(filesResult.error);
+    if (filesResult.data.length > MAX_REPO_FILES) {
+      return err(
+        new AppError(
+          `Repository has ${filesResult.data.length} files (max ${MAX_REPO_FILES})`,
+          "INVALID_INPUT",
+          422,
+        ),
+      );
+    }
+
+    const fileMap: Record<string, string> = {};
+    for (const { file, content } of resolutions) {
+      fileMap[file] = content;
+    }
+
+    const commitResult = await commitAndPush(
+      fs,
+      dir,
+      projectRemote,
+      projectToken,
+      fileMap,
+      "Resolved merge conflict manually",
+      logger,
+    );
+    if (!commitResult.success) return mapPushError(commitResult.error);
+    return ok({ commitSha: commitResult.data });
+  }
+
+  if (strategy === "accept-project") {
+    const cloneResult = await cloneRepo(projectRemote, projectToken, logger);
+    if (!cloneResult.success) return err(cloneResult.error);
+    const { fs, dir } = cloneResult.data;
+
+    // Guard: total file count
+    const filesResult = await listFilesAtCommit(fs, "main", logger);
+    if (!filesResult.success) return err(filesResult.error);
+    if (filesResult.data.length > MAX_REPO_FILES) {
+      return err(
+        new AppError(
+          `Repository has ${filesResult.data.length} files (max ${MAX_REPO_FILES})`,
+          "INVALID_INPUT",
+          422,
+        ),
+      );
+    }
+
+    // Re-stage conflicting files at their current (project) versions to produce a resolution commit
+    const conflicting = opts.conflictingFiles ?? [];
+    const fileMap: Record<string, string> = {};
+    for (const filePath of conflicting) {
+      try {
+        const content = await fs.promises.readFile(
+          dir === "/" ? `/${filePath}` : `${dir}/${filePath}`,
+          { encoding: "utf8" },
+        );
+        fileMap[filePath] =
+          typeof content === "string" ? content : new TextDecoder().decode(content);
+      } catch {
+        // File may not exist on project side; skip
+      }
+    }
+
+    if (Object.keys(fileMap).length === 0) {
+      // No conflicting files to re-stage — resolve HEAD as the "commit"
+      const refResult = await fromPromise(git.resolveRef({ fs, dir, ref: "main" }));
+      if (!refResult.success) return err(new AppError("Failed to resolve HEAD", "GIT_ERROR", 500));
+      return ok({ commitSha: refResult.data });
+    }
+
+    const commitResult = await commitAndPush(
+      fs,
+      dir,
+      projectRemote,
+      projectToken,
+      fileMap,
+      "Resolved merge conflict: accepted project changes",
+      logger,
+    );
+    if (!commitResult.success) return mapPushError(commitResult.error);
+    return ok({ commitSha: commitResult.data });
+  }
+
+  if (strategy === "accept-workspace") {
+    const projectClone = await cloneRepo(projectRemote, projectToken, logger);
+    if (!projectClone.success) return err(projectClone.error);
+    const { fs: projectFs, dir: projectDir } = projectClone.data;
+
+    // Guard: total file count in project
+    const filesResult = await listFilesAtCommit(projectFs, "main", logger);
+    if (!filesResult.success) return err(filesResult.error);
+    if (filesResult.data.length > MAX_REPO_FILES) {
+      return err(
+        new AppError(
+          `Repository has ${filesResult.data.length} files (max ${MAX_REPO_FILES})`,
+          "INVALID_INPUT",
+          422,
+        ),
+      );
+    }
+
+    const workspaceClone = await cloneRepo(workspaceRemote, workspaceToken, logger);
+    if (!workspaceClone.success) return err(workspaceClone.error);
+    const { fs: wsFs, dir: wsDir } = workspaceClone.data;
+
+    const conflicting = opts.conflictingFiles ?? [];
+    const filesToApply = conflicting.length > 0 ? conflicting : filesResult.data.map(([p]) => p);
+
+    const fileMap: Record<string, string> = {};
+    for (const filePath of filesToApply) {
+      try {
+        const content = await wsFs.promises.readFile(
+          wsDir === "/" ? `/${filePath}` : `${wsDir}/${filePath}`,
+          { encoding: "utf8" },
+        );
+        fileMap[filePath] =
+          typeof content === "string" ? content : new TextDecoder().decode(content);
+      } catch {
+        // File doesn't exist in workspace; skip
+      }
+    }
+
+    if (Object.keys(fileMap).length === 0) {
+      const refResult = await fromPromise(
+        git.resolveRef({ fs: projectFs, dir: projectDir, ref: "main" }),
+      );
+      if (!refResult.success) return err(new AppError("Failed to resolve HEAD", "GIT_ERROR", 500));
+      return ok({ commitSha: refResult.data });
+    }
+
+    const commitResult = await commitAndPush(
+      projectFs,
+      projectDir,
+      projectRemote,
+      projectToken,
+      fileMap,
+      "Resolved merge conflict: accepted workspace changes",
+      logger,
+    );
+    if (!commitResult.success) return mapPushError(commitResult.error);
+    return ok({ commitSha: commitResult.data });
+  }
+
+  return err(new AppError(`Unknown strategy: ${strategy}`, "INVALID_INPUT", 400));
+}
+
+function mapPushError(error: AppError): Result<never, AppError> {
+  const msg = error.message.toLowerCase();
+  if (
+    msg.includes("401") ||
+    msg.includes("403") ||
+    msg.includes("unauthorized") ||
+    msg.includes("forbidden")
+  ) {
+    return err(new AppError("GitHub token expired or insufficient permissions", "AUTH_ERROR", 401));
+  }
+  return err(error);
 }
 
 async function listFilesAtCommit(

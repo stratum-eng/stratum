@@ -11,10 +11,14 @@ vi.mock("../src/storage/changes", () => ({
   updateChangeStatus: vi.fn(),
 }));
 
-vi.mock("../src/storage/git-ops", () => ({
-  getDiffBetweenRepos: vi.fn(),
-  mergeWorkspaceIntoProject: vi.fn(),
-}));
+vi.mock("../src/storage/git-ops", async (importActual) => {
+  const actual = await importActual<typeof import("../src/storage/git-ops")>();
+  return {
+    ...actual,
+    getDiffBetweenRepos: vi.fn(),
+    mergeWorkspaceIntoProject: vi.fn(),
+  };
+});
 
 vi.mock("../src/storage/state", () => ({
   getProject: vi.fn(),

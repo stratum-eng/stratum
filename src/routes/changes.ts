@@ -13,7 +13,11 @@ import type { Evaluator } from "../evaluation/types";
 import { publishEvent } from "../queue/events";
 import { createChange, getChange, listChanges, updateChangeStatus } from "../storage/changes";
 import { listEvalRuns, recordEvalRuns } from "../storage/eval-runs";
-import { getDiffBetweenRepos, mergeWorkspaceIntoProject } from "../storage/git-ops";
+import {
+  MergeConflictError,
+  getDiffBetweenRepos,
+  mergeWorkspaceIntoProject,
+} from "../storage/git-ops";
 import { recordProvenance } from "../storage/provenance";
 import { getProject, getWorkspace } from "../storage/state";
 import type { Change, Env } from "../types";
@@ -438,6 +442,36 @@ app.post("/changes/:id/merge", async (c) => {
     { strategy },
   );
   if (!mergeResult.success) {
+    if (mergeResult.error instanceof MergeConflictError) {
+      const conflictId = crypto.randomUUID();
+      await c.env.STATE.put(
+        `conflict:${conflictId}`,
+        JSON.stringify({
+          conflictId,
+          namespace: project.namespace,
+          slug: project.slug,
+          workspaceName: change.workspace,
+          conflictingFiles: mergeResult.error.conflictingFiles,
+          detectedAt: new Date().toISOString(),
+        }),
+        { expirationTtl: 7 * 24 * 60 * 60 },
+      );
+      logger.info("Merge conflict detected, wrote conflict context", {
+        conflictId,
+        changeId: id,
+        conflictingFiles: mergeResult.error.conflictingFiles,
+      });
+      return c.json(
+        {
+          error: "Merge conflict",
+          code: "MERGE_CONFLICT",
+          conflictId,
+          conflictingFiles: mergeResult.error.conflictingFiles,
+          message: mergeResult.error.message,
+        },
+        409,
+      );
+    }
     logger.error("Failed to merge workspace into project", mergeResult.error);
     return badRequest(mergeResult.error.message);
   }

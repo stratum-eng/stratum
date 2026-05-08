@@ -61,6 +61,7 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
       token: forked.token,
       parent: project.id, // Store project ID instead of name
       createdAt: new Date().toISOString(),
+      branchName: workspaceName, // Artifacts fork name IS the branch ref
     },
     logger,
   );

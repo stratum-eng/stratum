@@ -353,6 +353,21 @@ export async function setAutoSyncEnabled(
   enabled: boolean,
   logger: Logger,
 ): Promise<Result<void, AppError>> {
+  return setSyncSettings(kv, namespace, slug, { autoSyncEnabled: enabled }, logger);
+}
+
+/**
+ * Persist sync settings (autoSyncEnabled + syncFrequency) atomically.
+ * Reads the existing sync-status blob, merges the provided fields, and writes back.
+ * Initialises a fresh blob if none exists yet.
+ */
+export async function setSyncSettings(
+  kv: KVNamespace,
+  namespace: string,
+  slug: string,
+  settings: { autoSyncEnabled?: boolean; syncFrequency?: number },
+  logger: Logger,
+): Promise<Result<void, AppError>> {
   try {
     const statusKey = syncStatusKey(namespace, slug);
     const existingStatus = parseSyncStatus(await kv.get(statusKey));
@@ -360,23 +375,143 @@ export async function setAutoSyncEnabled(
     const status: SyncStatus = {
       namespace,
       slug,
-      lastCheckedAt: new Date().toISOString(),
+      lastCheckedAt: existingStatus?.lastCheckedAt ?? new Date().toISOString(),
       lastSyncedAt: existingStatus?.lastSyncedAt,
       lastSyncedCommit: existingStatus?.lastSyncedCommit,
-      lastSyncStatus: existingStatus?.lastSyncStatus || "idle",
-      hasUpdates: existingStatus?.hasUpdates || false,
+      lastSyncStatus: existingStatus?.lastSyncStatus ?? "idle",
+      hasUpdates: existingStatus?.hasUpdates ?? false,
       commitsBehind: existingStatus?.commitsBehind,
-      autoSyncEnabled: enabled,
-      syncFrequency: existingStatus?.syncFrequency,
+      latestCommit: existingStatus?.latestCommit,
+      autoSyncEnabled: settings.autoSyncEnabled ?? existingStatus?.autoSyncEnabled ?? false,
+      syncFrequency: settings.syncFrequency ?? existingStatus?.syncFrequency,
     };
 
     await kv.put(statusKey, JSON.stringify(status));
 
-    logger.info("Auto-sync setting updated", { namespace, slug, enabled });
+    logger.info("Sync settings updated", { namespace, slug, ...settings });
     return ok(undefined);
   } catch (error) {
-    logger.error("Failed to set auto-sync", error instanceof Error ? error : undefined);
-    return err(new AppError("Failed to set auto-sync", "STORAGE_ERROR", 500));
+    logger.error("Failed to set sync settings", error instanceof Error ? error : undefined);
+    return err(new AppError("Failed to set sync settings", "STORAGE_ERROR", 500));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sync history (D1)
+// ---------------------------------------------------------------------------
+
+export interface SyncHistoryEntry {
+  namespace: string;
+  slug: string;
+  trigger: "manual" | "webhook" | "auto";
+  status: "success" | "failed" | "skipped";
+  commitsSynced?: number;
+  syncedCommit?: string;
+  errorMessage?: string;
+  durationMs?: number;
+  startedAt: string;
+  completedAt?: string;
+}
+
+export interface SyncHistoryRow extends SyncHistoryEntry {
+  id: number;
+}
+
+/**
+ * Insert one sync history row. Never throws — a D1 failure must not
+ * propagate to the caller (queue jobs must complete regardless).
+ */
+export async function recordSyncHistory(
+  db: D1Database,
+  entry: SyncHistoryEntry,
+  logger: Logger,
+): Promise<void> {
+  try {
+    await db
+      .prepare(
+        `INSERT INTO sync_history
+           (namespace, slug, trigger, status, commits_synced, synced_commit,
+            error_message, duration_ms, started_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        entry.namespace,
+        entry.slug,
+        entry.trigger,
+        entry.status,
+        entry.commitsSynced ?? 0,
+        entry.syncedCommit ?? null,
+        entry.errorMessage ?? null,
+        entry.durationMs ?? null,
+        entry.startedAt,
+        entry.completedAt ?? null,
+      )
+      .run();
+  } catch (error) {
+    logger.error("Failed to record sync history", error instanceof Error ? error : undefined, {
+      namespace: entry.namespace,
+      slug: entry.slug,
+    });
+  }
+}
+
+/**
+ * Return paginated sync history for a project, newest first.
+ * Returns an empty array if the table doesn't exist yet (safe deployment ordering).
+ */
+export async function getSyncHistory(
+  db: D1Database,
+  namespace: string,
+  slug: string,
+  limit: number,
+  offset: number,
+  logger: Logger,
+): Promise<SyncHistoryRow[]> {
+  const safeLimit = Math.min(Math.max(1, limit), 200);
+  const safeOffset = Math.max(0, offset);
+  try {
+    const result = await db
+      .prepare(
+        `SELECT id, namespace, slug, trigger, status, commits_synced, synced_commit,
+                error_message, duration_ms, started_at, completed_at
+         FROM sync_history
+         WHERE namespace = ? AND slug = ?
+         ORDER BY started_at DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .bind(namespace, slug, safeLimit, safeOffset)
+      .all<{
+        id: number;
+        namespace: string;
+        slug: string;
+        trigger: "manual" | "webhook" | "auto";
+        status: "success" | "failed" | "skipped";
+        commits_synced: number;
+        synced_commit: string | null;
+        error_message: string | null;
+        duration_ms: number | null;
+        started_at: string;
+        completed_at: string | null;
+      }>();
+    return (result.results ?? []).map((row) => ({
+      id: row.id,
+      namespace: row.namespace,
+      slug: row.slug,
+      trigger: row.trigger,
+      status: row.status,
+      commitsSynced: row.commits_synced,
+      syncedCommit: row.synced_commit ?? undefined,
+      errorMessage: row.error_message ?? undefined,
+      durationMs: row.duration_ms ?? undefined,
+      startedAt: row.started_at,
+      completedAt: row.completed_at ?? undefined,
+    }));
+  } catch (error) {
+    // Table may not exist yet if Worker was deployed before the migration ran.
+    logger.warn("Failed to get sync history (table may not exist yet)", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
   }
 }
 
