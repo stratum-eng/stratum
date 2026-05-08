@@ -134,9 +134,15 @@ export async function initAndPush(
 
   const initResult = await fromPromise(git.init({ fs, dir: DIR, defaultBranch: "main" }));
   if (!initResult.success) {
-    logger.error("Failed to initialize git repository", initResult.error, { remote });
+    const cause =
+      initResult.error instanceof Error ? initResult.error.message : String(initResult.error);
+    logger.error("Failed to initialize git repository", initResult.error, { remote, cause });
     return err(
-      new ExternalServiceError("Git", "Failed to initialize repository", initResult.error),
+      new ExternalServiceError(
+        "Git",
+        `Failed to initialize repository: ${cause}`,
+        initResult.error,
+      ),
     );
   }
 
