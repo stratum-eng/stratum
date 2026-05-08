@@ -3,6 +3,7 @@
 This repository uses isolated preview environments for each Pull Request. Each PR gets its own:
 - **Cloudflare Worker** (e.g., `stratum-pr-34`)
 - **D1 Database** (e.g., `stratum-pr-34`)
+- **KV Namespace** (e.g., `stratum-preview-state-pr-34`)
 - **Subdomain** (e.g., `pr-34.staging.app.usestratum.dev`)
 
 ## How It Works
@@ -17,7 +18,7 @@ This repository uses isolated preview environments for each Pull Request. Each P
 ### On PR Close/Merge
 1. Deletes the D1 database
 2. Deletes the Worker
-3. Deletes the DNS record
+3. Deletes the KV namespace
 4. Posts a comment confirming cleanup
 
 ## Setup Required
@@ -33,7 +34,7 @@ Add these secrets to your GitHub repository:
 
 - `CLOUDFLARE_ZONE_ID` - Zone ID for `usestratum.dev`
 
-- `PREVIEW_KV_NAMESPACE_ID` - (Optional) The workflow automatically creates/reuses a shared KV namespace called `stratum-preview-state`
+No KV secret is required — the workflow automatically creates a per-PR KV namespace (`stratum-preview-state-pr-{NUMBER}`) using `CLOUDFLARE_API_TOKEN` and deletes it when the PR closes.
 
 ## DNS Configuration
 
@@ -44,7 +45,7 @@ Ensure you have a wildcard DNS record:
 
 ## Benefits
 
-✅ **Isolation**: Each PR has its own database - schema migrations don't conflict  
+✅ **Isolation**: Each PR has its own database and KV namespace — no cross-PR state bleed  
 ✅ **Testing**: Test freely without affecting other PRs or staging  
 ✅ **Free**: Uses Cloudflare's generous free tier  
 ✅ **Auto-cleanup**: Resources are automatically deleted when PR closes  
