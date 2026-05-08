@@ -82,7 +82,15 @@ app.post("/", async (c) => {
   const username = c.get("username");
   if (!userId || !username) return unauthorized("Authentication required");
 
-  const body = await c.req.json<{ name?: unknown; files?: unknown; visibility?: unknown }>();
+  let body: { name?: unknown; files?: unknown; visibility?: unknown; seed?: unknown };
+  const contentType = c.req.header("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    body = await c.req.json<typeof body>();
+  } else {
+    const form = await c.req.parseBody();
+    body = { name: form.name, visibility: form.visibility, seed: form.seed };
+  }
+
   if (!isValidSlug(body.name)) return badRequest("name must be a 1-64 char alphanumeric slug");
 
   const namespace = getUserNamespace(username);
@@ -101,7 +109,7 @@ app.post("/", async (c) => {
     visibility = body.visibility;
   }
 
-  const seed = c.req.query("seed") === "true";
+  const seed = body.seed === "true" || body.seed === true || c.req.query("seed") === "true";
   const files =
     body.files !== undefined
       ? isStringRecord(body.files)
