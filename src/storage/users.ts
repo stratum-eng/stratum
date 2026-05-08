@@ -4,7 +4,7 @@ import { AppError, NotFoundError } from "../utils/errors";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
-import { validateUsername } from "../utils/username-validation";
+import { sanitizeUsername, validateUsername } from "../utils/username-validation";
 
 export interface CreateUserResult {
   user: User;
@@ -271,7 +271,12 @@ export async function upsertGitHubUser(
     emailHash: hashEmail(opts.email),
     username: opts.username,
   });
-  const createResult = await createUser(db, opts.email, logger, opts.username);
+  // Sanitize the GitHub handle before using it as a preferred username.
+  // GitHub allows handles that start with digits or match stratum reserved names,
+  // so we sanitize and validate — falling back to email-derived if it still fails.
+  const sanitized = sanitizeUsername(opts.username).replace(/^[0-9]+/, "");
+  const preferredUsername = validateUsername(sanitized, logger).success ? sanitized : undefined;
+  const createResult = await createUser(db, opts.email, logger, preferredUsername);
   if (!createResult.success) {
     return err(createResult.error);
   }
