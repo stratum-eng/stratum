@@ -1,11 +1,69 @@
 import { createPatch } from "diff";
 import git from "isomorphic-git";
-import http from "isomorphic-git/http/web";
 import type { ArtifactsCreateResult, ArtifactsNamespace, Author, CommitLogEntry } from "../types";
 import { AppError, ExternalServiceError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, fromPromise, ok } from "../utils/result";
 import { MemoryFS } from "./memory-fs";
+
+// Custom HTTP client for Cloudflare Workers
+// isomorphic-git/http/web expects browser APIs that don't exist in Workers
+const http = {
+  async request({
+    url,
+    method = "GET",
+    headers = {},
+    body: requestBody,
+  }: {
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: AsyncIterableIterator<Uint8Array>;
+  }) {
+    // Convert AsyncIterableIterator to Uint8Array if present
+    let body: Uint8Array | undefined;
+    if (requestBody) {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of requestBody) {
+        chunks.push(chunk);
+      }
+      // Concatenate chunks
+      const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      body = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        body.set(chunk, offset);
+        offset += chunk.length;
+      }
+    }
+
+    const response = await fetch(url, {
+      method,
+      headers,
+      body,
+    });
+
+    const resHeaders: Record<string, string> = {};
+    response.headers.forEach((value, key) => {
+      resHeaders[key] = value;
+    });
+
+    // Return body as async iterable to match expected interface
+    const responseBody = new Uint8Array(await response.arrayBuffer());
+    async function* bodyGenerator(): AsyncIterableIterator<Uint8Array> {
+      yield responseBody;
+    }
+
+    return {
+      url: response.url,
+      method,
+      statusCode: response.status,
+      statusMessage: response.statusText,
+      headers: resHeaders,
+      body: bodyGenerator(),
+    };
+  },
+};
 
 const DIR = "/";
 

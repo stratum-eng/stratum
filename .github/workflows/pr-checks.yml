@@ -254,7 +254,7 @@ jobs:
   # ========================================================================
   pr-status:
     name: PR Status Summary
-    needs: [lint, typecheck, test, integration-tests, deploy-staging]
+    needs: [lint, typecheck, test, integration-tests]
     runs-on: ubuntu-latest
     if: always()
     permissions:
@@ -269,8 +269,7 @@ jobs:
               lint: '${{ needs.lint.result }}',
               typecheck: '${{ needs.typecheck.result }}',
               test: '${{ needs.test.result }}',
-              integration: '${{ needs.integration-tests.result }}',
-              staging: '${{ needs.deploy-staging.result }}'
+              integration: '${{ needs.integration-tests.result }}'
             };
 
             const allPassed = Object.values(jobs).every(r => r === 'success');
@@ -286,7 +285,7 @@ jobs:
               conclusion: allPassed ? 'success' : 'failure',
               output: {
                 title: status,
-                summary: `Lint: ${jobs.lint}, Type Check: ${jobs.typecheck}, Tests: ${jobs.test}, Integration: ${jobs.integration}, Staging: ${jobs.staging}`
+                summary: `Lint: ${jobs.lint}, Type Check: ${jobs.typecheck}, Tests: ${jobs.test}, Integration: ${jobs.integration}`
               }
             });
 

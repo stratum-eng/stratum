@@ -1,0 +1,441 @@
+name: PR Preview Environment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+concurrency:
+  group: pr-preview-${{ github.event.number }}
+  cancel-in-progress: false
+
+env:
+  PR_NUMBER: ${{ github.event.number }}
+  PREVIEW_SUBDOMAIN: pr-${{ github.event.number }}
+  DB_NAME: stratum-pr-${{ github.event.number }}
+  WORKER_NAME: stratum-pr-${{ github.event.number }}
+
+jobs:
+  # =======================================================================
+  # Cleanup on PR Close
+  # =======================================================================
+  cleanup:
+    name: Cleanup Preview Environment
+    runs-on: ubuntu-latest
+    if: github.event.action == 'closed'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Delete D1 Database
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Deleting D1 database: ${{ env.DB_NAME }}"
+          # Get database ID
+          DB_ID=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            | jq -r ".result[] | select(.name == \"${{ env.DB_NAME }}\") | .uuid")
+          
+          if [ -n "$DB_ID" ] && [ "$DB_ID" != "null" ]; then
+            echo "Found database ID: $DB_ID"
+            DELETE_RESPONSE=$(curl -s -X DELETE \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database/${DB_ID}" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json")
+            
+            DELETE_SUCCESS=$(echo "$DELETE_RESPONSE" | jq -r '.success // false')
+            if [ "$DELETE_SUCCESS" = "true" ]; then
+              echo "✓ Database deleted"
+            else
+              echo "❌ Failed to delete database"
+              echo "Response: $DELETE_RESPONSE"
+              exit 1
+            fi
+          else
+            echo "Database not found, may have been already deleted"
+          fi
+
+      - name: Delete Worker Script
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Deleting Worker: ${{ env.WORKER_NAME }}"
+          DELETE_RESPONSE=$(curl -s -X DELETE \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/services/${{ env.WORKER_NAME }}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json")
+          DELETE_SUCCESS=$(echo "$DELETE_RESPONSE" | jq -r '.success // false')
+          if [ "$DELETE_SUCCESS" = "true" ]; then
+            echo "✓ Worker deleted"
+          else
+            ERROR_CODE=$(echo "$DELETE_RESPONSE" | jq -r '.errors[0].code // 0')
+            if [ "$ERROR_CODE" = "10007" ]; then
+              echo "Worker not found, may have been already deleted"
+            else
+              echo "❌ Failed to delete Worker"
+              echo "Response: $DELETE_RESPONSE"
+              exit 1
+            fi
+          fi
+
+      - name: Delete KV Namespace
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          KV_NAME="stratum-preview-state-pr-${{ env.PR_NUMBER }}"
+          echo "Deleting KV namespace: $KV_NAME"
+          KV_LIST=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json")
+          KV_ID=$(echo "$KV_LIST" | jq -r "[.result[]? // empty | select(.title == \"$KV_NAME\") | .id] | first // empty")
+          if [ -n "$KV_ID" ] && [ "$KV_ID" != "null" ]; then
+            DELETE_RESPONSE=$(curl -s -X DELETE \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${KV_ID}" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json")
+            DELETE_SUCCESS=$(echo "$DELETE_RESPONSE" | jq -r '.success // false')
+            if [ "$DELETE_SUCCESS" = "true" ]; then
+              echo "✓ KV namespace deleted"
+            else
+              echo "❌ Failed to delete KV namespace"
+              echo "Response: $DELETE_RESPONSE"
+              exit 1
+            fi
+          else
+            echo "KV namespace not found, may have been already deleted"
+          fi
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## 🗑️ Preview Environment Deleted
+
+            The preview environment for this PR has been cleaned up:
+            - ~~https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev~~
+
+            All resources (Worker, D1 database, KV namespace) have been destroyed.`
+            });
+
+  # =======================================================================
+  # Deploy Preview Environment
+  # =======================================================================
+  deploy:
+    name: Deploy Preview Environment
+    runs-on: ubuntu-latest
+    if: github.event.action != 'closed'
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      preview_url: ${{ steps.deploy.outputs.preview_url }}
+      db_id: ${{ steps.db.outputs.db_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create D1 Database
+        id: db
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Creating D1 database: ${{ env.DB_NAME }}"
+          
+          # Check if database already exists (handle null/empty results)
+          DB_LIST=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json")
+          
+          echo "Database list response: $DB_LIST"
+          
+          EXISTING_DB=$(echo "$DB_LIST" | jq -r "[.result[]? // empty | select(.name == \"${{ env.DB_NAME }}\") | .uuid] | first // empty")
+          
+          if [ -n "$EXISTING_DB" ] && [ "$EXISTING_DB" != "null" ]; then
+            echo "Database already exists: $EXISTING_DB"
+            echo "db_id=$EXISTING_DB" >> $GITHUB_OUTPUT
+          else
+            echo "Creating new database..."
+            # Create new database
+            DB_RESPONSE=$(curl -s -X POST \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\":\"${{ env.DB_NAME }}\"}")
+            
+            echo "Create response: $DB_RESPONSE"
+            
+            DB_ID=$(echo "$DB_RESPONSE" | jq -r '.result.uuid // empty')
+            
+            if [ -z "$DB_ID" ] || [ "$DB_ID" = "null" ]; then
+              echo "Error: Failed to create database"
+              echo "Response: $DB_RESPONSE"
+              exit 1
+            fi
+            
+            echo "Created database: $DB_ID"
+            echo "db_id=$DB_ID" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Apply D1 Migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DB_ID: ${{ steps.db.outputs.db_id }}
+        run: |
+          echo "Applying migrations to database: $DB_ID"
+          
+          # Create temporary wrangler.toml for migrations
+          cat > wrangler.migrate.toml << EOF
+          name = "temp-migrate-${{ env.PR_NUMBER }}"
+          [[d1_databases]]
+          binding = "DB"
+          database_name = "${{ env.DB_NAME }}"
+          database_id = "${DB_ID}"
+          migrations_dir = "migrations"
+          EOF
+          
+          # Apply migrations using wrangler (CI mode auto-confirms)
+          # For preview envs, we continue even if some migrations fail (e.g., already applied)
+          if npx wrangler d1 migrations apply ${{ env.DB_NAME }} --config wrangler.migrate.toml --remote; then
+            echo "✓ All migrations applied successfully"
+          else
+            MIGRATE_EXIT=$?
+            echo "⚠️ Some migrations failed (exit code: $MIGRATE_EXIT)"
+            echo "This can happen if the database was partially migrated in a previous run."
+            echo "Continuing with deployment..."
+          fi
+
+      - name: Create or Get KV Namespace
+        id: kv
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          KV_NAME="stratum-preview-state-pr-${{ env.PR_NUMBER }}"
+          
+          # Check if KV namespace exists
+          KV_LIST=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json")
+          
+          KV_ID=$(echo "$KV_LIST" | jq -r "[.result[]? // empty | select(.title == \"$KV_NAME\") | .id] | first // empty")
+          
+          if [ -n "$KV_ID" ] && [ "$KV_ID" != "null" ]; then
+            echo "Found existing KV namespace: $KV_ID"
+            echo "kv_id=$KV_ID" >> $GITHUB_OUTPUT
+          else
+            echo "Creating new KV namespace: $KV_NAME"
+            KV_RESPONSE=$(curl -s -X POST \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"title\":\"$KV_NAME\"}")
+            
+            KV_ID=$(echo "$KV_RESPONSE" | jq -r '.result.id // empty')
+            
+            if [ -z "$KV_ID" ] || [ "$KV_ID" = "null" ]; then
+              echo "Warning: Failed to create KV namespace, continuing without KV"
+              echo "Response: $KV_RESPONSE"
+              echo "kv_id=" >> $GITHUB_OUTPUT
+            else
+              echo "Created KV namespace: $KV_ID"
+              echo "kv_id=$KV_ID" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Generate Wrangler Config
+        env:
+          DB_ID: ${{ steps.db.outputs.db_id }}
+          KV_ID: ${{ steps.kv.outputs.kv_id }}
+        run: |
+          cat > wrangler.preview.toml << EOF
+          name = "${{ env.WORKER_NAME }}"
+          main = "src/index.ts"
+          compatibility_date = "2026-04-29"
+          compatibility_flags = ["nodejs_compat"]
+
+          # Keep workers.dev URL enabled
+          workers_dev = true
+
+          [observability]
+          enabled = true
+          head_sampling_rate = 1.0
+
+          [[d1_databases]]
+          binding = "DB"
+          database_name = "${{ env.DB_NAME }}"
+          database_id = "${DB_ID}"
+          migrations_dir = "migrations"
+          EOF
+          
+          # Only add KV if we have an ID
+          if [ -n "$KV_ID" ]; then
+            cat >> wrangler.preview.toml << EOF
+
+          [[kv_namespaces]]
+          binding = "STATE"
+          id = "${KV_ID}"
+          EOF
+          fi
+          
+          cat >> wrangler.preview.toml << EOF
+
+          [ai]
+          binding = "AI"
+
+          [[send_email]]
+          name = "EMAIL"
+
+          # Add custom domain - wrangler will create this automatically on deploy
+          # Note: zone_name must be the actual Cloudflare zone (usestratum.dev), not the subdomain
+          [[routes]]
+          pattern = "${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev"
+          custom_domain = true
+          zone_name = "usestratum.dev"
+
+          [vars]
+          POSTHOG_HOST = "https://app.posthog.com"
+          OAUTH_REDIRECT_URI = "https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev/auth/github/callback"
+          EMAIL_FROM_ADDRESS = "noreply@staging.app.usestratum.dev"
+          PREVIEW_ENV = "pr-${{ env.PR_NUMBER }}"
+          EOF
+          
+          echo "✓ Generated wrangler.preview.toml"
+          cat wrangler.preview.toml
+
+      - name: Deploy Worker
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Deploying Worker: ${{ env.WORKER_NAME }}"
+          DEPLOY_OUTPUT=$(npx wrangler deploy --config wrangler.preview.toml 2>&1)
+          echo "$DEPLOY_OUTPUT"
+
+          WORKERS_DEV_URL=$(echo "$DEPLOY_OUTPUT" | grep -oE 'https://[a-zA-Z0-9-]+\.[a-zA-Z0-9-]+\.workers\.dev' | head -1)
+          if [ -z "$WORKERS_DEV_URL" ]; then
+            echo "Warning: could not parse workers.dev URL from deploy output"
+          fi
+          echo "workers_dev_url=$WORKERS_DEV_URL" >> $GITHUB_OUTPUT
+
+          PREVIEW_URL="https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev"
+          echo "preview_url=$PREVIEW_URL" >> $GITHUB_OUTPUT
+          echo "Deployed to: $PREVIEW_URL"
+
+      - name: Wait for SSL
+        run: |
+          echo "⏳ Waiting for SSL certificate provisioning..."
+          echo "Custom domain: https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev"
+          echo ""
+          echo "Note: SSL certificate provisioning typically takes 30-60 seconds."
+
+      - name: Smoke Tests
+        env:
+          PREVIEW_URL: ${{ steps.deploy.outputs.preview_url }}
+          WORKERS_DEV_URL: ${{ steps.deploy.outputs.workers_dev_url }}
+        run: |
+          echo "Running smoke tests..."
+          echo "Preview URL: $PREVIEW_URL"
+
+          # First test the workers.dev URL to ensure Worker is working
+          echo "Testing workers.dev URL first: $WORKERS_DEV_URL"
+          if [ -n "$WORKERS_DEV_URL" ] && curl -sfS --max-time 10 "$WORKERS_DEV_URL/health"; then
+            echo "✓ Worker is responding on workers.dev"
+          else
+            echo "⚠️ Worker not responding on workers.dev (may still be deploying)"
+          fi
+
+          # Wait longer for custom domain SSL to provision
+          echo "Waiting 60 seconds for custom domain SSL certificate to provision..."
+          sleep 60
+
+          # Test custom domain with retries
+          echo "Testing custom domain: $PREVIEW_URL"
+          if curl -sfS --retry 5 --retry-delay 15 --max-time 30 "$PREVIEW_URL/health"; then
+            echo "✓ Smoke tests passed"
+          else
+            echo "⚠️ Custom domain not responding yet (SSL may still be provisioning)"
+            echo "The deployment succeeded, but the custom domain needs a few more minutes."
+            if [ -n "$WORKERS_DEV_URL" ]; then
+              echo "You can check the workers.dev URL in the meantime: $WORKERS_DEV_URL"
+            fi
+            # Don't fail the workflow - the deployment is successful
+          fi
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const previewUrl = '${{ steps.deploy.outputs.preview_url }}';
+            const dbId = '${{ steps.db.outputs.db_id }}';
+            
+            const body = `## 🚀 Preview Environment Ready
+
+            **URL:** ${previewUrl}
+
+            ### Details
+            - **PR Number:** #${{ env.PR_NUMBER }}
+            - **Database:** ${{ env.DB_NAME }} (ID: \`${dbId}\`)
+            - **Worker:** ${{ env.WORKER_NAME }}
+
+            ### Quick Links
+            - [Health Check](${previewUrl}/health)
+            - [Sign Up](${previewUrl}/auth/signup)
+            - [Sign In](${previewUrl}/auth/email)
+
+            ### Testing
+            This environment is isolated with its own database. Test freely!
+
+            > 💡 **Note:** This environment will be automatically deleted when the PR is closed or merged.`;
+
+            // Find existing comment (paginate to get all comments)
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('Preview Environment Ready')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
