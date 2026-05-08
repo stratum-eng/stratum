@@ -138,7 +138,18 @@ app.post("/", async (c) => {
 
   // Create Artifacts repo with namespaced name
   const artifactsRepoName = getArtifactsRepoName(namespace, slug);
-  const repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+  let repo: Awaited<ReturnType<typeof c.env.ARTIFACTS.create>>;
+  try {
+    repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+  } catch (artifactsError) {
+    const msg = artifactsError instanceof Error ? artifactsError.message : String(artifactsError);
+    logger.error(
+      "Failed to create Artifacts repo",
+      artifactsError instanceof Error ? artifactsError : undefined,
+      { artifactsRepoName, msg },
+    );
+    return internalError(`Failed to create repository: ${msg}`);
+  }
 
   const initResult = await initAndPush(repo.remote, repo.token, files, "Initial commit", logger);
   if (!initResult.success) {

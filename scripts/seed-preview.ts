@@ -67,7 +67,7 @@ async function createWorkspace(namespace: string, slug: string, workspaceName: s
 }
 
 async function whoami() {
-  const res = await apiFetch("/api/me");
+  const res = await apiFetch("/api/users/me");
   if (!res.ok) throw new Error(`Auth check failed: ${res.status} — check your session/token`);
   return res.json<{ id: string; email: string; username: string }>();
 }
@@ -76,7 +76,7 @@ async function main() {
   console.log(`\n🌱 Seeding ${BASE_URL}\n`);
 
   const me = await whoami();
-  console.log(`✓ Authenticated as @${me.username} (${me.email})\n`);
+  console.log(`✓ Authenticated as ${me.email}\n`);
 
   const projects = [
     { name: "demo-app", workspaces: ["feature-auth", "feature-ui"] },
