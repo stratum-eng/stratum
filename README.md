@@ -362,11 +362,11 @@ Before changing `[[artifacts]]` / `[[env.staging.artifacts]]` namespace values i
 
 See [docs/stratum-master-plan-v2.md](docs/stratum-master-plan-v2.md) for the full implementation plan.
 
-### Phase 0 ✅
+### Phase 0 🚧 (Current)
 - Basic fork/commit/merge loop on Artifacts
 - GitHub import
 
-### Phase 1 🚧 (Current)
+### Phase 1 🚧
 - Persistent storage (D1)
 - Authentication (OAuth + API tokens + email)
 - Evaluation engine (diff, webhook, secret scanning)
