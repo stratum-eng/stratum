@@ -20,19 +20,22 @@ const http = {
     headers?: Record<string, string>;
     body?: AsyncIterableIterator<Uint8Array>;
   }) {
-    // Stream request body directly instead of buffering to avoid OOM on large payloads
-    let body: ReadableStream<Uint8Array> | undefined;
+    // Buffer the full body before sending — Cloudflare Workers doesn't support
+    // half-duplex streaming on outbound fetch(), so a ReadableStream body may be
+    // silently dropped, causing the git server to return an empty response.
+    let body: Uint8Array | undefined;
     if (requestBody) {
-      body = new ReadableStream({
-        async pull(controller) {
-          const { value, done } = await requestBody.next();
-          if (done) {
-            controller.close();
-          } else {
-            controller.enqueue(value);
-          }
-        },
-      });
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of requestBody) {
+        chunks.push(chunk);
+      }
+      const totalLength = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+      body = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        body.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
     }
 
     const response = await fetch(url, {
