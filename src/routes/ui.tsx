@@ -451,17 +451,25 @@ app.get("/:namespace/:slug/changes", async (c) => {
   }
 
   const changesResult = await listChanges(c.env.DB, logger, project.name);
-  const changes = changesResult.success
-    ? changesResult.data.map((change) => ({
-        id: change.id,
-        project: change.project,
-        workspace: change.workspace,
-        status: change.status,
-        ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
-        ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
-        createdAt: change.createdAt,
-      }))
-    : [];
+  if (!changesResult.success) {
+    logger.error("Failed to list changes", changesResult.error);
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Error loading changes. Please try again.
+      </div>,
+      500,
+    );
+  }
+
+  const changes = changesResult.data.map((change) => ({
+    id: change.id,
+    project: change.project,
+    workspace: change.workspace,
+    status: change.status,
+    ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+    ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
+    createdAt: change.createdAt,
+  }));
 
   return c.html(
     <ChangesPage
@@ -509,13 +517,21 @@ app.get("/:namespace/:slug/workspaces", async (c) => {
   }
 
   const workspacesResult = await listWorkspaces(c.env.STATE, project.id, logger);
-  const workspaces = workspacesResult.success
-    ? workspacesResult.data.map((ws) => ({
-        name: ws.name,
-        parent: ws.parent,
-        createdAt: ws.createdAt,
-      }))
-    : [];
+  if (!workspacesResult.success) {
+    logger.error("Failed to list workspaces", workspacesResult.error);
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Error loading workspaces. Please try again.
+      </div>,
+      500,
+    );
+  }
+
+  const workspaces = workspacesResult.data.map((ws) => ({
+    name: ws.name,
+    parent: ws.parent,
+    createdAt: ws.createdAt,
+  }));
 
   return c.html(
     <WorkspacesPage
