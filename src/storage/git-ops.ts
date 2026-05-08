@@ -170,8 +170,12 @@ export async function initAndPush(
     git.push({ fs, dir: DIR, http, url: remote, ref: "main", onAuth: makeAuth(token) }),
   );
   if (!pushResult.success) {
-    logger.error("Failed to push to remote", pushResult.error, { remote });
-    return err(new ExternalServiceError("Git", "Failed to push to remote", pushResult.error));
+    const cause =
+      pushResult.error instanceof Error ? pushResult.error.message : String(pushResult.error);
+    logger.error("Failed to push to remote", pushResult.error, { remote, cause });
+    return err(
+      new ExternalServiceError("Git", `Failed to push to remote: ${cause}`, pushResult.error),
+    );
   }
 
   logger.info("Successfully initialized and pushed repository", { remote, sha: commitResult.data });
