@@ -924,20 +924,31 @@ export async function importFromGitHub(
       }, timeoutMs);
     });
 
-    // Race between import and timeout
-    const result = await Promise.race([
+    const doImport = () =>
       artifacts.import({
-        source: {
-          url: githubUrl,
-          branch,
-          depth,
-        },
-        target: {
-          name,
-        },
-      }),
-      timeoutPromise,
-    ]);
+        source: { url: githubUrl, branch, depth },
+        target: { name },
+      });
+
+    // First attempt
+    let result: Awaited<ReturnType<typeof doImport>>;
+    try {
+      result = await Promise.race([doImport(), timeoutPromise]);
+    } catch (firstError) {
+      const msg = firstError instanceof Error ? firstError.message : String(firstError);
+      if (!msg.includes("already exists")) throw firstError;
+
+      // Artifacts has an existing repo with this name — delete it and retry once.
+      // The placeholder repo created during project creation conflicts with import(),
+      // which requires the target name to not exist.
+      logger.warn("Artifacts repo already exists, deleting and retrying", { name });
+      try {
+        await artifacts.delete(name);
+      } catch {
+        // ignore — if delete fails, the retry will also fail and surface the error
+      }
+      result = await Promise.race([doImport(), timeoutPromise]);
+    }
 
     logger.info("Successfully imported from GitHub", {
       name,

@@ -586,14 +586,6 @@ async function processImportJob(
     // Check cancellation after status update
     if (await checkCancelled()) return;
 
-    // Delete the empty placeholder repo before importing.
-    // artifacts.import() requires the target name to not exist.
-    try {
-      await env.ARTIFACTS.delete(artifactsRepoName);
-    } catch {
-      // ignore — repo may not exist if project creation failed partway through
-    }
-
     const depth = 10; // Default depth
 
     const importResult = await importFromGitHub(
