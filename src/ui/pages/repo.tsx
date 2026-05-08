@@ -102,7 +102,7 @@ export const RepoPage: FC<RepoProps> = ({
           {hasSource && canSync && (
             <form
               method="post"
-              action={`/${project.namespace}/${project.slug}/sync`}
+              action={`/api/projects/${project.namespace}/${project.slug}/sync`}
               style={{ display: "inline" }}
             >
               <button

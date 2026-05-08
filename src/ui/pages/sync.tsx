@@ -66,7 +66,7 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
         <div class="page-header">
           <h1>Sync Status</h1>
           <div class="header-actions">
-            <a href={`/p/${project.namespace}/${project.slug}`} class="btn btn-secondary">
+            <a href={`/${project.namespace}/${project.slug}`} class="btn btn-secondary">
               ← Back to Project
             </a>
           </div>

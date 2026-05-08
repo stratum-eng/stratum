@@ -99,9 +99,9 @@ export const ConflictResolution: FC<ConflictResolutionProps> = ({ conflict, onRe
           >
             Accept All Theirs
           </button>
-          <a href="/docs/conflict-resolution" class="btn btn-link" target="_blank" rel="noreferrer">
+          <span class="btn btn-link" style="cursor:default;opacity:0.5">
             📖 Learn More
-          </a>
+          </span>
         </div>
       )}
 

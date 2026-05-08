@@ -341,20 +341,6 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
               🔄 Retry Import
             </button>
           </form>
-          <a
-            href={"/docs/troubleshooting#import-errors"}
-            class="btn btn-link"
-            target="_blank"
-            rel="noreferrer"
-          >
-            📖 View Documentation
-          </a>
-          <a
-            href={`/support?error=${encodeURIComponent(mainError)}&project=${namespace}/${slug}`}
-            class="btn btn-link"
-          >
-            📧 Contact Support
-          </a>
         </div>
       )}
 
