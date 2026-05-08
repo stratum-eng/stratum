@@ -318,7 +318,7 @@ jobs:
           [vars]
           POSTHOG_HOST = "https://app.posthog.com"
           OAUTH_REDIRECT_URI = "https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev/auth/github/callback"
-          EMAIL_FROM_ADDRESS = "noreply@staging.app.usestratum.dev"
+          EMAIL_FROM_ADDRESS = "noreply@usestratum.dev"
           PREVIEW_ENV = "pr-${{ env.PR_NUMBER }}"
           EOF
           
