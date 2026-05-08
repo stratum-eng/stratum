@@ -20,21 +20,19 @@ const http = {
     headers?: Record<string, string>;
     body?: AsyncIterableIterator<Uint8Array>;
   }) {
-    // Convert AsyncIterableIterator to Uint8Array if present
-    let body: Uint8Array | undefined;
+    // Stream request body directly instead of buffering to avoid OOM on large payloads
+    let body: ReadableStream<Uint8Array> | undefined;
     if (requestBody) {
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of requestBody) {
-        chunks.push(chunk);
-      }
-      // Concatenate chunks
-      const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-      body = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        body.set(chunk, offset);
-        offset += chunk.length;
-      }
+      body = new ReadableStream({
+        async pull(controller) {
+          const { value, done } = await requestBody.next();
+          if (done) {
+            controller.close();
+          } else {
+            controller.enqueue(value);
+          }
+        },
+      });
     }
 
     const response = await fetch(url, {
@@ -48,10 +46,19 @@ const http = {
       resHeaders[key] = value;
     });
 
-    // Return body as async iterable to match expected interface
-    const responseBody = new Uint8Array(await response.arrayBuffer());
+    // Stream response body instead of materializing to avoid high memory usage
     async function* bodyGenerator(): AsyncIterableIterator<Uint8Array> {
-      yield responseBody;
+      if (!response.body) return;
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          yield value;
+        }
+      } finally {
+        reader.releaseLock();
+      }
     }
 
     return {
