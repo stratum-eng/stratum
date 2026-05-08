@@ -144,11 +144,11 @@ app.post("/", async (c) => {
   } catch (artifactsError) {
     const msg = artifactsError instanceof Error ? artifactsError.message : String(artifactsError);
     if (msg.includes("already exists")) {
-      // Partial failure recovery: Artifacts repo was created but KV write failed.
-      // Re-use the existing repo and issue a fresh token.
-      const existingRepo = await c.env.ARTIFACTS.get(artifactsRepoName);
-      const tokenResult = await existingRepo.createToken("write", 86400 * 30);
-      repo = { name: existingRepo.name, remote: existingRepo.remote, token: tokenResult.plaintext };
+      // Orphaned Artifacts repo from a previous failed attempt (KV write failed after Artifacts
+      // create succeeded). Delete it and recreate — ARTIFACTS.get() returns a JsRpcStub where
+      // property accesses are lazy JsRpcProperty objects that can't be used as plain strings.
+      await c.env.ARTIFACTS.delete(artifactsRepoName);
+      repo = await c.env.ARTIFACTS.create(artifactsRepoName);
     } else {
       logger.error(
         "Failed to create Artifacts repo",
@@ -414,13 +414,9 @@ app.post(
         // If repo already exists, try to get it and create a token
         const errorMessage = artifactsError instanceof Error ? artifactsError.message : "";
         if (errorMessage.includes("already exists")) {
-          const existingRepo = await c.env.ARTIFACTS.get(artifactsRepoName);
-          const tokenResult = await existingRepo.createToken("write", 86400 * 30); // 30 days
-          repo = {
-            name: existingRepo.name,
-            remote: existingRepo.remote,
-            token: tokenResult.plaintext,
-          };
+          // Orphaned repo — delete and recreate to avoid JsRpcProperty on get() Stub fields.
+          await c.env.ARTIFACTS.delete(artifactsRepoName);
+          repo = await c.env.ARTIFACTS.create(artifactsRepoName);
         } else {
           throw artifactsError;
         }

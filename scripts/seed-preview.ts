@@ -55,7 +55,7 @@ async function createProject(name: string, seed = true) {
 }
 
 async function createWorkspace(namespace: string, slug: string, workspaceName: string) {
-  const res = await apiFetch(`/api/projects/${namespace}/${slug}/workspaces`, {
+  const res = await apiFetch(`/api/workspaces/${namespace}/${slug}/workspaces`, {
     method: "POST",
     body: JSON.stringify({ name: workspaceName }),
   });
@@ -63,7 +63,7 @@ async function createWorkspace(namespace: string, slug: string, workspaceName: s
     const body = await res.text();
     throw new Error(`Failed to create workspace '${workspaceName}': ${res.status} ${body}`);
   }
-  return res.json<{ name: string; branchName: string }>();
+  return res.json<{ workspace: string; remote: string }>();
 }
 
 async function whoami() {
@@ -107,7 +107,7 @@ async function main() {
       process.stdout.write(`    Creating workspace '${wsName}'... `);
       try {
         const ws = await createWorkspace(ns, sl, wsName);
-        console.log(`✓  (branch: ${ws.branchName})`);
+        console.log(`✓  (workspace: ${ws.workspace})`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("already exists")) {
