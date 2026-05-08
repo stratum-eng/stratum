@@ -29,12 +29,8 @@ async function getCurrentUser(
   if (!result.success) return null;
 
   const user = result.data;
-  // Generate username from email if missing (for users created before migration)
-  const emailPart = user.email?.split("@")[0];
-  const username =
-    user.username || (emailPart ? emailPart.toLowerCase().replace(/[^a-z0-9]/g, "") : "");
-
-  return { id: user.id, email: user.email, username };
+  // Username is always present - enforced by database schema and validation
+  return { id: user.id, email: user.email, username: user.username };
 }
 
 // GET / — Dashboard (list projects)

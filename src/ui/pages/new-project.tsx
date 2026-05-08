@@ -2,7 +2,7 @@ import type { FC } from "hono/jsx";
 import { Layout } from "../layout";
 
 interface NewProjectProps {
-  user?: { id: string; email: string; username?: string } | null;
+  user?: { id: string; email: string; username: string } | null;
   error?: string;
 }
 

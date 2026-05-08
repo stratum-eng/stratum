@@ -13,10 +13,12 @@ import { bulkImportRouter } from "./routes/bulk-import";
 import { changesRouter } from "./routes/changes";
 import { emailAuthRouter } from "./routes/email-auth";
 import { healthRouter } from "./routes/health";
+import { loginRouter } from "./routes/login";
 import { metricsRouter } from "./routes/metrics";
 import { orgsRouter } from "./routes/orgs";
 import { projectsRouter } from "./routes/projects";
 import { sessionRouter } from "./routes/sessions";
+import { signupRouter } from "./routes/signup";
 import { syncAllProjects, syncRouter } from "./routes/sync";
 import { syncManagementRouter } from "./routes/sync-management";
 import { uiRouter } from "./routes/ui";
@@ -125,6 +127,8 @@ app.get("/ui/changes/:id", (c) => {
 
 app.route("/auth", authRouter);
 app.route("/auth/email", emailAuthRouter);
+app.route("/auth/login", loginRouter);
+app.route("/auth/signup", signupRouter);
 app.route("/auth/sessions", sessionRouter);
 app.route("/", uiRouter); // Mount UI at root
 app.route("/api/projects", projectsRouter);

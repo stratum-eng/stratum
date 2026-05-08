@@ -1,8 +1,9 @@
 import { Hono } from "hono";
-import { createUser, getUser } from "../storage/users";
+import { createUser, getUser, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 import { badRequest, created, ok } from "../utils/response";
+import { validateUsername } from "../utils/username-validation";
 import { isValidEmail } from "../utils/validation";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -59,6 +60,50 @@ app.get("/me", async (c) => {
   logger.debug("User retrieved", { userId });
 
   return ok({ id: user.id, email: user.email, createdAt: user.createdAt });
+});
+
+// GET /api/users/check-username - Check if username is available
+app.get("/check-username", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  try {
+    const username = c.req.query("username");
+
+    if (!username || typeof username !== "string") {
+      return c.json({ available: false, message: "Username is required" }, 400);
+    }
+
+    const normalizedUsername = username.toLowerCase().trim();
+
+    // Validate username using shared validator (includes reserved name check)
+    const validation = validateUsername(normalizedUsername, logger);
+    if (!validation.success) {
+      const message = validation.error[0]?.message ?? "Invalid username format";
+      return c.json({ available: false, message }, 400);
+    }
+
+    // Check if username exists
+    const existingUser = await getUserByUsername(c.env.DB, normalizedUsername, logger);
+
+    if (existingUser.success) {
+      return c.json({
+        available: false,
+        message: "This username is already taken",
+      });
+    }
+
+    return c.json({ available: true, message: "Username is available" });
+  } catch (error) {
+    logger.error(
+      "Error checking username availability",
+      error instanceof Error ? error : undefined,
+    );
+    return c.json({ available: false, message: "Unable to check username availability" }, 500);
+  }
 });
 
 export { app as usersRouter };

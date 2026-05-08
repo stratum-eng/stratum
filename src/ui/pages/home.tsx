@@ -10,7 +10,7 @@ interface HomeProps {
     createdAt: string;
     visibility?: string;
   }>;
-  user?: { id: string; email: string } | null;
+  user?: { id: string; email: string; username: string } | null;
 }
 
 export const HomePage: FC<HomeProps> = ({ projects, user }) => {

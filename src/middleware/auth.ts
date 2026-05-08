@@ -9,7 +9,7 @@ import { type Logger, createLogger } from "../utils/logger";
 declare module "hono" {
   interface ContextVariableMap {
     userId?: string;
-    username?: string;
+    username: string;
     agentId?: string;
     agentOwnerId?: string;
     logger: Logger;
