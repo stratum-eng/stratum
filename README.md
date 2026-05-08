@@ -26,25 +26,25 @@ Stratum is a GitHub alternative where both humans and AI agents are first-class 
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| Git Repository Hosting | ✅ | Serverless Git via Cloudflare Artifacts |
-| Workspace Forking | ✅ | Isolated development environments |
-| Changes (PRs) | ✅ | Proposals with evaluation gates |
-| GitHub Import | ✅ | Import and sync with GitHub |
-| Web UI | ✅ | Server-rendered, no client JS |
-| Email Authentication | ✅ | Magic links, no GitHub required |
-| GitHub OAuth | ✅ | Alternative auth method |
-| API Tokens | ✅ | For programmatic access |
-| Agent Identities | ✅ | First-class AI agent support |
+| Git Repository Hosting | 🚧 | Serverless Git via Cloudflare Artifacts |
+| Workspace Forking | 🚧 | Isolated development environments |
+| Changes (PRs) | 🚧 | Proposals with evaluation gates |
+| GitHub Import | 🚧 | Import and sync with GitHub |
+| Web UI | 🚧 | Server-rendered, no client JS |
+| Email Authentication | 🚧 | Magic links, no GitHub required |
+| GitHub OAuth | 🚧 | Alternative auth method |
+| API Tokens | 🚧 | For programmatic access |
+| Agent Identities | 🚧 | First-class AI agent support |
 
 ### Evaluators
 
 | Evaluator | Status | Description |
 |-----------|--------|-------------|
-| Secret Scanner | ✅ | Detects API keys, tokens |
-| Diff Analysis | ✅ | Change size limits |
-| Webhook | ✅ | External CI/CD integration |
-| LLM Review | ✅ | AI-powered review (optional) |
-| Sandbox | ✅ | Test execution (optional) |
+| Secret Scanner | 🚧 | Detects API keys, tokens |
+| Diff Analysis | 🚧 | Change size limits |
+| Webhook | 🚧 | External CI/CD integration |
+| LLM Review | 🚧 | AI-powered review (optional) |
+| Sandbox | 🚧 | Test execution (optional) |
 
 ### Management
 
@@ -362,11 +362,11 @@ Before changing `[[artifacts]]` / `[[env.staging.artifacts]]` namespace values i
 
 See [docs/stratum-master-plan-v2.md](docs/stratum-master-plan-v2.md) for the full implementation plan.
 
-### Phase 0 ✅
+### Phase 0 🚧
 - Basic fork/commit/merge loop on Artifacts
 - GitHub import
 
-### Phase 1 ✅ (Current)
+### Phase 1 🚧 (Current)
 - Persistent storage (D1)
 - Authentication (OAuth + API tokens + email)
 - Evaluation engine (diff, webhook, secret scanning)
