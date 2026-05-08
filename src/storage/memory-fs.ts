@@ -58,6 +58,8 @@ export class MemoryFS {
     rmdir: this.rmdir.bind(this),
     stat: this.stat.bind(this),
     lstat: this.lstat.bind(this),
+    readlink: this.readlink.bind(this),
+    symlink: this.symlink.bind(this),
   };
 
   normalize(input: string): string {
@@ -209,6 +211,15 @@ export class MemoryFS {
     return this.stat(path);
   }
 
+  // isomorphic-git requires readlink/symlink to be present even if symlinks are never used.
+  async readlink(path: string): Promise<Result<string, AppError>> {
+    return err(fsError("EINVAL", `EINVAL: invalid argument, readlink '${path}'`));
+  }
+
+  async symlink(_target: string, path: string): Promise<Result<void, AppError>> {
+    return err(fsError("EPERM", `EPERM: operation not permitted, symlink '${path}'`));
+  }
+
   /**
    * Returns a Node.js fs-compatible interface for isomorphic-git
    * This unwraps Result objects and throws errors like standard Node.js fs
@@ -226,6 +237,8 @@ export class MemoryFS {
       rmdir: (path: string) => Promise<void>;
       stat: (path: string) => Promise<MemoryStats>;
       lstat: (path: string) => Promise<MemoryStats>;
+      readlink: (path: string) => Promise<string>;
+      symlink: (target: string, path: string) => Promise<void>;
     };
   } {
     const nodeFS = {
@@ -265,6 +278,15 @@ export class MemoryFS {
           const result = await this.lstat(path);
           if (!result.success) throw result.error;
           return result.data;
+        },
+        readlink: async (path: string) => {
+          const result = await this.readlink(path);
+          if (!result.success) throw result.error;
+          return result.data;
+        },
+        symlink: async (target: string, path: string) => {
+          const result = await this.symlink(target, path);
+          if (!result.success) throw result.error;
         },
       },
     };
