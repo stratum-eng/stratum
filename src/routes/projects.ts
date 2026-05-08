@@ -586,7 +586,14 @@ async function processImportJob(
     // Check cancellation after status update
     if (await checkCancelled()) return;
 
-    // Perform the actual import
+    // Delete the empty placeholder repo before importing.
+    // artifacts.import() requires the target name to not exist.
+    try {
+      await env.ARTIFACTS.delete(artifactsRepoName);
+    } catch {
+      // ignore — repo may not exist if project creation failed partway through
+    }
+
     const depth = 10; // Default depth
 
     const importResult = await importFromGitHub(
@@ -1014,9 +1021,14 @@ app.post(
       return notFound("Import job", `${namespace}/${slug}`);
     }
 
-    const _existing = progressResult.data;
+    const existing = progressResult.data;
 
-    // Reset the import job
+    const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+    if (!projectResult.success) {
+      return notFound("Project", `${namespace}/${slug}`);
+    }
+
+    // Reset the import job to queued
     const resetResult = await updateImportStatus(
       c.env.DB,
       namespace,
@@ -1031,7 +1043,56 @@ app.post(
       return internalError(resetResult.error.message);
     }
 
-    // TODO: Re-queue the import job for processing
+    const githubUrl = existing.sourceUrl;
+    const branch = existing.branch ?? "main";
+    const importId = existing.id;
+
+    if (c.env.IMPORT_QUEUE) {
+      try {
+        const { queueImportJob } = await import("../queue/import-queue");
+        await queueImportJob(c.env.IMPORT_QUEUE, {
+          importId,
+          projectId: existing.projectId,
+          namespace,
+          slug,
+          githubUrl,
+          branch,
+          depth: 10,
+        });
+      } catch (queueError) {
+        logger.error(
+          "Failed to re-queue import job",
+          queueError instanceof Error ? queueError : undefined,
+          { namespace, slug },
+        );
+        await updateImportStatus(
+          c.env.DB,
+          namespace,
+          slug,
+          "failed",
+          logger,
+          `Failed to re-queue: ${queueError instanceof Error ? queueError.message : String(queueError)}`,
+        );
+        return internalError("Failed to queue import job");
+      }
+    } else {
+      // No queue — process synchronously in the background
+      logger.warn("IMPORT_QUEUE not configured, falling back to direct processing", {
+        namespace,
+        slug,
+      });
+      c.executionCtx.waitUntil(
+        processImportJob(c.env, projectResult.data, importId, githubUrl, branch, logger).catch(
+          (error) => {
+            logger.error(
+              "Unhandled error in background import retry",
+              error instanceof Error ? error : undefined,
+              { namespace, slug },
+            );
+          },
+        ),
+      );
+    }
 
     logger.info("Import retry initiated", { namespace, slug });
     return ok({
@@ -1465,12 +1526,13 @@ app.post(
       return internalError(cancelResult.error.message);
     }
 
-    logger.info("Import cancellation requested", { namespace, slug });
+    const finalStatus = cancelResult.data.status;
+    logger.info("Import cancellation requested", { namespace, slug, finalStatus });
     return ok({
-      message: "Import cancellation requested",
+      message: finalStatus === "cancelled" ? "Import cancelled" : "Import cancellation requested",
       namespace,
       slug,
-      status: "cancelling",
+      status: finalStatus,
     });
   },
 );
