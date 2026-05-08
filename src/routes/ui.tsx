@@ -4,6 +4,7 @@ import { listEvalRuns } from "../storage/eval-runs";
 import { getCommitLog, listFilesInRepo, readFileFromRepo } from "../storage/git-ops";
 import { getImportProgress } from "../storage/imports";
 import { getProject, getProjectByPath, listProjects, listWorkspaces } from "../storage/state";
+import { getSyncStatus } from "../storage/sync";
 import { getUser } from "../storage/users";
 import type { Env } from "../types";
 import { ChangeDetailPage } from "../ui/pages/change-detail";
@@ -11,6 +12,7 @@ import { ChangesPage } from "../ui/pages/changes";
 import { HomePage } from "../ui/pages/home";
 import { NewProjectPage } from "../ui/pages/new-project";
 import { RepoPage } from "../ui/pages/repo";
+import { SyncPage } from "../ui/pages/sync";
 import { WorkspacesPage } from "../ui/pages/workspaces";
 import { canReadProject, filterReadableProjects } from "../utils/authz";
 import { createLogger } from "../utils/logger";
@@ -408,6 +410,194 @@ app.get("/p/:name/workspaces", async (c) => {
       project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
       workspaces={view}
       user={userResult}
+    />,
+  );
+});
+
+// GET /:namespace/:slug/changes — Changes list (namespace format)
+app.get("/:namespace/:slug/changes", async (c) => {
+  const { namespace, slug } = c.req.param();
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const logger = createLogger({ path: c.req.path, userId });
+
+  if (!isValidNamespace(namespace) || !isValidSlug(slug)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Invalid project path.</div>,
+      400,
+    );
+  }
+
+  const [userResult, projectResult] = await Promise.all([
+    getCurrentUser(c, logger),
+    getProjectByPath(c.env.STATE, namespace, slug, logger),
+  ]);
+
+  if (!projectResult.success) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Project '{namespace}/{slug}' not found.
+      </div>,
+      404,
+    );
+  }
+  const project = projectResult.data;
+
+  if (!canReadProject(project, userId, agentOwnerId)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Access denied.</div>,
+      403,
+    );
+  }
+
+  const changesResult = await listChanges(c.env.DB, logger, project.name);
+  const changes = changesResult.success
+    ? changesResult.data.map((change) => ({
+        id: change.id,
+        project: change.project,
+        workspace: change.workspace,
+        status: change.status,
+        ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+        ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
+        createdAt: change.createdAt,
+      }))
+    : [];
+
+  return c.html(
+    <ChangesPage
+      project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
+      changes={changes}
+      user={userResult}
+    />,
+  );
+});
+
+// GET /:namespace/:slug/workspaces — Workspaces list (namespace format)
+app.get("/:namespace/:slug/workspaces", async (c) => {
+  const { namespace, slug } = c.req.param();
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const logger = createLogger({ path: c.req.path, userId });
+
+  if (!isValidNamespace(namespace) || !isValidSlug(slug)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Invalid project path.</div>,
+      400,
+    );
+  }
+
+  const [userResult, projectResult] = await Promise.all([
+    getCurrentUser(c, logger),
+    getProjectByPath(c.env.STATE, namespace, slug, logger),
+  ]);
+
+  if (!projectResult.success) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Project '{namespace}/{slug}' not found.
+      </div>,
+      404,
+    );
+  }
+  const project = projectResult.data;
+
+  if (!canReadProject(project, userId, agentOwnerId)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Access denied.</div>,
+      403,
+    );
+  }
+
+  const workspacesResult = await listWorkspaces(c.env.STATE, project.id, logger);
+  const workspaces = workspacesResult.success
+    ? workspacesResult.data.map((ws) => ({
+        name: ws.name,
+        parent: ws.parent,
+        createdAt: ws.createdAt,
+      }))
+    : [];
+
+  return c.html(
+    <WorkspacesPage
+      project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
+      workspaces={workspaces}
+      user={userResult}
+    />,
+  );
+});
+
+// GET /:namespace/:slug/sync — Sync management page
+app.get("/:namespace/:slug/sync", async (c) => {
+  const { namespace, slug } = c.req.param();
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const logger = createLogger({ path: c.req.path, userId });
+
+  if (!isValidNamespace(namespace) || !isValidSlug(slug)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Invalid project path.</div>,
+      400,
+    );
+  }
+
+  if (!userId) {
+    return c.redirect("/auth/email");
+  }
+
+  const [_userResult, projectResult] = await Promise.all([
+    getCurrentUser(c, logger),
+    getProjectByPath(c.env.STATE, namespace, slug, logger),
+  ]);
+
+  if (!projectResult.success) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Project '{namespace}/{slug}' not found.
+      </div>,
+      404,
+    );
+  }
+  const project = projectResult.data;
+
+  if (!canReadProject(project, userId, agentOwnerId)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Access denied.</div>,
+      403,
+    );
+  }
+
+  const syncStatusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);
+  const stored = syncStatusResult.success ? syncStatusResult.data : null;
+  const syncStatus = {
+    namespace,
+    slug,
+    sourceUrl: project.remote || "",
+    sourceBranch: "main",
+    lastSyncStatus: (stored?.lastSyncStatus ?? "idle") as
+      | "success"
+      | "failed"
+      | "in_progress"
+      | "idle",
+    lastSyncedAt: stored?.lastSyncedAt,
+    lastSyncedCommit: stored?.lastSyncedCommit,
+    lastSyncError: stored?.lastSyncError,
+    hasUpdates: stored?.hasUpdates ?? false,
+    commitsBehind: stored?.commitsBehind,
+    latestCommit: stored?.latestCommit,
+    autoSyncEnabled: stored?.autoSyncEnabled ?? false,
+    syncFrequency: stored?.syncFrequency,
+    lastCheckedAt: stored?.lastCheckedAt ?? new Date().toISOString(),
+  };
+
+  return c.html(
+    <SyncPage
+      project={{
+        namespace: project.namespace || namespace,
+        slug: project.slug || slug,
+        name: project.name,
+      }}
+      syncStatus={syncStatus}
+      syncHistory={[]}
     />,
   );
 });
