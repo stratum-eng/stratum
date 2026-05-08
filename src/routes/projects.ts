@@ -147,8 +147,19 @@ app.post("/", async (c) => {
       // Orphaned Artifacts repo from a previous failed attempt (KV write failed after Artifacts
       // create succeeded). Delete it and recreate — ARTIFACTS.get() returns a JsRpcStub where
       // property accesses are lazy JsRpcProperty objects that can't be used as plain strings.
-      await c.env.ARTIFACTS.delete(artifactsRepoName);
-      repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+      try {
+        await c.env.ARTIFACTS.delete(artifactsRepoName);
+        repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+      } catch (recoveryError) {
+        logger.error(
+          "Failed to delete and recreate Artifacts repo",
+          recoveryError instanceof Error ? recoveryError : undefined,
+          { artifactsRepoName, error: recoveryError },
+        );
+        return internalError(
+          `Failed to recover repository: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+        );
+      }
     } else {
       logger.error(
         "Failed to create Artifacts repo",
