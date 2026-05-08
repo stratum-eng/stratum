@@ -25,11 +25,7 @@ const PROJECT = {
 // Env mock factory
 // ---------------------------------------------------------------------------
 
-function makeEnv({
-  hasQueue = true,
-  queueSendFails = false,
-  syncInProgress = false,
-} = {}): {
+function makeEnv({ hasQueue = true, queueSendFails = false, syncInProgress = false } = {}): {
   DB: D1Database;
   STATE: KVNamespace;
   IMPORT_QUEUE: Queue | undefined;
@@ -99,9 +95,8 @@ vi.mock("../src/storage/imports", () => ({
   createImportJob: vi.fn().mockResolvedValue({ success: true }),
 }));
 
-import { getProjectByGitHubRepo } from "../src/storage/github-bridge";
 import { queueSyncJob } from "../src/queue/import-queue";
-import { createImportJob } from "../src/storage/imports";
+import { getProjectByGitHubRepo } from "../src/storage/github-bridge";
 
 // ---------------------------------------------------------------------------
 // We test handlePush indirectly by calling the internal function via the
@@ -166,7 +161,7 @@ describe("Webhook push handler", () => {
         projectId: PROJECT.id,
         namespace: PROJECT.namespace,
         slug: PROJECT.slug,
-        githubUrl: PROJECT.sourceUrl!,
+        githubUrl: PROJECT.sourceUrl as string,
         branch: "main",
         depth: 10,
         trigger: "webhook",
