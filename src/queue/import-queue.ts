@@ -214,6 +214,15 @@ async function processImportJob(
       return;
     }
 
+    // Delete the empty placeholder repo created during project creation.
+    // artifacts.import() requires the target name to not exist — it creates a
+    // fresh repo populated with the GitHub content.
+    try {
+      await env.ARTIFACTS.delete(artifactsRepoName);
+    } catch {
+      // ignore — repo may not exist if project creation failed partway through
+    }
+
     // Perform the actual import
     const importResult = await importFromGitHub(
       env.ARTIFACTS,

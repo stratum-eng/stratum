@@ -500,6 +500,11 @@ export async function cancelImportJob(
     );
   }
 
+  // If already cancelling (no active worker to complete it), finalize immediately.
+  if (progress.status === "cancelling") {
+    return updateImportStatus(db, namespace, slug, "cancelled", logger, "Import cancelled");
+  }
+
   return updateImportStatus(
     db,
     namespace,
@@ -645,9 +650,9 @@ export async function recoverStalledImport(
   try {
     const row = await db
       .prepare(
-        `SELECT * FROM import_jobs 
-         WHERE namespace = ? AND slug = ? 
-         AND status IN ('cloning', 'processing', 'syncing')
+        `SELECT * FROM import_jobs
+         WHERE namespace = ? AND slug = ?
+         AND status IN ('cloning', 'processing', 'syncing', 'cancelling')
          AND updated_at < datetime('now', ?)
          ORDER BY updated_at DESC LIMIT 1`,
       )
@@ -658,7 +663,9 @@ export async function recoverStalledImport(
       return ok(false); // No stalled import found
     }
 
-    logger.warn("Detected stalled import, marking as failed", {
+    const targetStatus = row.status === "cancelling" ? "cancelled" : "failed";
+
+    logger.warn(`Detected stalled import, marking as ${targetStatus}`, {
       namespace,
       slug,
       importId: row.id,
@@ -673,15 +680,19 @@ export async function recoverStalledImport(
       namespace,
       slug,
       {
-        status: "failed",
+        status: targetStatus,
         completedAt: now,
-        errors: [
-          {
-            file: "_import",
-            error: `Import stalled: no progress for longer than ${Math.round(maxStallMs / 1000)} seconds. This may indicate a network issue or timeout with the git provider.`,
-            timestamp: now,
-          },
-        ],
+        ...(targetStatus === "failed"
+          ? {
+              errors: [
+                {
+                  file: "_import",
+                  error: `Import stalled: no progress for longer than ${Math.round(maxStallMs / 1000)} seconds. This may indicate a network issue or timeout with the git provider.`,
+                  timestamp: now,
+                },
+              ],
+            }
+          : {}),
       },
       logger,
     );
