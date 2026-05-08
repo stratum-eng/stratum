@@ -143,12 +143,20 @@ app.post("/", async (c) => {
     repo = await c.env.ARTIFACTS.create(artifactsRepoName);
   } catch (artifactsError) {
     const msg = artifactsError instanceof Error ? artifactsError.message : String(artifactsError);
-    logger.error(
-      "Failed to create Artifacts repo",
-      artifactsError instanceof Error ? artifactsError : undefined,
-      { artifactsRepoName, msg },
-    );
-    return internalError(`Failed to create repository: ${msg}`);
+    if (msg.includes("already exists")) {
+      // Partial failure recovery: Artifacts repo was created but KV write failed.
+      // Re-use the existing repo and issue a fresh token.
+      const existingRepo = await c.env.ARTIFACTS.get(artifactsRepoName);
+      const tokenResult = await existingRepo.createToken("write", 86400 * 30);
+      repo = { name: existingRepo.name, remote: existingRepo.remote, token: tokenResult.plaintext };
+    } else {
+      logger.error(
+        "Failed to create Artifacts repo",
+        artifactsError instanceof Error ? artifactsError : undefined,
+        { artifactsRepoName, msg },
+      );
+      return internalError(`Failed to create repository: ${msg}`);
+    }
   }
 
   const initResult = await initAndPush(repo.remote, repo.token, files, "Initial commit", logger);
