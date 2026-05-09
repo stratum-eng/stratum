@@ -141,13 +141,9 @@ async function processRepoImport(
     } catch (artifactsError) {
       const errorMessage = artifactsError instanceof Error ? artifactsError.message : "";
       if (errorMessage.includes("already exists")) {
-        const existingRepo = await env.ARTIFACTS.get(artifactsRepoName);
-        const tokenResult = await existingRepo.createToken("write", 86400 * 30);
-        repo = {
-          name: existingRepo.name,
-          remote: existingRepo.remote,
-          token: tokenResult.plaintext,
-        };
+        // Orphaned repo — delete and recreate to avoid JsRpcProperty on get() Stub fields.
+        await env.ARTIFACTS.delete(artifactsRepoName);
+        repo = await env.ARTIFACTS.create(artifactsRepoName);
       } else {
         throw artifactsError;
       }

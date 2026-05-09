@@ -13,6 +13,7 @@ import {
   recordImportStarted,
 } from "../storage/metrics";
 import { getProjectByPath, setProject } from "../storage/state";
+import { recordSyncHistory } from "../storage/sync";
 import type {
   EmailMessage,
   Env,
@@ -426,6 +427,20 @@ async function processSyncJob(
         startedAt,
         isSync: true,
       });
+      await recordSyncHistory(
+        env.DB,
+        {
+          namespace,
+          slug,
+          trigger: message.trigger ?? "manual",
+          status: "failed",
+          errorMessage: importResult.error.message,
+          durationMs: Date.now() - startedAt,
+          startedAt: new Date(startedAt).toISOString(),
+          completedAt: new Date().toISOString(),
+        },
+        logger,
+      );
 
       // Update project sync error status
       const updatedProject: ProjectEntry = {
@@ -496,6 +511,20 @@ async function processSyncJob(
     // Record completion with duration
     const duration = Date.now() - startedAt;
     await recordImportCompleted(env.DB, namespace, slug, duration, logger);
+    await recordSyncHistory(
+      env.DB,
+      {
+        namespace,
+        slug,
+        trigger: message.trigger ?? "manual",
+        status: "success",
+        syncedCommit: latestCommitSha,
+        durationMs: duration,
+        startedAt: new Date(startedAt).toISOString(),
+        completedAt: new Date().toISOString(),
+      },
+      logger,
+    );
 
     logger.info("Sync completed successfully", {
       importId,
@@ -526,6 +555,20 @@ async function processSyncJob(
         startedAt,
         isSync: true,
       });
+      await recordSyncHistory(
+        env.DB,
+        {
+          namespace,
+          slug,
+          trigger: message.trigger ?? "manual",
+          status: "failed",
+          errorMessage: err.message,
+          durationMs: Date.now() - startedAt,
+          startedAt: new Date(startedAt).toISOString(),
+          completedAt: new Date().toISOString(),
+        },
+        logger,
+      );
 
       await updateImportStatus(
         env.DB,

@@ -1,7 +1,15 @@
 import { Hono } from "hono";
 import { authMiddleware } from "../middleware/auth";
-import { getProject } from "../storage/state";
-import { checkForSyncUpdates, getSyncStatus, updateProjectAfterSync } from "../storage/sync";
+import { resolveConflict } from "../storage/git-ops";
+import { getProject, getProjectByPath, getWorkspace, setProject } from "../storage/state";
+import {
+  checkForSyncUpdates,
+  getSyncHistory,
+  getSyncStatus,
+  recordSyncHistory,
+  setSyncSettings,
+  updateProjectAfterSync,
+} from "../storage/sync";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 import { notFound, ok } from "../utils/response";
@@ -223,16 +231,37 @@ app.post("/projects/:namespace/:slug/sync/settings", async (c) => {
     return c.json({ error: "Forbidden - You do not have access to this project" }, 403);
   }
 
-  // TODO: Implement sync settings storage
-  // For now, return 501 Not Implemented
-
-  return c.json(
+  const settingsResult = await setSyncSettings(
+    c.env.STATE,
+    namespace,
+    slug,
     {
-      error: "Not implemented",
-      message: "Sync settings persistence is not yet implemented",
+      autoSyncEnabled: body.autoSyncEnabled,
+      syncFrequency: body.syncFrequency,
     },
-    501,
+    logger,
   );
+  if (!settingsResult.success) {
+    logger.error("Failed to persist sync settings", settingsResult.error);
+    return c.json({ error: "Failed to save sync settings" }, 500);
+  }
+
+  // Mirror autoSyncEnabled onto ProjectEntry so the scheduled runner picks it up.
+  // syncFrequency is intentionally NOT mirrored — the runner reads the sync-status blob.
+  if (body.autoSyncEnabled !== undefined) {
+    const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+    if (projectResult.success) {
+      const project = projectResult.data;
+      await setProject(c.env.STATE, { ...project, autoSyncEnabled: body.autoSyncEnabled }, logger);
+    }
+  }
+
+  logger.info("Sync settings saved", { namespace, slug });
+  return c.json({
+    success: true,
+    autoSyncEnabled: body.autoSyncEnabled,
+    syncFrequency: body.syncFrequency,
+  });
 });
 
 /**
@@ -262,16 +291,14 @@ app.get("/projects/:namespace/:slug/sync/history", async (c) => {
     return c.json({ error: "Forbidden - You do not have access to this project" }, 403);
   }
 
-  // TODO: Implement sync history storage
-  // For now, return 501 Not Implemented
+  const rawLimit = Number(c.req.query("limit") ?? "50");
+  const rawOffset = Number(c.req.query("offset") ?? "0");
+  const limit = Number.isFinite(rawLimit) ? rawLimit : 50;
+  const offset = Number.isFinite(rawOffset) ? rawOffset : 0;
 
-  return c.json(
-    {
-      error: "Not implemented",
-      message: "Sync history retrieval is not yet implemented",
-    },
-    501,
-  );
+  const history = await getSyncHistory(c.env.DB, namespace, slug, limit, offset, logger);
+  logger.debug("Sync history retrieved", { namespace, slug, count: history.length });
+  return c.json({ history });
 });
 
 /**
@@ -417,7 +444,7 @@ app.get("/projects/:namespace/:slug/sync/stream", async (c) => {
 
 /**
  * POST /projects/conflicts/:id/resolve
- * Resolve merge conflicts
+ * Resolve a merge conflict by applying a strategy and committing the result.
  */
 app.post("/projects/conflicts/:id/resolve", async (c) => {
   const userId = c.get("userId");
@@ -426,13 +453,6 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
   }
 
   const conflictId = c.req.param("id");
-  const body = await c.req.json<{
-    strategy: "ours" | "theirs" | "manual";
-    resolutions?: Array<{
-      file: string;
-      content?: string;
-    }>;
-  }>();
 
   const logger = createLogger({
     requestId: crypto.randomUUID(),
@@ -441,69 +461,139 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
     userId,
   });
 
-  // Validate strategy
-  if (!body.strategy || !["ours", "theirs", "manual"].includes(body.strategy)) {
-    return c.json({ error: "Invalid strategy. Must be 'ours', 'theirs', or 'manual'" }, 400);
+  // Read conflict context from KV
+  const conflictRaw = await c.env.STATE.get(`conflict:${conflictId}`);
+  if (!conflictRaw) {
+    return c.json({ error: "Conflict not found or already resolved", code: "GONE" }, 410);
   }
 
-  // Validate manual resolutions if strategy is manual
-  if (body.strategy === "manual" && (!body.resolutions || body.resolutions.length === 0)) {
-    return c.json({ error: "Manual strategy requires resolutions array" }, 400);
-  }
-
-  logger.info("Resolving conflicts", {
-    conflictId,
-    strategy: body.strategy,
-    fileCount: body.resolutions?.length,
-  });
-
+  let conflictCtx: {
+    conflictId: string;
+    namespace: string;
+    slug: string;
+    workspaceName: string;
+    conflictingFiles: string[];
+    detectedAt: string;
+  };
   try {
-    // Store the resolution in KV for tracking
-    const resolutionKey = `conflict-resolution:${conflictId}`;
-    const resolution = {
-      conflictId,
-      resolvedBy: userId,
-      resolvedAt: new Date().toISOString(),
-      strategy: body.strategy,
-      fileCount: body.resolutions?.length ?? 0,
-      files: body.resolutions?.map((r) => r.file) ?? [],
-    };
+    conflictCtx = JSON.parse(conflictRaw);
+  } catch {
+    logger.error("Corrupt conflict context in KV", undefined, { conflictId });
+    return c.json({ error: "Corrupt conflict context" }, 500);
+  }
 
-    await c.env.STATE.put(resolutionKey, JSON.stringify(resolution), {
-      expirationTtl: 7 * 24 * 60 * 60, // 7 days retention
-    });
+  const body: { strategy?: unknown; resolutions?: unknown } = await c.req
+    .json<{ strategy?: unknown; resolutions?: unknown }>()
+    .catch(() => ({ strategy: undefined, resolutions: undefined }));
 
-    // TODO: Implement actual file merge logic
-    // This would involve:
-    // 1. Fetching the conflict details from KV
-    // 2. Applying the resolution strategy to each file
-    // 3. Creating a merge commit with the resolved files
-    // 4. Updating the workspace/project state
+  const VALID_STRATEGIES = ["accept-project", "accept-workspace", "manual"] as const;
+  type Strategy = (typeof VALID_STRATEGIES)[number];
 
-    logger.info("Conflict resolution recorded", {
-      conflictId,
-      strategy: body.strategy,
-    });
-
-    return c.json({
-      success: true,
-      message: `Conflict resolution recorded with strategy: ${body.strategy}`,
-      conflictId,
-      resolvedAt: resolution.resolvedAt,
-      filesResolved: resolution.fileCount,
-    });
-  } catch (error) {
-    logger.error("Failed to resolve conflicts", error instanceof Error ? error : undefined, {
-      conflictId,
-    });
+  if (!body.strategy || !VALID_STRATEGIES.includes(body.strategy as Strategy)) {
     return c.json(
-      {
-        error: "Failed to resolve conflicts",
-        message: error instanceof Error ? error.message : "Unknown error",
-      },
-      500,
+      { error: "Invalid strategy. Must be 'accept-project', 'accept-workspace', or 'manual'" },
+      400,
     );
   }
+
+  const strategy = body.strategy as Strategy;
+
+  if (strategy === "manual") {
+    if (!Array.isArray(body.resolutions) || body.resolutions.length === 0) {
+      return c.json({ error: "manual strategy requires a non-empty resolutions array" }, 400);
+    }
+    for (const r of body.resolutions as Array<{ file?: unknown; content?: unknown }>) {
+      if (typeof r.file !== "string" || typeof r.content !== "string") {
+        return c.json(
+          { error: "Each resolution must have string 'file' and 'content' fields" },
+          400,
+        );
+      }
+      if ((r.file as string).includes("../") || (r.file as string).startsWith("/")) {
+        return c.json(
+          {
+            error: `Invalid file path: ${r.file} — path traversal is not allowed`,
+            code: "INVALID_PATH",
+          },
+          422,
+        );
+      }
+    }
+  }
+
+  // Re-fetch project and workspace for tokens — never use tokens from conflict context
+  const projectResult = await getProjectByPath(
+    c.env.STATE,
+    conflictCtx.namespace,
+    conflictCtx.slug,
+    logger,
+  );
+  if (!projectResult.success) {
+    return c.json({ error: "Project not found" }, 404);
+  }
+  const project = projectResult.data;
+
+  const workspaceResult = await getWorkspace(
+    c.env.STATE,
+    project.id,
+    conflictCtx.workspaceName,
+    logger,
+  );
+  if (!workspaceResult.success) {
+    return c.json({ error: "Workspace not found" }, 404);
+  }
+  const workspace = workspaceResult.data;
+
+  logger.info("Resolving conflict", {
+    conflictId,
+    strategy,
+    workspaceName: conflictCtx.workspaceName,
+  });
+
+  const startedAt = Date.now();
+  const resolveResult = await resolveConflict(
+    {
+      projectRemote: project.remote,
+      projectToken: project.token,
+      workspaceRemote: workspace.remote,
+      workspaceToken: workspace.token,
+      strategy,
+      conflictingFiles: conflictCtx.conflictingFiles,
+      manualResolutions:
+        strategy === "manual"
+          ? (body.resolutions as Array<{ file: string; content: string }>)
+          : undefined,
+    },
+    logger,
+  );
+
+  if (!resolveResult.success) {
+    const status = resolveResult.error.statusCode === 401 ? 401 : 422;
+    return c.json({ error: resolveResult.error.message, code: resolveResult.error.code }, status);
+  }
+
+  const { commitSha } = resolveResult.data;
+
+  // Record history (non-throwing); delete conflict key regardless of history outcome
+  await recordSyncHistory(
+    c.env.DB,
+    {
+      namespace: conflictCtx.namespace,
+      slug: conflictCtx.slug,
+      trigger: "manual",
+      status: "success",
+      syncedCommit: commitSha,
+      durationMs: Date.now() - startedAt,
+      startedAt: new Date(startedAt).toISOString(),
+      completedAt: new Date().toISOString(),
+    },
+    logger,
+  );
+
+  await c.env.STATE.delete(`conflict:${conflictId}`);
+
+  logger.info("Conflict resolved", { conflictId, commitSha });
+  return c.json({ status: "resolved", commitSha });
 });
 
 export { app as syncManagementRouter };

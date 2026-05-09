@@ -82,7 +82,15 @@ app.post("/", async (c) => {
   const username = c.get("username");
   if (!userId || !username) return unauthorized("Authentication required");
 
-  const body = await c.req.json<{ name?: unknown; files?: unknown; visibility?: unknown }>();
+  let body: { name?: unknown; files?: unknown; visibility?: unknown; seed?: unknown };
+  const contentType = c.req.header("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    body = await c.req.json<typeof body>();
+  } else {
+    const form = await c.req.parseBody();
+    body = { name: form.name, visibility: form.visibility, seed: form.seed };
+  }
+
   if (!isValidSlug(body.name)) return badRequest("name must be a 1-64 char alphanumeric slug");
 
   const namespace = getUserNamespace(username);
@@ -101,7 +109,7 @@ app.post("/", async (c) => {
     visibility = body.visibility;
   }
 
-  const seed = c.req.query("seed") === "true";
+  const seed = body.seed === "true" || body.seed === true || c.req.query("seed") === "true";
   const files =
     body.files !== undefined
       ? isStringRecord(body.files)
@@ -130,7 +138,37 @@ app.post("/", async (c) => {
 
   // Create Artifacts repo with namespaced name
   const artifactsRepoName = getArtifactsRepoName(namespace, slug);
-  const repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+  let repo: Awaited<ReturnType<typeof c.env.ARTIFACTS.create>>;
+  try {
+    repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+  } catch (artifactsError) {
+    const msg = artifactsError instanceof Error ? artifactsError.message : String(artifactsError);
+    if (msg.includes("already exists")) {
+      // Orphaned Artifacts repo from a previous failed attempt (KV write failed after Artifacts
+      // create succeeded). Delete it and recreate — ARTIFACTS.get() returns a JsRpcStub where
+      // property accesses are lazy JsRpcProperty objects that can't be used as plain strings.
+      try {
+        await c.env.ARTIFACTS.delete(artifactsRepoName);
+        repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+      } catch (recoveryError) {
+        logger.error(
+          "Failed to delete and recreate Artifacts repo",
+          recoveryError instanceof Error ? recoveryError : undefined,
+          { artifactsRepoName, error: recoveryError },
+        );
+        return internalError(
+          `Failed to recover repository: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+        );
+      }
+    } else {
+      logger.error(
+        "Failed to create Artifacts repo",
+        artifactsError instanceof Error ? artifactsError : undefined,
+        { artifactsRepoName, msg },
+      );
+      return internalError(`Failed to create repository: ${msg}`);
+    }
+  }
 
   const initResult = await initAndPush(repo.remote, repo.token, files, "Initial commit", logger);
   if (!initResult.success) {
@@ -387,13 +425,9 @@ app.post(
         // If repo already exists, try to get it and create a token
         const errorMessage = artifactsError instanceof Error ? artifactsError.message : "";
         if (errorMessage.includes("already exists")) {
-          const existingRepo = await c.env.ARTIFACTS.get(artifactsRepoName);
-          const tokenResult = await existingRepo.createToken("write", 86400 * 30); // 30 days
-          repo = {
-            name: existingRepo.name,
-            remote: existingRepo.remote,
-            token: tokenResult.plaintext,
-          };
+          // Orphaned repo — delete and recreate to avoid JsRpcProperty on get() Stub fields.
+          await c.env.ARTIFACTS.delete(artifactsRepoName);
+          repo = await c.env.ARTIFACTS.create(artifactsRepoName);
         } else {
           throw artifactsError;
         }
@@ -563,7 +597,6 @@ async function processImportJob(
     // Check cancellation after status update
     if (await checkCancelled()) return;
 
-    // Perform the actual import
     const depth = 10; // Default depth
 
     const importResult = await importFromGitHub(
@@ -991,9 +1024,14 @@ app.post(
       return notFound("Import job", `${namespace}/${slug}`);
     }
 
-    const _existing = progressResult.data;
+    const existing = progressResult.data;
 
-    // Reset the import job
+    const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+    if (!projectResult.success) {
+      return notFound("Project", `${namespace}/${slug}`);
+    }
+
+    // Reset the import job to queued
     const resetResult = await updateImportStatus(
       c.env.DB,
       namespace,
@@ -1008,7 +1046,56 @@ app.post(
       return internalError(resetResult.error.message);
     }
 
-    // TODO: Re-queue the import job for processing
+    const githubUrl = existing.sourceUrl;
+    const branch = existing.branch ?? "main";
+    const importId = existing.id;
+
+    if (c.env.IMPORT_QUEUE) {
+      try {
+        const { queueImportJob } = await import("../queue/import-queue");
+        await queueImportJob(c.env.IMPORT_QUEUE, {
+          importId,
+          projectId: existing.projectId,
+          namespace,
+          slug,
+          githubUrl,
+          branch,
+          depth: 10,
+        });
+      } catch (queueError) {
+        logger.error(
+          "Failed to re-queue import job",
+          queueError instanceof Error ? queueError : undefined,
+          { namespace, slug },
+        );
+        await updateImportStatus(
+          c.env.DB,
+          namespace,
+          slug,
+          "failed",
+          logger,
+          `Failed to re-queue: ${queueError instanceof Error ? queueError.message : String(queueError)}`,
+        );
+        return internalError("Failed to queue import job");
+      }
+    } else {
+      // No queue — process synchronously in the background
+      logger.warn("IMPORT_QUEUE not configured, falling back to direct processing", {
+        namespace,
+        slug,
+      });
+      c.executionCtx.waitUntil(
+        processImportJob(c.env, projectResult.data, importId, githubUrl, branch, logger).catch(
+          (error) => {
+            logger.error(
+              "Unhandled error in background import retry",
+              error instanceof Error ? error : undefined,
+              { namespace, slug },
+            );
+          },
+        ),
+      );
+    }
 
     logger.info("Import retry initiated", { namespace, slug });
     return ok({
@@ -1442,12 +1529,13 @@ app.post(
       return internalError(cancelResult.error.message);
     }
 
-    logger.info("Import cancellation requested", { namespace, slug });
+    const finalStatus = cancelResult.data.status;
+    logger.info("Import cancellation requested", { namespace, slug, finalStatus });
     return ok({
-      message: "Import cancellation requested",
+      message: finalStatus === "cancelled" ? "Import cancelled" : "Import cancellation requested",
       namespace,
       slug,
-      status: "cancelling",
+      status: finalStatus,
     });
   },
 );

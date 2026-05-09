@@ -3,9 +3,12 @@
  * Processes GitHub webhook events for bidirectional sync
  */
 
-import type { D1Database, KVNamespace } from "@cloudflare/workers-types";
 import { Hono } from "hono";
+import { createChange, getChangeByGitHubBranch, updateChangeStatus } from "../storage/changes";
 import { getProjectByGitHubRepo } from "../storage/github-bridge";
+import { createImportJob } from "../storage/imports";
+import { getWorkspace } from "../storage/state";
+import { getSyncStatus, setSyncInProgress } from "../storage/sync";
 import type { Env } from "../types";
 import { type Logger, createLogger } from "../utils/logger";
 
@@ -56,11 +59,12 @@ function hexToBytes(hex: string): ArrayBuffer {
 }
 
 /**
- * Handle push event from GitHub
+ * Handle push event from GitHub.
+ * Enqueues a sync job when a push lands on the project's default branch.
+ * Follows the same pattern as projects.ts sync endpoint for queue usage.
  */
 async function handlePush(
-  _db: D1Database,
-  kv: KVNamespace,
+  env: Env,
   payload: {
     repository: { owner: { login: string }; name: string };
     ref: string;
@@ -76,8 +80,7 @@ async function handlePush(
 
   logger.info("Processing GitHub push event", { owner, repo, branch, commitSha });
 
-  // Find the corresponding Stratum project
-  const projectResult = await getProjectByGitHubRepo(kv, owner, repo, logger);
+  const projectResult = await getProjectByGitHubRepo(env.STATE, owner, repo, logger);
   if (!projectResult.success) {
     logger.debug("No Stratum project found for repo", { owner, repo });
     return;
@@ -85,7 +88,6 @@ async function handlePush(
 
   const project = projectResult.data;
 
-  // Only sync if this is the default branch
   if (branch !== project.sourceDefaultBranch) {
     logger.debug("Push to non-default branch, skipping sync", {
       branch,
@@ -94,16 +96,70 @@ async function handlePush(
     return;
   }
 
-  // TODO: Trigger sync via queue
-  logger.info("GitHub push detected, would trigger sync", { projectId: project.id, commitSha });
+  // De-duplicate: skip if a sync is already running for this project.
+  const syncStatusResult = await getSyncStatus(env.STATE, project.namespace, project.slug, logger);
+  if (syncStatusResult.success && syncStatusResult.data?.lastSyncStatus === "in_progress") {
+    logger.info("Sync already in progress, skipping webhook-triggered sync", {
+      projectId: project.id,
+    });
+    return;
+  }
+
+  if (!env.IMPORT_QUEUE) {
+    logger.warn("IMPORT_QUEUE not configured — webhook sync trigger skipped", {
+      projectId: project.id,
+      namespace: project.namespace,
+      slug: project.slug,
+    });
+    return;
+  }
+
+  const importId = crypto.randomUUID();
+  const sourceBranch = project.sourceDefaultBranch ?? "main";
+  const sourceUrl = project.sourceUrl ?? project.remote;
+
+  // Enqueue FIRST — only write state flags after a successful send().
+  const { queueSyncJob } = await import("../queue/import-queue");
+  await queueSyncJob(env.IMPORT_QUEUE, {
+    importId,
+    projectId: project.id,
+    namespace: project.namespace,
+    slug: project.slug,
+    githubUrl: sourceUrl,
+    branch: sourceBranch,
+    depth: 10,
+    trigger: "webhook",
+  });
+
+  // State flags written only after successful enqueue.
+  await setSyncInProgress(env.STATE, project.namespace, project.slug, logger);
+  await createImportJob(
+    env.DB,
+    {
+      id: importId,
+      projectId: project.id,
+      namespace: project.namespace,
+      slug: project.slug,
+      sourceUrl,
+      branch: sourceBranch,
+    },
+    logger,
+  );
+
+  logger.info("Sync job enqueued from GitHub push webhook", {
+    projectId: project.id,
+    importId,
+    commitSha,
+  });
 }
 
 /**
- * Handle pull request event from GitHub
+ * Handle pull request event from GitHub.
+ * Maps PR open/close/merge to Stratum Change records.
+ * Exported for testing.
  */
-async function handlePullRequest(
-  _db: D1Database,
-  kv: KVNamespace,
+export async function handlePullRequest(
+  env: Env,
   payload: {
     action: string;
     number: number;
@@ -111,6 +167,7 @@ async function handlePullRequest(
       title: string;
       body: string;
       state: string;
+      merged?: boolean;
       html_url: string;
       head: { ref: string; sha: string };
       base: { ref: string };
@@ -124,39 +181,98 @@ async function handlePullRequest(
   const repo = payload.repository.name;
   const prNumber = payload.number;
   const action = payload.action;
+  const pr = payload.pull_request;
 
   logger.info("Processing GitHub PR event", { owner, repo, prNumber, action });
 
-  // Find the corresponding Stratum project
-  const projectResult = await getProjectByGitHubRepo(kv, owner, repo, logger);
+  const projectResult = await getProjectByGitHubRepo(env.STATE, owner, repo, logger);
   if (!projectResult.success) {
     logger.debug("No Stratum project found for repo", { owner, repo });
     return;
   }
 
   const project = projectResult.data;
-  const pr = payload.pull_request;
 
-  // TODO: Implement workspace lookup from branch and user mapping
-  // For now, we log that this would sync PR to Change
-  logger.info("Would sync GitHub PR to Stratum Change", {
-    projectId: project.id,
-    prNumber,
-    headBranch: pr.head.ref,
-    headSha: pr.head.sha,
-    baseBranch: pr.base.ref,
-  });
+  if (action === "opened" || action === "synchronize") {
+    const existing = await getChangeByGitHubBranch(env.DB, logger, project.id, pr.head.ref);
+
+    if (existing) {
+      // Idempotent update of head SHA
+      await updateChangeStatus(env.DB, logger, existing.id, existing.status, {
+        githubHeadSha: pr.head.sha,
+        githubPrNumber: prNumber,
+        githubPrUrl: pr.html_url,
+        githubOwner: owner,
+        githubRepo: repo,
+        githubBranch: pr.head.ref,
+      });
+      logger.info("Updated head SHA on existing Change", { changeId: existing.id });
+    } else {
+      // Only create a Change if there's a matching workspace — never create phantom records
+      const workspaceResult = await getWorkspace(env.STATE, project.id, pr.head.ref, logger);
+      if (!workspaceResult.success) {
+        logger.debug("No matching workspace for PR branch — skipping", {
+          branch: pr.head.ref,
+          projectId: project.id,
+        });
+        return;
+      }
+
+      const createResult = await createChange(env.DB, logger, {
+        project: project.id,
+        workspace: pr.head.ref,
+      });
+      if (!createResult.success) {
+        logger.error("Failed to create Change from PR webhook", createResult.error, { prNumber });
+        return;
+      }
+
+      await updateChangeStatus(env.DB, logger, createResult.data.id, "open", {
+        githubHeadSha: pr.head.sha,
+        githubPrNumber: prNumber,
+        githubPrUrl: pr.html_url,
+        githubOwner: owner,
+        githubRepo: repo,
+        githubBranch: pr.head.ref,
+      });
+      logger.info("Created Change from PR webhook", { changeId: createResult.data.id, prNumber });
+    }
+    return;
+  }
+
+  if (action === "closed") {
+    const existing = await getChangeByGitHubBranch(env.DB, logger, project.id, pr.head.ref);
+    if (!existing) {
+      logger.debug("No Change found for closed PR branch", { branch: pr.head.ref });
+      return;
+    }
+
+    const newStatus = pr.merged ? "merged" : "rejected";
+    await updateChangeStatus(env.DB, logger, existing.id, newStatus, {
+      githubPrState: "closed",
+      ...(pr.merged ? { mergedAt: new Date().toISOString() } : {}),
+    });
+    logger.info("Updated Change status from PR close", {
+      changeId: existing.id,
+      newStatus,
+      merged: pr.merged,
+    });
+    return;
+  }
+
+  logger.debug("Unhandled PR action", { action, prNumber });
 }
 
 /**
- * Handle pull request review event from GitHub
+ * Handle pull request review event from GitHub.
+ * Maps review states to Stratum Change statuses.
+ * Exported for testing.
  */
-async function handlePullRequestReview(
-  _db: D1Database,
-  _kv: KVNamespace,
+export async function handlePullRequestReview(
+  env: Env,
   payload: {
     action: string;
-    pull_request: { number: number };
+    pull_request: { number: number; head: { ref: string } };
     review: { state: string; user: { login: string } };
     repository: { owner: { login: string }; name: string };
   },
@@ -167,11 +283,46 @@ async function handlePullRequestReview(
   const prNumber = payload.pull_request.number;
   const reviewState = payload.review.state;
   const reviewer = payload.review.user.login;
+  const headRef = payload.pull_request.head.ref;
 
   logger.info("Processing GitHub PR review", { owner, repo, prNumber, reviewState, reviewer });
 
-  // TODO: Update evaluation/approval status in Stratum
-  // This would integrate with the approval workflow
+  if (reviewState === "dismissed" || reviewState === "commented") {
+    logger.debug("No status change for review state", { reviewState });
+    return;
+  }
+
+  const projectResult = await getProjectByGitHubRepo(env.STATE, owner, repo, logger);
+  if (!projectResult.success) {
+    logger.debug("No Stratum project found for repo", { owner, repo });
+    return;
+  }
+
+  const project = projectResult.data;
+  const existing = await getChangeByGitHubBranch(env.DB, logger, project.id, headRef);
+  if (!existing) {
+    logger.debug("No Change found for reviewed PR branch", { branch: headRef });
+    return;
+  }
+
+  let newStatus: "accepted" | "needs_changes" | undefined;
+  if (reviewState === "approved") {
+    newStatus = "accepted";
+  } else if (reviewState === "changes_requested") {
+    newStatus = "needs_changes";
+  }
+
+  if (!newStatus) {
+    logger.debug("Unhandled review state", { reviewState });
+    return;
+  }
+
+  await updateChangeStatus(env.DB, logger, existing.id, newStatus);
+  logger.info("Updated Change status from PR review", {
+    changeId: existing.id,
+    reviewState,
+    newStatus,
+  });
 }
 
 /**
@@ -257,8 +408,7 @@ app.post("/", async (c) => {
     switch (eventType) {
       case "push":
         await handlePush(
-          c.env.DB,
-          c.env.STATE,
+          c.env,
           data as {
             repository: { owner: { login: string }; name: string };
             ref: string;
@@ -271,8 +421,7 @@ app.post("/", async (c) => {
 
       case "pull_request":
         await handlePullRequest(
-          c.env.DB,
-          c.env.STATE,
+          c.env,
           data as {
             action: string;
             number: number;
@@ -280,6 +429,7 @@ app.post("/", async (c) => {
               title: string;
               body: string;
               state: string;
+              merged?: boolean;
               html_url: string;
               head: { ref: string; sha: string };
               base: { ref: string };
@@ -293,11 +443,10 @@ app.post("/", async (c) => {
 
       case "pull_request_review":
         await handlePullRequestReview(
-          c.env.DB,
-          c.env.STATE,
+          c.env,
           data as {
             action: string;
-            pull_request: { number: number };
+            pull_request: { number: number; head: { ref: string } };
             review: { state: string; user: { login: string } };
             repository: { owner: { login: string }; name: string };
           },

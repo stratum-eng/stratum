@@ -3,7 +3,8 @@
  * Push Stratum Changes to GitHub PRs and post evaluation comments
  */
 
-import type { D1Database } from "@cloudflare/workers-types";
+import type { D1Database, KVNamespace } from "@cloudflare/workers-types";
+import { getWorkspace } from "../storage/state";
 import type { Change, ProjectEntry } from "../types";
 import { AppError, NotFoundError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
@@ -24,6 +25,7 @@ export interface PushChangeOpts {
  */
 export async function pushChangeToGitHub(
   db: D1Database,
+  kv: KVNamespace,
   opts: PushChangeOpts,
   encryptionSecret: string,
   logger: Logger,
@@ -31,6 +33,25 @@ export async function pushChangeToGitHub(
   const { change, project, userId, title, body } = opts;
 
   logger.info("Pushing Change to GitHub", { changeId: change.id, projectId: project.id });
+
+  // Look up workspace first — fail fast if it doesn't exist
+  const workspaceResult = await getWorkspace(kv, project.id, change.workspace, logger);
+  if (!workspaceResult.success) {
+    return err(
+      new AppError(
+        `Workspace '${change.workspace}' not found for change ${change.id}`,
+        "NOT_FOUND",
+        404,
+      ),
+    );
+  }
+  const workspace = workspaceResult.data;
+  const branch = workspace.branchName ?? workspace.name;
+  if (!branch) {
+    return err(
+      new AppError(`Workspace '${change.workspace}' has no branch name`, "INVALID_STATE", 500),
+    );
+  }
 
   // Get user's GitHub token
   const tokenResult = await getGitHubToken(db, userId, encryptionSecret, logger);
@@ -61,9 +82,6 @@ export async function pushChangeToGitHub(
   const prTitle = title || `Stratum Change: ${change.id.slice(0, 8)}`;
   const prBody = body || buildPRBody(change, project);
 
-  // Get workspace branch info
-  // TODO: Get actual branch name from workspace
-  const branch = `stratum/${change.id.slice(0, 8)}`;
   const baseBranch = project.sourceDefaultBranch || project.githubDefaultBranch || "main";
 
   try {

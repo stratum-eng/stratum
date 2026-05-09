@@ -155,6 +155,8 @@ export interface SyncJobMessage {
   branch: string;
   depth: number;
   timestamp: string;
+  /** How this sync was triggered. Omitting defaults to 'manual'. */
+  trigger?: "manual" | "webhook" | "auto";
 }
 
 export interface ProjectEntry {
@@ -214,6 +216,9 @@ export interface WorkspaceEntry {
   token: string;
   parent: string;
   createdAt: string;
+  /** The Artifacts fork ref name. Equals `name` for workspaces created after this field was added.
+   *  Absent on workspaces created before this field; callers should fall back to `name`. */
+  branchName?: string;
 }
 
 // Import progress tracking
