@@ -394,6 +394,25 @@ app.post(
                 );
                 // Non-fatal — user can use the Retry button on the project page
               }
+            } else {
+              // No queue — fall back to direct processing
+              const projectForRetry = existingProjectResult.data;
+              c.executionCtx.waitUntil(
+                processImportJob(
+                  c.env,
+                  projectForRetry,
+                  existingImport.data.id,
+                  existingImport.data.sourceUrl,
+                  existingImport.data.branch ?? "main",
+                  logger,
+                ).catch((error) => {
+                  logger.error(
+                    "Unhandled error in background import re-trigger",
+                    error instanceof Error ? error : undefined,
+                    { namespace, slug },
+                  );
+                }),
+              );
             }
           }
         }

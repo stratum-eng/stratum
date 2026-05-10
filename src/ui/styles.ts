@@ -217,6 +217,7 @@ a:hover { text-decoration: underline; }
 
 .icon-success { color: #4ade80; }
 .icon-error { color: #f87171; }
+.icon-cancelled { color: #888; }
 
 .badge {
   padding: 0.25rem 0.5rem;
@@ -233,6 +234,7 @@ a:hover { text-decoration: underline; }
 .badge-processing { background: #3e3a1a; color: #f7c97c; }
 .badge-completed { background: #1a3e1a; color: #4ade80; }
 .badge-failed { background: #3d1a1a; color: #f87171; }
+.badge-cancelled { background: #2a2a2a; color: #999; }
 
 .import-source {
   margin-bottom: 1rem;
@@ -359,6 +361,65 @@ a:hover { text-decoration: underline; }
   padding-top: 1rem;
   border-top: 1px solid #1e1e1e;
 }
+
+.btn-secondary { background: #1e1e1e; border-color: #333; color: #ccc; }
+.btn-secondary:hover { background: #2a2a2a; color: #f0f0f0; }
+
+.error-alert {
+  margin: 1rem 0;
+  padding: 1rem;
+  background: #1a0a0a;
+  border: 1px solid #5d2a2a;
+  border-radius: 6px;
+}
+
+.error-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.error-header h3 {
+  font-size: 0.95rem;
+  color: #f87171;
+  margin: 0;
+}
+
+.error-icon { font-size: 1rem; }
+
+.error-description {
+  font-size: 0.85rem;
+  color: #fca5a5;
+  margin: 0 0 0.75rem;
+}
+
+.troubleshooting-section { margin-top: 0.75rem; }
+
+.troubleshooting-section h4 {
+  font-size: 0.85rem;
+  color: #f7c97c;
+  margin: 0 0 0.4rem;
+}
+
+.troubleshooting-tips {
+  padding-left: 1.25rem;
+  margin: 0;
+}
+
+.troubleshooting-tips li {
+  font-size: 0.82rem;
+  color: #aaa;
+  padding: 0.15rem 0;
+}
+
+.error-action { margin-top: 0.75rem; }
+
+.failed-actions { display: flex; gap: 0.5rem; }
+
+.retry-form { display: inline; }
+
+.technical-errors summary { color: #888; cursor: pointer; padding: 0.5rem 0; font-size: 0.85rem; }
 
 /* File Tree */
 .file-tree { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
