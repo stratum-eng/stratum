@@ -938,15 +938,30 @@ export async function importFromGitHub(
       const msg = firstError instanceof Error ? firstError.message : String(firstError);
       if (!msg.includes("already exists")) throw firstError;
 
-      // Artifacts has an existing repo with this name — delete it and retry once.
-      // The placeholder repo created during project creation conflicts with import(),
-      // which requires the target name to not exist.
+      // Artifacts is eventually consistent — delete the conflicting repo then retry with
+      // exponential backoff. 2 s is often not enough for the deletion to propagate.
       logger.warn("Artifacts repo already exists, deleting and retrying", { name });
       const deleted = await artifacts.delete(name);
       logger.info("Artifacts delete result before retry", { name, deleted });
-      // Artifacts is eventually consistent — wait for the deletion to propagate before retrying.
-      await new Promise((r) => setTimeout(r, 2000));
-      result = await Promise.race([doImport(), timeoutPromise]);
+
+      const retryDelays = [3000, 5000, 8000];
+      let lastError: unknown = firstError;
+      for (let i = 0; i < retryDelays.length; i++) {
+        await new Promise((r) => setTimeout(r, retryDelays[i]));
+        try {
+          result = await Promise.race([doImport(), timeoutPromise]);
+          lastError = null;
+          break;
+        } catch (retryError) {
+          lastError = retryError;
+          const retryMsg = retryError instanceof Error ? retryError.message : String(retryError);
+          if (!retryMsg.includes("already exists")) throw retryError;
+          logger.warn("Artifacts delete not yet consistent, retrying", { name, attempt: i + 1 });
+        }
+      }
+      if (lastError !== null) throw lastError;
+      // TypeScript narrowing: lastError is null means result was assigned in the loop
+      result = result!;
     }
 
     logger.info("Successfully imported from GitHub", {
