@@ -82,6 +82,16 @@ describe("getFileContent", () => {
     }
   });
 
+  it("returns content for file exactly at the 512 KB limit", async () => {
+    const exactContent = "x".repeat(512 * 1024);
+    vi.mocked(readFileFromRepo).mockResolvedValueOnce({ success: true, data: exactContent });
+    const result = await getFileContent("remote", "token", "exact.txt", defaultLogger);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual({ kind: "content", value: exactContent });
+    }
+  });
+
   it("returns not-found for FS_ERROR", async () => {
     const { AppError } = await import("../src/utils/errors");
     vi.mocked(readFileFromRepo).mockResolvedValueOnce({

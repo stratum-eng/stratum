@@ -628,6 +628,22 @@ app.get("/:namespace/:slug/blob/*", async (c) => {
   const agentOwnerId = c.get("agentOwnerId");
   const logger = createLogger({ path: c.req.path, userId });
 
+  if (!isValidNamespace(namespace)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Invalid namespace format.
+      </div>,
+      400,
+    );
+  }
+
+  if (!isValidSlug(slug)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Invalid slug format.</div>,
+      400,
+    );
+  }
+
   if (!filePath || !isValidFilePath(filePath)) {
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">Invalid file path.</div>,

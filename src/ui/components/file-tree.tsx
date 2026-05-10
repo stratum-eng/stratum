@@ -59,7 +59,7 @@ export const FileTree: FC<FileTreeProps> = ({ nodes, namespace, slug }) => {
   }
 
   const counter = { value: 0 };
-  const totalFiles = countFiles(nodes);
+  const totalEntries = countNodes(nodes);
 
   return (
     <div class="file-tree">
@@ -73,23 +73,22 @@ export const FileTree: FC<FileTreeProps> = ({ nodes, namespace, slug }) => {
           counter={counter}
         />
       ))}
-      {totalFiles > MAX_RENDERED_NODES && (
+      {totalEntries > MAX_RENDERED_NODES && (
         <p class="file-tree-notice">
-          Showing first {MAX_RENDERED_NODES} of {totalFiles} files. Use the API to browse the full
-          tree.
+          Showing first {MAX_RENDERED_NODES} of {totalEntries} entries. Use the API to browse the
+          full tree.
         </p>
       )}
     </div>
   );
 };
 
-function countFiles(nodes: FileTreeNode[]): number {
+function countNodes(nodes: FileTreeNode[]): number {
   let count = 0;
   for (const node of nodes) {
-    if (node.type === "file") {
-      count++;
-    } else {
-      count += countFiles(node.children);
+    count++;
+    if (node.type === "dir") {
+      count += countNodes(node.children);
     }
   }
   return count;

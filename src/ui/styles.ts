@@ -373,6 +373,7 @@ a:hover { text-decoration: underline; }
 .file-tree-dir > summary::before { content: "▶  "; font-size: 0.7rem; }
 .file-tree-dir[open] > summary::before { content: "▼  "; font-size: 0.7rem; }
 .file-tree-dir > summary::-webkit-details-marker { display: none; }
+.file-tree-dir > summary::marker { content: ""; }
 .file-tree-children { padding-left: 1.25rem; }
 .file-tree-file { padding: 0.2rem 0; }
 .file-tree-file a { color: #ccc; text-decoration: none; display: block; }
