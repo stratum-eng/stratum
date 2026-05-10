@@ -3,3 +3,5 @@ dist/
 .wrangler/
 .DS_Store
 coverage/
+.claude/
+.playwright-mcp/

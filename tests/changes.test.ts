@@ -639,12 +639,12 @@ describe("GET /api/projects/:name/changes", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 403 when listing another user's private project changes", async () => {
+  it("returns 404 when listing another user's private project changes", async () => {
     const res = await app.fetch(
       request("GET", "/api/projects/my-project/changes", undefined, OTHER_USER_AUTH),
       env,
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(listChanges).not.toHaveBeenCalled();
   });
 });
@@ -735,7 +735,7 @@ describe("GET /api/changes/:id", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 403 when reading another user's private change", async () => {
+  it("returns 404 when reading another user's private change", async () => {
     vi.mocked(getChange).mockResolvedValue({
       success: true,
       data: mockChange,
@@ -748,7 +748,7 @@ describe("GET /api/changes/:id", () => {
       request("GET", "/api/changes/chg_abc123", undefined, OTHER_USER_AUTH),
       env,
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });
 

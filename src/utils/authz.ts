@@ -5,6 +5,11 @@ export function canReadProject(
   userId?: string,
   agentOwnerId?: string,
 ): boolean {
+  // Incomplete imports are only visible to the owner — the repo has no content yet.
+  // importCompleted is absent on legacy projects; treat absence as completed.
+  if (project.importCompleted === false) {
+    return canWriteProject(project, userId, agentOwnerId);
+  }
   if (project.visibility === "public") return true;
   return canWriteProject(project, userId, agentOwnerId);
 }

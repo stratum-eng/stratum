@@ -1,9 +1,71 @@
 import type { FC } from "hono/jsx";
+import { marked } from "marked";
+import sanitizeHtml from "sanitize-html";
 import type { GitProvider, ImportProgress } from "../../types";
 import { FileTree } from "../components/file-tree";
 import { ImportProgressCard } from "../components/import-progress";
 import { buildFileTree } from "../file-tree";
 import { Layout } from "../layout";
+
+marked.setOptions({ gfm: true, breaks: false });
+
+const ALLOWED_README_TAGS = [
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "p",
+  "br",
+  "hr",
+  "ul",
+  "ol",
+  "li",
+  "dl",
+  "dt",
+  "dd",
+  "strong",
+  "em",
+  "del",
+  "code",
+  "pre",
+  "blockquote",
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+  "a",
+  "img",
+  "details",
+  "summary",
+  "div",
+  "span",
+];
+
+function renderReadme(raw: string): string {
+  const html = marked(raw) as string;
+  return sanitizeHtml(html, {
+    allowedTags: ALLOWED_README_TAGS,
+    allowedAttributes: {
+      a: ["href", "title", "target", "rel"],
+      img: ["src", "alt", "title", "width", "height"],
+      code: ["class"],
+      pre: ["class"],
+      td: ["align"],
+      th: ["align"],
+    },
+    allowedSchemes: ["http", "https", "mailto"],
+    transformTags: {
+      a: (tagName, attribs) => ({
+        tagName,
+        attribs: { ...attribs, rel: "noopener noreferrer", target: "_blank" },
+      }),
+    },
+  });
+}
 
 interface RepoProps {
   project: {
@@ -212,47 +274,62 @@ export const RepoPage: FC<RepoProps> = ({
         />
       )}
 
-      {readme && (
-        <div class="card readme-card">
-          <div class="readme-content">
-            <pre>{readme}</pre>
+      <div class="repo-layout">
+        <div class="repo-sidebar">
+          <div class="card">
+            <h2>Files</h2>
+            <FileTree
+              nodes={buildFileTree(files)}
+              namespace={project.namespace}
+              slug={project.slug}
+            />
           </div>
         </div>
-      )}
 
-      <div class="card">
-        <h2>Files</h2>
-        <FileTree nodes={buildFileTree(files)} namespace={project.namespace} slug={project.slug} />
-      </div>
+        <div class="repo-main">
+          {readme && (
+            <div class="card readme-card">
+              <h2>README</h2>
+              {/* renderReadme() runs marked then sanitize-html — safe to inject */}
+              <div
+                class="readme-content"
+                dangerouslySetInnerHTML={{ __html: renderReadme(readme) }}
+              />
+            </div>
+          )}
 
-      <div class="card">
-        <h2>Recent commits</h2>
-        {log.length === 0 ? (
-          <div class="empty-state">
-            <p>No commits yet.</p>
+          <div class="card">
+            <h2>Recent commits</h2>
+            {log.length === 0 ? (
+              <div class="empty-state">
+                <p>No commits yet.</p>
+              </div>
+            ) : (
+              <table class="table commit-table">
+                <thead>
+                  <tr>
+                    <th>SHA</th>
+                    <th>Message</th>
+                    <th>Author</th>
+                    <th>Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {log.map((commit) => (
+                    <tr key={commit.sha}>
+                      <td class="mono commit-sha">{commit.sha.slice(0, 7)}</td>
+                      <td class="commit-message">{commit.message.split("\n")[0]}</td>
+                      <td class="commit-author">{commit.author.replace(/<[^>]+>/, "").trim()}</td>
+                      <td class="commit-date">
+                        {new Date(commit.timestamp * 1000).toLocaleDateString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
-        ) : (
-          <table class="table">
-            <thead>
-              <tr>
-                <th>SHA</th>
-                <th>Message</th>
-                <th>Author</th>
-                <th>Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {log.map((commit) => (
-                <tr key={commit.sha}>
-                  <td class="mono">{commit.sha.slice(0, 7)}</td>
-                  <td>{commit.message}</td>
-                  <td>{commit.author}</td>
-                  <td>{new Date(commit.timestamp * 1000).toLocaleDateString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+        </div>
       </div>
     </Layout>
   );

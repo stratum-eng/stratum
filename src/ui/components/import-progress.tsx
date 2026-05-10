@@ -139,31 +139,47 @@ function classifyError(errorMessage: string): ErrorInfo {
     };
   }
 
-  // Storage errors
-  if (
-    msg.includes("disk") ||
-    msg.includes("quota") ||
-    msg.includes("space") ||
-    msg.includes("storage")
-  ) {
+  // Storage / naming conflict errors
+  if (msg.includes("already exists")) {
     return {
-      type: "STORAGE_ERROR",
-      title: "Storage Error",
-      description: "We ran out of storage space while importing the repository.",
+      type: "ALREADY_EXISTS",
+      title: "Import Conflict",
+      description:
+        "A storage conflict was detected while setting up the repository. Retrying usually resolves this.",
       tips: [
-        "The repository might be too large for our current storage limits",
-        "Try importing a specific subdirectory instead of the entire repository",
-        "Contact support to discuss storage options for large repositories",
+        "Click Retry Import — the conflict is typically resolved on the next attempt",
+        "If retrying fails repeatedly, contact support with the error details below",
       ],
     };
   }
 
-  // Default error
+  if (
+    msg.includes("disk") ||
+    msg.includes("quota") ||
+    msg.includes("space") ||
+    msg.includes("storage") ||
+    msg.includes("artifacts")
+  ) {
+    return {
+      type: "STORAGE_ERROR",
+      title: "Storage Error",
+      description: "An error occurred while storing the repository. This may be a temporary issue.",
+      tips: [
+        "The repository might be too large for our current storage limits",
+        "Try the import again - this might have been a temporary service issue",
+        "Contact support if the problem persists",
+      ],
+    };
+  }
+
+  // Default error — include raw message if available so it's diagnosable
+  const rawDetail = errorMessage.trim()
+    ? `Error details: ${errorMessage}`
+    : "No error details available. Check the logs below.";
   return {
     type: "UNKNOWN_ERROR",
     title: "Import Failed",
-    description:
-      "An unexpected error occurred while importing the repository. Our team has been notified.",
+    description: rawDetail,
     tips: [
       "Try the import again - this might have been a temporary issue",
       "Check the detailed error logs below for more information",
@@ -330,7 +346,7 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
         </div>
       )}
 
-      {isFailed && (
+      {(isFailed || isCancelled) && (
         <div class="actions-section failed-actions">
           <form
             method="post"

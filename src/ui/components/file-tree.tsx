@@ -1,8 +1,6 @@
 import type { FC } from "hono/jsx";
 import type { FileTreeNode } from "../file-tree";
 
-const MAX_RENDERED_NODES = 500;
-
 interface FileTreeProps {
   nodes: FileTreeNode[];
   namespace: string;
@@ -14,13 +12,9 @@ interface NodeProps {
   namespace: string;
   slug: string;
   depth: number;
-  counter: { value: number };
 }
 
-const FileTreeNodeItem: FC<NodeProps> = ({ node, namespace, slug, depth, counter }) => {
-  if (counter.value >= MAX_RENDERED_NODES) return null;
-  counter.value++;
-
+const FileTreeNodeItem: FC<NodeProps> = ({ node, namespace, slug, depth }) => {
   if (node.type === "file") {
     const href = `/${namespace}/${slug}/blob/${node.path.split("/").map(encodeURIComponent).join("/")}`;
     return (
@@ -41,7 +35,6 @@ const FileTreeNodeItem: FC<NodeProps> = ({ node, namespace, slug, depth, counter
             namespace={namespace}
             slug={slug}
             depth={depth + 1}
-            counter={counter}
           />
         ))}
       </div>
@@ -58,38 +51,11 @@ export const FileTree: FC<FileTreeProps> = ({ nodes, namespace, slug }) => {
     );
   }
 
-  const counter = { value: 0 };
-  const totalEntries = countNodes(nodes);
-
   return (
     <div class="file-tree">
       {nodes.map((node) => (
-        <FileTreeNodeItem
-          key={node.path}
-          node={node}
-          namespace={namespace}
-          slug={slug}
-          depth={0}
-          counter={counter}
-        />
+        <FileTreeNodeItem key={node.path} node={node} namespace={namespace} slug={slug} depth={0} />
       ))}
-      {totalEntries > MAX_RENDERED_NODES && (
-        <p class="file-tree-notice">
-          Showing first {MAX_RENDERED_NODES} of {totalEntries} entries. Use the API to browse the
-          full tree.
-        </p>
-      )}
     </div>
   );
 };
-
-function countNodes(nodes: FileTreeNode[]): number {
-  let count = 0;
-  for (const node of nodes) {
-    count++;
-    if (node.type === "dir") {
-      count += countNodes(node.children);
-    }
-  }
-  return count;
-}

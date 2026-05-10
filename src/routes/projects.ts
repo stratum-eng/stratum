@@ -280,7 +280,8 @@ app.get("/:namespace/:slug", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId))
+    return notFound("Project", `${project.namespace}/${project.slug}`);
 
   logger.info("Project retrieved", { namespace, slug });
   return ok({
@@ -348,10 +349,77 @@ app.post(
       const existingProjectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
       if (existingProjectResult.success) {
         logger.info("Project already exists", { namespace, slug });
-        // Redirect to existing project if coming from web UI
+
+        // If the project exists but the import never completed, re-trigger it so the
+        // user doesn't need to hunt for the "Retry Import" button after a rate-limit failure.
+        const existingImport = await getImportProgress(c.env.DB, namespace, slug, logger);
+        if (existingImport.success && existingImport.data) {
+          const importStatus = existingImport.data.status;
+          const isIncomplete = !["completed", "queued", "cloning", "processing"].includes(
+            importStatus,
+          );
+
+          if (isIncomplete) {
+            logger.info("Project exists with incomplete import — re-triggering", {
+              namespace,
+              slug,
+              importStatus,
+            });
+            await updateImportStatus(
+              c.env.DB,
+              namespace,
+              slug,
+              "queued",
+              logger,
+              "Import re-triggered via form",
+            );
+
+            if (c.env.IMPORT_QUEUE) {
+              try {
+                const { queueImportJob } = await import("../queue/import-queue");
+                await queueImportJob(c.env.IMPORT_QUEUE, {
+                  importId: existingImport.data.id,
+                  projectId: existingImport.data.projectId,
+                  namespace,
+                  slug,
+                  githubUrl: existingImport.data.sourceUrl,
+                  branch: existingImport.data.branch ?? "main",
+                  depth: 10,
+                });
+              } catch (queueError) {
+                logger.error(
+                  "Failed to re-queue import on form re-submit",
+                  queueError instanceof Error ? queueError : undefined,
+                  { namespace, slug },
+                );
+                // Non-fatal — user can use the Retry button on the project page
+              }
+            } else {
+              // No queue — fall back to direct processing
+              const projectForRetry = existingProjectResult.data;
+              c.executionCtx.waitUntil(
+                processImportJob(
+                  c.env,
+                  projectForRetry,
+                  existingImport.data.id,
+                  existingImport.data.sourceUrl,
+                  existingImport.data.branch ?? "main",
+                  logger,
+                ).catch((error) => {
+                  logger.error(
+                    "Unhandled error in background import re-trigger",
+                    error instanceof Error ? error : undefined,
+                    { namespace, slug },
+                  );
+                }),
+              );
+            }
+          }
+        }
+
         const contentType = c.req.header("content-type") || "";
         if (!contentType.includes("application/json")) {
-          return c.redirect(`/@${namespace.replace("@", "")}/${slug}`);
+          return c.redirect(`/@${namespace.replace("@", "")}/${slug}?import=active`);
         }
         return ok({
           namespace,
@@ -466,6 +534,7 @@ app.post(
         sourceRepo: parsedUrl?.info.repo,
         sourceDefaultBranch: branch,
         visibility,
+        importCompleted: false,
       };
 
       const setResult = await setProject(c.env.STATE, project, logger);
@@ -629,11 +698,12 @@ async function processImportJob(
     // Check cancellation before updating project
     if (await checkCancelled()) return;
 
-    // Update project with actual repo info
+    // Update project with actual repo info and mark import as complete
     const updatedProject: ProjectEntry = {
       ...project,
       remote: importResult.data.remote,
       token: importResult.data.token,
+      importCompleted: true,
     };
 
     await setProject(env.STATE, updatedProject, logger);
@@ -705,7 +775,8 @@ app.get("/:namespace/:slug/files", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId))
+    return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const filesResult = await listFilesInRepo(project.remote, project.token, logger);
   if (!filesResult.success) {
@@ -748,7 +819,8 @@ app.get("/:namespace/:slug/content", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId))
+    return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const contentResult = await getFileContent(project.remote, project.token, filePath, logger);
   if (!contentResult.success) {
@@ -792,7 +864,8 @@ app.get("/:namespace/:slug/log", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId))
+    return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const depth = Number(c.req.query("depth") ?? 20);
   const logResult = await getCommitLog(project.remote, project.token, logger, depth);
@@ -838,7 +911,8 @@ app.get("/:namespace/:slug/provenance", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId))
+    return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const limitParam = c.req.query("limit");
   const limit = limitParam !== undefined ? Number(limitParam) : undefined;
@@ -883,9 +957,8 @@ app.get("/:namespace/:slug/import/status", async (c) => {
     return notFound("Project", `${namespace}/${slug}`);
   }
 
-  if (!canReadProject(projectResult.data, userId, agentOwnerId)) {
-    return forbidden("Project access denied");
-  }
+  if (!canReadProject(projectResult.data, userId, agentOwnerId))
+    return notFound("Project", `${namespace}/${slug}`);
 
   const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
   if (!progressResult.success) {
@@ -953,9 +1026,8 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
 
   const userId = c.get("userId");
   const agentOwnerId = c.get("agentOwnerId");
-  if (!canReadProject(projectResult.data, userId, agentOwnerId)) {
-    return forbidden("Project access denied");
-  }
+  if (!canReadProject(projectResult.data, userId, agentOwnerId))
+    return notFound("Project", `${namespace}/${slug}`);
 
   // Set up SSE response
   c.header("Content-Type", "text/event-stream");
@@ -1367,9 +1439,8 @@ app.get("/:namespace/:slug/sync/status", async (c) => {
 
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
-    return forbidden("Project access denied");
-  }
+  if (!canReadProject(project, userId, agentOwnerId))
+    return notFound("Project", `${namespace}/${slug}`);
 
   // Get detailed sync status
   const syncStatusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);

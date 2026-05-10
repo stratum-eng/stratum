@@ -273,7 +273,8 @@ app.get("/projects/:name/changes", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId))
+    return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const statusParam = c.req.query("status");
   const validStatuses: Change["status"][] = [
@@ -332,7 +333,8 @@ app.get("/changes/:id", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId))
+    return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const evalRunsResult = await listEvalRuns(c.env.DB, logger, id);
   if (!evalRunsResult.success) {

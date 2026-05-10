@@ -31,6 +31,10 @@ class MemoryStats {
     return this.entry.kind === "file" ? 0o100644 : 0o040000;
   }
 
+  // isomorphic-git sets mode after stat() during checkout; the no-op setter prevents
+  // "Cannot set property mode … only a getter" TypeErrors on those writes.
+  set mode(_value: number) {}
+
   isFile(): boolean {
     return this.entry.kind === "file";
   }
@@ -211,13 +215,14 @@ export class MemoryFS {
     return this.stat(path);
   }
 
-  // isomorphic-git requires readlink/symlink to be present even if symlinks are never used.
+  // isomorphic-git requires readlink/symlink to be present. Symlinks aren't representable
+  // in MemoryFS, so silently skip them — the symlink entry is dropped but the clone continues.
   async readlink(path: string): Promise<Result<string, AppError>> {
     return err(fsError("EINVAL", `EINVAL: invalid argument, readlink '${path}'`));
   }
 
-  async symlink(_target: string, path: string): Promise<Result<void, AppError>> {
-    return err(fsError("EPERM", `EPERM: operation not permitted, symlink '${path}'`));
+  async symlink(_target: string, _path: string): Promise<Result<void, AppError>> {
+    return ok(undefined);
   }
 
   /**

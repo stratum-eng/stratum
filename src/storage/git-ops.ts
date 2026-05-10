@@ -942,11 +942,10 @@ export async function importFromGitHub(
       // The placeholder repo created during project creation conflicts with import(),
       // which requires the target name to not exist.
       logger.warn("Artifacts repo already exists, deleting and retrying", { name });
-      try {
-        await artifacts.delete(name);
-      } catch {
-        // ignore — if delete fails, the retry will also fail and surface the error
-      }
+      const deleted = await artifacts.delete(name);
+      logger.info("Artifacts delete result before retry", { name, deleted });
+      // Artifacts is eventually consistent — wait for the deletion to propagate before retrying.
+      await new Promise((r) => setTimeout(r, 2000));
       result = await Promise.race([doImport(), timeoutPromise]);
     }
 

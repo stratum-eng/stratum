@@ -104,7 +104,8 @@ app.get("/:namespace/:slug/workspaces", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId))
+    return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const workspacesResult = await listWorkspaces(c.env.STATE, project.id, logger);
   if (!workspacesResult.success) {

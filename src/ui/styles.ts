@@ -60,7 +60,7 @@ a:hover { text-decoration: underline; }
 }
 
 .main {
-  max-width: 800px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 2rem 1.5rem;
 }
@@ -217,6 +217,7 @@ a:hover { text-decoration: underline; }
 
 .icon-success { color: #4ade80; }
 .icon-error { color: #f87171; }
+.icon-cancelled { color: #888; }
 
 .badge {
   padding: 0.25rem 0.5rem;
@@ -233,6 +234,7 @@ a:hover { text-decoration: underline; }
 .badge-processing { background: #3e3a1a; color: #f7c97c; }
 .badge-completed { background: #1a3e1a; color: #4ade80; }
 .badge-failed { background: #3d1a1a; color: #f87171; }
+.badge-cancelled { background: #2a2a2a; color: #999; }
 
 .import-source {
   margin-bottom: 1rem;
@@ -360,6 +362,65 @@ a:hover { text-decoration: underline; }
   border-top: 1px solid #1e1e1e;
 }
 
+.btn-secondary { background: #1e1e1e; border-color: #333; color: #ccc; }
+.btn-secondary:hover { background: #2a2a2a; color: #f0f0f0; }
+
+.error-alert {
+  margin: 1rem 0;
+  padding: 1rem;
+  background: #1a0a0a;
+  border: 1px solid #5d2a2a;
+  border-radius: 6px;
+}
+
+.error-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.error-header h3 {
+  font-size: 0.95rem;
+  color: #f87171;
+  margin: 0;
+}
+
+.error-icon { font-size: 1rem; }
+
+.error-description {
+  font-size: 0.85rem;
+  color: #fca5a5;
+  margin: 0 0 0.75rem;
+}
+
+.troubleshooting-section { margin-top: 0.75rem; }
+
+.troubleshooting-section h4 {
+  font-size: 0.85rem;
+  color: #f7c97c;
+  margin: 0 0 0.4rem;
+}
+
+.troubleshooting-tips {
+  padding-left: 1.25rem;
+  margin: 0;
+}
+
+.troubleshooting-tips li {
+  font-size: 0.82rem;
+  color: #aaa;
+  padding: 0.15rem 0;
+}
+
+.error-action { margin-top: 0.75rem; }
+
+.failed-actions { display: flex; gap: 0.5rem; }
+
+.retry-form { display: inline; }
+
+.technical-errors summary { color: #888; cursor: pointer; padding: 0.5rem 0; font-size: 0.85rem; }
+
 /* File Tree */
 .file-tree { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
 .file-tree-dir { border: none; }
@@ -408,4 +469,53 @@ a:hover { text-decoration: underline; }
   background: #0d0d0d;
 }
 .file-viewer-message { padding: 1.5rem; color: #666; font-style: italic; font-size: 0.85rem; margin: 0; }
+
+/* Repo page two-column layout */
+.repo-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.repo-sidebar { position: sticky; top: 1rem; }
+.repo-main { min-width: 0; }
+
+@media (max-width: 700px) {
+  .repo-layout { grid-template-columns: 1fr; }
+  .repo-sidebar { position: static; }
+}
+
+/* README rendered markdown */
+.readme-card h2 { margin-bottom: 1rem; }
+
+.readme-content { font-size: 0.875rem; line-height: 1.7; color: #ccc; }
+.readme-content h1 { font-size: 1.3rem; color: #f0f0f0; margin: 1.25rem 0 0.5rem; border-bottom: 1px solid #222; padding-bottom: 0.3rem; }
+.readme-content h2 { font-size: 1.1rem; color: #e0e0e0; margin: 1.1rem 0 0.4rem; border-bottom: 1px solid #1a1a1a; padding-bottom: 0.25rem; }
+.readme-content h3 { font-size: 0.95rem; color: #d0d0d0; margin: 0.9rem 0 0.3rem; }
+.readme-content h4, .readme-content h5, .readme-content h6 { color: #bbb; margin: 0.75rem 0 0.25rem; }
+.readme-content p { margin: 0.5rem 0; }
+.readme-content a { color: #7ca9f7; }
+.readme-content a:hover { text-decoration: underline; }
+.readme-content code { font-family: 'JetBrains Mono', monospace; font-size: 0.8em; background: #1a1a1a; padding: 0.1em 0.35em; border-radius: 3px; color: #e0e0e0; }
+.readme-content pre { background: #0d0d0d; border: 1px solid #222; border-radius: 6px; padding: 1rem; overflow-x: auto; margin: 0.75rem 0; }
+.readme-content pre code { background: none; padding: 0; font-size: 0.8rem; color: #d4d4d4; }
+.readme-content blockquote { border-left: 3px solid #333; margin: 0.75rem 0; padding: 0.25rem 0 0.25rem 1rem; color: #888; }
+.readme-content ul, .readme-content ol { padding-left: 1.5rem; margin: 0.5rem 0; }
+.readme-content li { margin: 0.2rem 0; }
+.readme-content table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin: 0.75rem 0; }
+.readme-content th { background: #1a1a1a; color: #aaa; font-weight: 600; text-align: left; padding: 0.4rem 0.6rem; border: 1px solid #2a2a2a; }
+.readme-content td { padding: 0.35rem 0.6rem; border: 1px solid #1e1e1e; color: #bbb; }
+.readme-content tr:nth-child(even) td { background: #0d0d0d; }
+.readme-content img { max-width: 100%; border-radius: 4px; }
+.readme-content hr { border: none; border-top: 1px solid #222; margin: 1rem 0; }
+.readme-content details { margin: 0.5rem 0; }
+.readme-content summary { cursor: pointer; color: #888; }
+
+/* Commit table */
+.commit-table { table-layout: fixed; width: 100%; }
+.commit-sha { width: 72px; font-size: 0.8rem; color: #7ca9f7; }
+.commit-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+.commit-author { width: 160px; font-size: 0.82rem; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commit-date { width: 96px; font-size: 0.82rem; color: #666; text-align: right; }
 `;
