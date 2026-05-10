@@ -25,7 +25,7 @@ import {
 import type { ArtifactsCreateResult, Env, ProjectEntry } from "../types";
 import { getArtifactsRepoName } from "../types";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
-import { canReadProject, filterReadableProjects } from "../utils/authz";
+import { canReadProject, filterReadableProjects, shouldAppearNotFound } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
 import {
@@ -280,7 +280,11 @@ app.get("/:namespace/:slug", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId))
+      return notFound("Project", `${project.namespace}/${project.slug}`);
+    return forbidden("Project access denied");
+  }
 
   logger.info("Project retrieved", { namespace, slug });
   return ok({
@@ -514,6 +518,7 @@ app.post(
         sourceRepo: parsedUrl?.info.repo,
         sourceDefaultBranch: branch,
         visibility,
+        importCompleted: false,
       };
 
       const setResult = await setProject(c.env.STATE, project, logger);
@@ -677,11 +682,12 @@ async function processImportJob(
     // Check cancellation before updating project
     if (await checkCancelled()) return;
 
-    // Update project with actual repo info
+    // Update project with actual repo info and mark import as complete
     const updatedProject: ProjectEntry = {
       ...project,
       remote: importResult.data.remote,
       token: importResult.data.token,
+      importCompleted: true,
     };
 
     await setProject(env.STATE, updatedProject, logger);
@@ -753,7 +759,11 @@ app.get("/:namespace/:slug/files", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId))
+      return notFound("Project", `${project.namespace}/${project.slug}`);
+    return forbidden("Project access denied");
+  }
 
   const filesResult = await listFilesInRepo(project.remote, project.token, logger);
   if (!filesResult.success) {
@@ -796,7 +806,11 @@ app.get("/:namespace/:slug/content", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId))
+      return notFound("Project", `${project.namespace}/${project.slug}`);
+    return forbidden("Project access denied");
+  }
 
   const contentResult = await getFileContent(project.remote, project.token, filePath, logger);
   if (!contentResult.success) {
@@ -840,7 +854,11 @@ app.get("/:namespace/:slug/log", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId))
+      return notFound("Project", `${project.namespace}/${project.slug}`);
+    return forbidden("Project access denied");
+  }
 
   const depth = Number(c.req.query("depth") ?? 20);
   const logResult = await getCommitLog(project.remote, project.token, logger, depth);
@@ -886,7 +904,11 @@ app.get("/:namespace/:slug/provenance", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId))
+      return notFound("Project", `${project.namespace}/${project.slug}`);
+    return forbidden("Project access denied");
+  }
 
   const limitParam = c.req.query("limit");
   const limit = limitParam !== undefined ? Number(limitParam) : undefined;
@@ -932,6 +954,8 @@ app.get("/:namespace/:slug/import/status", async (c) => {
   }
 
   if (!canReadProject(projectResult.data, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(projectResult.data, userId, agentOwnerId))
+      return notFound("Project", `${namespace}/${slug}`);
     return forbidden("Project access denied");
   }
 
@@ -1002,6 +1026,8 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
   const userId = c.get("userId");
   const agentOwnerId = c.get("agentOwnerId");
   if (!canReadProject(projectResult.data, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(projectResult.data, userId, agentOwnerId))
+      return notFound("Project", `${namespace}/${slug}`);
     return forbidden("Project access denied");
   }
 
@@ -1416,6 +1442,8 @@ app.get("/:namespace/:slug/sync/status", async (c) => {
   const project = projectResult.data;
 
   if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId))
+      return notFound("Project", `${namespace}/${slug}`);
     return forbidden("Project access denied");
   }
 

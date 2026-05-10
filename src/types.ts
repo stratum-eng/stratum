@@ -190,6 +190,9 @@ export interface ProjectEntry {
   autoSyncEnabled?: boolean;
   syncFrequency?: number; // Minutes between auto-syncs
   visibility?: "private" | "public";
+  // False while the initial import is in flight; true once it completes.
+  // Absent on legacy projects — treated as true for backward compatibility.
+  importCompleted?: boolean;
 }
 
 // Helper to generate full project path

@@ -262,11 +262,12 @@ async function processImportJob(
       return;
     }
 
-    // Update project with actual repo info
+    // Update project with actual repo info and mark import as complete
     const updatedProject: ProjectEntry = {
       ...project,
       remote: importResult.data.remote,
       token: importResult.data.token,
+      importCompleted: true,
     };
 
     const setResult = await setProject(env.STATE, updatedProject, logger);

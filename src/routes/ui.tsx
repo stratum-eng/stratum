@@ -16,7 +16,7 @@ import { NewProjectPage } from "../ui/pages/new-project";
 import { RepoPage } from "../ui/pages/repo";
 import { SyncPage } from "../ui/pages/sync";
 import { WorkspacesPage } from "../ui/pages/workspaces";
-import { canReadProject, filterReadableProjects } from "../utils/authz";
+import { canReadProject, filterReadableProjects, shouldAppearNotFound } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import { isValidNamespace, isValidSlug } from "../utils/validation";
 
@@ -121,6 +121,14 @@ app.get("/p/:name", async (c) => {
   const project = projectResult.data;
 
   if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId)) {
+      return c.html(
+        <div style="padding:2rem;font-family:monospace;color:#f87171;">
+          Project '{name}' not found.
+        </div>,
+        404,
+      );
+    }
     logger.warn("Access denied to project", { name, userId });
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">
@@ -142,7 +150,7 @@ app.get("/p/:name", async (c) => {
     project.slug || project.name,
     logger,
   );
-  if (importResult.success && importResult.data) {
+  if (importResult.success && importResult.data && importResult.data.status !== "completed") {
     importProgress = importResult.data;
   }
 
@@ -235,6 +243,14 @@ app.get("/p/:name/changes", async (c) => {
   const project = projectResult.data;
 
   if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId)) {
+      return c.html(
+        <div style="padding:2rem;font-family:monospace;color:#f87171;">
+          Project '{name}' not found.
+        </div>,
+        404,
+      );
+    }
     logger.warn("Access denied to project changes", { name, userId });
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">
@@ -310,6 +326,12 @@ app.get("/changes/:id", async (c) => {
   }
 
   if (!canReadProject(projectResult.data, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(projectResult.data, userId, agentOwnerId)) {
+      return c.html(
+        <div style="padding:2rem;font-family:monospace;color:#f87171;">Not found.</div>,
+        404,
+      );
+    }
     logger.warn("Access denied to change", { id, userId });
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">Access denied.</div>,
@@ -380,6 +402,12 @@ app.get("/p/:name/workspaces", async (c) => {
   }
 
   if (!canReadProject(projectResult.data, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(projectResult.data, userId, agentOwnerId)) {
+      return c.html(
+        <div style="padding:2rem;font-family:monospace;color:#f87171;">Not found.</div>,
+        404,
+      );
+    }
     logger.warn("Access denied to project workspaces", { name, userId });
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">Access denied.</div>,
@@ -446,6 +474,14 @@ app.get("/:namespace/:slug/changes", async (c) => {
   const project = projectResult.data;
 
   if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId)) {
+      return c.html(
+        <div style="padding:2rem;font-family:monospace;color:#f87171;">
+          Project '{namespace}/{slug}' not found.
+        </div>,
+        404,
+      );
+    }
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">Access denied.</div>,
       403,
@@ -512,6 +548,14 @@ app.get("/:namespace/:slug/workspaces", async (c) => {
   const project = projectResult.data;
 
   if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId)) {
+      return c.html(
+        <div style="padding:2rem;font-family:monospace;color:#f87171;">
+          Project '{namespace}/{slug}' not found.
+        </div>,
+        404,
+      );
+    }
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">Access denied.</div>,
       403,
@@ -578,6 +622,14 @@ app.get("/:namespace/:slug/sync", async (c) => {
   const project = projectResult.data;
 
   if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId)) {
+      return c.html(
+        <div style="padding:2rem;font-family:monospace;color:#f87171;">
+          Project '{namespace}/{slug}' not found.
+        </div>,
+        404,
+      );
+    }
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">Access denied.</div>,
       403,
@@ -667,6 +719,14 @@ app.get("/:namespace/:slug/blob/*", async (c) => {
   const project = projectResult.data;
 
   if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId)) {
+      return c.html(
+        <div style="padding:2rem;font-family:monospace;color:#f87171;">
+          Project '{namespace}/{slug}' not found.
+        </div>,
+        404,
+      );
+    }
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">
         Access denied. You don't have permission to view this project.
@@ -758,6 +818,19 @@ app.get("/:namespace/:slug", async (c) => {
   const project = projectResult.data;
 
   if (!canReadProject(project, userId, agentOwnerId)) {
+    if (shouldAppearNotFound(project, userId, agentOwnerId)) {
+      logger.warn("Project not found (incomplete import hidden from non-owner)", {
+        namespace,
+        slug,
+        userId,
+      });
+      return c.html(
+        <div style="padding:2rem;font-family:monospace;color:#f87171;">
+          Project '{namespace}/{slug}' not found.
+        </div>,
+        404,
+      );
+    }
     logger.warn("Access denied to project", { namespace, slug, userId });
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">
@@ -772,9 +845,9 @@ app.get("/:namespace/:slug", async (c) => {
   let readme: string | null = null;
   let importProgress = null;
 
-  // Check for active import
+  // Check for active import — hide the card once it has completed
   const importResult = await getImportProgress(c.env.DB, namespace, slug, logger);
-  if (importResult.success && importResult.data) {
+  if (importResult.success && importResult.data && importResult.data.status !== "completed") {
     importProgress = importResult.data;
   }
 
