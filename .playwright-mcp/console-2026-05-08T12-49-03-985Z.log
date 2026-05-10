@@ -1,3 +1,0 @@
-[17945908ms] [ERROR] Pattern attribute value [a-z0-9-]+ is not a valid regular expression: Uncaught SyntaxError: Invalid regular expression: /[a-z0-9-]+/v: Invalid character class @ https://pr-45.staging.app.usestratum.dev/new:0
-[17968341ms] [ERROR] Pattern attribute value [a-z0-9-]+ is not a valid regular expression: Uncaught SyntaxError: Invalid regular expression: /[a-z0-9-]+/v: Invalid character class @ https://pr-45.staging.app.usestratum.dev/new:0
-[17968627ms] [ERROR] Failed to load resource: the server responded with a status of 429 () @ https://pr-45.staging.app.usestratum.dev/api/projects/@jlmx/apptrack/import:0
