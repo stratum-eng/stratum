@@ -1,6 +1,8 @@
 import type { FC } from "hono/jsx";
 import type { GitProvider, ImportProgress } from "../../types";
+import { FileTree } from "../components/file-tree";
 import { ImportProgressCard } from "../components/import-progress";
+import { buildFileTree } from "../file-tree";
 import { Layout } from "../layout";
 
 interface RepoProps {
@@ -220,19 +222,7 @@ export const RepoPage: FC<RepoProps> = ({
 
       <div class="card">
         <h2>Files</h2>
-        {files.length === 0 ? (
-          <div class="empty-state">
-            <p>No files in this repository.</p>
-          </div>
-        ) : (
-          <ul class="file-list">
-            {files.map((file) => (
-              <li key={file} class="file-item">
-                {file}
-              </li>
-            ))}
-          </ul>
-        )}
+        <FileTree nodes={buildFileTree(files)} namespace={project.namespace} slug={project.slug} />
       </div>
 
       <div class="card">

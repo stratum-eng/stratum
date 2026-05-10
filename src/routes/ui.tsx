@@ -7,8 +7,10 @@ import { getProject, getProjectByPath, listProjects, listWorkspaces } from "../s
 import { getSyncStatus } from "../storage/sync";
 import { getUser } from "../storage/users";
 import type { Env } from "../types";
+import { getFileContent, isValidFilePath } from "../ui/file-content";
 import { ChangeDetailPage } from "../ui/pages/change-detail";
 import { ChangesPage } from "../ui/pages/changes";
+import { FileViewerPage } from "../ui/pages/file-viewer";
 import { HomePage } from "../ui/pages/home";
 import { NewProjectPage } from "../ui/pages/new-project";
 import { RepoPage } from "../ui/pages/repo";
@@ -614,6 +616,77 @@ app.get("/:namespace/:slug/sync", async (c) => {
       }}
       syncStatus={syncStatus}
       syncHistory={[]}
+    />,
+  );
+});
+
+// GET /:namespace/:slug/blob/* — File viewer (must be before /:namespace/:slug catch-all)
+app.get("/:namespace/:slug/blob/*", async (c) => {
+  const { namespace, slug } = c.req.param();
+  const filePath = c.req.param("*") ?? "";
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const logger = createLogger({ path: c.req.path, userId });
+
+  if (!filePath || !isValidFilePath(filePath)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Invalid file path.</div>,
+      400,
+    );
+  }
+
+  const [userResult, projectResult] = await Promise.all([
+    getCurrentUser(c, logger),
+    getProjectByPath(c.env.STATE, namespace, slug, logger),
+  ]);
+
+  if (!projectResult.success) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Project '{namespace}/{slug}' not found.
+      </div>,
+      404,
+    );
+  }
+  const project = projectResult.data;
+
+  if (!canReadProject(project, userId, agentOwnerId)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Access denied. You don't have permission to view this project.
+      </div>,
+      403,
+    );
+  }
+
+  const contentResult = await getFileContent(project.remote, project.token, filePath, logger);
+  if (!contentResult.success) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Error loading file.</div>,
+      500,
+    );
+  }
+
+  const content = contentResult.data;
+  if (content.kind === "not-found") {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        File '{filePath}' not found in this repository.
+      </div>,
+      404,
+    );
+  }
+
+  return c.html(
+    <FileViewerPage
+      project={{
+        namespace: project.namespace,
+        slug: project.slug,
+        name: project.name,
+      }}
+      path={filePath}
+      content={content}
+      user={userResult}
     />,
   );
 });
