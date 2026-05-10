@@ -1,0 +1,36 @@
+- generic [active] [ref=e1]:
+  - navigation [ref=e2]:
+    - link "stratum" [ref=e3] [cursor=pointer]:
+      - /url: /
+    - link "projects" [ref=e5] [cursor=pointer]:
+      - /url: /
+    - generic [ref=e6]:
+      - generic [ref=e7]: jlmx
+      - link "logout" [ref=e8] [cursor=pointer]:
+        - /url: /auth/logout
+  - main [ref=e9]:
+    - generic [ref=e10]:
+      - heading "demo-app" [level=1] [ref=e11]
+      - link "View changes" [ref=e13] [cursor=pointer]:
+        - /url: /@jlmx/demo-app/changes
+    - generic [ref=e16]: "# My Project Created with Stratum."
+    - generic [ref=e17]:
+      - heading "Files" [level=2] [ref=e18]
+      - list [ref=e19]:
+        - listitem [ref=e20]: README.md
+        - listitem [ref=e21]: src/index.ts
+    - generic [ref=e22]:
+      - heading "Recent commits" [level=2] [ref=e23]
+      - table [ref=e24]:
+        - rowgroup [ref=e25]:
+          - row "SHA Message Author Date" [ref=e26]:
+            - columnheader "SHA" [ref=e27]
+            - columnheader "Message" [ref=e28]
+            - columnheader "Author" [ref=e29]
+            - columnheader "Date" [ref=e30]
+        - rowgroup [ref=e31]:
+          - row "cf601f9 Initial commit Stratum <system@usestratum.dev> 5/8/2026" [ref=e32]:
+            - cell "cf601f9" [ref=e33]
+            - cell "Initial commit" [ref=e34]
+            - cell "Stratum <system@usestratum.dev>" [ref=e35]
+            - cell "5/8/2026" [ref=e36]

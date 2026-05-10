@@ -14,19 +14,6 @@ export function canReadProject(
   return canWriteProject(project, userId, agentOwnerId);
 }
 
-/**
- * Returns true when a non-owner should receive a 404 rather than a 403.
- * An incomplete import is invisible to outsiders — leaking its existence
- * (even via a 403) is undesirable.
- */
-export function shouldAppearNotFound(
-  project: ProjectEntry,
-  userId?: string,
-  agentOwnerId?: string,
-): boolean {
-  return project.importCompleted === false && !canWriteProject(project, userId, agentOwnerId);
-}
-
 export function canWriteProject(
   project: ProjectEntry,
   userId?: string,

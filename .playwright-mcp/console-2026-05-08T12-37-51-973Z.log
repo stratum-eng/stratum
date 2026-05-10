@@ -1,0 +1,4 @@
+[    1441ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://pr-45.staging.app.usestratum.dev/favicon.ico:0
+[   21368ms] [ERROR] Failed to load resource: the server responded with a status of 500 () @ https://pr-45.staging.app.usestratum.dev/api/projects:0
+[  101652ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://pr-45.staging.app.usestratum.dev/api/projects/@jlmx/test-buffered-1778243964704/workspaces:0
+[  275269ms] [ERROR] Failed to load resource: the server responded with a status of 500 () @ https://pr-45.staging.app.usestratum.dev/api/projects:0

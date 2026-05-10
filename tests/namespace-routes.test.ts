@@ -286,7 +286,7 @@ describe("Namespace Routes", () => {
       expect(html).toContain("not found");
     });
 
-    it("returns 403 for private project without access", async () => {
+    it("returns 404 for private project without access", async () => {
       await createTestProject(env, "@testuser", "private-project", "user_test", "private");
 
       const res = await app.fetch(
@@ -294,9 +294,7 @@ describe("Namespace Routes", () => {
         env,
       );
 
-      expect(res.status).toBe(403);
-      const html = await res.text();
-      expect(html).toContain("Access denied");
+      expect(res.status).toBe(404);
     });
 
     it("allows owner to access their private project", async () => {
@@ -399,7 +397,7 @@ describe("Namespace Routes", () => {
         expect(body.error).toContain("not found");
       });
 
-      it("returns 403 for private project without access", async () => {
+      it("returns 404 for private project without access", async () => {
         await createTestProject(env, "@testuser", "private-project", "user_test", "private");
 
         const res = await app.fetch(
@@ -412,7 +410,7 @@ describe("Namespace Routes", () => {
           env,
         );
 
-        expect(res.status).toBe(403);
+        expect(res.status).toBe(404);
       });
 
       it("allows owner to access their private project's files", async () => {
@@ -472,7 +470,7 @@ describe("Namespace Routes", () => {
         expect(res.status).toBe(404);
       });
 
-      it("returns 403 for private project without access", async () => {
+      it("returns 404 for private project without access", async () => {
         await createTestProject(env, "@testuser", "private-project", "user_test", "private");
 
         mockImportProgress["@testuser:private-project"] = {
@@ -490,7 +488,7 @@ describe("Namespace Routes", () => {
           env,
         );
 
-        expect(res.status).toBe(403);
+        expect(res.status).toBe(404);
       });
 
       it("returns 404 for non-existent project", async () => {
@@ -613,7 +611,7 @@ describe("Namespace Routes", () => {
         expect(res.status).toBe(404);
       });
 
-      it("returns 403 for private project without access", async () => {
+      it("returns 404 for private project without access", async () => {
         await createTestProject(env, "@testuser", "private-project", "user_test", "private");
 
         const res = await app.fetch(
@@ -626,7 +624,7 @@ describe("Namespace Routes", () => {
           env,
         );
 
-        expect(res.status).toBe(403);
+        expect(res.status).toBe(404);
       });
     });
   });
@@ -649,7 +647,7 @@ describe("Namespace Routes", () => {
         expect(res.status).toBe(404);
       });
 
-      it("returns 403 for private legacy project without access", async () => {
+      it("returns 404 for private legacy project without access", async () => {
         await createLegacyProject(env, "private-legacy", "user_test", "private");
 
         const res = await app.fetch(
@@ -657,7 +655,7 @@ describe("Namespace Routes", () => {
           env,
         );
 
-        expect(res.status).toBe(403);
+        expect(res.status).toBe(404);
       });
     });
 
@@ -704,12 +702,12 @@ describe("Namespace Routes", () => {
       expect(res.status).toBe(200);
     });
 
-    it("requires authentication for private projects", async () => {
+    it("returns 404 for private projects when unauthenticated", async () => {
       await createTestProject(env, "@testuser", "private-project", "user_test", "private");
 
       const res = await app.fetch(request("GET", "/@testuser/private-project"), env);
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
     });
 
     it("allows project owner to access their private project", async () => {
