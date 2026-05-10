@@ -307,7 +307,7 @@ app.get("/:namespace/:slug", async (c) => {
 app.post(
   "/:namespace/:slug/import",
   importRateLimitMiddleware({
-    importsPerWindow: 1,
+    importsPerWindow: 3,
     windowSeconds: 60,
     maxConcurrentPerProject: 1,
     projectLockSeconds: 300, // 5 minutes default import timeout
@@ -1117,7 +1117,7 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
 app.post(
   "/:namespace/:slug/import/retry",
   importRateLimitMiddleware({
-    importsPerWindow: 1,
+    importsPerWindow: 3,
     windowSeconds: 60,
     maxConcurrentPerProject: 1,
     projectLockSeconds: 300,
