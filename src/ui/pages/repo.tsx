@@ -76,6 +76,8 @@ interface RepoProps {
     createdAt: string;
     sourceUrl?: string;
     sourceProvider?: GitProvider;
+    sourceOwner?: string;
+    sourceRepo?: string;
     lastSyncedAt?: string;
     lastSyncedCommit?: string;
     lastSyncStatus?: "success" | "failed" | "in_progress" | "idle";
@@ -203,7 +205,9 @@ export const RepoPage: FC<RepoProps> = ({
           <div class="sync-status-header">
             <div class="sync-status-info">
               <span class="sync-provider">
-                {getProviderIcon(project.sourceProvider)} {getProviderName(project.sourceProvider)}
+                {project.sourceOwner && project.sourceRepo
+                  ? `Forked from ${project.sourceOwner}/${project.sourceRepo}`
+                  : `${getProviderIcon(project.sourceProvider)} ${getProviderName(project.sourceProvider)}`}
               </span>
               <a
                 href={project.sourceUrl}
@@ -255,9 +259,40 @@ export const RepoPage: FC<RepoProps> = ({
 
           {project.lastSyncError && (
             <div class="sync-error-message">
-              <strong>Error:</strong> {project.lastSyncError}
+              <strong>Error:</strong> {project.lastSyncError.slice(0, 200)}
+              {project.lastSyncError.length > 200 ? "…" : ""}
             </div>
           )}
+        </div>
+      )}
+
+      {hasSource && canSync && project.sourceProvider === "github" && (
+        <div class="card" style={{ marginTop: "1rem" }}>
+          <h3 style={{ marginTop: 0 }}>Prepare a pull request</h3>
+          <p style={{ color: "#aaa", marginBottom: "1rem" }}>
+            Your changes in <strong>{project.name}</strong> can be pushed back to{" "}
+            <a href={project.sourceUrl} target="_blank" rel="noopener noreferrer">
+              {project.sourceOwner && project.sourceRepo
+                ? `${project.sourceOwner}/${project.sourceRepo}`
+                : project.sourceUrl?.replace(/^https?:\/\//, "")}
+            </a>{" "}
+            as a pull request. Open your Changes to review and push.
+          </p>
+          <a href={`/${project.namespace}/${project.slug}/changes`} class="btn btn-primary">
+            Open Changes
+          </a>
+        </div>
+      )}
+
+      {hasSource && canSync && project.sourceProvider !== "github" && (
+        <div class="card" style={{ marginTop: "1rem" }}>
+          <h3 style={{ marginTop: 0 }}>Review your changes</h3>
+          <p style={{ color: "#aaa", marginBottom: "1rem" }}>
+            View and manage your changes before pushing them upstream.
+          </p>
+          <a href={`/${project.namespace}/${project.slug}/changes`} class="btn btn-primary">
+            Open Changes
+          </a>
         </div>
       )}
 

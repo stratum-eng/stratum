@@ -5,7 +5,7 @@ import { getCommitLog, listFilesInRepo, readFileFromRepo } from "../storage/git-
 import { getImportProgress } from "../storage/imports";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
 import { getProject, getProjectByPath, listProjects, listWorkspaces } from "../storage/state";
-import { getSyncStatus } from "../storage/sync";
+import { getProjectSourceUrl, getSyncStatus } from "../storage/sync";
 import { getUser } from "../storage/users";
 import type { Env } from "../types";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
@@ -147,6 +147,29 @@ app.get("/p/:name", async (c) => {
     importProgress = importResult.data;
   }
 
+  // Fetch upstream sync status — guard: skip for legacy entries without a namespace
+  let syncStatus: {
+    hasUpdates?: boolean;
+    commitsBehind?: number;
+    latestCommit?: string;
+    lastCheckedAt?: string;
+  } | null = null;
+  let canSync = false;
+  if (project.namespace) {
+    const legacyNamespace = project.namespace ?? "@legacy";
+    const legacySlug = project.slug ?? project.name;
+    const syncStatusResult = await getSyncStatus(c.env.STATE, legacyNamespace, legacySlug, logger);
+    if (syncStatusResult.success && syncStatusResult.data) {
+      syncStatus = syncStatusResult.data;
+    }
+    canSync =
+      !!getProjectSourceUrl(project) &&
+      !!userId &&
+      project.ownerType === "user" &&
+      project.ownerId === userId &&
+      project.importCompleted !== false;
+  }
+
   const snapshotResult = await readRepoSnapshot(c.env.STATE, project, logger);
   if (snapshotResult.success && snapshotResult.data) {
     files = snapshotResult.data.files;
@@ -206,12 +229,23 @@ app.get("/p/:name", async (c) => {
         slug: project.slug,
         remote: project.remote,
         createdAt: project.createdAt,
+        sourceUrl: getProjectSourceUrl(project),
+        sourceProvider: project.sourceProvider,
+        sourceOwner: project.sourceOwner,
+        sourceRepo: project.sourceRepo,
+        lastSyncedAt: project.lastSyncedAt,
+        lastSyncedCommit: project.lastSyncedCommit,
+        lastSyncStatus: project.lastSyncStatus,
+        lastSyncError: project.lastSyncError,
+        autoSyncEnabled: project.autoSyncEnabled,
       }}
       files={files}
       log={log}
       readme={readme}
       user={userResult}
       importProgress={importProgress}
+      syncStatus={syncStatus}
+      canSync={canSync}
     />,
   );
 });
@@ -793,6 +827,25 @@ app.get("/:namespace/:slug", async (c) => {
     importProgress = importResult.data;
   }
 
+  // Fetch upstream sync status (null on KV failure — not fatal)
+  let syncStatus: {
+    hasUpdates?: boolean;
+    commitsBehind?: number;
+    latestCommit?: string;
+    lastCheckedAt?: string;
+  } | null = null;
+  const syncStatusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);
+  if (syncStatusResult.success && syncStatusResult.data) {
+    syncStatus = syncStatusResult.data;
+  }
+
+  const canSync =
+    !!getProjectSourceUrl(project) &&
+    !!userId &&
+    project.ownerType === "user" &&
+    project.ownerId === userId &&
+    project.importCompleted !== false;
+
   const snapshotResult2 = await readRepoSnapshot(c.env.STATE, project, logger);
   if (snapshotResult2.success && snapshotResult2.data) {
     files = snapshotResult2.data.files;
@@ -853,12 +906,23 @@ app.get("/:namespace/:slug", async (c) => {
         slug: project.slug,
         remote: project.remote,
         createdAt: project.createdAt,
+        sourceUrl: getProjectSourceUrl(project),
+        sourceProvider: project.sourceProvider,
+        sourceOwner: project.sourceOwner,
+        sourceRepo: project.sourceRepo,
+        lastSyncedAt: project.lastSyncedAt,
+        lastSyncedCommit: project.lastSyncedCommit,
+        lastSyncStatus: project.lastSyncStatus,
+        lastSyncError: project.lastSyncError,
+        autoSyncEnabled: project.autoSyncEnabled,
       }}
       files={files}
       log={log}
       readme={readme}
       user={userResult}
       importProgress={importProgress}
+      syncStatus={syncStatus}
+      canSync={canSync}
     />,
   );
 });

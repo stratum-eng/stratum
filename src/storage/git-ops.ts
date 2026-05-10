@@ -930,39 +930,39 @@ export async function importFromGitHub(
         target: { name },
       });
 
-    // First attempt
-    let result: Awaited<ReturnType<typeof doImport>>;
-    try {
-      result = await Promise.race([doImport(), timeoutPromise]);
-    } catch (firstError) {
-      const msg = firstError instanceof Error ? firstError.message : String(firstError);
-      if (!msg.includes("already exists")) throw firstError;
+    type ImportResult = Awaited<ReturnType<typeof doImport>>;
 
-      // Artifacts is eventually consistent — delete the conflicting repo then retry with
-      // exponential backoff. 2 s is often not enough for the deletion to propagate.
-      logger.warn("Artifacts repo already exists, deleting and retrying", { name });
-      const deleted = await artifacts.delete(name);
-      logger.info("Artifacts delete result before retry", { name, deleted });
+    // Artifacts is eventually consistent — on "already exists" delete and retry with
+    // exponential backoff; extracted into a local function so the return type is always known.
+    const doImportWithRetry = async (): Promise<ImportResult> => {
+      try {
+        return await Promise.race([doImport(), timeoutPromise]);
+      } catch (firstError) {
+        const msg = firstError instanceof Error ? firstError.message : String(firstError);
+        if (!msg.includes("already exists")) throw firstError;
 
-      const retryDelays = [3000, 5000, 8000];
-      let lastError: unknown = firstError;
-      for (let i = 0; i < retryDelays.length; i++) {
-        await new Promise((r) => setTimeout(r, retryDelays[i]));
-        try {
-          result = await Promise.race([doImport(), timeoutPromise]);
-          lastError = null;
-          break;
-        } catch (retryError) {
-          lastError = retryError;
-          const retryMsg = retryError instanceof Error ? retryError.message : String(retryError);
-          if (!retryMsg.includes("already exists")) throw retryError;
-          logger.warn("Artifacts delete not yet consistent, retrying", { name, attempt: i + 1 });
+        logger.warn("Artifacts repo already exists, deleting and retrying", { name });
+        const deleted = await artifacts.delete(name);
+        logger.info("Artifacts delete result before retry", { name, deleted });
+
+        const retryDelays = [3000, 5000, 8000];
+        let lastError: unknown = firstError;
+        for (let i = 0; i < retryDelays.length; i++) {
+          await new Promise((r) => setTimeout(r, retryDelays[i]));
+          try {
+            return await Promise.race([doImport(), timeoutPromise]);
+          } catch (retryError) {
+            lastError = retryError;
+            const retryMsg = retryError instanceof Error ? retryError.message : String(retryError);
+            if (!retryMsg.includes("already exists")) throw retryError;
+            logger.warn("Artifacts delete not yet consistent, retrying", { name, attempt: i + 1 });
+          }
         }
+        throw lastError;
       }
-      if (lastError !== null) throw lastError;
-      // TypeScript narrowing: lastError is null means result was assigned in the loop
-      result = result!;
-    }
+    };
+
+    const result = await doImportWithRetry();
 
     logger.info("Successfully imported from GitHub", {
       name,
