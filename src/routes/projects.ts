@@ -355,11 +355,8 @@ app.post(
         const existingImport = await getImportProgress(c.env.DB, namespace, slug, logger);
         if (existingImport.success && existingImport.data) {
           const importStatus = existingImport.data.status;
-          const isIncomplete = !["completed", "queued", "cloning", "processing"].includes(
-            importStatus,
-          );
 
-          if (isIncomplete) {
+          if (importStatus === "failed" || importStatus === "cancelled") {
             logger.info("Project exists with incomplete import — re-triggering", {
               namespace,
               slug,
