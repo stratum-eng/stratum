@@ -29,9 +29,14 @@ export async function getFileContent(
   path: string,
   logger: Logger,
 ): Promise<Result<FileContentResult, AppError>> {
-  const readResult = await readFileFromRepo(remote, token, path, logger);
+  const readResult = await readFileFromRepo(remote, token, path, logger, {
+    maxBytes: MAX_FILE_BYTES,
+  });
 
   if (!readResult.success) {
+    if (readResult.error.code === "FILE_TOO_LARGE") {
+      return ok({ kind: "oversize" });
+    }
     if (readResult.error.code === "FS_ERROR") {
       return ok({ kind: "not-found" });
     }
@@ -44,6 +49,7 @@ export async function getFileContent(
     return ok({ kind: "binary" });
   }
 
+  // Defensive fallback: check byte size in case lower-layer check is bypassed
   if (new TextEncoder().encode(content).length > MAX_FILE_BYTES) {
     return ok({ kind: "oversize" });
   }

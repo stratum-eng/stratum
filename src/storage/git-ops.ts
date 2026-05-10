@@ -86,8 +86,8 @@ interface NodeFS {
     readdir(path: string): Promise<string[]>;
     mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
     rmdir(path: string): Promise<void>;
-    stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }>;
-    lstat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }>;
+    stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean; size: number }>;
+    lstat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean; size: number }>;
   };
 }
 
@@ -796,6 +796,7 @@ export async function readFileFromRepo(
   token: string,
   path: string,
   logger: Logger,
+  options?: { maxBytes?: number },
 ): Promise<Result<string, AppError>> {
   logger.debug("Reading file from repo", { remote, path });
 
@@ -805,10 +806,24 @@ export async function readFileFromRepo(
   const { fs } = cloneResult.data;
 
   try {
+    if (options?.maxBytes !== undefined) {
+      const stats = await fs.promises.stat(`/${path}`);
+      if (stats.size > options.maxBytes) {
+        logger.info("File exceeds maxBytes limit, skipping read", {
+          remote,
+          path,
+          size: stats.size,
+          maxBytes: options.maxBytes,
+        });
+        return err(new AppError(`File too large: ${path}`, "FILE_TOO_LARGE", 413));
+      }
+    }
+
     const content = await fs.promises.readFile(`/${path}`, { encoding: "utf8" });
     logger.info("Successfully read file from repo", { remote, path });
     return ok(typeof content === "string" ? content : new TextDecoder().decode(content));
   } catch (error) {
+    if (error instanceof AppError) return err(error);
     logger.error("Failed to read file from repo", error instanceof Error ? error : undefined, {
       remote,
       path,

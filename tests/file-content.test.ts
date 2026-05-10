@@ -92,6 +92,19 @@ describe("getFileContent", () => {
     }
   });
 
+  it("returns oversize when lower layer reports FILE_TOO_LARGE", async () => {
+    const { AppError } = await import("../src/utils/errors");
+    vi.mocked(readFileFromRepo).mockResolvedValueOnce({
+      success: false,
+      error: new AppError("File too large", "FILE_TOO_LARGE", 413),
+    });
+    const result = await getFileContent("remote", "token", "huge.bin", defaultLogger);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual({ kind: "oversize" });
+    }
+  });
+
   it("returns not-found for FS_ERROR", async () => {
     const { AppError } = await import("../src/utils/errors");
     vi.mocked(readFileFromRepo).mockResolvedValueOnce({
