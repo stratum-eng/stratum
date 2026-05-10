@@ -24,6 +24,7 @@ import {
 } from "../storage/sync";
 import type { ArtifactsCreateResult, Env, ProjectEntry } from "../types";
 import { getArtifactsRepoName } from "../types";
+import { getFileContent, isValidFilePath } from "../ui/file-content";
 import { canReadProject, filterReadableProjects } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
@@ -719,6 +720,53 @@ app.get("/:namespace/:slug/files", async (c) => {
     path: `/${namespace}/${slug}`,
     files: filesResult.data,
   });
+});
+
+// GET /projects/:namespace/:slug/content - Get file content by path
+app.get("/:namespace/:slug/content", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const { namespace, slug } = c.req.param();
+  const filePath = c.req.query("path");
+
+  if (!filePath) return badRequest("Missing required query parameter: path");
+  if (!isValidFilePath(filePath)) return badRequest("Invalid file path");
+
+  const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") {
+      return notFound("Project", `${namespace}/${slug}`);
+    }
+    return internalError(projectResult.error.message);
+  }
+  const project = projectResult.data;
+
+  if (!canReadProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+
+  const contentResult = await getFileContent(project.remote, project.token, filePath, logger);
+  if (!contentResult.success) {
+    return internalError(contentResult.error.message);
+  }
+
+  const result = contentResult.data;
+  logger.info("File content retrieved", { namespace, slug, path: filePath, kind: result.kind });
+
+  if (result.kind === "not-found") {
+    return notFound("File", filePath);
+  }
+
+  if (result.kind === "content") {
+    return ok({ namespace, slug, path: filePath, kind: "content", value: result.value });
+  }
+
+  return ok({ namespace, slug, path: filePath, kind: result.kind });
 });
 
 // GET /projects/:namespace/:slug/log - Get commit log

@@ -359,4 +359,53 @@ a:hover { text-decoration: underline; }
   padding-top: 1rem;
   border-top: 1px solid #1e1e1e;
 }
+
+/* File Tree */
+.file-tree { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
+.file-tree-dir { border: none; }
+.file-tree-dir > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.25rem 0;
+  color: #aaa;
+  user-select: none;
+}
+.file-tree-dir > summary::before { content: "▶  "; font-size: 0.7rem; }
+.file-tree-dir[open] > summary::before { content: "▼  "; font-size: 0.7rem; }
+.file-tree-dir > summary::-webkit-details-marker { display: none; }
+.file-tree-dir > summary::marker { content: ""; }
+.file-tree-children { padding-left: 1.25rem; }
+.file-tree-file { padding: 0.2rem 0; }
+.file-tree-file a { color: #ccc; text-decoration: none; display: block; }
+.file-tree-file a:hover { color: #f0f0f0; text-decoration: underline; }
+.file-tree-notice { font-size: 0.8rem; color: #555; margin-top: 0.75rem; font-style: italic; }
+
+/* File Viewer */
+.file-viewer-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85rem;
+  margin-bottom: 0;
+  color: #888;
+}
+.file-viewer-breadcrumb a { color: #7ca9f7; text-decoration: none; }
+.file-viewer-breadcrumb a:hover { text-decoration: underline; }
+.file-viewer-breadcrumb .sep { color: #444; }
+.file-viewer-breadcrumb-current { color: #f0f0f0; }
+.file-viewer-content { padding: 0; overflow: hidden; }
+.file-viewer-content pre {
+  margin: 0;
+  padding: 1rem;
+  overflow-x: auto;
+  white-space: pre;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  color: #d4d4d4;
+  line-height: 1.6;
+  background: #0d0d0d;
+}
+.file-viewer-message { padding: 1.5rem; color: #666; font-style: italic; font-size: 0.85rem; margin: 0; }
 `;
