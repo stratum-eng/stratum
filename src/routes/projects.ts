@@ -348,10 +348,58 @@ app.post(
       const existingProjectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
       if (existingProjectResult.success) {
         logger.info("Project already exists", { namespace, slug });
-        // Redirect to existing project if coming from web UI
+
+        // If the project exists but the import never completed, re-trigger it so the
+        // user doesn't need to hunt for the "Retry Import" button after a rate-limit failure.
+        const existingImport = await getImportProgress(c.env.DB, namespace, slug, logger);
+        if (existingImport.success && existingImport.data) {
+          const importStatus = existingImport.data.status;
+          const isIncomplete = !["completed", "queued", "cloning", "processing"].includes(
+            importStatus,
+          );
+
+          if (isIncomplete) {
+            logger.info("Project exists with incomplete import — re-triggering", {
+              namespace,
+              slug,
+              importStatus,
+            });
+            await updateImportStatus(
+              c.env.DB,
+              namespace,
+              slug,
+              "queued",
+              logger,
+              "Import re-triggered via form",
+            );
+
+            if (c.env.IMPORT_QUEUE) {
+              try {
+                const { queueImportJob } = await import("../queue/import-queue");
+                await queueImportJob(c.env.IMPORT_QUEUE, {
+                  importId: existingImport.data.id,
+                  projectId: existingImport.data.projectId,
+                  namespace,
+                  slug,
+                  githubUrl: existingImport.data.sourceUrl,
+                  branch: existingImport.data.branch ?? "main",
+                  depth: 10,
+                });
+              } catch (queueError) {
+                logger.error(
+                  "Failed to re-queue import on form re-submit",
+                  queueError instanceof Error ? queueError : undefined,
+                  { namespace, slug },
+                );
+                // Non-fatal — user can use the Retry button on the project page
+              }
+            }
+          }
+        }
+
         const contentType = c.req.header("content-type") || "";
         if (!contentType.includes("application/json")) {
-          return c.redirect(`/@${namespace.replace("@", "")}/${slug}`);
+          return c.redirect(`/@${namespace.replace("@", "")}/${slug}?import=active`);
         }
         return ok({
           namespace,

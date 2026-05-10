@@ -330,7 +330,7 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
         </div>
       )}
 
-      {isFailed && (
+      {(isFailed || isCancelled) && (
         <div class="actions-section failed-actions">
           <form
             method="post"
