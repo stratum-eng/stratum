@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { importFromGitHub } from "../storage/git-ops";
+import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { getProject, listProjects, setProject } from "../storage/state";
 import type { Env, ProjectEntry } from "../types";
 import { createLogger } from "../utils/logger";
@@ -91,6 +92,17 @@ export async function syncAllProjects(env: Env): Promise<{ synced: number; faile
       if (result.success) {
         synced++;
         projectLogger.info("Project synced successfully");
+        // NOTE: writeSnapshotFromRepo must be called after any new sync trigger added here
+        await writeSnapshotFromRepo(
+          env.STATE,
+          {
+            remote: result.data.remote,
+            token: result.data.token,
+            namespace: project.namespace,
+            slug: project.slug,
+          },
+          projectLogger,
+        );
       } else {
         failed++;
         projectLogger.error("Project sync failed", result.error);

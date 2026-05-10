@@ -3,6 +3,7 @@ import { getChange, listChanges } from "../storage/changes";
 import { listEvalRuns } from "../storage/eval-runs";
 import { getCommitLog, listFilesInRepo, readFileFromRepo } from "../storage/git-ops";
 import { getImportProgress } from "../storage/imports";
+import { readRepoSnapshot } from "../storage/repo-snapshot";
 import { getProject, getProjectByPath, listProjects, listWorkspaces } from "../storage/state";
 import { getSyncStatus } from "../storage/sync";
 import { getUser } from "../storage/users";
@@ -146,42 +147,50 @@ app.get("/p/:name", async (c) => {
     importProgress = importResult.data;
   }
 
-  try {
-    const [filesResult, logResult] = await Promise.all([
-      listFilesInRepo(project.remote, project.token, logger),
-      getCommitLog(project.remote, project.token, logger, 20),
-    ]);
+  const snapshotResult = await readRepoSnapshot(c.env.STATE, project, logger);
+  if (snapshotResult.success && snapshotResult.data) {
+    files = snapshotResult.data.files;
+    log = snapshotResult.data.commits;
+    readme = snapshotResult.data.readme;
+  } else {
+    // Cache miss or corrupt entry — fall back to git clone
+    try {
+      const [filesResult, logResult] = await Promise.all([
+        listFilesInRepo(project.remote, project.token, logger),
+        getCommitLog(project.remote, project.token, logger, 20),
+      ]);
 
-    if (filesResult.success) {
-      files = filesResult.data;
-    } else {
-      logger.warn("Failed to list files in repo", { error: filesResult.error });
-    }
-
-    if (logResult.success) {
-      log = logResult.data;
-    } else {
-      logger.warn("Failed to get commit log", { error: logResult.error });
-    }
-
-    // Try to read README.md if it exists
-    const readmePath = files.find((f) => f.toLowerCase() === "readme.md");
-    if (readmePath) {
-      const readmeResult = await readFileFromRepo(
-        project.remote,
-        project.token,
-        readmePath,
-        logger,
-      );
-      if (readmeResult.success) {
-        readme = readmeResult.data;
+      if (filesResult.success) {
+        files = filesResult.data;
+      } else {
+        logger.warn("Failed to list files in repo", { error: filesResult.error });
       }
+
+      if (logResult.success) {
+        log = logResult.data;
+      } else {
+        logger.warn("Failed to get commit log", { error: logResult.error });
+      }
+
+      // Try to read README.md if it exists
+      const readmePath = files.find((f) => f.toLowerCase() === "readme.md");
+      if (readmePath) {
+        const readmeResult = await readFileFromRepo(
+          project.remote,
+          project.token,
+          readmePath,
+          logger,
+        );
+        if (readmeResult.success) {
+          readme = readmeResult.data;
+        }
+      }
+    } catch (error) {
+      // Repo may be empty or unreachable — render with empty data
+      logger.warn("Error loading repo data", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-  } catch (error) {
-    // Repo may be empty or unreachable — render with empty data
-    logger.warn("Error loading repo data", {
-      error: error instanceof Error ? error.message : String(error),
-    });
   }
 
   logger.debug("Rendering project page", {
@@ -784,42 +793,50 @@ app.get("/:namespace/:slug", async (c) => {
     importProgress = importResult.data;
   }
 
-  try {
-    const [filesResult, logResult] = await Promise.all([
-      listFilesInRepo(project.remote, project.token, logger),
-      getCommitLog(project.remote, project.token, logger, 20),
-    ]);
+  const snapshotResult2 = await readRepoSnapshot(c.env.STATE, project, logger);
+  if (snapshotResult2.success && snapshotResult2.data) {
+    files = snapshotResult2.data.files;
+    log = snapshotResult2.data.commits;
+    readme = snapshotResult2.data.readme;
+  } else {
+    // Cache miss or corrupt entry — fall back to git clone
+    try {
+      const [filesResult, logResult] = await Promise.all([
+        listFilesInRepo(project.remote, project.token, logger),
+        getCommitLog(project.remote, project.token, logger, 20),
+      ]);
 
-    if (filesResult.success) {
-      files = filesResult.data;
-    } else {
-      logger.warn("Failed to list files in repo", { error: filesResult.error });
-    }
-
-    if (logResult.success) {
-      log = logResult.data;
-    } else {
-      logger.warn("Failed to get commit log", { error: logResult.error });
-    }
-
-    // Try to read README.md if it exists
-    const readmePath = files.find((f) => f.toLowerCase() === "readme.md");
-    if (readmePath) {
-      const readmeResult = await readFileFromRepo(
-        project.remote,
-        project.token,
-        readmePath,
-        logger,
-      );
-      if (readmeResult.success) {
-        readme = readmeResult.data;
+      if (filesResult.success) {
+        files = filesResult.data;
+      } else {
+        logger.warn("Failed to list files in repo", { error: filesResult.error });
       }
+
+      if (logResult.success) {
+        log = logResult.data;
+      } else {
+        logger.warn("Failed to get commit log", { error: logResult.error });
+      }
+
+      // Try to read README.md if it exists
+      const readmePath = files.find((f) => f.toLowerCase() === "readme.md");
+      if (readmePath) {
+        const readmeResult = await readFileFromRepo(
+          project.remote,
+          project.token,
+          readmePath,
+          logger,
+        );
+        if (readmeResult.success) {
+          readme = readmeResult.data;
+        }
+      }
+    } catch (error) {
+      // Repo may be empty or unreachable — render with empty data
+      logger.warn("Error loading repo data", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-  } catch (error) {
-    // Repo may be empty or unreachable — render with empty data
-    logger.warn("Error loading repo data", {
-      error: error instanceof Error ? error.message : String(error),
-    });
   }
 
   logger.debug("Rendering project page", {

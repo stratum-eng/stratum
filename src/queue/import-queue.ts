@@ -12,6 +12,7 @@ import {
   recordImportFailed,
   recordImportStarted,
 } from "../storage/metrics";
+import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { getProjectByPath, setProject } from "../storage/state";
 import { recordSyncHistory } from "../storage/sync";
 import type {
@@ -316,6 +317,13 @@ async function processImportJob(
     const duration = Date.now() - startedAt;
     await recordImportCompleted(env.DB, namespace, slug, duration, logger);
 
+    // Write repo snapshot to KV so page loads skip git clones going forward
+    await writeSnapshotFromRepo(
+      env.STATE,
+      { remote: updatedProject.remote, token: updatedProject.token, namespace, slug },
+      logger,
+    );
+
     logger.info("Import completed successfully", { importId, namespace, slug, duration });
     msg.ack();
   } catch (error) {
@@ -526,6 +534,13 @@ async function processSyncJob(
         startedAt: new Date(startedAt).toISOString(),
         completedAt: new Date().toISOString(),
       },
+      logger,
+    );
+
+    // Write repo snapshot to KV so page loads skip git clones going forward
+    await writeSnapshotFromRepo(
+      env.STATE,
+      { remote: updatedProject.remote, token: updatedProject.token, namespace, slug },
       logger,
     );
 

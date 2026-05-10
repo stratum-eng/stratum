@@ -12,6 +12,7 @@ import {
   updateImportStatus,
 } from "../storage/imports";
 import { listProvenance } from "../storage/provenance";
+import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { getProjectByPath, listProjectsByNamespace, setProject } from "../storage/state";
 import {
   checkForSyncUpdates,
@@ -723,6 +724,13 @@ async function processImportJob(
 
     // Release the rate limit lock on completion
     await releaseImportLock(env.STATE, namespace, slug, logger);
+
+    // Write repo snapshot to KV so page loads skip git clones going forward
+    await writeSnapshotFromRepo(
+      env.STATE,
+      { remote: updatedProject.remote, token: updatedProject.token, namespace, slug },
+      logger,
+    );
 
     logger.info("Import completed", { namespace, slug, importId });
   } catch (error) {
@@ -1579,6 +1587,13 @@ async function processSyncJob(
       "completed",
       logger,
       "Sync completed successfully",
+    );
+
+    // Write repo snapshot to KV so page loads skip git clones going forward
+    await writeSnapshotFromRepo(
+      env.STATE,
+      { remote: importResult.data.remote, token: importResult.data.token, namespace, slug },
+      logger,
     );
 
     logger.info("Sync completed", { namespace, slug, importId });
