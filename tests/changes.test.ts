@@ -806,6 +806,8 @@ describe("POST /api/changes/:id/merge", () => {
       success: true,
       data: undefined,
     });
+    // Default policy: no branch-protection rules.
+    vi.mocked(loadPolicy).mockResolvedValue({ evaluators: [], requireAll: true, minScore: 0.7 });
   });
 
   it("merges an approved change and returns merged=true", async () => {
@@ -996,6 +998,97 @@ describe("POST /api/changes/:id/merge", () => {
       env,
     );
     expect(res.status).toBe(404);
+  });
+
+  it("blocks merge with 403 when required evaluators are missing", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted" },
+    });
+    vi.mocked(loadPolicy).mockResolvedValue({
+      evaluators: [],
+      merge: { requiredEvaluators: ["secret_scan"] },
+    });
+    vi.mocked(listEvalRuns).mockResolvedValue({ success: true, data: [] });
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { code: string; reasons: string[] };
+    expect(body.code).toBe("PROTECTION_BLOCKED");
+    expect(body.reasons[0]).toContain("secret_scan");
+  });
+
+  it("merges when required evaluators have passing latest runs", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted" },
+    });
+    vi.mocked(loadPolicy).mockResolvedValue({
+      evaluators: [],
+      merge: { requiredEvaluators: ["secret_scan"] },
+    });
+    vi.mocked(listEvalRuns).mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: "run_1",
+          changeId: mockChange.id,
+          evaluatorType: "secret_scan",
+          score: 1,
+          passed: true,
+          reason: "ok",
+          ranAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { merged: boolean };
+    expect(body.merged).toBe(true);
+  });
+
+  it("rejects ?force=true when the policy disables force merges", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "open" },
+    });
+    vi.mocked(loadPolicy).mockResolvedValue({
+      evaluators: [],
+      merge: { allowForce: false },
+    });
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge?force=true`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("Force merge is disabled");
+  });
+
+  it("force merge bypasses protection rules when force is allowed", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "open" },
+    });
+    vi.mocked(loadPolicy).mockResolvedValue({
+      evaluators: [],
+      merge: { requiredEvaluators: ["secret_scan"] },
+    });
+    vi.mocked(listEvalRuns).mockResolvedValue({ success: true, data: [] });
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge?force=true`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
   });
 });
 

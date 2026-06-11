@@ -1,7 +1,7 @@
 import YAML from "yaml";
 import { readFileFromRepo } from "../storage/git-ops";
 import type { Logger } from "../utils/logger";
-import type { EvalPolicy } from "./types";
+import type { EvalPolicy, MergePolicy } from "./types";
 
 const DEFAULT_POLICY: EvalPolicy = {
   evaluators: [{ type: "diff" }],
@@ -59,8 +59,41 @@ async function readAndParsePolicy(
       return null;
     }
 
-    return { ...DEFAULT_POLICY, ...(parsed as Partial<EvalPolicy>) };
+    const policy = { ...DEFAULT_POLICY, ...(parsed as Partial<EvalPolicy>) };
+    const merge = sanitizeMergePolicy((parsed as Record<string, unknown>).merge);
+    if (merge) {
+      policy.merge = merge;
+    } else {
+      delete policy.merge;
+    }
+    return policy;
   } catch {
     return null;
   }
+}
+
+/** Keep only well-typed merge-protection fields from user-supplied config. */
+function sanitizeMergePolicy(raw: unknown): MergePolicy | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const source = raw as Record<string, unknown>;
+  const merge: MergePolicy = {};
+
+  if (
+    typeof source.requiredApprovals === "number" &&
+    Number.isInteger(source.requiredApprovals) &&
+    source.requiredApprovals >= 0
+  ) {
+    merge.requiredApprovals = source.requiredApprovals;
+  }
+  if (
+    Array.isArray(source.requiredEvaluators) &&
+    source.requiredEvaluators.every((entry) => typeof entry === "string")
+  ) {
+    merge.requiredEvaluators = source.requiredEvaluators;
+  }
+  if (typeof source.allowForce === "boolean") {
+    merge.allowForce = source.allowForce;
+  }
+
+  return Object.keys(merge).length > 0 ? merge : null;
 }

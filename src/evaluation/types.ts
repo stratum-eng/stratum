@@ -17,6 +17,20 @@ export interface EvalPolicy {
   evaluators: EvaluatorConfig[];
   requireAll?: boolean;
   minScore?: number;
+  merge?: MergePolicy;
+}
+
+/**
+ * Branch-protection rules enforced at the merge step.
+ * Configured under `merge:` in .stratum/policy.yaml.
+ */
+export interface MergePolicy {
+  /** Human approvals required before a change can merge. Default 0. */
+  requiredApprovals?: number;
+  /** Evaluator types whose latest run must have passed (e.g. ["secret_scan", "diff"]). */
+  requiredEvaluators?: string[];
+  /** When false, the ?force=true override is rejected. Default true. */
+  allowForce?: boolean;
 }
 
 export type EvaluatorConfig =

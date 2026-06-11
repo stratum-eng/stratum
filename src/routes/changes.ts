@@ -10,7 +10,9 @@ import {
 } from "../evaluation";
 import type { EvalPolicy, EvalResult } from "../evaluation/types";
 import type { Evaluator } from "../evaluation/types";
+import { checkMergeProtection } from "../merge/protection";
 import { type EventActor, emitEvent } from "../queue/events";
+import type { MergeOutcome } from "../queue/merge-queue";
 import { createChange, getChange, listChanges, updateChangeStatus } from "../storage/changes";
 import { listEvalRuns, recordEvalRuns } from "../storage/eval-runs";
 import {
@@ -404,17 +406,40 @@ app.post("/changes/:id/merge", async (c) => {
 
   if (!canWriteProject(project, userId)) return forbidden("Project access denied");
 
+  // Branch protection: the policy's merge rules gate every merge path.
+  const mergePolicy = await loadPolicy(project.remote, project.token, logger);
+  const forceAllowed = mergePolicy.merge?.allowForce !== false;
+  if (force && !forceAllowed) {
+    return badRequest("Force merge is disabled by this project's policy");
+  }
+
   if (!MERGEABLE_STATUSES.includes(change.status) && !force) {
     return badRequest("Change must be approved, accepted, or promoted before merging");
+  }
+
+  if (!force) {
+    const protectionResult = await checkMergeProtection(c.env.DB, logger, change, mergePolicy);
+    if (!protectionResult.success) {
+      logger.error("Failed to evaluate merge protection", protectionResult.error);
+      return badRequest(protectionResult.error.message);
+    }
+    if (!protectionResult.data.allowed) {
+      return c.json(
+        {
+          error: "Merge blocked by branch protection",
+          code: "PROTECTION_BLOCKED",
+          reasons: protectionResult.data.reasons,
+        },
+        403,
+      );
+    }
   }
 
   if (c.env.MERGE_QUEUE && strategy === "merge") {
     const doId = c.env.MERGE_QUEUE.idFromName(change.project);
     const stub = c.env.MERGE_QUEUE.get(doId);
     const result = await (
-      stub as unknown as {
-        merge(changeId: string): Promise<{ success: boolean; commit?: string; error?: string }>;
-      }
+      stub as unknown as { merge(changeId: string): Promise<MergeOutcome> }
     ).merge(id);
 
     if (!result.success) {
