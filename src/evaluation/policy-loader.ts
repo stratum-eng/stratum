@@ -59,14 +59,12 @@ async function readAndParsePolicy(
       return null;
     }
 
-    const policy = { ...DEFAULT_POLICY, ...(parsed as Partial<EvalPolicy>) };
     const merge = sanitizeMergePolicy((parsed as Record<string, unknown>).merge);
-    if (merge) {
-      policy.merge = merge;
-    } else {
-      delete policy.merge;
-    }
-    return policy;
+    const { merge: _unsanitized, ...policy } = {
+      ...DEFAULT_POLICY,
+      ...(parsed as Partial<EvalPolicy>),
+    };
+    return merge ? { ...policy, merge } : policy;
   } catch {
     return null;
   }
