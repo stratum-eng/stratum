@@ -4,18 +4,20 @@ import { listEvalRuns } from "../storage/eval-runs";
 import { listProjectEvents } from "../storage/events";
 import { getCommitLog, listFilesInRepo, readFileFromRepo } from "../storage/git-ops";
 import { getImportProgress } from "../storage/imports";
+import { getIssueByNumber, listIssues } from "../storage/issues";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
 import { getProject, getProjectByPath, listProjects, listWorkspaces } from "../storage/state";
 import { getProjectSourceUrl, getSyncStatus } from "../storage/sync";
 import { getUser } from "../storage/users";
 import { listDeliveries, listWebhooks } from "../storage/webhooks";
-import type { Env } from "../types";
+import type { Env, ProjectEntry } from "../types";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
 import { ActivityPage } from "../ui/pages/activity";
 import { ChangeDetailPage } from "../ui/pages/change-detail";
 import { ChangesPage } from "../ui/pages/changes";
 import { FileViewerPage } from "../ui/pages/file-viewer";
 import { HomePage } from "../ui/pages/home";
+import { IssueDetailPage, IssuesPage, NewIssuePage } from "../ui/pages/issues";
 import { NewProjectPage } from "../ui/pages/new-project";
 import { RepoPage } from "../ui/pages/repo";
 import { SyncPage } from "../ui/pages/sync";
@@ -588,6 +590,126 @@ app.get("/:namespace/:slug/activity", async (c) => {
       project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
       events={eventsResult.data}
       user={userResult}
+    />,
+  );
+});
+
+// Shared loader for issue pages: validates path, loads user + project, checks read access.
+async function loadIssuePageContext(c: {
+  env: Env;
+  get(key: "userId" | "agentOwnerId"): string | undefined;
+  req: { param(key: string): string; path: string; query(key: string): string | undefined };
+}): Promise<
+  | {
+      project: ProjectEntry;
+      user: { id: string; email: string; username: string } | null;
+      userId: string | undefined;
+      logger: ReturnType<typeof createLogger>;
+    }
+  | { errorStatus: 400 | 404 }
+> {
+  const namespace = c.req.param("namespace");
+  const slug = c.req.param("slug");
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const logger = createLogger({ path: c.req.path, userId });
+
+  if (!isValidNamespace(namespace) || !isValidSlug(slug)) return { errorStatus: 400 };
+
+  const [user, projectResult] = await Promise.all([
+    getCurrentUser(c, logger),
+    getProjectByPath(c.env.STATE, namespace, slug, logger),
+  ]);
+  if (!projectResult.success) return { errorStatus: 404 };
+  const project = projectResult.data;
+  if (!canReadProject(project, userId, agentOwnerId)) return { errorStatus: 404 };
+
+  return { project, user, userId, logger };
+}
+
+const issuePageError = (status: 400 | 404 | 500) => (
+  <div style="padding:2rem;font-family:monospace;color:#f87171;">
+    {status === 400 ? "Invalid project path." : status === 404 ? "Not found." : "Server error."}
+  </div>
+);
+
+// GET /:namespace/:slug/issues — Issues list
+app.get("/:namespace/:slug/issues", async (c) => {
+  const ctx = await loadIssuePageContext(c);
+  if ("errorStatus" in ctx) return c.html(issuePageError(ctx.errorStatus), ctx.errorStatus);
+  const { project, user, userId, logger } = ctx;
+
+  const statusParam = c.req.query("status");
+  const filter: "open" | "closed" | "all" =
+    statusParam === "closed" ? "closed" : statusParam === "all" ? "all" : "open";
+
+  const issuesResult = await listIssues(
+    c.env.DB,
+    logger,
+    project.name,
+    filter === "all" ? undefined : filter,
+  );
+  if (!issuesResult.success) {
+    logger.error("Failed to list issues", issuesResult.error);
+    return c.html(issuePageError(500), 500);
+  }
+
+  return c.html(
+    <IssuesPage
+      project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
+      issues={issuesResult.data}
+      filter={filter}
+      canWrite={canWriteProject(project, userId)}
+      user={user}
+    />,
+  );
+});
+
+// GET /:namespace/:slug/issues/new — New issue form (writers only)
+app.get("/:namespace/:slug/issues/new", async (c) => {
+  const ctx = await loadIssuePageContext(c);
+  if ("errorStatus" in ctx) return c.html(issuePageError(ctx.errorStatus), ctx.errorStatus);
+  const { project, user, userId } = ctx;
+
+  if (!canWriteProject(project, userId)) {
+    return c.html(issuePageError(404), 404);
+  }
+
+  return c.html(
+    <NewIssuePage
+      project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
+      user={user}
+    />,
+  );
+});
+
+// GET /:namespace/:slug/issues/:number — Issue detail
+app.get("/:namespace/:slug/issues/:number", async (c) => {
+  const ctx = await loadIssuePageContext(c);
+  if ("errorStatus" in ctx) return c.html(issuePageError(ctx.errorStatus), ctx.errorStatus);
+  const { project, user, userId, logger } = ctx;
+
+  const number = Number(c.req.param("number"));
+  if (!Number.isInteger(number) || number <= 0) {
+    return c.html(issuePageError(400), 400);
+  }
+
+  const issueResult = await getIssueByNumber(c.env.DB, logger, project.name, number);
+  if (!issueResult.success) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Issue #{number} not found.
+      </div>,
+      404,
+    );
+  }
+
+  return c.html(
+    <IssueDetailPage
+      project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
+      issue={issueResult.data}
+      canWrite={canWriteProject(project, userId)}
+      user={user}
     />,
   );
 });

@@ -195,6 +195,9 @@ export const RepoPage: FC<RepoProps> = ({
               </button>
             </form>
           )}
+          <a class="btn" href={`/${project.namespace}/${project.slug}/issues`}>
+            Issues
+          </a>
           <a class="btn" href={`/${project.namespace}/${project.slug}/activity`}>
             Activity
           </a>

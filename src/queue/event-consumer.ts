@@ -11,6 +11,7 @@ import type { Env, Message, MessageBatch } from "../types";
 import type { Logger } from "../utils/logger";
 import { createLogger } from "../utils/logger";
 import type { EventQueueMessage } from "./events";
+import { autoCloseLinkedIssues } from "./issue-autoclose";
 import { deliverEventToWebhooks } from "./webhook-delivery";
 
 /** Attempts after which a pending event is abandoned and marked failed. */
@@ -44,12 +45,19 @@ const webhookHandler: EventHandler = {
   },
 };
 
+const issueAutoCloseHandler: EventHandler = {
+  name: "issue-autoclose",
+  async handle(env, event, logger) {
+    await autoCloseLinkedIssues(env, event, logger);
+  },
+};
+
 /**
- * Ordered handler registry. Later features (issue auto-close) append here;
- * every handler runs for every event and decides internally whether the
- * event type concerns it.
+ * Ordered handler registry. Every handler runs for every event and decides
+ * internally whether the event type concerns it. Issue auto-close runs
+ * before webhooks so receivers observe a consistent issue state.
  */
-const handlers: EventHandler[] = [analyticsHandler, webhookHandler];
+const handlers: EventHandler[] = [analyticsHandler, issueAutoCloseHandler, webhookHandler];
 
 async function processEvent(env: Env, event: EventRecord, logger: Logger): Promise<void> {
   for (const handler of handlers) {

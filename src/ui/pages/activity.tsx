@@ -45,6 +45,15 @@ export function describeEvent(event: EventRecord): string {
       return `Change ${changeId ?? "?"} rejected`;
     case "sync.completed":
       return `Synced from upstream${commit ? ` → ${commit.slice(0, 7)}` : ""}`;
+    case "issue.opened": {
+      const number = typeof payload.issueNumber === "number" ? payload.issueNumber : "?";
+      const title = asString(payload.title);
+      return `Issue #${number} opened${title ? `: ${title}` : ""}`;
+    }
+    case "issue.closed": {
+      const number = typeof payload.issueNumber === "number" ? payload.issueNumber : "?";
+      return `Issue #${number} closed${changeId ? ` by ${changeId}` : ""}`;
+    }
     default:
       return event.type;
   }
