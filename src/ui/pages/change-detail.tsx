@@ -1,4 +1,5 @@
 import type { FC } from "hono/jsx";
+import type { ChangeComment, ChangeReview } from "../../storage/change-reviews";
 import { Layout } from "../layout";
 
 interface ChangeDetailProps {
@@ -30,6 +31,10 @@ interface ChangeDetailProps {
     evalScore?: number;
     mergedAt: string;
   } | null;
+  comments?: ChangeComment[];
+  reviews?: ChangeReview[];
+  /** Whether the current user may submit review verdicts. */
+  canReview?: boolean;
   user?: { id: string; email: string; username: string } | null;
 }
 
@@ -53,7 +58,17 @@ function statusBadgeClass(status: string): string {
   }
 }
 
-export const ChangeDetailPage: FC<ChangeDetailProps> = ({ change, evalRuns, provenance, user }) => {
+const REVIEWABLE_STATUSES = ["open", "needs_changes", "accepted", "approved"];
+
+export const ChangeDetailPage: FC<ChangeDetailProps> = ({
+  change,
+  evalRuns,
+  provenance,
+  comments = [],
+  reviews = [],
+  canReview = false,
+  user,
+}) => {
   return (
     <Layout title={`Change ${change.id}`} user={user}>
       <div class="page-header">
@@ -209,7 +224,77 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({ change, evalRuns, prov
         </div>
       )}
 
-      {(change.status === "accepted" || change.status === "promoted") && (
+      <div class="card">
+        <h2>Reviews</h2>
+        {reviews.length === 0 ? (
+          <p class="review-empty">No reviews yet.</p>
+        ) : (
+          <ul class="review-list">
+            {reviews.map((review) => (
+              <li key={review.id} class="review-item">
+                {review.verdict === "approve" ? (
+                  <span class="badge badge-approved">approved</span>
+                ) : (
+                  <span class="badge badge-rejected">changes requested</span>
+                )}
+                <span class="review-reviewer mono">{review.reviewerId}</span>
+                {review.comment && <span class="review-comment">{review.comment}</span>}
+                <span class="review-time">{new Date(review.createdAt).toLocaleString()}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {canReview && REVIEWABLE_STATUSES.includes(change.status) && (
+          <div class="review-actions">
+            <form method="post" action={`/api/changes/${change.id}/reviews`}>
+              <input type="hidden" name="verdict" value="approve" />
+              <button type="submit" class="btn btn-primary">
+                Approve
+              </button>
+            </form>
+            <form method="post" action={`/api/changes/${change.id}/reviews`}>
+              <input type="hidden" name="verdict" value="request_changes" />
+              <button type="submit" class="btn btn-danger">
+                Request changes
+              </button>
+            </form>
+          </div>
+        )}
+      </div>
+
+      <div class="card">
+        <h2>Comments</h2>
+        {comments.length === 0 ? (
+          <p class="review-empty">No comments yet.</p>
+        ) : (
+          <ul class="comment-list">
+            {comments.map((comment) => (
+              <li key={comment.id} class="comment-item">
+                <div class="comment-meta">
+                  <span class={`activity-actor activity-actor-${comment.authorType}`}>
+                    {comment.authorType}
+                  </span>
+                  <span class="mono">{comment.authorId}</span>
+                  <span class="review-time">{new Date(comment.createdAt).toLocaleString()}</span>
+                </div>
+                <pre class="comment-body">{comment.body}</pre>
+              </li>
+            ))}
+          </ul>
+        )}
+        {user && (
+          <form method="post" action={`/api/changes/${change.id}/comments`} class="comment-form">
+            <textarea name="body" rows={3} placeholder="Leave a comment…" required />
+            <button type="submit" class="btn">
+              Comment
+            </button>
+          </form>
+        )}
+      </div>
+
+      {(change.status === "accepted" ||
+        change.status === "approved" ||
+        change.status === "promoted") && (
         <div class="action-row">
           <form method="post" action={`/api/changes/${change.id}/merge`}>
             <button type="submit" class="btn">

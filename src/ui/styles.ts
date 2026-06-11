@@ -523,6 +523,29 @@ a:hover { text-decoration: underline; }
   padding: 0.5rem; border-radius: 4px; font-family: inherit;
 }
 
+/* Change reviews and comments */
+.review-empty { color: #666; font-size: 0.85rem; }
+.review-list, .comment-list { list-style: none; padding: 0; margin: 0; }
+.review-item {
+  display: flex; align-items: baseline; gap: 0.75rem;
+  padding: 0.4rem 0; border-bottom: 1px solid #222; font-size: 0.85rem; flex-wrap: wrap;
+}
+.review-reviewer { color: #aaa; font-size: 0.8rem; }
+.review-comment { color: #ccc; flex: 1; }
+.review-time { color: #555; font-size: 0.75rem; margin-left: auto; }
+.review-actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+.comment-item { padding: 0.6rem 0; border-bottom: 1px solid #222; }
+.comment-meta { display: flex; gap: 0.5rem; align-items: baseline; font-size: 0.8rem; color: #888; }
+.comment-body {
+  white-space: pre-wrap; word-break: break-word; font-family: inherit;
+  margin: 0.35rem 0 0; color: #ddd; font-size: 0.9rem;
+}
+.comment-form { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.75rem; max-width: 560px; }
+.comment-form textarea {
+  background: #111; border: 1px solid #333; color: #eee;
+  padding: 0.5rem; border-radius: 4px; font-family: inherit;
+}
+
 /* File Viewer */
 .file-viewer-breadcrumb {
   display: flex;

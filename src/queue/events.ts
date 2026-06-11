@@ -8,6 +8,13 @@ export type StratumEvent =
   | { type: "change.evaluated"; project: string; changeId: string; score: number; passed: boolean }
   | { type: "change.merged"; project: string; changeId: string; commit: string }
   | { type: "change.rejected"; project: string; changeId: string }
+  | { type: "change.commented"; project: string; changeId: string }
+  | {
+      type: "change.reviewed";
+      project: string;
+      changeId: string;
+      verdict: "approve" | "request_changes";
+    }
   | { type: "project.created"; project: string }
   | { type: "project.imported"; project: string; sourceUrl: string }
   // workspace.deleted is deliberately absent: the delete path only knows the
