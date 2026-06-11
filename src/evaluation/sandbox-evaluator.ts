@@ -95,8 +95,10 @@ export class SandboxEvaluator implements Evaluator {
       }
       logger.debug("Files written to sandbox", { fileCount: files.size });
 
+      const runStartedAt = Date.now();
       const result = await sb.run(command, { timeout: timeoutMs });
-      logger.debug("Sandbox command completed", { exitCode: result.exitCode });
+      const sandboxMs = Date.now() - runStartedAt;
+      logger.debug("Sandbox command completed", { exitCode: result.exitCode, sandboxMs });
 
       let score: number;
       if (result.exitCode === 0) {
@@ -110,7 +112,7 @@ export class SandboxEvaluator implements Evaluator {
       const reason = (result.stdout + result.stderr).slice(0, 500).trim();
 
       logger.info("Sandbox evaluation complete", { score, passed });
-      return ok({ score, passed, reason });
+      return ok({ score, passed, reason, costs: [{ kind: "sandbox_ms", quantity: sandboxMs }] });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error(

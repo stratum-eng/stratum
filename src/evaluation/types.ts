@@ -7,6 +7,8 @@ export interface EvalResult {
   passed: boolean;
   reason: string;
   issues?: string[];
+  /** Resource usage the evaluator incurred, recorded for cost tracking. */
+  costs?: Array<{ kind: "llm_tokens" | "sandbox_ms"; quantity: number; estimated?: boolean }>;
 }
 
 export interface Evaluator {

@@ -50,6 +50,7 @@ export class LLMEvaluator implements Evaluator {
         },
       ];
 
+      const promptChars = messages.reduce((sum, m) => sum + m.content.length, 0);
       const raw = await this.ai.run(model, { messages });
 
       if (raw instanceof ReadableStream) {
@@ -62,6 +63,11 @@ export class LLMEvaluator implements Evaluator {
       }
 
       const responseText = raw.response;
+      // Workers AI does not report token usage; ~4 chars/token is the standard estimate.
+      const estimatedTokens = Math.ceil((promptChars + (responseText?.length ?? 0)) / 4);
+      const costs: EvalResult["costs"] = [
+        { kind: "llm_tokens", quantity: estimatedTokens, estimated: true },
+      ];
 
       let parsed: { score: unknown; passed: unknown; reason: unknown; issues?: unknown };
       try {
@@ -78,6 +84,7 @@ export class LLMEvaluator implements Evaluator {
           score: fallbackScore,
           passed: false,
           reason: responseText?.slice(0, 200) ?? "No response",
+          costs,
         });
       }
 
@@ -92,6 +99,7 @@ export class LLMEvaluator implements Evaluator {
           score: fallbackScore,
           passed: false,
           reason: responseText?.slice(0, 200) ?? "No response",
+          costs,
         });
       }
 
@@ -109,6 +117,7 @@ export class LLMEvaluator implements Evaluator {
         passed,
         reason: parsed.reason,
         ...(issues !== undefined ? { issues } : {}),
+        costs,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

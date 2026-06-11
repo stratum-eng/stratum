@@ -15,6 +15,7 @@ import { checkMergeProtection } from "../merge/protection";
 import { type EventActor, emitEvent } from "../queue/events";
 import type { MergeOutcome } from "../queue/merge-queue";
 import { createChange, getChange, listChanges, updateChangeStatus } from "../storage/changes";
+import { type CostSample, getChangeCostSummary, recordCosts } from "../storage/costs";
 import { listEvalRuns, recordEvalRuns } from "../storage/eval-runs";
 import {
   MergeConflictError,
@@ -251,6 +252,18 @@ app.post("/projects/:name/changes", async (c) => {
     return badRequest(recordResult.error.message);
   }
 
+  // Best-effort cost tracking: the diff clones both repos, evaluators self-report.
+  const createCostSamples: CostSample[] = [
+    { kind: "git_ops", quantity: 2 },
+    ...evalRuns.flatMap(({ result }) => result.costs ?? []),
+  ];
+  await recordCosts(
+    c.env.DB,
+    logger,
+    { project: projectName, changeId: change.id, workspace: body.workspace },
+    createCostSamples,
+  );
+
   const updateResult = await updateChangeStatus(c.env.DB, logger, change.id, newStatus, {
     evalScore: evalResult.score,
     evalPassed: evalResult.passed,
@@ -384,8 +397,14 @@ app.get("/changes/:id", async (c) => {
     return badRequest(evalRunsResult.error.message);
   }
 
+  const costsResult = await getChangeCostSummary(c.env.DB, logger, id);
+
   logger.info("Change retrieved", { changeId: id });
-  return ok({ change, evalRuns: evalRunsResult.data });
+  return ok({
+    change,
+    evalRuns: evalRunsResult.data,
+    costs: costsResult.success ? costsResult.data : [],
+  });
 });
 
 app.post("/changes/:id/merge", async (c) => {
@@ -582,6 +601,13 @@ app.post("/changes/:id/merge", async (c) => {
     logger.error("Failed to update change status to merged", updateResult.error);
     return badRequest(updateResult.error.message);
   }
+
+  await recordCosts(
+    c.env.DB,
+    logger,
+    { project: change.project, changeId: id, workspace: change.workspace },
+    [{ kind: "git_ops", quantity: 2 }],
+  );
 
   const provenanceResult = await recordProvenance(c.env.DB, logger, {
     commitSha: commit,
@@ -827,6 +853,17 @@ app.post("/changes/:id/evaluate", async (c) => {
     logger.error("Failed to record eval runs", recordResult.error);
     return badRequest(recordResult.error.message);
   }
+
+  const evaluateCostSamples: CostSample[] = [
+    { kind: "git_ops", quantity: 2 },
+    ...evalRuns.flatMap(({ result }) => result.costs ?? []),
+  ];
+  await recordCosts(
+    c.env.DB,
+    logger,
+    { project: change.project, changeId: id, workspace: change.workspace },
+    evaluateCostSamples,
+  );
 
   const updateResult = await updateChangeStatus(
     c.env.DB,
