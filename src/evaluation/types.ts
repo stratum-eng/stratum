@@ -31,6 +31,14 @@ export interface MergePolicy {
   requiredEvaluators?: string[];
   /** When false, the ?force=true override is rejected. Default true. */
   allowForce?: boolean;
+  /** When true, a change whose recorded base is behind project HEAD cannot merge. */
+  requireFreshBase?: boolean;
+  /** Smoke command run in a sandbox against the merged HEAD (e.g. "npm test"). */
+  postMergeCommand?: string;
+  /** Timeout for the post-merge command. Default 60s. */
+  postMergeTimeoutMs?: number;
+  /** Revert the merge commit when the post-merge command fails. Default true. */
+  autoRevert?: boolean;
 }
 
 export type EvaluatorConfig =

@@ -320,11 +320,21 @@ export interface Change {
   id: string;
   project: string;
   workspace: string;
-  status: "open" | "needs_changes" | "accepted" | "approved" | "promoted" | "merged" | "rejected";
+  status:
+    | "open"
+    | "needs_changes"
+    | "accepted"
+    | "approved"
+    | "promoted"
+    | "merged"
+    | "rejected"
+    | "reverted";
   agentId?: string;
   evalScore?: number;
   evalPassed?: boolean;
   evalReason?: string;
+  /** Project HEAD at change creation — the base the evaluation ran against. */
+  baseSha?: string;
   createdAt: string;
   mergedAt?: string;
   githubOwner?: string;

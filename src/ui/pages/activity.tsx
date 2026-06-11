@@ -43,6 +43,10 @@ export function describeEvent(event: EventRecord): string {
       return `Change ${changeId ?? "?"} merged${commit ? ` → ${commit.slice(0, 7)}` : ""}`;
     case "change.rejected":
       return `Change ${changeId ?? "?"} rejected`;
+    case "change.reverted": {
+      const revert = asString(payload.revertCommit);
+      return `Change ${changeId ?? "?"} reverted${revert ? ` → ${revert.slice(0, 7)}` : ""} (post-merge check failed)`;
+    }
     case "change.commented":
       return `Comment on change ${changeId ?? "?"}`;
     case "change.reviewed": {
