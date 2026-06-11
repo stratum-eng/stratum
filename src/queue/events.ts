@@ -14,7 +14,15 @@ export type StratumEvent =
   // project ID, and events are scoped by project name. It lands with the
   // project-identity unification work.
   | { type: "workspace.created"; project: string; workspace: string }
-  | { type: "sync.completed"; project: string; commit?: string };
+  | { type: "sync.completed"; project: string; commit?: string }
+  | { type: "issue.opened"; project: string; issueNumber: number; title: string }
+  | {
+      type: "issue.closed";
+      project: string;
+      issueNumber: number;
+      title: string;
+      changeId?: string;
+    };
 
 export interface EventActor {
   type: EventActorType;

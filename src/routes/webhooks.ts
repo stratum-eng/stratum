@@ -27,6 +27,8 @@ const SUBSCRIBABLE_EVENTS = [
   "project.imported",
   "workspace.created",
   "sync.completed",
+  "issue.opened",
+  "issue.closed",
 ];
 
 interface ProjectAccess {

@@ -493,6 +493,36 @@ a:hover { text-decoration: underline; }
 .btn-small { font-size: 0.75rem; padding: 0.25rem 0.6rem; }
 .btn-danger { color: #f87171; border-color: #5f1e1e; }
 
+/* Issues */
+.page-header-actions { display: flex; gap: 0.5rem; }
+.issues-filter { display: flex; gap: 1rem; margin-bottom: 1rem; font-size: 0.9rem; }
+.issues-filter a { color: #777; text-decoration: none; }
+.issues-filter a:hover { color: #ccc; }
+.issues-filter-active { color: #f0f0f0 !important; font-weight: 600; }
+.issues-list { list-style: none; padding: 0; margin: 0; }
+.issues-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid #222;
+  font-size: 0.9rem;
+  flex-wrap: wrap;
+}
+.issues-title { color: #e8e8e8; text-decoration: none; flex: 1; min-width: 200px; }
+.issues-title:hover { color: #7cb7ff; }
+.issues-linked-change { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: #c4a7ff; }
+.issues-meta { color: #555; font-size: 0.8rem; }
+.issue-status-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.issue-body { margin-top: 1rem; }
+.issue-body-text { white-space: pre-wrap; word-break: break-word; font-family: inherit; margin: 0; }
+.issue-form { display: flex; flex-direction: column; gap: 0.75rem; max-width: 560px; }
+.issue-form label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; color: #aaa; }
+.issue-form input, .issue-form textarea {
+  background: #111; border: 1px solid #333; color: #eee;
+  padding: 0.5rem; border-radius: 4px; font-family: inherit;
+}
+
 /* File Viewer */
 .file-viewer-breadcrumb {
   display: flex;

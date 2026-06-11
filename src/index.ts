@@ -14,6 +14,7 @@ import { bulkImportRouter } from "./routes/bulk-import";
 import { changesRouter } from "./routes/changes";
 import { emailAuthRouter } from "./routes/email-auth";
 import { healthRouter } from "./routes/health";
+import { issuesRouter } from "./routes/issues";
 import { loginRouter } from "./routes/login";
 import { metricsRouter } from "./routes/metrics";
 import { orgsRouter } from "./routes/orgs";
@@ -134,6 +135,7 @@ app.route("/auth/signup", signupRouter);
 app.route("/auth/sessions", sessionRouter);
 app.route("/", uiRouter); // Mount UI at root
 app.route("/api/projects", webhooksRouter);
+app.route("/api/projects", issuesRouter);
 app.route("/api/projects", projectsRouter);
 app.route("/api/workspaces", workspacesRouter);
 app.route("/api/users", usersRouter);
