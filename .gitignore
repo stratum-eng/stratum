@@ -5,3 +5,7 @@ dist/
 coverage/
 .claude/
 .playwright-mcp/
+
+# Local screenshots
+*.png
+!coverage/*.png

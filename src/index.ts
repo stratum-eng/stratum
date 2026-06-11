@@ -4,7 +4,8 @@ import { githubWebhookRouter } from "./github/webhooks";
 import { analyticsMiddleware } from "./middleware/analytics";
 import { authMiddleware } from "./middleware/auth";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
-import type { StratumEvent } from "./queue/events";
+import { handleEventQueue, sweepStaleEvents } from "./queue/event-consumer";
+import type { EventQueueMessage } from "./queue/events";
 import { handleImportQueue } from "./queue/import-queue";
 import { runTtlSweep } from "./queue/ttl-sweep";
 import { agentsRouter } from "./routes/agents";
@@ -154,8 +155,12 @@ app.onError((err, c) => {
 
 export default {
   fetch: app.fetch,
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     const logger = createLogger({ component: "scheduled" });
+    if (event.cron === "*/5 * * * *") {
+      ctx.waitUntil(sweepStaleEvents(env, logger));
+      return;
+    }
     ctx.waitUntil(Promise.all([runTtlSweep(env, logger), syncAllProjects(env)]));
   },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
@@ -172,15 +177,7 @@ export default {
       });
       await handleImportQueue(batch as MessageBatch<ImportJobMessage | SyncJobMessage>, env);
     } else if (queueName === "stratum-events") {
-      // Handle events queue messages
-      const eventsBatch = batch as MessageBatch<StratumEvent>;
-      for (const msg of eventsBatch.messages) {
-        logger.info("Processing events queue message", {
-          type: msg.body.type,
-          messageId: msg.id,
-        });
-        msg.ack();
-      }
+      await handleEventQueue(batch as MessageBatch<EventQueueMessage>, env);
     } else {
       // Unknown queue - ack all messages to prevent retries
       logger.warn("Unknown queue", { queue: queueName });

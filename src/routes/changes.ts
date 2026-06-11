@@ -10,7 +10,7 @@ import {
 } from "../evaluation";
 import type { EvalPolicy, EvalResult } from "../evaluation/types";
 import type { Evaluator } from "../evaluation/types";
-import { publishEvent } from "../queue/events";
+import { type EventActor, emitEvent } from "../queue/events";
 import { createChange, getChange, listChanges, updateChangeStatus } from "../storage/changes";
 import { listEvalRuns, recordEvalRuns } from "../storage/eval-runs";
 import {
@@ -113,12 +113,22 @@ app.post("/projects/:name/changes", async (c) => {
   }
   const change = changeResult.data;
 
-  await publishEvent(c.env.EVENTS_QUEUE, {
-    type: "change.created",
-    changeId: change.id,
-    project: projectName,
-    workspace: body.workspace,
-  });
+  const actor: EventActor = agentId
+    ? { type: "agent", id: agentId }
+    : { type: "user", ...(userId !== undefined ? { id: userId } : {}) };
+
+  await emitEvent(
+    c.env.DB,
+    c.env.EVENTS_QUEUE,
+    {
+      type: "change.created",
+      project: projectName,
+      changeId: change.id,
+      workspace: body.workspace,
+    },
+    actor,
+    logger,
+  );
 
   const policy = await loadPolicy(project.remote, project.token, logger);
 
@@ -226,12 +236,19 @@ app.post("/projects/:name/changes", async (c) => {
     return badRequest(updateResult.error.message);
   }
 
-  await publishEvent(c.env.EVENTS_QUEUE, {
-    type: "change.evaluated",
-    changeId: change.id,
-    score: evalResult.score,
-    passed: evalResult.passed,
-  });
+  await emitEvent(
+    c.env.DB,
+    c.env.EVENTS_QUEUE,
+    {
+      type: "change.evaluated",
+      project: projectName,
+      changeId: change.id,
+      score: evalResult.score,
+      passed: evalResult.passed,
+    },
+    { type: "system" },
+    logger,
+  );
 
   const updatedChange: Change = {
     ...change,
@@ -404,12 +421,13 @@ app.post("/changes/:id/merge", async (c) => {
       return badRequest(result.error ?? "Merge failed");
     }
 
-    await publishEvent(c.env.EVENTS_QUEUE, {
-      type: "change.merged",
-      changeId: id,
-      project: change.project,
-      commit: result.commit ?? "",
-    });
+    await emitEvent(
+      c.env.DB,
+      c.env.EVENTS_QUEUE,
+      { type: "change.merged", project: change.project, changeId: id, commit: result.commit ?? "" },
+      { type: "user", id: userId },
+      logger,
+    );
 
     logger.info("Change merged via queue", {
       changeId: id,
@@ -504,12 +522,13 @@ app.post("/changes/:id/merge", async (c) => {
     // Don't fail the request if provenance recording fails
   }
 
-  await publishEvent(c.env.EVENTS_QUEUE, {
-    type: "change.merged",
-    changeId: id,
-    project: change.project,
-    commit,
-  });
+  await emitEvent(
+    c.env.DB,
+    c.env.EVENTS_QUEUE,
+    { type: "change.merged", project: change.project, changeId: id, commit },
+    { type: "user", id: userId },
+    logger,
+  );
 
   logger.info("Change merged", {
     changeId: id,
@@ -575,11 +594,13 @@ app.post("/changes/:id/reject", async (c) => {
     return badRequest(updateResult.error.message);
   }
 
-  await publishEvent(c.env.EVENTS_QUEUE, {
-    type: "change.rejected",
-    changeId: id,
-    project: change.project,
-  });
+  await emitEvent(
+    c.env.DB,
+    c.env.EVENTS_QUEUE,
+    { type: "change.rejected", project: change.project, changeId: id },
+    { type: "user", id: userId },
+    logger,
+  );
 
   logger.info("Change rejected", { changeId: id, project: change.project });
   return ok({ rejected: true, changeId: id });

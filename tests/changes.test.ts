@@ -104,7 +104,7 @@ vi.mock("../src/storage/provenance", () => ({
 }));
 
 vi.mock("../src/queue/events", () => ({
-  publishEvent: vi.fn().mockResolvedValue(undefined),
+  emitEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../src/storage/users", () => ({

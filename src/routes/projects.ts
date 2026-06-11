@@ -1,5 +1,7 @@
 import { Hono } from "hono";
 import { importRateLimitMiddleware, releaseImportLock } from "../middleware/rate-limit";
+import { emitEvent } from "../queue/events";
+import { listProjectEvents } from "../storage/events";
 import { getCommitLog, importFromGitHub, initAndPush, listFilesInRepo } from "../storage/git-ops";
 import { buildAuthConfig } from "../storage/git-providers";
 import {
@@ -203,6 +205,14 @@ app.post("/", async (c) => {
     slug,
     visibility,
   });
+
+  await emitEvent(
+    c.env.DB,
+    c.env.EVENTS_QUEUE,
+    { type: "project.created", project: project.name },
+    { type: "user", id: userId },
+    logger,
+  );
 
   return created({
     id: projectId,
@@ -943,6 +953,58 @@ app.get("/:namespace/:slug/provenance", async (c) => {
     slug,
     path: `/${namespace}/${slug}`,
     records: recordsResult.data,
+  });
+});
+
+// GET /projects/:namespace/:slug/activity - Project activity feed (domain events)
+app.get("/:namespace/:slug/activity", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const { namespace, slug } = c.req.param();
+
+  const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") {
+      return notFound("Project", `${namespace}/${slug}`);
+    }
+    logger.error("Failed to get project", projectResult.error);
+    return internalError(projectResult.error.message);
+  }
+  const project = projectResult.data;
+
+  if (!canReadProject(project, userId, agentOwnerId))
+    return notFound("Project", `${project.namespace}/${project.slug}`);
+
+  const limitParam = c.req.query("limit");
+  const parsedLimit = limitParam !== undefined ? Number(limitParam) : Number.NaN;
+  const limit = Number.isInteger(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 200) : 50;
+
+  const eventsResult = await listProjectEvents(c.env.DB, logger, project.name, limit);
+  if (!eventsResult.success) {
+    logger.error("Failed to list project events", eventsResult.error);
+    return internalError(eventsResult.error.message);
+  }
+
+  logger.info("Activity listed", { namespace, slug, count: eventsResult.data.length });
+  return ok({
+    namespace,
+    slug,
+    path: `/${namespace}/${slug}`,
+    events: eventsResult.data.map((event) => ({
+      id: event.id,
+      type: event.type,
+      actorType: event.actorType,
+      ...(event.actorId !== undefined ? { actorId: event.actorId } : {}),
+      payload: event.payload,
+      createdAt: event.createdAt,
+    })),
   });
 });
 

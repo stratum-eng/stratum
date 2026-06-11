@@ -27,6 +27,7 @@ import type { Message, MessageBatch } from "../types";
 import { getArtifactsRepoName } from "../types";
 import { escapeHtml } from "../utils/html";
 import { type Logger, createLogger } from "../utils/logger";
+import { emitEvent } from "./events";
 
 const logger = createLogger({ component: "ImportQueue" });
 
@@ -324,6 +325,18 @@ async function processImportJob(
       logger,
     );
 
+    await emitEvent(
+      env.DB,
+      env.EVENTS_QUEUE,
+      {
+        type: "project.imported",
+        project: updatedProject.name,
+        sourceUrl: msg.body.sourceUrl ?? githubUrl,
+      },
+      { type: "system" },
+      logger,
+    );
+
     logger.info("Import completed successfully", { importId, namespace, slug, duration });
     msg.ack();
   } catch (error) {
@@ -541,6 +554,18 @@ async function processSyncJob(
     await writeSnapshotFromRepo(
       env.STATE,
       { remote: updatedProject.remote, token: updatedProject.token, namespace, slug },
+      logger,
+    );
+
+    await emitEvent(
+      env.DB,
+      env.EVENTS_QUEUE,
+      {
+        type: "sync.completed",
+        project: updatedProject.name,
+        ...(latestCommitSha !== undefined ? { commit: latestCommitSha } : {}),
+      },
+      { type: "system" },
       logger,
     );
 
