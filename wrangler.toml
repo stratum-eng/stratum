@@ -55,8 +55,10 @@ max_batch_size = 1  # Process imports one at a time for resource management
 max_retries = 3     # Retry failed imports up to 3 times
 retry_delay = 30    # Wait 30 seconds between retries
 
+# "0 6 * * *"   — daily housekeeping: workspace TTL sweep + auto-sync
+# "*/5 * * * *" — event outbox sweep: re-enqueue stale pending events
 [triggers]
-crons = ["0 6 * * *"]
+crons = ["0 6 * * *", "*/5 * * * *"]
 
 [vars]
 POSTHOG_HOST = "https://app.posthog.com"

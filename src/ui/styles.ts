@@ -444,6 +444,32 @@ a:hover { text-decoration: underline; }
 .file-tree-toggle-btn { background: none; border: none; color: #666; font-size: 0.75rem; cursor: pointer; padding: 0; font-family: inherit; }
 .file-tree-toggle-btn:hover { color: #aaa; }
 
+/* Activity Feed */
+.activity-list { list-style: none; padding: 0; margin: 0; }
+.activity-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid #222;
+  font-size: 0.9rem;
+}
+.activity-actor {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.activity-actor-user { background: #1e3a5f; color: #7cb7ff; }
+.activity-actor-agent { background: #3b2a5f; color: #c4a7ff; }
+.activity-actor-system { background: #2a2a2a; color: #888; }
+.activity-description { flex: 1; color: #ccc; }
+.activity-description a { color: #7cb7ff; text-decoration: none; }
+.activity-description a:hover { text-decoration: underline; }
+.activity-time { color: #555; font-size: 0.8rem; flex-shrink: 0; }
+
 /* File Viewer */
 .file-viewer-breadcrumb {
   display: flex;

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { type EventActor, emitEvent } from "../queue/events";
 import { cloneRepo, commitAndPush } from "../storage/git-ops";
 import {
   deleteWorkspace,
@@ -72,6 +73,18 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
   }
 
   logger.info("Workspace created", { workspaceName, namespace, slug, projectId: project.id });
+
+  const actor: EventActor = agentId
+    ? { type: "agent", id: agentId }
+    : { type: "user", ...(userId !== undefined ? { id: userId } : {}) };
+  await emitEvent(
+    c.env.DB,
+    c.env.EVENTS_QUEUE,
+    { type: "workspace.created", project: project.name, workspace: workspaceName },
+    actor,
+    logger,
+  );
+
   return created({
     workspace: workspaceName,
     remote: forked.remote,

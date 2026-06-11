@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { getChange, listChanges } from "../storage/changes";
 import { listEvalRuns } from "../storage/eval-runs";
+import { listProjectEvents } from "../storage/events";
 import { getCommitLog, listFilesInRepo, readFileFromRepo } from "../storage/git-ops";
 import { getImportProgress } from "../storage/imports";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
@@ -9,6 +10,7 @@ import { getProjectSourceUrl, getSyncStatus } from "../storage/sync";
 import { getUser } from "../storage/users";
 import type { Env } from "../types";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
+import { ActivityPage } from "../ui/pages/activity";
 import { ChangeDetailPage } from "../ui/pages/change-detail";
 import { ChangesPage } from "../ui/pages/changes";
 import { FileViewerPage } from "../ui/pages/file-viewer";
@@ -522,6 +524,64 @@ app.get("/:namespace/:slug/changes", async (c) => {
     <ChangesPage
       project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
       changes={changes}
+      user={userResult}
+    />,
+  );
+});
+
+// GET /:namespace/:slug/activity — Project activity feed
+app.get("/:namespace/:slug/activity", async (c) => {
+  const { namespace, slug } = c.req.param();
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const logger = createLogger({ path: c.req.path, userId });
+
+  if (!isValidNamespace(namespace) || !isValidSlug(slug)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Invalid project path.</div>,
+      400,
+    );
+  }
+
+  const [userResult, projectResult] = await Promise.all([
+    getCurrentUser(c, logger),
+    getProjectByPath(c.env.STATE, namespace, slug, logger),
+  ]);
+
+  if (!projectResult.success) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Project '{namespace}/{slug}' not found.
+      </div>,
+      404,
+    );
+  }
+  const project = projectResult.data;
+
+  if (!canReadProject(project, userId, agentOwnerId)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Project '{namespace}/{slug}' not found.
+      </div>,
+      404,
+    );
+  }
+
+  const eventsResult = await listProjectEvents(c.env.DB, logger, project.name);
+  if (!eventsResult.success) {
+    logger.error("Failed to list project events", eventsResult.error);
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Error loading activity. Please try again.
+      </div>,
+      500,
+    );
+  }
+
+  return c.html(
+    <ActivityPage
+      project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
+      events={eventsResult.data}
       user={userResult}
     />,
   );
