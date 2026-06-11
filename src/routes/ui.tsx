@@ -672,7 +672,7 @@ app.get("/:namespace/:slug/sync", async (c) => {
 // GET /:namespace/:slug/blob/* — File viewer (must be before /:namespace/:slug catch-all)
 app.get("/:namespace/:slug/blob/*", async (c) => {
   const { namespace, slug } = c.req.param();
-  const filePath = c.req.param("*") ?? "";
+  const filePath = c.req.path.slice(`/${namespace}/${slug}/blob/`.length);
   const userId = c.get("userId");
   const agentOwnerId = c.get("agentOwnerId");
   const logger = createLogger({ path: c.req.path, userId });

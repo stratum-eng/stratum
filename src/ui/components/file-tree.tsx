@@ -25,7 +25,7 @@ const FileTreeNodeItem: FC<NodeProps> = ({ node, namespace, slug, depth }) => {
   }
 
   return (
-    <details open={depth === 0} class="file-tree-dir">
+    <details class="file-tree-dir">
       <summary>{node.name}</summary>
       <div class="file-tree-children">
         {node.children.map((child) => (
@@ -53,6 +53,15 @@ export const FileTree: FC<FileTreeProps> = ({ nodes, namespace, slug }) => {
 
   return (
     <div class="file-tree">
+      <div class="file-tree-controls">
+        <button
+          type="button"
+          class="file-tree-toggle-btn"
+          onclick="(function(btn){var t=btn.closest('.file-tree');var ds=t.querySelectorAll('details');var open=Array.from(ds).some(function(d){return d.open});ds.forEach(function(d){d.open=!open});btn.textContent=open?'Expand all':'Collapse all'})(this)"
+        >
+          Expand all
+        </button>
+      </div>
       {nodes.map((node) => (
         <FileTreeNodeItem key={node.path} node={node} namespace={namespace} slug={slug} depth={0} />
       ))}

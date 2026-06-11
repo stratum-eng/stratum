@@ -440,6 +440,9 @@ a:hover { text-decoration: underline; }
 .file-tree-file a { color: #ccc; text-decoration: none; display: block; }
 .file-tree-file a:hover { color: #f0f0f0; text-decoration: underline; }
 .file-tree-notice { font-size: 0.8rem; color: #555; margin-top: 0.75rem; font-style: italic; }
+.file-tree-controls { margin-bottom: 0.5rem; }
+.file-tree-toggle-btn { background: none; border: none; color: #666; font-size: 0.75rem; cursor: pointer; padding: 0; font-family: inherit; }
+.file-tree-toggle-btn:hover { color: #aaa; }
 
 /* File Viewer */
 .file-viewer-breadcrumb {

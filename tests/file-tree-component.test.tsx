@@ -31,19 +31,17 @@ describe("FileTree component", () => {
     expect(html).toContain("src");
   });
 
-  it("root-level dir has open attribute", () => {
+  it("all dirs are collapsed by default (no open attribute)", () => {
     const nodes = buildFileTree(["src/index.ts"]);
     const html = renderToString(<FileTree nodes={nodes} namespace="@user" slug="repo" />);
-    expect(html).toMatch(/<details[^>]*open[^>]*>/);
+    expect(html).not.toMatch(/<details[^>]*open[^>]*>/);
   });
 
-  it("nested dir does not have open attribute", () => {
-    const nodes = buildFileTree(["src/utils/helpers.ts"]);
+  it("renders collapse/expand all button", () => {
+    const nodes = buildFileTree(["src/index.ts"]);
     const html = renderToString(<FileTree nodes={nodes} namespace="@user" slug="repo" />);
-    const detailsMatches = [...html.matchAll(/<details([^>]*)>/g)];
-    expect(detailsMatches.length).toBeGreaterThanOrEqual(2);
-    const secondDetails = detailsMatches[1]?.[1] ?? "";
-    expect(secondDetails).not.toContain("open");
+    expect(html).toContain("file-tree-toggle-btn");
+    expect(html).toContain("Expand all");
   });
 
   it("escapes special characters in file names", () => {
