@@ -17,9 +17,13 @@ export function makeEventsD1(): { db: D1Database; rows: EventRow[] } {
 
   function makeStmt(sql: string, bindings: unknown[]) {
     const upper = sql.trim().toUpperCase();
+    // Queries against other tables (e.g. webhooks, issued by other event
+    // handlers) get an empty result instead of misreading event rows.
+    const isEventsTable = /\b(FROM|INTO|UPDATE)\s+EVENTS\b/.test(upper);
     return {
       bind: (...args: unknown[]) => makeStmt(sql, args),
       run: async () => {
+        if (!isEventsTable) return { success: true, meta: {} };
         if (upper.startsWith("INSERT INTO EVENTS")) {
           rows.push({
             id: bindings[0] as string,
@@ -52,9 +56,11 @@ export function makeEventsD1(): { db: D1Database; rows: EventRow[] } {
         return { success: true, meta: {} };
       },
       first: async <T>() => {
+        if (!isEventsTable) return null;
         return (rows.find((r) => r.id === bindings[0]) ?? null) as T | null;
       },
       all: async <T>() => {
+        if (!isEventsTable) return { results: [] as T[], success: true, meta: {} };
         let results: EventRow[];
         if (upper.includes("WHERE PROJECT = ?")) {
           results = rows

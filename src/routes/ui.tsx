@@ -8,6 +8,7 @@ import { readRepoSnapshot } from "../storage/repo-snapshot";
 import { getProject, getProjectByPath, listProjects, listWorkspaces } from "../storage/state";
 import { getProjectSourceUrl, getSyncStatus } from "../storage/sync";
 import { getUser } from "../storage/users";
+import { listDeliveries, listWebhooks } from "../storage/webhooks";
 import type { Env } from "../types";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
 import { ActivityPage } from "../ui/pages/activity";
@@ -18,10 +19,12 @@ import { HomePage } from "../ui/pages/home";
 import { NewProjectPage } from "../ui/pages/new-project";
 import { RepoPage } from "../ui/pages/repo";
 import { SyncPage } from "../ui/pages/sync";
+import { WebhooksPage } from "../ui/pages/webhooks";
 import { WorkspacesPage } from "../ui/pages/workspaces";
-import { canReadProject, filterReadableProjects } from "../utils/authz";
+import { canReadProject, canWriteProject, filterReadableProjects } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import { isValidNamespace, isValidSlug } from "../utils/validation";
+import { SUBSCRIBABLE_EVENTS } from "./webhooks";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -171,6 +174,7 @@ app.get("/p/:name", async (c) => {
       project.ownerId === userId &&
       project.importCompleted !== false;
   }
+  const isOwner = !!userId && project.ownerType === "user" && project.ownerId === userId;
 
   const snapshotResult = await readRepoSnapshot(c.env.STATE, project, logger);
   if (snapshotResult.success && snapshotResult.data) {
@@ -248,6 +252,7 @@ app.get("/p/:name", async (c) => {
       importProgress={importProgress}
       syncStatus={syncStatus}
       canSync={canSync}
+      isOwner={isOwner}
     />,
   );
 });
@@ -587,6 +592,72 @@ app.get("/:namespace/:slug/activity", async (c) => {
   );
 });
 
+// GET /:namespace/:slug/webhooks — Webhook management (project writers only)
+app.get("/:namespace/:slug/webhooks", async (c) => {
+  const { namespace, slug } = c.req.param();
+  const userId = c.get("userId");
+  const logger = createLogger({ path: c.req.path, userId });
+
+  if (!isValidNamespace(namespace) || !isValidSlug(slug)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Invalid project path.</div>,
+      400,
+    );
+  }
+
+  const [userResult, projectResult] = await Promise.all([
+    getCurrentUser(c, logger),
+    getProjectByPath(c.env.STATE, namespace, slug, logger),
+  ]);
+
+  if (!projectResult.success) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Project '{namespace}/{slug}' not found.
+      </div>,
+      404,
+    );
+  }
+  const project = projectResult.data;
+
+  // Webhook URLs and secrets are sensitive: writers only.
+  if (!canWriteProject(project, userId)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Project '{namespace}/{slug}' not found.
+      </div>,
+      404,
+    );
+  }
+
+  const webhooksResult = await listWebhooks(c.env.DB, logger, project.name);
+  if (!webhooksResult.success) {
+    logger.error("Failed to list webhooks", webhooksResult.error);
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Error loading webhooks. Please try again.
+      </div>,
+      500,
+    );
+  }
+
+  const webhooks = await Promise.all(
+    webhooksResult.data.map(async (webhook) => {
+      const deliveriesResult = await listDeliveries(c.env.DB, logger, webhook.id, 5);
+      return { webhook, deliveries: deliveriesResult.success ? deliveriesResult.data : [] };
+    }),
+  );
+
+  return c.html(
+    <WebhooksPage
+      project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
+      webhooks={webhooks}
+      subscribableEvents={SUBSCRIBABLE_EVENTS}
+      user={userResult}
+    />,
+  );
+});
+
 // GET /:namespace/:slug/workspaces — Workspaces list (namespace format)
 app.get("/:namespace/:slug/workspaces", async (c) => {
   const { namespace, slug } = c.req.param();
@@ -899,12 +970,8 @@ app.get("/:namespace/:slug", async (c) => {
     syncStatus = syncStatusResult.data;
   }
 
-  const canSync =
-    !!getProjectSourceUrl(project) &&
-    !!userId &&
-    project.ownerType === "user" &&
-    project.ownerId === userId &&
-    project.importCompleted !== false;
+  const isOwner = !!userId && project.ownerType === "user" && project.ownerId === userId;
+  const canSync = !!getProjectSourceUrl(project) && isOwner && project.importCompleted !== false;
 
   const snapshotResult2 = await readRepoSnapshot(c.env.STATE, project, logger);
   if (snapshotResult2.success && snapshotResult2.data) {
@@ -983,6 +1050,7 @@ app.get("/:namespace/:slug", async (c) => {
       importProgress={importProgress}
       syncStatus={syncStatus}
       canSync={canSync}
+      isOwner={isOwner}
     />,
   );
 });

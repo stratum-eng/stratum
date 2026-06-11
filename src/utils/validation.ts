@@ -201,6 +201,51 @@ export function isValidRepoUrl(value: unknown): value is string {
   return GITHUB_REPO_RE.test(value) || GITLAB_REPO_RE.test(value) || BITBUCKET_REPO_RE.test(value);
 }
 
+const PRIVATE_HOSTNAME_RE = /^(localhost$|127\.|10\.|192\.168\.|169\.254\.|0\.)/i;
+const PRIVATE_172_RE = /^172\.(1[6-9]|2\d|3[01])\./;
+// URL.hostname keeps brackets for IPv6 literals, e.g. "[::1]".
+const PRIVATE_IPV6_RE = /^\[(::1\]$|f[cd]|fe80|::ffff:)/i;
+
+/**
+ * Validates an outbound webhook URL. Requires http(s) and rejects hostnames
+ * that are obviously private (loopback, RFC 1918, link-local, ULA) to limit
+ * SSRF from user-supplied webhook targets. DNS-level rebinding is out of
+ * scope here; Workers egress provides the second layer.
+ */
+export function validateWebhookUrl(value: unknown, logger?: Logger): ValidationResult<string> {
+  const log = logger ?? defaultLogger;
+
+  if (typeof value !== "string" || value.length > 2048) {
+    return err([{ field: "url", message: "Must be a string of at most 2048 characters" }]);
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return err([{ field: "url", message: "Must be a valid URL" }]);
+  }
+
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return err([{ field: "url", message: "Must use http or https" }]);
+  }
+
+  const hostname = parsed.hostname;
+  if (
+    PRIVATE_HOSTNAME_RE.test(hostname) ||
+    PRIVATE_172_RE.test(hostname) ||
+    PRIVATE_IPV6_RE.test(hostname) ||
+    hostname.endsWith(".internal") ||
+    hostname.endsWith(".local") ||
+    (!hostname.includes(".") && !hostname.startsWith("["))
+  ) {
+    log.debug("Validation failed - webhook URL targets a private host", { hostname });
+    return err([{ field: "url", message: "URL must target a public host" }]);
+  }
+
+  return ok(value);
+}
+
 /**
  * Converts a string to a URL-safe slug.
  * - Lowercases the string

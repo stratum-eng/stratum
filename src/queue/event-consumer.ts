@@ -11,6 +11,7 @@ import type { Env, Message, MessageBatch } from "../types";
 import type { Logger } from "../utils/logger";
 import { createLogger } from "../utils/logger";
 import type { EventQueueMessage } from "./events";
+import { deliverEventToWebhooks } from "./webhook-delivery";
 
 /** Attempts after which a pending event is abandoned and marked failed. */
 export const MAX_EVENT_ATTEMPTS = 5;
@@ -36,12 +37,19 @@ const analyticsHandler: EventHandler = {
   },
 };
 
+const webhookHandler: EventHandler = {
+  name: "webhooks",
+  async handle(env, event, logger) {
+    await deliverEventToWebhooks(env, event, logger);
+  },
+};
+
 /**
- * Ordered handler registry. Later features (webhook notifications, issue
- * auto-close) append here; every handler runs for every event and decides
- * internally whether the event type concerns it.
+ * Ordered handler registry. Later features (issue auto-close) append here;
+ * every handler runs for every event and decides internally whether the
+ * event type concerns it.
  */
-const handlers: EventHandler[] = [analyticsHandler];
+const handlers: EventHandler[] = [analyticsHandler, webhookHandler];
 
 async function processEvent(env: Env, event: EventRecord, logger: Logger): Promise<void> {
   for (const handler of handlers) {
