@@ -470,6 +470,29 @@ a:hover { text-decoration: underline; }
 .activity-description a:hover { text-decoration: underline; }
 .activity-time { color: #555; font-size: 0.8rem; flex-shrink: 0; }
 
+/* Webhooks */
+.webhook-form { display: flex; flex-direction: column; gap: 0.75rem; max-width: 480px; }
+.webhook-form label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; color: #aaa; }
+.webhook-form input {
+  background: #111; border: 1px solid #333; color: #eee;
+  padding: 0.5rem; border-radius: 4px; font-family: inherit;
+}
+.webhook-help { font-size: 0.8rem; color: #666; }
+.webhook-card { margin-top: 1rem; }
+.webhook-card-header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.webhook-url { font-size: 0.85rem; color: #7cb7ff; margin-right: 0.5rem; word-break: break-all; }
+.webhook-actions { display: flex; gap: 0.5rem; }
+.webhook-meta { font-size: 0.8rem; color: #777; margin: 0.5rem 0 0; word-break: break-all; }
+.webhook-deliveries { margin-top: 0.75rem; font-size: 0.85rem; }
+.webhook-deliveries summary { cursor: pointer; color: #888; }
+.webhook-deliveries ul { list-style: none; padding: 0.5rem 0 0; margin: 0; }
+.webhook-delivery { display: flex; gap: 0.75rem; align-items: baseline; padding: 0.25rem 0; flex-wrap: wrap; }
+.webhook-delivery-type { font-family: 'JetBrains Mono', monospace; color: #ccc; }
+.webhook-delivery-meta { color: #777; }
+.webhook-delivery-time { color: #555; margin-left: auto; }
+.btn-small { font-size: 0.75rem; padding: 0.25rem 0.6rem; }
+.btn-danger { color: #f87171; border-color: #5f1e1e; }
+
 /* File Viewer */
 .file-viewer-breadcrumb {
   display: flex;

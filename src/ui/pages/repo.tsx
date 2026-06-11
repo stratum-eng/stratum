@@ -96,6 +96,7 @@ interface RepoProps {
     lastCheckedAt?: string;
   } | null;
   canSync?: boolean;
+  isOwner?: boolean;
 }
 
 function getProviderIcon(provider?: GitProvider): string {
@@ -154,6 +155,7 @@ export const RepoPage: FC<RepoProps> = ({
   importProgress,
   syncStatus,
   canSync,
+  isOwner,
 }) => {
   const hasSource = !!project.sourceUrl;
   const isSyncing = project.lastSyncStatus === "in_progress";
@@ -196,6 +198,11 @@ export const RepoPage: FC<RepoProps> = ({
           <a class="btn" href={`/${project.namespace}/${project.slug}/activity`}>
             Activity
           </a>
+          {isOwner && (
+            <a class="btn" href={`/${project.namespace}/${project.slug}/webhooks`}>
+              Webhooks
+            </a>
+          )}
           <a class="btn btn-primary" href={`/${project.namespace}/${project.slug}/changes`}>
             View changes
           </a>

@@ -24,6 +24,7 @@ import { syncAllProjects, syncRouter } from "./routes/sync";
 import { syncManagementRouter } from "./routes/sync-management";
 import { uiRouter } from "./routes/ui";
 import { usersRouter } from "./routes/users";
+import { webhooksRouter } from "./routes/webhooks";
 import { workspacesRouter } from "./routes/workspaces";
 import { createSession } from "./storage/sessions";
 import { createUser, getUserByEmail } from "./storage/users";
@@ -132,6 +133,7 @@ app.route("/auth/login", loginRouter);
 app.route("/auth/signup", signupRouter);
 app.route("/auth/sessions", sessionRouter);
 app.route("/", uiRouter); // Mount UI at root
+app.route("/api/projects", webhooksRouter);
 app.route("/api/projects", projectsRouter);
 app.route("/api/workspaces", workspacesRouter);
 app.route("/api/users", usersRouter);
