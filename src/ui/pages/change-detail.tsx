@@ -52,6 +52,7 @@ function statusBadgeClass(status: string): string {
     case "merged":
       return "badge badge-merged";
     case "rejected":
+    case "reverted":
       return "badge badge-rejected";
     default:
       return "badge";

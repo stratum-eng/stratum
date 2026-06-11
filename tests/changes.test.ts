@@ -17,8 +17,13 @@ vi.mock("../src/storage/git-ops", async (importActual) => {
     ...actual,
     getDiffBetweenRepos: vi.fn(),
     mergeWorkspaceIntoProject: vi.fn(),
+    getCommitLog: vi.fn(),
   };
 });
+
+vi.mock("../src/storage/repo-snapshot", () => ({
+  readRepoSnapshot: vi.fn().mockResolvedValue({ success: true, data: null }),
+}));
 
 vi.mock("../src/storage/state", () => ({
   getProject: vi.fn(),
@@ -121,7 +126,11 @@ import { CompositeEvaluator, SecretScanEvaluator, loadPolicy } from "../src/eval
 import { getAgentByToken } from "../src/storage/agents";
 import { createChange, getChange, listChanges, updateChangeStatus } from "../src/storage/changes";
 import { listEvalRuns, recordEvalRuns } from "../src/storage/eval-runs";
-import { getDiffBetweenRepos, mergeWorkspaceIntoProject } from "../src/storage/git-ops";
+import {
+  getCommitLog,
+  getDiffBetweenRepos,
+  mergeWorkspaceIntoProject,
+} from "../src/storage/git-ops";
 import { getProject, getWorkspace } from "../src/storage/state";
 import { getUserByToken } from "../src/storage/users";
 
@@ -278,6 +287,10 @@ describe("POST /api/projects/:name/changes", () => {
       data: mockChange,
     });
     vi.mocked(loadPolicy).mockResolvedValue(mockPolicy);
+    vi.mocked(getCommitLog).mockResolvedValue({
+      success: true,
+      data: [{ sha: "sha_base", message: "m", author: "a", timestamp: 0 }],
+    });
     vi.mocked(getDiffBetweenRepos).mockResolvedValue({
       success: true,
       data: "diff --git a/src/index.ts b/src/index.ts\n+new line",
@@ -808,6 +821,10 @@ describe("POST /api/changes/:id/merge", () => {
     });
     // Default policy: no branch-protection rules.
     vi.mocked(loadPolicy).mockResolvedValue({ evaluators: [], requireAll: true, minScore: 0.7 });
+    vi.mocked(getCommitLog).mockResolvedValue({
+      success: true,
+      data: [{ sha: "sha_head", message: "m", author: "a", timestamp: 0 }],
+    });
   });
 
   it("merges an approved change and returns merged=true", async () => {
@@ -1071,6 +1088,43 @@ describe("POST /api/changes/:id/merge", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain("Force merge is disabled");
+  });
+
+  it("returns 409 STALE_BASE when requireFreshBase is set and the base moved", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted", baseSha: "sha_old" },
+    });
+    vi.mocked(loadPolicy).mockResolvedValue({
+      evaluators: [],
+      merge: { requireFreshBase: true },
+    });
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code: string; currentHead: string };
+    expect(body.code).toBe("STALE_BASE");
+    expect(body.currentHead).toBe("sha_head");
+  });
+
+  it("merges when requireFreshBase is set and the base matches HEAD", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted", baseSha: "sha_head" },
+    });
+    vi.mocked(loadPolicy).mockResolvedValue({
+      evaluators: [],
+      merge: { requireFreshBase: true },
+    });
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
   });
 
   it("force merge bypasses protection rules when force is allowed", async () => {

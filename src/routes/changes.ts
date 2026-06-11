@@ -10,6 +10,7 @@ import {
 } from "../evaluation";
 import type { EvalPolicy, EvalResult } from "../evaluation/types";
 import type { Evaluator } from "../evaluation/types";
+import { runPostMergeCheck } from "../merge/post-merge";
 import { checkMergeProtection } from "../merge/protection";
 import { type EventActor, emitEvent } from "../queue/events";
 import type { MergeOutcome } from "../queue/merge-queue";
@@ -20,9 +21,11 @@ import {
   getDiffBetweenRepos,
   mergeWorkspaceIntoProject,
 } from "../storage/git-ops";
+import { getCommitLog } from "../storage/git-ops";
 import { recordProvenance } from "../storage/provenance";
+import { readRepoSnapshot } from "../storage/repo-snapshot";
 import { getProject, getWorkspace } from "../storage/state";
-import type { Change, Env } from "../types";
+import type { Change, Env, ProjectEntry } from "../types";
 import { canReadProject, canWriteProject } from "../utils/authz";
 import type { AppError } from "../utils/errors";
 import { createLogger } from "../utils/logger";
@@ -38,6 +41,23 @@ function parseGitHubRepo(url: string): { owner: string; repo: string } | null {
 }
 
 const MERGEABLE_STATUSES: Change["status"][] = ["approved", "accepted", "promoted"];
+
+/** Current project HEAD: cheap KV snapshot first, single-commit clone as fallback. */
+async function resolveProjectHead(
+  env: Env,
+  project: ProjectEntry,
+  logger: Logger,
+): Promise<string | null> {
+  if (project.namespace && project.slug) {
+    const snapshotResult = await readRepoSnapshot(env.STATE, project, logger);
+    if (snapshotResult.success) {
+      const sha = snapshotResult.data?.commits[0]?.sha;
+      if (sha) return sha;
+    }
+  }
+  const logResult = await getCommitLog(project.remote, project.token, logger, 1);
+  return logResult.success ? (logResult.data[0]?.sha ?? null) : null;
+}
 
 class UnavailableEvaluator implements Evaluator {
   constructor(
@@ -104,10 +124,13 @@ app.post("/projects/:name/changes", async (c) => {
     return badRequest(`Workspace '${body.workspace}' does not belong to project '${projectName}'`);
   }
 
+  const baseSha = await resolveProjectHead(c.env, project, logger);
+
   const changeResult = await createChange(c.env.DB, logger, {
     project: projectName,
     workspace: body.workspace,
     ...(agentId !== undefined ? { agentId } : {}),
+    ...(baseSha !== null ? { baseSha } : {}),
   });
   if (!changeResult.success) {
     logger.error("Failed to create change", changeResult.error);
@@ -433,6 +456,21 @@ app.post("/changes/:id/merge", async (c) => {
         403,
       );
     }
+
+    if (mergePolicy.merge?.requireFreshBase && change.baseSha !== undefined) {
+      const currentHead = await resolveProjectHead(c.env, project, logger);
+      if (currentHead !== null && currentHead !== change.baseSha) {
+        return c.json(
+          {
+            error: "Change base is stale: the project advanced since this change was evaluated",
+            code: "STALE_BASE",
+            baseSha: change.baseSha,
+            currentHead,
+          },
+          409,
+        );
+      }
+    }
   }
 
   if (c.env.MERGE_QUEUE && strategy === "merge") {
@@ -459,12 +497,23 @@ app.post("/changes/:id/merge", async (c) => {
       project: change.project,
       commit: result.commit,
     });
+
+    const postMergeViaQueue = result.commit
+      ? await runPostMergeCheck(
+          c.env,
+          project,
+          { changeId: id, mergeCommit: result.commit, policy: mergePolicy },
+          logger,
+        )
+      : { status: "skipped" as const };
+
     return ok({
       merged: true,
       changeId: id,
       project: change.project,
       workspace: change.workspace,
       commit: result.commit,
+      postMerge: postMergeViaQueue,
     });
   }
 
@@ -561,12 +610,21 @@ app.post("/changes/:id/merge", async (c) => {
     workspace: change.workspace,
     commit,
   });
+
+  const postMerge = await runPostMergeCheck(
+    c.env,
+    project,
+    { changeId: id, mergeCommit: commit, policy: mergePolicy },
+    logger,
+  );
+
   return ok({
     merged: true,
     changeId: id,
     project: change.project,
     workspace: change.workspace,
     commit,
+    postMerge,
   });
 });
 

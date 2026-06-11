@@ -831,6 +831,136 @@ export async function listFilesInRepo(
   return walkDir(fs, dir, "", logger);
 }
 
+/**
+ * Read the full working tree (paths → text contents) in a single clone.
+ * Used by the post-merge smoke check to populate a sandbox.
+ */
+export async function readRepoFiles(
+  remote: string,
+  token: string,
+  logger: Logger,
+): Promise<Result<Map<string, string>, AppError>> {
+  logger.debug("Reading repo files", { remote });
+
+  const cloneResult = await cloneRepo(remote, token, logger);
+  if (!cloneResult.success) return err(cloneResult.error);
+  const { fs, dir } = cloneResult.data;
+
+  const filesResult = await walkDir(fs, dir, "", logger);
+  if (!filesResult.success) return err(filesResult.error);
+
+  const contents = new Map<string, string>();
+  for (const path of filesResult.data) {
+    try {
+      const raw = await fs.promises.readFile(`/${path}`, { encoding: "utf8" });
+      contents.set(path, typeof raw === "string" ? raw : new TextDecoder().decode(raw));
+    } catch (error) {
+      logger.warn("Skipping unreadable file in repo tree", {
+        path,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return ok(contents);
+}
+
+/** The first parent of a commit — for a merge commit, the pre-merge HEAD. */
+export async function getCommitParent(
+  remote: string,
+  token: string,
+  commitSha: string,
+  logger: Logger,
+): Promise<Result<string, AppError>> {
+  const cloneResult = await cloneRepo(remote, token, logger);
+  if (!cloneResult.success) return err(cloneResult.error);
+  const { fs, dir } = cloneResult.data;
+
+  const readResult = await fromPromise(git.readCommit({ fs, dir, oid: commitSha }));
+  if (!readResult.success) {
+    logger.error("Failed to read commit", readResult.error, { commitSha });
+    return err(new ExternalServiceError("Git", "Failed to read commit", readResult.error));
+  }
+  const parent = readResult.data.commit.parent[0];
+  if (!parent) {
+    return err(new AppError(`Commit ${commitSha} has no parent`, "GIT_ERROR", 500));
+  }
+  return ok(parent);
+}
+
+/**
+ * Revert the repository to the tree of `targetSha` by writing a new commit
+ * on top of the current HEAD (history is preserved; nothing is force-pushed).
+ * Returns the revert commit sha.
+ */
+export async function revertToCommit(
+  remote: string,
+  token: string,
+  targetSha: string,
+  message: string,
+  logger: Logger,
+): Promise<Result<string, AppError>> {
+  logger.info("Reverting repo to commit tree", { remote, targetSha });
+
+  const cloneResult = await cloneRepo(remote, token, logger);
+  if (!cloneResult.success) return err(cloneResult.error);
+  const { fs, dir } = cloneResult.data;
+
+  const headResult = await fromPromise(git.resolveRef({ fs, dir, ref: "HEAD" }));
+  if (!headResult.success) {
+    return err(new ExternalServiceError("Git", "Failed to resolve HEAD", headResult.error));
+  }
+
+  const targetResult = await fromPromise(git.readCommit({ fs, dir, oid: targetSha }));
+  if (!targetResult.success) {
+    logger.error("Failed to read revert target", targetResult.error, { targetSha });
+    return err(new ExternalServiceError("Git", "Failed to read revert target", targetResult.error));
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const signature = {
+    name: SYSTEM_AUTHOR.name,
+    email: SYSTEM_AUTHOR.email,
+    timestamp: now,
+    timezoneOffset: 0,
+  };
+  const writeResult = await fromPromise(
+    git.writeCommit({
+      fs,
+      dir,
+      commit: {
+        message,
+        tree: targetResult.data.commit.tree,
+        parent: [headResult.data],
+        author: signature,
+        committer: signature,
+      },
+    }),
+  );
+  if (!writeResult.success) {
+    logger.error("Failed to write revert commit", writeResult.error, { targetSha });
+    return err(new ExternalServiceError("Git", "Failed to write revert commit", writeResult.error));
+  }
+  const revertSha = writeResult.data;
+
+  const refResult = await fromPromise(
+    git.writeRef({ fs, dir, ref: "refs/heads/main", value: revertSha, force: true }),
+  );
+  if (!refResult.success) {
+    return err(new ExternalServiceError("Git", "Failed to update ref", refResult.error));
+  }
+
+  const pushResult = await fromPromise(
+    git.push({ fs, dir, http, url: remote, ref: "main", onAuth: makeAuth(token) }),
+  );
+  if (!pushResult.success) {
+    logger.error("Failed to push revert commit", pushResult.error, { remote });
+    return err(new ExternalServiceError("Git", "Failed to push revert commit", pushResult.error));
+  }
+
+  logger.info("Revert commit pushed", { remote, revertSha, targetSha });
+  return ok(revertSha);
+}
+
 async function walkDir(
   fs: NodeFS,
   base: string,

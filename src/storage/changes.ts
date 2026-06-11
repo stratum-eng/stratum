@@ -13,6 +13,7 @@ interface ChangeRow {
   eval_score: number | null;
   eval_passed: number | null;
   eval_reason: string | null;
+  base_sha: string | null;
   created_at: string;
   merged_at: string | null;
   github_owner: string | null;
@@ -39,6 +40,7 @@ function rowToChange(row: ChangeRow): Change {
   if (row.eval_score !== null) change.evalScore = row.eval_score;
   if (row.eval_passed !== null) change.evalPassed = row.eval_passed === 1;
   if (row.eval_reason !== null) change.evalReason = row.eval_reason;
+  if (row.base_sha !== null) change.baseSha = row.base_sha;
   if (row.merged_at !== null) change.mergedAt = row.merged_at;
   if (row.github_owner !== null) change.githubOwner = row.github_owner;
   if (row.github_repo !== null) change.githubRepo = row.github_repo;
@@ -60,6 +62,7 @@ export async function createChange(
     project: string;
     workspace: string;
     agentId?: string;
+    baseSha?: string;
   },
 ): Promise<Result<Change, AppError>> {
   const id = newId("chg");
@@ -68,9 +71,17 @@ export async function createChange(
   try {
     await db
       .prepare(
-        "INSERT INTO changes (id, project, workspace, status, agent_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO changes (id, project, workspace, status, agent_id, base_sha, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
       )
-      .bind(id, opts.project, opts.workspace, "open", opts.agentId ?? null, createdAt)
+      .bind(
+        id,
+        opts.project,
+        opts.workspace,
+        "open",
+        opts.agentId ?? null,
+        opts.baseSha ?? null,
+        createdAt,
+      )
       .run();
 
     const change: Change = {
@@ -81,6 +92,7 @@ export async function createChange(
       createdAt,
     };
     if (opts.agentId !== undefined) change.agentId = opts.agentId;
+    if (opts.baseSha !== undefined) change.baseSha = opts.baseSha;
 
     logger.debug("Change created", {
       changeId: id,

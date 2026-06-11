@@ -8,6 +8,7 @@ export type StratumEvent =
   | { type: "change.evaluated"; project: string; changeId: string; score: number; passed: boolean }
   | { type: "change.merged"; project: string; changeId: string; commit: string }
   | { type: "change.rejected"; project: string; changeId: string }
+  | { type: "change.reverted"; project: string; changeId: string; revertCommit: string }
   | { type: "change.commented"; project: string; changeId: string }
   | {
       type: "change.reviewed";

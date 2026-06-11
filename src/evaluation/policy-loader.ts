@@ -92,6 +92,22 @@ function sanitizeMergePolicy(raw: unknown): MergePolicy | null {
   if (typeof source.allowForce === "boolean") {
     merge.allowForce = source.allowForce;
   }
+  if (typeof source.requireFreshBase === "boolean") {
+    merge.requireFreshBase = source.requireFreshBase;
+  }
+  if (typeof source.postMergeCommand === "string" && source.postMergeCommand.trim()) {
+    merge.postMergeCommand = source.postMergeCommand.trim();
+  }
+  if (
+    typeof source.postMergeTimeoutMs === "number" &&
+    Number.isFinite(source.postMergeTimeoutMs) &&
+    source.postMergeTimeoutMs > 0
+  ) {
+    merge.postMergeTimeoutMs = source.postMergeTimeoutMs;
+  }
+  if (typeof source.autoRevert === "boolean") {
+    merge.autoRevert = source.autoRevert;
+  }
 
   return Object.keys(merge).length > 0 ? merge : null;
 }
