@@ -43,6 +43,12 @@ export function describeEvent(event: EventRecord): string {
       return `Change ${changeId ?? "?"} merged${commit ? ` → ${commit.slice(0, 7)}` : ""}`;
     case "change.rejected":
       return `Change ${changeId ?? "?"} rejected`;
+    case "change.commented":
+      return `Comment on change ${changeId ?? "?"}`;
+    case "change.reviewed": {
+      const verdict = payload.verdict === "approve" ? "approved" : "changes requested";
+      return `Change ${changeId ?? "?"} reviewed → ${verdict}`;
+    }
     case "sync.completed":
       return `Synced from upstream${commit ? ` → ${commit.slice(0, 7)}` : ""}`;
     case "issue.opened": {

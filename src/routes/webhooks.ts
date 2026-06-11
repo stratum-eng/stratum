@@ -23,6 +23,8 @@ const SUBSCRIBABLE_EVENTS = [
   "change.evaluated",
   "change.merged",
   "change.rejected",
+  "change.commented",
+  "change.reviewed",
   "project.created",
   "project.imported",
   "workspace.created",
