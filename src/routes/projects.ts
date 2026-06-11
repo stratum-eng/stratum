@@ -12,6 +12,7 @@ import {
   updateImportStatus,
 } from "../storage/imports";
 import { listProvenance } from "../storage/provenance";
+import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { getProjectByPath, listProjectsByNamespace, setProject } from "../storage/state";
 import {
   checkForSyncUpdates,
@@ -306,7 +307,7 @@ app.get("/:namespace/:slug", async (c) => {
 app.post(
   "/:namespace/:slug/import",
   importRateLimitMiddleware({
-    importsPerWindow: 1,
+    importsPerWindow: 3,
     windowSeconds: 60,
     maxConcurrentPerProject: 1,
     projectLockSeconds: 300, // 5 minutes default import timeout
@@ -724,6 +725,13 @@ async function processImportJob(
     // Release the rate limit lock on completion
     await releaseImportLock(env.STATE, namespace, slug, logger);
 
+    // Write repo snapshot to KV so page loads skip git clones going forward
+    await writeSnapshotFromRepo(
+      env.STATE,
+      { remote: updatedProject.remote, token: updatedProject.token, namespace, slug },
+      logger,
+    );
+
     logger.info("Import completed", { namespace, slug, importId });
   } catch (error) {
     logger.error("Import job failed", error instanceof Error ? error : undefined, {
@@ -1109,7 +1117,7 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
 app.post(
   "/:namespace/:slug/import/retry",
   importRateLimitMiddleware({
-    importsPerWindow: 1,
+    importsPerWindow: 3,
     windowSeconds: 60,
     maxConcurrentPerProject: 1,
     projectLockSeconds: 300,
@@ -1241,6 +1249,7 @@ app.post("/:namespace/:slug/sync", async (c) => {
   if (!userId || !username) return unauthorized("Authentication required");
 
   const { namespace, slug } = c.req.param();
+  const isJson = c.req.header("content-type")?.includes("application/json") ?? false;
   const userNamespace = getUserNamespace(username);
 
   if (namespace !== userNamespace) {
@@ -1260,11 +1269,17 @@ app.post("/:namespace/:slug/sync", async (c) => {
   const sourceUrl = getProjectSourceUrl(project);
 
   if (!sourceUrl) {
+    if (!isJson) {
+      return c.redirect(`/${namespace}/${slug}?sync=error&reason=no-source-url`);
+    }
     return badRequest("Project is not connected to a remote repository");
   }
 
   const provider = getProjectProvider(project);
   if (!provider) {
+    if (!isJson) {
+      return c.redirect(`/${namespace}/${slug}?sync=error&reason=unsupported-provider`);
+    }
     return badRequest(
       "Project source URL is not from a supported provider (GitHub, GitLab, or Bitbucket)",
     );
@@ -1273,6 +1288,9 @@ app.post("/:namespace/:slug/sync", async (c) => {
   // Check if there's already a sync in progress
   const syncStatusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);
   if (syncStatusResult.success && syncStatusResult.data?.lastSyncStatus === "in_progress") {
+    if (!isJson) {
+      return c.redirect(`/${namespace}/${slug}?sync=error&reason=sync-in-progress`);
+    }
     return badRequest("A sync is already in progress for this project");
   }
 
@@ -1292,11 +1310,17 @@ app.post("/:namespace/:slug/sync", async (c) => {
   const checkResult = await checkForSyncUpdates(c.env.STATE, project, auth, logger);
   if (!checkResult.success) {
     await updateProjectSyncError(c.env.STATE, project, checkResult.error.message, logger);
+    if (!isJson) {
+      return c.redirect(`/${namespace}/${slug}?sync=error&reason=check-failed`);
+    }
     return internalError(checkResult.error.message);
   }
 
   if (!checkResult.data.hasUpdates) {
     logger.info("No updates available for project", { namespace, slug });
+    if (!isJson) {
+      return c.redirect(`/${namespace}/${slug}`);
+    }
     return ok({
       message: "No updates available",
       namespace,
@@ -1325,6 +1349,9 @@ app.post("/:namespace/:slug/sync", async (c) => {
   if (!createResult.success) {
     await updateProjectSyncError(c.env.STATE, project, createResult.error.message, logger);
     logger.error("Failed to create sync job", createResult.error);
+    if (!isJson) {
+      return c.redirect(`/${namespace}/${slug}?sync=error&reason=job-create-failed`);
+    }
     return internalError(createResult.error.message);
   }
 
@@ -1402,6 +1429,9 @@ app.post("/:namespace/:slug/sync", async (c) => {
     latestCommit: checkResult.data.latestCommit?.slice(0, 7),
   });
 
+  if (!isJson) {
+    return c.redirect(`/${namespace}/${slug}?sync=queued`);
+  }
   return ok({
     message: "Sync initiated",
     namespace,
@@ -1579,6 +1609,13 @@ async function processSyncJob(
       "completed",
       logger,
       "Sync completed successfully",
+    );
+
+    // Write repo snapshot to KV so page loads skip git clones going forward
+    await writeSnapshotFromRepo(
+      env.STATE,
+      { remote: importResult.data.remote, token: importResult.data.token, namespace, slug },
+      logger,
     );
 
     logger.info("Sync completed", { namespace, slug, importId });
