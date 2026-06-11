@@ -1,6 +1,7 @@
 import type { EvalPolicy } from "../evaluation/types";
 import { emitEvent } from "../queue/events";
 import { updateChangeStatus } from "../storage/changes";
+import { recordCosts } from "../storage/costs";
 import { getCommitParent, readRepoFiles, revertToCommit } from "../storage/git-ops";
 import type { Env, ProjectEntry } from "../types";
 import type { Logger } from "../utils/logger";
@@ -55,9 +56,14 @@ export async function runPostMergeCheck(
       for (const [path, content] of filesResult.data) {
         await sandbox.writeFile(path, content);
       }
+      const runStartedAt = Date.now();
       const run = await sandbox.run(command, {
         timeout: merge?.postMergeTimeoutMs ?? DEFAULT_POST_MERGE_TIMEOUT_MS,
       });
+      await recordCosts(env.DB, logger, { project: project.name, changeId: opts.changeId }, [
+        { kind: "sandbox_ms", quantity: Date.now() - runStartedAt },
+        { kind: "git_ops", quantity: 1 },
+      ]);
       if (run.exitCode === 0) {
         logger.info("Post-merge check passed", { changeId: opts.changeId });
         return { status: "passed" };

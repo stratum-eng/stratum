@@ -523,6 +523,10 @@ a:hover { text-decoration: underline; }
   padding: 0.5rem; border-radius: 4px; font-family: inherit;
 }
 
+/* Costs */
+.cost-list { list-style: none; padding: 0; margin: 0; font-size: 0.9rem; color: #ccc; }
+.cost-list li { padding: 0.2rem 0; }
+
 /* Change reviews and comments */
 .review-empty { color: #666; font-size: 0.85rem; }
 .review-list, .comment-list { list-style: none; padding: 0; margin: 0; }

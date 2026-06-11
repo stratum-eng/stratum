@@ -1,5 +1,6 @@
 import type { FC } from "hono/jsx";
 import type { ChangeComment, ChangeReview } from "../../storage/change-reviews";
+import type { CostSummaryEntry } from "../../storage/costs";
 import { Layout } from "../layout";
 
 interface ChangeDetailProps {
@@ -33,6 +34,7 @@ interface ChangeDetailProps {
   } | null;
   comments?: ChangeComment[];
   reviews?: ChangeReview[];
+  costs?: CostSummaryEntry[];
   /** Whether the current user may submit review verdicts. */
   canReview?: boolean;
   user?: { id: string; email: string; username: string } | null;
@@ -61,12 +63,27 @@ function statusBadgeClass(status: string): string {
 
 const REVIEWABLE_STATUSES = ["open", "needs_changes", "accepted", "approved"];
 
+function describeCost(entry: CostSummaryEntry): string {
+  const prefix = entry.estimated ? "~" : "";
+  switch (entry.kind) {
+    case "llm_tokens":
+      return `${prefix}${Math.round(entry.total).toLocaleString()} LLM tokens`;
+    case "sandbox_ms":
+      return `${prefix}${(entry.total / 1000).toFixed(1)}s sandbox time`;
+    case "git_ops":
+      return `${prefix}${Math.round(entry.total)} git operations`;
+    default:
+      return `${prefix}${entry.total} ${entry.kind}`;
+  }
+}
+
 export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   change,
   evalRuns,
   provenance,
   comments = [],
   reviews = [],
+  costs = [],
   canReview = false,
   user,
 }) => {
@@ -222,6 +239,17 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
             <dt>Merged</dt>
             <dd>{new Date(provenance.mergedAt).toLocaleString()}</dd>
           </dl>
+        </div>
+      )}
+
+      {costs.length > 0 && (
+        <div class="card">
+          <h2>Resource usage</h2>
+          <ul class="cost-list">
+            {costs.map((entry) => (
+              <li key={entry.kind}>{describeCost(entry)}</li>
+            ))}
+          </ul>
         </div>
       )}
 

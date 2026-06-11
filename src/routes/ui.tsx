@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { listComments, listReviews } from "../storage/change-reviews";
 import { getChange, listChanges } from "../storage/changes";
+import { getChangeCostSummary } from "../storage/costs";
 import { listEvalRuns } from "../storage/eval-runs";
 import { listProjectEvents } from "../storage/events";
 import { getCommitLog, listFilesInRepo, readFileFromRepo } from "../storage/git-ops";
@@ -370,10 +371,11 @@ app.get("/changes/:id", async (c) => {
     );
   }
 
-  const [evalRunsResult, commentsResult, reviewsResult] = await Promise.all([
+  const [evalRunsResult, commentsResult, reviewsResult, costsResult] = await Promise.all([
     listEvalRuns(c.env.DB, logger, change.id),
     listComments(c.env.DB, logger, change.id),
     listReviews(c.env.DB, logger, change.id),
+    getChangeCostSummary(c.env.DB, logger, change.id),
   ]);
   if (!evalRunsResult.success) {
     logger.error("Failed to list eval runs", evalRunsResult.error);
@@ -407,6 +409,7 @@ app.get("/changes/:id", async (c) => {
       provenance={null}
       comments={commentsResult.success ? commentsResult.data : []}
       reviews={reviewsResult.success ? reviewsResult.data : []}
+      costs={costsResult.success ? costsResult.data : []}
       canReview={!!userResult && canWriteProject(projectResult.data, userId)}
       user={userResult}
     />,
