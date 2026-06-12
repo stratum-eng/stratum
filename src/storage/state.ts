@@ -57,20 +57,47 @@ export async function getProjectByPath(
   return parseEntry<ProjectEntry>(raw, key, logger);
 }
 
-// Legacy: Get project by name (for backward compatibility during migration)
+/**
+ * Resolve a project by flexible reference:
+ * 1. "namespace/slug" (with or without the leading @) → namespaced key
+ * 2. legacy "project:<name>" key (pre-namespace entries)
+ * 3. scan fallback matching name or slug — namespaced projects are stored
+ *    only under namespace:slug keys, but the change/review APIs and stored
+ *    Change rows reference projects by bare name.
+ */
 export async function getProject(
   kv: KVNamespace,
   name: string,
   logger: Logger,
 ): Promise<Result<ProjectEntry, AppError>> {
-  logger.debug("Fetching project (legacy)", { name });
-  const raw = await kv.get(legacyProjectKey(name));
-  if (!raw) {
-    return err(
-      new AppError(`Project '${name}' not found`, "NOT_FOUND", 404, { resource: "project", name }),
-    );
+  logger.debug("Resolving project reference", { name });
+
+  if (name.includes("/")) {
+    const [nsRaw, slug] = name.split("/", 2);
+    if (nsRaw && slug) {
+      const namespace = nsRaw.startsWith("@") ? nsRaw : `@${nsRaw}`;
+      const byPath = await getProjectByPath(kv, namespace, slug, logger);
+      if (byPath.success) return byPath;
+    }
   }
-  return parseEntry<ProjectEntry>(raw, legacyProjectKey(name), logger);
+
+  const raw = await kv.get(legacyProjectKey(name));
+  if (raw) {
+    return parseEntry<ProjectEntry>(raw, legacyProjectKey(name), logger);
+  }
+
+  const allResult = await listProjects(kv, logger);
+  if (allResult.success) {
+    const match = allResult.data.find((project) => project.name === name || project.slug === name);
+    if (match) {
+      logger.debug("Project resolved via scan fallback", { name, id: match.id });
+      return ok(match);
+    }
+  }
+
+  return err(
+    new AppError(`Project '${name}' not found`, "NOT_FOUND", 404, { resource: "project", name }),
+  );
 }
 
 // Set project using new namespace-aware key

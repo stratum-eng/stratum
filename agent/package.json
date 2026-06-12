@@ -1,0 +1,21 @@
+{
+  "name": "@stratum/agent",
+  "version": "0.1.0",
+  "description": "Reference agent for Stratum — fork, edit with an LLM, commit, open a Change",
+  "type": "module",
+  "bin": { "stratum-agent": "./dist/index.js" },
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": { "node": ">=18" }
+}
