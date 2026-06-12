@@ -86,7 +86,9 @@ not a master-plan line item:
 
 ### Client-side unified/split diff toggle
 
-The diff viewer (`src/ui/components/diff-view.tsx`) renders unified diffs
+The diff viewer
+([`src/ui/components/diff-view.tsx`](../src/ui/components/diff-view.tsx))
+renders unified diffs
 only. The alignment research recommends a split-view toggle that switches
 client-side — no page reload or content refetch — as a differentiator over
 GitHub/GitLab, which require a full reload to switch views.
