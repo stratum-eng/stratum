@@ -69,6 +69,10 @@ const REVIEWABLE_STATUSES = ["open", "needs_changes", "accepted", "approved"];
 /** Mirrors MERGEABLE_STATUSES in routes/changes.ts — the API rejects other statuses. */
 const MERGEABLE_STATUSES = ["approved", "accepted", "promoted"];
 
+/** No further actions apply: merged changes can't be rejected (API enforces it), and
+ * rejecting an already rejected/reverted change is meaningless. */
+const TERMINAL_STATUSES = ["merged", "rejected", "reverted"];
+
 function describeCost(entry: CostSummaryEntry): string {
   const prefix = entry.estimated ? "~" : "";
   switch (entry.kind) {
@@ -94,6 +98,11 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   canReview = false,
   user,
 }) => {
+  const hasGithubPr = change.githubPrUrl !== undefined;
+  const canMerge = !hasGithubPr && canReview && MERGEABLE_STATUSES.includes(change.status);
+  const canReject = !TERMINAL_STATUSES.includes(change.status);
+  const hasActions = hasGithubPr || canMerge || canReject;
+
   return (
     <Layout
       title={`Change ${change.id}`}
@@ -110,45 +119,49 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
         </a>
       </div>
 
-      <div class="card">
-        <h2>Actions</h2>
-        <div class="action-row">
-          {change.githubPrUrl !== undefined ? (
-            <a class="btn btn-primary" href={change.githubPrUrl} target="_blank" rel="noreferrer">
-              Open GitHub PR
-            </a>
-          ) : (
-            <>
-              {canReview && MERGEABLE_STATUSES.includes(change.status) && (
-                <form method="post" action={`/api/changes/${change.id}/merge`}>
-                  <button type="submit" class="btn btn-primary">
-                    Merge change
-                  </button>
-                </form>
-              )}
-              {(change.status === "accepted" || change.status === "promoted") && (
-                <form method="post" action={`/api/changes/${change.id}/github-pr`}>
-                  <button type="submit" class="btn btn-primary">
-                    Promote to GitHub
-                  </button>
-                </form>
-              )}
-              {(change.status === "open" || change.status === "needs_changes") && (
-                <form method="post" action={`/api/changes/${change.id}/evaluate`}>
-                  <button type="submit" class="btn">
-                    Run evaluations again
-                  </button>
-                </form>
-              )}
-            </>
-          )}
-          <form method="post" action={`/api/changes/${change.id}/reject`}>
-            <button type="submit" class="btn btn-danger">
-              Reject change
-            </button>
-          </form>
+      {hasActions && (
+        <div class="card">
+          <h2>Actions</h2>
+          <div class="action-row">
+            {hasGithubPr ? (
+              <a class="btn btn-primary" href={change.githubPrUrl} target="_blank" rel="noreferrer">
+                Open GitHub PR
+              </a>
+            ) : (
+              <>
+                {canMerge && (
+                  <form method="post" action={`/api/changes/${change.id}/merge`}>
+                    <button type="submit" class="btn btn-primary">
+                      Merge change
+                    </button>
+                  </form>
+                )}
+                {(change.status === "accepted" || change.status === "promoted") && (
+                  <form method="post" action={`/api/changes/${change.id}/github-pr`}>
+                    <button type="submit" class="btn btn-primary">
+                      Promote to GitHub
+                    </button>
+                  </form>
+                )}
+                {(change.status === "open" || change.status === "needs_changes") && (
+                  <form method="post" action={`/api/changes/${change.id}/evaluate`}>
+                    <button type="submit" class="btn">
+                      Run evaluations again
+                    </button>
+                  </form>
+                )}
+              </>
+            )}
+            {canReject && (
+              <form method="post" action={`/api/changes/${change.id}/reject`}>
+                <button type="submit" class="btn btn-danger">
+                  Reject change
+                </button>
+              </form>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       <div class="card">
         <dl class="detail-list">
