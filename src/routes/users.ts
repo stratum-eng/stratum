@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { createUser, getUser, getUserByUsername } from "../storage/users";
+import { createUser, getUser, getUserByUsername, rotateUserToken } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 import { badRequest, created, ok } from "../utils/response";
@@ -60,6 +60,30 @@ app.get("/me", async (c) => {
   logger.debug("User retrieved", { userId });
 
   return ok({ id: user.id, email: user.email, createdAt: user.createdAt });
+});
+
+// POST /api/users/me/rotate-token - Replace the caller's API key
+app.post("/me/rotate-token", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+    userId: c.get("userId"),
+  });
+
+  const userId = c.get("userId");
+  if (!userId) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const result = await rotateUserToken(c.env.DB, userId, logger);
+  if (!result.success) {
+    logger.error("Failed to rotate API key", result.error, { userId });
+    return c.json({ error: "Failed to rotate API key" }, 500);
+  }
+
+  // The old key is invalid as of this response; the new one is shown once.
+  return ok({ token: result.data });
 });
 
 // GET /api/users/check-username - Check if username is available
