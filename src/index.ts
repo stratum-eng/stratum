@@ -140,7 +140,6 @@ app.route("/auth/email", emailAuthRouter);
 app.route("/auth/login", loginRouter);
 app.route("/auth/signup", signupRouter);
 app.route("/auth/sessions", sessionRouter);
-app.route("/", uiRouter); // Mount UI at root
 app.route("/api/projects", webhooksRouter);
 app.route("/api/projects", issuesRouter);
 app.route("/api/projects", projectsRouter);
@@ -154,6 +153,9 @@ app.route("/api", syncRouter);
 app.route("/api", syncManagementRouter);
 app.route("/api/bulk-import", bulkImportRouter);
 app.route("/api/webhooks/github", githubWebhookRouter);
+// Mount the UI router last: its /:namespace/:slug catch-all would otherwise
+// shadow two-segment API paths like GET /api/projects.
+app.route("/", uiRouter);
 
 app.notFound((c) => c.json({ error: "Not found" }, 404));
 app.onError((err, c) => {

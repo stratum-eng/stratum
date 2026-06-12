@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import {
   CompositeEvaluator,
   DiffEvaluator,
@@ -43,6 +43,22 @@ function parseGitHubRepo(url: string): { owner: string; repo: string } | null {
 }
 
 const MERGEABLE_STATUSES: Change["status"][] = ["approved", "accepted", "promoted"];
+
+/**
+ * Success response for endpoints that the change-detail UI posts to with plain HTML forms.
+ * Browsers send a form content type; API/CLI/agent callers send JSON or no body at all,
+ * so only form posts are redirected back to the change page.
+ */
+function okOrFormRedirect<T>(c: Context<{ Bindings: Env }>, changeId: string, data: T): Response {
+  const contentType = c.req.header("content-type") ?? "";
+  if (
+    contentType.includes("application/x-www-form-urlencoded") ||
+    contentType.includes("multipart/form-data")
+  ) {
+    return c.redirect(`/changes/${changeId}`, 302);
+  }
+  return ok(data);
+}
 
 /** Current project HEAD: cheap KV snapshot first, single-commit clone as fallback. */
 async function resolveProjectHead(
@@ -123,7 +139,9 @@ app.post("/projects/:name/changes", async (c) => {
   }
   const workspace = workspaceResult.data;
 
-  if (workspace.parent !== projectName) {
+  // Workspaces created via the namespaced API store the project id in `parent`;
+  // legacy workspaces stored the project name.
+  if (workspace.parent !== project.id && workspace.parent !== projectName) {
     return badRequest(`Workspace '${body.workspace}' does not belong to project '${projectName}'`);
   }
 
@@ -539,7 +557,7 @@ app.post("/changes/:id/merge", async (c) => {
         )
       : { status: "skipped" as const };
 
-    return ok({
+    return okOrFormRedirect(c, id, {
       merged: true,
       changeId: id,
       project: change.project,
@@ -667,7 +685,7 @@ app.post("/changes/:id/merge", async (c) => {
     logger,
   );
 
-  return ok({
+  return okOrFormRedirect(c, id, {
     merged: true,
     changeId: id,
     project: change.project,
@@ -736,7 +754,7 @@ app.post("/changes/:id/reject", async (c) => {
   );
 
   logger.info("Change rejected", { changeId: id, project: change.project });
-  return ok({ rejected: true, changeId: id });
+  return okOrFormRedirect(c, id, { rejected: true, changeId: id });
 });
 
 app.post("/changes/:id/evaluate", async (c) => {
@@ -911,7 +929,7 @@ app.post("/changes/:id/evaluate", async (c) => {
     evalScore: evalResult.score,
     passed: evalResult.passed,
   });
-  return ok({ changeId: id, eval: evalResult, evalRuns: recordResult.data });
+  return okOrFormRedirect(c, id, { changeId: id, eval: evalResult, evalRuns: recordResult.data });
 });
 
 app.post("/changes/:id/github-pr", async (c) => {
@@ -1013,7 +1031,7 @@ app.post("/changes/:id/github-pr", async (c) => {
     prNumber: pr.number,
     repo: `${repo.owner}/${repo.repo}`,
   });
-  return ok({
+  return okOrFormRedirect(c, id, {
     changeId: id,
     github: {
       owner: repo.owner,

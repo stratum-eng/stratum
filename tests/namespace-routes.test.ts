@@ -780,4 +780,29 @@ describe("Namespace Routes", () => {
       expect(res.status).toBe(200);
     });
   });
+
+  describe("API route mount order", () => {
+    // Regression: the UI router's /:namespace/:slug catch-all used to be mounted before
+    // the API routers and swallowed two-segment API paths like GET /api/projects,
+    // returning an HTML error page instead of JSON.
+    it("GET /api/projects reaches the API router and returns JSON", async () => {
+      await createTestProject(env, "@testuser", "my-project", "user_test", "private");
+
+      const res = await app.fetch(request("GET", "/api/projects", undefined, AUTH_HEADERS), env);
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const body = (await res.json()) as { projects: Array<{ slug: string }> };
+      expect(body.projects.map((p) => p.slug)).toContain("my-project");
+    });
+
+    it("GET /api/projects without auth returns an empty JSON list, not HTML", async () => {
+      const res = await app.fetch(request("GET", "/api/projects"), env);
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const body = (await res.json()) as { projects: unknown[] };
+      expect(body.projects).toEqual([]);
+    });
+  });
 });
