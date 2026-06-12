@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { recordAudit } from "../storage/audit";
 import { createSession, deleteSession, getSession } from "../storage/sessions";
-import { upsertGitHubUser } from "../storage/users";
+import { createUser, getUserByEmail, upsertGitHubUser } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 
@@ -197,6 +197,153 @@ app.get("/github/callback", async (c) => {
   }
 
   return c.redirect(redirectTo);
+});
+
+app.get("/google", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const clientId = c.env.GOOGLE_CLIENT_ID;
+  const redirectUri = c.env.GOOGLE_REDIRECT_URI;
+
+  if (!clientId || !c.env.GOOGLE_CLIENT_SECRET || !redirectUri) {
+    logger.warn("Google OAuth not configured");
+    return c.json({ error: "Google OAuth is not configured" }, 501);
+  }
+
+  const state = crypto.randomUUID().replace(/-/g, "");
+  await c.env.STATE.put(`oauth_state:${state}`, "1", { expirationTtl: 600 });
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: "openid email profile",
+    state,
+  });
+
+  logger.debug("Redirecting to Google OAuth");
+  return c.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+});
+
+app.get("/google/callback", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const clientId = c.env.GOOGLE_CLIENT_ID;
+  const clientSecret = c.env.GOOGLE_CLIENT_SECRET;
+  const redirectUri = c.env.GOOGLE_REDIRECT_URI;
+
+  if (!clientId || !clientSecret || !redirectUri) {
+    logger.warn("Google OAuth not configured");
+    return c.json({ error: "Google OAuth is not configured" }, 501);
+  }
+
+  const { code, state } = c.req.query();
+
+  if (!state) {
+    return c.json({ error: "Missing state parameter" }, 400);
+  }
+  const stateKey = `oauth_state:${state}`;
+  const storedState = await c.env.STATE.get(stateKey);
+  if (!storedState) {
+    logger.warn("Invalid or expired state", { statePrefix: state.slice(0, 8) });
+    return c.json({ error: "Invalid or expired state" }, 400);
+  }
+  await c.env.STATE.delete(stateKey);
+
+  if (!code) {
+    return c.json({ error: "Missing code parameter" }, 400);
+  }
+
+  logger.debug("Exchanging code for Google token");
+  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+      grant_type: "authorization_code",
+      redirect_uri: redirectUri,
+    }),
+  });
+
+  if (!tokenRes.ok) {
+    logger.error("Failed to exchange code for Google token");
+    return c.json({ error: "Failed to exchange code for token" }, 502);
+  }
+
+  const tokenData = await tokenRes.json<{ access_token?: string; error?: string }>();
+  if (!tokenData.access_token) {
+    logger.error("Google OAuth error", undefined, { error: tokenData.error });
+    return c.json({ error: "Google OAuth error" }, 502);
+  }
+
+  const userRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+    headers: { Authorization: `Bearer ${tokenData.access_token}` },
+  });
+  if (!userRes.ok) {
+    logger.error("Failed to fetch Google user data");
+    return c.json({ error: "Failed to fetch Google user data" }, 502);
+  }
+
+  const googleUser = await userRes.json<{
+    sub: string;
+    email?: string;
+    email_verified?: boolean;
+  }>();
+
+  if (!googleUser.email || googleUser.email_verified !== true) {
+    logger.warn("Google account has no verified email");
+    return c.json({ error: "No verified email on Google account" }, 422);
+  }
+
+  // Google identity maps onto the email-based account model: an existing
+  // account with this email is reused, otherwise one is created — the same
+  // semantics as magic-link sign-in.
+  const existing = await getUserByEmail(c.env.DB, googleUser.email, logger);
+  let userId: string;
+  if (existing.success) {
+    userId = existing.data.id;
+  } else {
+    const createdResult = await createUser(c.env.DB, googleUser.email, logger);
+    if (!createdResult.success) {
+      logger.error("Failed to create user from Google sign-in", createdResult.error);
+      return c.json({ error: "Failed to create user" }, 500);
+    }
+    userId = createdResult.data.user.id;
+  }
+
+  const sessionLogger = logger.child({ userId });
+  const sessionResult = await createSession(c.env.DB, userId, sessionLogger);
+  if (!sessionResult.success) {
+    sessionLogger.error("Failed to create session");
+    return c.json({ error: "Failed to create session" }, 500);
+  }
+  await recordAudit(c.env.DB, sessionLogger, {
+    action: "session.created",
+    actorType: "user",
+    actorId: userId,
+    detail: { method: "google-oauth" },
+  });
+
+  setCookie(c, "stratum_session", sessionResult.data.id, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "Lax",
+    maxAge: 2592000,
+    path: "/",
+  });
+
+  sessionLogger.info("Google OAuth successful, session created");
+  return c.redirect("/");
 });
 
 app.get("/logout", async (c) => {
