@@ -3,15 +3,20 @@ import type { FC } from "hono/jsx";
 interface LayoutProps {
   title: string;
   user?: { id: string; email: string; username: string } | null | undefined;
+  /** Auto-reload the page every N seconds (status polling without client JS). */
+  refreshSeconds?: number;
   children?: unknown;
 }
 
-export const Layout: FC<LayoutProps> = ({ title, user, children }) => {
+export const Layout: FC<LayoutProps> = ({ title, user, refreshSeconds, children }) => {
   return (
     <html lang="en">
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        {refreshSeconds !== undefined && (
+          <meta http-equiv="refresh" content={String(refreshSeconds)} />
+        )}
         <title>{title} — Stratum</title>
         <link rel="stylesheet" href="/ui.css" />
       </head>

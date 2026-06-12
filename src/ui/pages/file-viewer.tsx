@@ -1,6 +1,7 @@
 import { Fragment } from "hono/jsx";
 import type { FC } from "hono/jsx";
 import type { FileContentResult } from "../file-content";
+import { highlightCode } from "../highlight";
 import { Layout } from "../layout";
 
 const extensionToLanguage: Record<string, string> = {
@@ -94,11 +95,23 @@ export const FileViewerPage: FC<FileViewerPageProps> = ({ project, path, content
       </div>
 
       <div class="card file-viewer-content">
-        {content.kind === "content" && (
-          <pre>
-            <code class={`language-${language}`}>{content.value}</code>
-          </pre>
-        )}
+        {content.kind === "content" &&
+          (() => {
+            // highlightCode escapes its input; the returned markup is trusted.
+            const highlighted = highlightCode(content.value, language);
+            return (
+              <pre>
+                {highlighted !== null ? (
+                  <code
+                    class={`highlighted language-${language}`}
+                    dangerouslySetInnerHTML={{ __html: highlighted }}
+                  />
+                ) : (
+                  <code class={`language-${language}`}>{content.value}</code>
+                )}
+              </pre>
+            );
+          })()}
         {content.kind === "binary" && <p class="file-viewer-message">Binary file — not shown.</p>}
         {content.kind === "oversize" && (
           <p class="file-viewer-message">File too large to display (&gt; 512 KB).</p>

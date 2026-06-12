@@ -4,15 +4,23 @@ import { getChange, listChanges } from "../storage/changes";
 import { getChangeCostSummary } from "../storage/costs";
 import { listEvalRuns } from "../storage/eval-runs";
 import { listProjectEvents } from "../storage/events";
+import { getDiffBetweenRepos } from "../storage/git-ops";
 import { getCommitLog, listFilesInRepo, readFileFromRepo } from "../storage/git-ops";
 import { getImportProgress } from "../storage/imports";
 import { getIssueByNumber, listIssues } from "../storage/issues";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
-import { getProject, getProjectByPath, listProjects, listWorkspaces } from "../storage/state";
+import {
+  getProject,
+  getProjectByPath,
+  getWorkspace,
+  listProjects,
+  listWorkspaces,
+} from "../storage/state";
 import { getProjectSourceUrl, getSyncStatus } from "../storage/sync";
 import { getUser } from "../storage/users";
 import { listDeliveries, listWebhooks } from "../storage/webhooks";
 import type { Env, ProjectEntry } from "../types";
+import { parseUnifiedDiff } from "../ui/components/diff-view";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
 import { ActivityPage } from "../ui/pages/activity";
 import { ChangeDetailPage } from "../ui/pages/change-detail";
@@ -382,6 +390,33 @@ app.get("/changes/:id", async (c) => {
     listReviews(c.env.DB, logger, change.id),
     getChangeCostSummary(c.env.DB, logger, change.id),
   ]);
+
+  // The diff is only renderable while the workspace still exists and the
+  // change is still in review; failures degrade to "no diff section".
+  let diffFiles: ReturnType<typeof parseUnifiedDiff> | null = null;
+  const DIFFABLE_STATUSES = ["open", "needs_changes", "accepted", "approved"];
+  if (DIFFABLE_STATUSES.includes(change.status)) {
+    const workspaceResult = await getWorkspace(
+      c.env.STATE,
+      projectResult.data.id,
+      change.workspace,
+      logger,
+    );
+    if (workspaceResult.success) {
+      const diffResult = await getDiffBetweenRepos(
+        projectResult.data.remote,
+        projectResult.data.token,
+        workspaceResult.data.remote,
+        workspaceResult.data.token,
+        logger,
+      );
+      if (diffResult.success) {
+        diffFiles = parseUnifiedDiff(diffResult.data);
+      } else {
+        logger.warn("Failed to load change diff", { changeId: change.id });
+      }
+    }
+  }
   if (!evalRunsResult.success) {
     logger.error("Failed to list eval runs", evalRunsResult.error);
   }
@@ -415,6 +450,7 @@ app.get("/changes/:id", async (c) => {
       comments={commentsResult.success ? commentsResult.data : []}
       reviews={reviewsResult.success ? reviewsResult.data : []}
       costs={costsResult.success ? costsResult.data : []}
+      diff={diffFiles}
       canReview={!!userResult && (await canWriteProject(c.env.DB, projectResult.data, userId))}
       user={userResult}
     />,
