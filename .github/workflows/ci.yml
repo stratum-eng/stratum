@@ -35,6 +35,34 @@ jobs:
           name: coverage-report
           path: coverage/
 
+  packages:
+    name: CLI & Agent Packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: CLI — install, typecheck, test, build
+        working-directory: cli
+        run: |
+          npm install
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Agent — install, typecheck, test, build
+        working-directory: agent
+        run: |
+          npm install
+          npm run typecheck
+          npm test
+          npm run build
+
   # ========================================================================
   # Staging Deployment with Automatic Migration
   # ========================================================================
