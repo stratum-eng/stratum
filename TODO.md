@@ -2,7 +2,8 @@
 
 The master-plan feature roadmap (stratum-master-plan-v2.md, Phases 0–3 plus the
 code-level Phase 4 hardening items) is complete as of 2026-06-11. See
-docs/CURRENT_CAPABILITIES.md for what exists and its limitations.
+docs/CURRENT_CAPABILITIES.md for what exists and its limitations, and
+docs/REMAINING_WORK.md for context on each remaining item below.
 
 ## Remaining (operational / scale — master-plan Phase 4, Stratum Cloud)
 
