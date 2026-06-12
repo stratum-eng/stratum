@@ -10,6 +10,7 @@ import type { EventQueueMessage } from "./queue/events";
 import { handleImportQueue } from "./queue/import-queue";
 import { runTtlSweep } from "./queue/ttl-sweep";
 import { agentsRouter } from "./routes/agents";
+import { auditRouter } from "./routes/audit";
 import { authRouter } from "./routes/auth";
 import { bulkImportRouter } from "./routes/bulk-import";
 import { changesRouter } from "./routes/changes";
@@ -110,6 +111,9 @@ app.route("/api/health", healthRouter);
 
 // Admin metrics endpoint
 app.route("/api/admin/metrics", metricsRouter);
+
+// Admin audit trail endpoint
+app.route("/api/admin/audit", auditRouter);
 
 // Redirects from old /ui/* URLs to new paths (backward compatibility)
 app.get("/ui", (c) => c.redirect("/", 301));

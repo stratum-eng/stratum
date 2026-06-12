@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { recordAudit } from "../storage/audit";
 import { createUser, getUser, getUserByUsername, rotateUserToken } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
@@ -81,6 +82,12 @@ app.post("/me/rotate-token", async (c) => {
     logger.error("Failed to rotate API key", result.error, { userId });
     return c.json({ error: "Failed to rotate API key" }, 500);
   }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "token.rotated",
+    actorType: "user",
+    actorId: userId,
+  });
 
   // The old key is invalid as of this response; the new one is shown once.
   return ok({ token: result.data });

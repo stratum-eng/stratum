@@ -14,6 +14,7 @@ import { runPostMergeCheck } from "../merge/post-merge";
 import { checkMergeProtection } from "../merge/protection";
 import { type EventActor, emitEvent } from "../queue/events";
 import type { MergeOutcome } from "../queue/merge-queue";
+import { recordAudit } from "../storage/audit";
 import { createChange, getChange, listChanges, updateChangeStatus } from "../storage/changes";
 import { type CostSample, getChangeCostSummary, recordCosts } from "../storage/costs";
 import { listEvalRuns, recordEvalRuns } from "../storage/eval-runs";
@@ -519,6 +520,16 @@ app.post("/changes/:id/merge", async (c) => {
       commit: result.commit,
     });
 
+    if (force) {
+      await recordAudit(c.env.DB, logger, {
+        action: "merge.forced",
+        actorType: "user",
+        actorId: userId,
+        subject: id,
+        detail: { project: change.project },
+      });
+    }
+
     const postMergeViaQueue = result.commit
       ? await runPostMergeCheck(
           c.env,
@@ -638,6 +649,16 @@ app.post("/changes/:id/merge", async (c) => {
     workspace: change.workspace,
     commit,
   });
+
+  if (force) {
+    await recordAudit(c.env.DB, logger, {
+      action: "merge.forced",
+      actorType: "user",
+      actorId: userId,
+      subject: id,
+      detail: { project: change.project },
+    });
+  }
 
   const postMerge = await runPostMergeCheck(
     c.env,

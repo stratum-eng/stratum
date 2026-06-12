@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { recordAudit } from "../storage/audit";
 import { getProjectByPath } from "../storage/state";
 import {
   createWebhook,
@@ -130,6 +131,14 @@ app.post("/:namespace/:slug/webhooks", async (c) => {
     return internalError(webhookResult.error.message);
   }
 
+  await recordAudit(c.env.DB, logger, {
+    action: "webhook.created",
+    actorType: "user",
+    actorId: userId,
+    subject: webhookResult.data.id,
+    detail: { project: project.name, url: webhookResult.data.url },
+  });
+
   if (!contentType.includes("application/json")) {
     return c.redirect(`/${project.namespace}/${project.slug}/webhooks`, 302);
   }
@@ -215,6 +224,14 @@ app.post("/:namespace/:slug/webhooks/:id/toggle", async (c) => {
     return internalError(updateResult.error.message);
   }
 
+  await recordAudit(c.env.DB, logger, {
+    action: "webhook.toggled",
+    actorType: "user",
+    actorId: c.get("userId"),
+    subject: id,
+    detail: { project: project.name, active: !webhookResult.data.active },
+  });
+
   const contentType = c.req.header("content-type") ?? "";
   if (!contentType.includes("application/json")) {
     return c.redirect(`/${project.namespace}/${project.slug}/webhooks`, 302);
@@ -248,6 +265,14 @@ app.delete("/:namespace/:slug/webhooks/:id", async (c) => {
     return internalError(deleteResult.error.message);
   }
 
+  await recordAudit(c.env.DB, logger, {
+    action: "webhook.deleted",
+    actorType: "user",
+    actorId: c.get("userId"),
+    subject: id,
+    detail: { project: project.name },
+  });
+
   return ok({ deleted: true, id });
 });
 
@@ -276,6 +301,14 @@ app.post("/:namespace/:slug/webhooks/:id/delete", async (c) => {
   if (!deleteResult.success) {
     return internalError(deleteResult.error.message);
   }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "webhook.deleted",
+    actorType: "user",
+    actorId: c.get("userId"),
+    subject: id,
+    detail: { project: project.name },
+  });
 
   return c.redirect(`/${project.namespace}/${project.slug}/webhooks`, 302);
 });
