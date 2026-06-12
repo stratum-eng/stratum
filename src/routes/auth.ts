@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { recordAudit } from "../storage/audit";
 import { createSession, deleteSession, getSession } from "../storage/sessions";
 import { upsertGitHubUser } from "../storage/users";
 import type { Env } from "../types";
@@ -159,6 +160,14 @@ app.get("/github/callback", async (c) => {
   const sessionLogger = logger.child({ userId: user.id });
 
   const sessionResult = await createSession(c.env.DB, user.id, sessionLogger);
+  if (sessionResult.success) {
+    await recordAudit(c.env.DB, sessionLogger, {
+      action: "session.created",
+      actorType: "user",
+      actorId: user.id,
+      detail: { method: "github-oauth" },
+    });
+  }
   if (!sessionResult.success) {
     sessionLogger.error("Failed to create session");
     return c.json({ error: "Failed to create session" }, 500);

@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { getMagicLinkEmail } from "../email/templates";
+import { recordAudit } from "../storage/audit";
 import { createSession } from "../storage/sessions";
 import { createUser, getUserByEmail, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
@@ -696,6 +697,14 @@ async function createSessionAndRedirect(
 ): Promise<Response> {
   const sessionLogger = logger.child({ userId });
   const sessionResult = await createSession(c.env.DB, userId, sessionLogger, rememberMe);
+  if (sessionResult.success) {
+    await recordAudit(c.env.DB, sessionLogger, {
+      action: "session.created",
+      actorType: "user",
+      actorId: userId,
+      detail: { method: "magic-link" },
+    });
+  }
 
   if (!sessionResult.success) {
     sessionLogger.error("Failed to create session");

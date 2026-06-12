@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { createAgent, deleteAgent, getAgent, listAgents } from "../storage/agents";
+import { recordAudit } from "../storage/audit";
 import { listComments, listReviews } from "../storage/change-reviews";
 import { getChange, listChanges } from "../storage/changes";
 import { getChangeCostSummary } from "../storage/costs";
@@ -155,6 +156,12 @@ app.post("/settings/rotate-token", async (c) => {
     return c.html(issuePageError(500), 500);
   }
 
+  await recordAudit(c.env.DB, logger, {
+    action: "token.rotated",
+    actorType: "user",
+    actorId: user.id,
+  });
+
   const agents = await loadAgentSummaries(c.env.DB, user.id, logger);
   // Rendered in the POST response so the secret never lands in a URL or log.
   return c.html(
@@ -186,6 +193,14 @@ app.post("/settings/agents", async (c) => {
     return c.html(issuePageError(500), 500);
   }
 
+  await recordAudit(c.env.DB, logger, {
+    action: "agent.created",
+    actorType: "user",
+    actorId: user.id,
+    subject: createResult.data.agent.id,
+    detail: { name },
+  });
+
   const agents = await loadAgentSummaries(c.env.DB, user.id, logger);
   return c.html(
     <SettingsPage
@@ -205,7 +220,15 @@ app.post("/settings/agents/:id/delete", async (c) => {
   const { id } = c.req.param();
   const agentResult = await getAgent(c.env.DB, id, logger);
   if (agentResult.success && agentResult.data.ownerId === user.id) {
-    await deleteAgent(c.env.DB, id, logger);
+    const deleteResult = await deleteAgent(c.env.DB, id, logger);
+    if (deleteResult.success) {
+      await recordAudit(c.env.DB, logger, {
+        action: "agent.revoked",
+        actorType: "user",
+        actorId: user.id,
+        subject: id,
+      });
+    }
   }
   return c.redirect("/settings", 302);
 });

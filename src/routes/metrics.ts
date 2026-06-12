@@ -6,36 +6,28 @@
 import { Hono } from "hono";
 import { getMetricsSummary, getQueueDepth } from "../storage/metrics";
 import type { Env } from "../types";
+import { isAdminRequest } from "../utils/admin";
 import { createLogger } from "../utils/logger";
 import { internalError, ok, unauthorized } from "../utils/response";
 
 const app = new Hono<{ Bindings: Env }>();
 
-/**
- * Simple admin check - can be enhanced with proper role-based access control
- * For now, checks if user is authenticated
- */
 async function isAdmin(c: {
   env: Env;
   req: { header: (name: string) => string | undefined };
   get: <T>(key: string) => T | undefined;
 }): Promise<boolean> {
-  // Check for API key authentication (for service-to-service calls)
-  const apiKey = c.req.header("X-Admin-API-Key");
-  if (apiKey && c.env.ADMIN_API_KEY && apiKey === c.env.ADMIN_API_KEY) {
-    return true;
-  }
-
-  // Check for session-based authentication
-  const userId = c.get("userId");
-  if (!userId) {
-    return false;
-  }
-
-  // TODO: Add proper admin role checking
-  // For now, any authenticated user can view metrics
-  // In production, this should check for admin role
-  return true;
+  const logger = createLogger({ component: "MetricsAdmin" });
+  return isAdminRequest(
+    c.env,
+    {
+      ...(c.req.header("X-Admin-API-Key") !== undefined
+        ? { adminApiKeyHeader: c.req.header("X-Admin-API-Key") }
+        : {}),
+      ...(c.get<string>("userId") !== undefined ? { userId: c.get<string>("userId") } : {}),
+    },
+    logger,
+  );
 }
 
 // GET /api/admin/metrics - Get import metrics dashboard data

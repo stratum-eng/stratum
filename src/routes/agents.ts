@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { createAgent, deleteAgent, getAgent, listAgents } from "../storage/agents";
+import { recordAudit } from "../storage/audit";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 import { badRequest, created, ok } from "../utils/response";
@@ -51,6 +52,13 @@ app.post("/", async (c) => {
 
   const { agent, plaintext } = result.data;
   logger.info("Agent created", { agentId: agent.id, userId });
+  await recordAudit(c.env.DB, logger, {
+    action: "agent.created",
+    actorType: "user",
+    actorId: userId,
+    subject: agent.id,
+    detail: { name: agent.name },
+  });
 
   return created({
     agent: {
@@ -176,6 +184,13 @@ app.delete("/:id", async (c) => {
     logger.error("Failed to delete agent", deleteResult.error, { agentId: id });
     return c.json({ error: "Failed to delete agent" }, 500);
   }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "agent.revoked",
+    actorType: "user",
+    actorId: userId,
+    subject: id,
+  });
 
   logger.info("Agent deleted", { agentId: id, userId });
   return ok({ deleted: true, id });
