@@ -105,6 +105,9 @@ export interface Env {
   STRATUM_TELEMETRY_DISABLED?: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_REDIRECT_URI?: string;
   GITHUB_WEBHOOK_SECRET?: string;
   OAUTH_REDIRECT_URI?: string;
   // Git provider API tokens for sync

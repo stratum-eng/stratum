@@ -77,6 +77,9 @@ name = "EMAIL"
 # STRATUM_TELEMETRY_DISABLED = "true"  # uncomment to disable telemetry for self-hosted
 # GITHUB_CLIENT_ID =
 # GITHUB_CLIENT_SECRET =
+# GOOGLE_CLIENT_ID =
+# GOOGLE_CLIENT_SECRET =
+# GOOGLE_REDIRECT_URI = "https://yourdomain.com/auth/google/callback"
 # EMAIL_FROM_ADDRESS = "noreply@yourdomain.com"  # for magic link emails
 
 # Staging environment
