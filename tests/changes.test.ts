@@ -550,6 +550,19 @@ describe("POST /api/projects/:name/changes", () => {
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain("does not belong to project");
   });
+
+  it("accepts a workspace whose parent stores the project id", async () => {
+    // Workspaces created via the namespaced API store the project id, not its name.
+    vi.mocked(getWorkspace).mockResolvedValue({
+      success: true,
+      data: { ...mockWorkspace, parent: mockProject.id },
+    });
+    const res = await app.fetch(
+      request("POST", "/api/projects/my-project/changes", { workspace: "fix-bug" }, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(201);
+  });
 });
 
 describe("GET /api/projects/:name/changes", () => {
@@ -866,6 +879,28 @@ describe("POST /api/changes/:id/merge", () => {
       "merged",
       expect.objectContaining({ mergedAt: expect.any(String) }),
     );
+  });
+
+  it("redirects browser form posts back to the change page after merging", async () => {
+    const acceptedChange: Change = { ...mockChange, status: "accepted" };
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: acceptedChange,
+    });
+
+    const res = await app.fetch(
+      new Request("http://localhost/api/changes/chg_abc123/merge", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          ...USER_AUTH,
+        },
+        body: "",
+      }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/changes/chg_abc123");
   });
 
   it("merges an accepted change", async () => {
@@ -1208,6 +1243,34 @@ describe("POST /api/changes/:id/reject", () => {
     const body = (await res.json()) as { rejected: boolean; changeId: string };
     expect(body.rejected).toBe(true);
     expect(body.changeId).toBe("chg_abc123");
+    expect(updateChangeStatus).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      "chg_abc123",
+      "rejected",
+      expect.any(Object),
+    );
+  });
+
+  it("redirects browser form posts back to the change page", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: mockChange,
+    });
+
+    const res = await app.fetch(
+      new Request("http://localhost/api/changes/chg_abc123/reject", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          ...USER_AUTH,
+        },
+        body: "",
+      }),
+      env,
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/changes/chg_abc123");
     expect(updateChangeStatus).toHaveBeenCalledWith(
       env.DB,
       expect.any(Object),
