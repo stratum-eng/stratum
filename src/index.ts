@@ -3,6 +3,7 @@ import { setCookie } from "hono/cookie";
 import { githubWebhookRouter } from "./github/webhooks";
 import { analyticsMiddleware } from "./middleware/analytics";
 import { authMiddleware } from "./middleware/auth";
+import { csrfMiddleware } from "./middleware/csrf";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
 import { handleEventQueue, sweepStaleEvents } from "./queue/event-consumer";
 import type { EventQueueMessage } from "./queue/events";
@@ -39,6 +40,7 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.use("*", analyticsMiddleware);
 app.use("*", authMiddleware);
+app.use("*", csrfMiddleware);
 app.use("*", rateLimitMiddleware());
 
 app.get("/health", (c) => c.json({ status: "ok", service: "stratum" }));

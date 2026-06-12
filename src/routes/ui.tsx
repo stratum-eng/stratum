@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { createAgent, deleteAgent, getAgent, listAgents } from "../storage/agents";
 import { listComments, listReviews } from "../storage/change-reviews";
 import { getChange, listChanges } from "../storage/changes";
 import { getChangeCostSummary } from "../storage/costs";
@@ -17,7 +18,7 @@ import {
   listWorkspaces,
 } from "../storage/state";
 import { getProjectSourceUrl, getSyncStatus } from "../storage/sync";
-import { getUser } from "../storage/users";
+import { getUser, rotateUserToken } from "../storage/users";
 import { listDeliveries, listWebhooks } from "../storage/webhooks";
 import type { Env, ProjectEntry } from "../types";
 import { parseUnifiedDiff } from "../ui/components/diff-view";
@@ -30,6 +31,7 @@ import { HomePage } from "../ui/pages/home";
 import { IssueDetailPage, IssuesPage, NewIssuePage } from "../ui/pages/issues";
 import { NewProjectPage } from "../ui/pages/new-project";
 import { RepoPage } from "../ui/pages/repo";
+import { SettingsPage } from "../ui/pages/settings";
 import { SyncPage } from "../ui/pages/sync";
 import { WebhooksPage } from "../ui/pages/webhooks";
 import { WorkspacesPage } from "../ui/pages/workspaces";
@@ -114,6 +116,98 @@ app.get("/new", async (c) => {
 
   logger.debug("Rendering new project page");
   return c.html(<NewProjectPage user={user} />);
+});
+
+async function loadAgentSummaries(
+  db: D1Database,
+  userId: string,
+  logger: ReturnType<typeof createLogger>,
+): Promise<Array<{ id: string; name: string; model?: string; createdAt: string }>> {
+  const agentsResult = await listAgents(db, userId, logger);
+  if (!agentsResult.success) return [];
+  return agentsResult.data.map((agent) => ({
+    id: agent.id,
+    name: agent.name,
+    ...(agent.model !== undefined ? { model: agent.model } : {}),
+    createdAt: agent.createdAt,
+  }));
+}
+
+// GET /settings — Account, API key, and agent token management
+app.get("/settings", async (c) => {
+  const logger = createLogger({ path: c.req.path, userId: c.get("userId") });
+  const user = await getCurrentUser(c, logger);
+  if (!user) return c.redirect("/auth/email");
+
+  const agents = await loadAgentSummaries(c.env.DB, user.id, logger);
+  return c.html(<SettingsPage user={user} agents={agents} />);
+});
+
+// POST /settings/rotate-token — Rotate the API key; renders the new key once
+app.post("/settings/rotate-token", async (c) => {
+  const logger = createLogger({ path: c.req.path, userId: c.get("userId") });
+  const user = await getCurrentUser(c, logger);
+  if (!user) return c.redirect("/auth/email");
+
+  const rotateResult = await rotateUserToken(c.env.DB, user.id, logger);
+  if (!rotateResult.success) {
+    logger.error("Failed to rotate API key", rotateResult.error);
+    return c.html(issuePageError(500), 500);
+  }
+
+  const agents = await loadAgentSummaries(c.env.DB, user.id, logger);
+  // Rendered in the POST response so the secret never lands in a URL or log.
+  return c.html(
+    <SettingsPage
+      user={user}
+      agents={agents}
+      freshToken={{ kind: "api-key", value: rotateResult.data }}
+    />,
+  );
+});
+
+// POST /settings/agents — Create an agent token; renders it once
+app.post("/settings/agents", async (c) => {
+  const logger = createLogger({ path: c.req.path, userId: c.get("userId") });
+  const user = await getCurrentUser(c, logger);
+  if (!user) return c.redirect("/auth/email");
+
+  const form = await c.req.parseBody();
+  const name = typeof form.name === "string" ? form.name.trim().slice(0, 100) : "";
+  if (!name) return c.html(issuePageError(400), 400);
+  const model =
+    typeof form.model === "string" && form.model.trim()
+      ? form.model.trim().slice(0, 100)
+      : undefined;
+
+  const createResult = await createAgent(c.env.DB, user.id, name, logger, model);
+  if (!createResult.success) {
+    logger.error("Failed to create agent", createResult.error);
+    return c.html(issuePageError(500), 500);
+  }
+
+  const agents = await loadAgentSummaries(c.env.DB, user.id, logger);
+  return c.html(
+    <SettingsPage
+      user={user}
+      agents={agents}
+      freshToken={{ kind: "agent", value: createResult.data.plaintext, agentName: name }}
+    />,
+  );
+});
+
+// POST /settings/agents/:id/delete — Revoke an agent token
+app.post("/settings/agents/:id/delete", async (c) => {
+  const logger = createLogger({ path: c.req.path, userId: c.get("userId") });
+  const user = await getCurrentUser(c, logger);
+  if (!user) return c.redirect("/auth/email");
+
+  const { id } = c.req.param();
+  const agentResult = await getAgent(c.env.DB, id, logger);
+  if (agentResult.success && agentResult.data.ownerId === user.id) {
+    await deleteAgent(c.env.DB, id, logger);
+  }
+  return c.redirect("/settings", 302);
 });
 
 // GET /p/:name — Repo view (files + commit log) - DEPRECATED: Use /:namespace/:slug

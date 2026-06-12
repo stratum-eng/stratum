@@ -119,6 +119,37 @@ export async function createUser(
   }
 }
 
+/**
+ * Rotate a user's API key: generates a new key and invalidates the old one
+ * in a single update. Returns the new plaintext key — shown once, never stored.
+ */
+export async function rotateUserToken(
+  db: D1Database,
+  userId: string,
+  logger: Logger,
+): Promise<Result<string, AppError>> {
+  try {
+    const plaintext = await generateApiKey("stratum_user");
+    const tokenHash = await hashToken(plaintext);
+
+    const result = await db
+      .prepare("UPDATE users SET token_hash = ? WHERE id = ?")
+      .bind(tokenHash, userId)
+      .run();
+    if (result.meta.changes === 0) {
+      return err(new AppError(`User '${userId}' not found`, "NOT_FOUND", 404, { userId }));
+    }
+
+    logger.info("User API key rotated", { userId });
+    return ok(plaintext);
+  } catch (error) {
+    logger.error("Failed to rotate user token", error instanceof Error ? error : undefined, {
+      userId,
+    });
+    return err(new AppError("Failed to rotate API key", "STORAGE_ERROR", 500, { userId }));
+  }
+}
+
 export async function getUser(
   db: D1Database,
   id: string,

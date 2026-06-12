@@ -12,6 +12,8 @@ declare module "hono" {
     username: string;
     agentId?: string;
     agentOwnerId?: string;
+    /** How the caller authenticated — CSRF checks apply to "session" only. */
+    authVia?: "token" | "session";
     logger: Logger;
   }
 }
@@ -55,6 +57,7 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
       }
       c.set("userId", userResult.data.id);
       c.set("username", userResult.data.username);
+      c.set("authVia", "token");
       logger.debug("Auth success - user", {
         userId: userResult.data.id,
         username: userResult.data.username,
@@ -74,6 +77,7 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
       }
       c.set("agentId", agentResult.data.id);
       c.set("agentOwnerId", agentResult.data.ownerId);
+      c.set("authVia", "token");
       logger.debug("Auth success - agent", {
         agentId: agentResult.data.id,
         ownerId: agentResult.data.ownerId,
@@ -99,6 +103,7 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         await deleteSession(c.env.DB, sessionId, userId, logger);
       } else {
         c.set("userId", sessionResult.data.userId);
+        c.set("authVia", "session");
 
         // Fetch username for the session user
         const userResult = await getUser(c.env.DB, sessionResult.data.userId, logger);

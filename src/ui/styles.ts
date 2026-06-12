@@ -551,6 +551,21 @@ a:hover { text-decoration: underline; }
 .diff-del { background: rgba(248, 113, 113, 0.12); color: #f5c2c2; }
 .diff-hunk { color: #7cb7ff; background: #14181f; }
 
+/* Settings */
+.settings-help { font-size: 0.85rem; color: #888; }
+.settings-token-reveal { border: 1px solid #2d4f2d; background: #101a10; }
+.settings-token {
+  display: block; padding: 0.6rem 0.75rem; background: #0d0d0d;
+  border: 1px solid #333; border-radius: 4px; word-break: break-all;
+  font-size: 0.85rem; color: #9ecbff;
+}
+.settings-agent-form { display: flex; flex-direction: column; gap: 0.75rem; max-width: 420px; margin-top: 1rem; }
+.settings-agent-form label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; color: #aaa; }
+.settings-agent-form input {
+  background: #111; border: 1px solid #333; color: #eee;
+  padding: 0.5rem; border-radius: 4px; font-family: inherit;
+}
+
 /* Costs */
 .cost-list { list-style: none; padding: 0; margin: 0; font-size: 0.9rem; color: #ccc; }
 .cost-list li { padding: 0.2rem 0; }

@@ -32,6 +32,9 @@ export const Layout: FC<LayoutProps> = ({ title, user, refreshSeconds, children 
             {user ? (
               <>
                 <span class="nav-user">{user.username ?? user.email}</span>
+                <a href="/settings" class="nav-auth-link">
+                  settings
+                </a>
                 <a href="/auth/logout" class="nav-auth-link">
                   logout
                 </a>
