@@ -83,6 +83,16 @@ describe("Google OAuth", () => {
     expect(location).toContain("scope=openid+email+profile");
   });
 
+  it("rejects a known state without the binding cookie (login CSRF)", async () => {
+    const app = makeApp();
+    const env = makeEnv({ STATE: makeKv({ "oauth_state:goodstate": "1" }) });
+    const res = await app.fetch(
+      new Request("http://localhost/auth/google/callback?code=ok&state=goodstate"),
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
   it("rejects callbacks with an unknown state", async () => {
     const app = makeApp();
     const env = makeEnv();
@@ -126,7 +136,9 @@ describe("Google OAuth", () => {
     });
 
     const res = await app.fetch(
-      new Request("http://localhost/auth/google/callback?code=ok&state=goodstate"),
+      new Request("http://localhost/auth/google/callback?code=ok&state=goodstate", {
+        headers: { Cookie: "stratum_oauth_state=goodstate" },
+      }),
       env,
     );
     expect(res.status).toBe(302);
@@ -171,7 +183,9 @@ describe("Google OAuth", () => {
     });
 
     const res = await app.fetch(
-      new Request("http://localhost/auth/google/callback?code=ok&state=goodstate"),
+      new Request("http://localhost/auth/google/callback?code=ok&state=goodstate", {
+        headers: { Cookie: "stratum_oauth_state=goodstate" },
+      }),
       env,
     );
     expect(res.status).toBe(302);
@@ -193,7 +207,9 @@ describe("Google OAuth", () => {
     });
 
     const res = await app.fetch(
-      new Request("http://localhost/auth/google/callback?code=ok&state=goodstate"),
+      new Request("http://localhost/auth/google/callback?code=ok&state=goodstate", {
+        headers: { Cookie: "stratum_oauth_state=goodstate" },
+      }),
       env,
     );
     expect(res.status).toBe(422);

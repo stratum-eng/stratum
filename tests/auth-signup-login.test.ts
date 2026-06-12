@@ -1221,7 +1221,9 @@ describe("Auth Signup/Login Integration Tests", () => {
       await env.STATE.put(`oauth_state:${state}`, "1", { expirationTtl: 600 });
 
       const res = await app.fetch(
-        request(`/auth/github/callback?code=test-code&state=${state}`),
+        request(`/auth/github/callback?code=test-code&state=${state}`, {
+          headers: { Cookie: `stratum_oauth_state=${state}` },
+        }),
         env,
       );
 
@@ -1242,11 +1244,42 @@ describe("Auth Signup/Login Integration Tests", () => {
       expect(body.error).toContain("Invalid or expired state");
     });
 
+    it("rejects a known state when the browser cookie is missing (login CSRF)", async () => {
+      const state = "test-state-csrf";
+      await env.STATE.put(`oauth_state:${state}`, "1", { expirationTtl: 600 });
+
+      const res = await app.fetch(
+        request(`/auth/github/callback?code=test-code&state=${state}`),
+        env,
+      );
+
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects when the cookie state does not match the query state", async () => {
+      const state = "test-state-mismatch";
+      await env.STATE.put(`oauth_state:${state}`, "1", { expirationTtl: 600 });
+
+      const res = await app.fetch(
+        request(`/auth/github/callback?code=test-code&state=${state}`, {
+          headers: { Cookie: "stratum_oauth_state=other-state-value" },
+        }),
+        env,
+      );
+
+      expect(res.status).toBe(400);
+    });
+
     it("rejects missing code parameter", async () => {
       const state = "test-state-456";
       await env.STATE.put(`oauth_state:${state}`, "1", { expirationTtl: 600 });
 
-      const res = await app.fetch(request(`/auth/github/callback?state=${state}`), env);
+      const res = await app.fetch(
+        request(`/auth/github/callback?state=${state}`, {
+          headers: { Cookie: `stratum_oauth_state=${state}` },
+        }),
+        env,
+      );
 
       expect(res.status).toBe(400);
       const body = (await res.json()) as { error: string };

@@ -8,6 +8,61 @@ import { createLogger } from "../utils/logger";
 
 const app = new Hono<{ Bindings: Env }>();
 
+const OAUTH_STATE_COOKIE = "stratum_oauth_state";
+const OAUTH_STATE_TTL_SECONDS = 600;
+
+/** Constant-time string equality — OAuth state values are attacker-influenced. */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+/**
+ * Mint an OAuth state, persist it in KV (replay prevention), and bind it to
+ * the initiating browser via a short-lived cookie (login-CSRF prevention).
+ */
+async function issueOAuthState(
+  c: Parameters<typeof setCookie>[0],
+  kv: KVNamespace,
+): Promise<string> {
+  const state = crypto.randomUUID().replace(/-/g, "");
+  await kv.put(`oauth_state:${state}`, "1", { expirationTtl: OAUTH_STATE_TTL_SECONDS });
+  setCookie(c, OAUTH_STATE_COOKIE, state, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "Lax",
+    maxAge: OAUTH_STATE_TTL_SECONDS,
+    path: "/auth",
+  });
+  return state;
+}
+
+/**
+ * Validate a callback's state: it must match the browser's state cookie
+ * (constant-time) AND exist in KV. Consumes both on success.
+ */
+async function consumeOAuthState(
+  c: Parameters<typeof getCookie>[0] & Parameters<typeof deleteCookie>[0],
+  kv: KVNamespace,
+  state: string,
+): Promise<boolean> {
+  const cookieState = getCookie(c, OAUTH_STATE_COOKIE);
+  if (!cookieState || !timingSafeEqual(cookieState, state)) {
+    return false;
+  }
+  deleteCookie(c, OAUTH_STATE_COOKIE, { path: "/auth" });
+
+  const stateKey = `oauth_state:${state}`;
+  const stored = await kv.get(stateKey);
+  if (!stored) return false;
+  await kv.delete(stateKey);
+  return true;
+}
+
 app.get("/github", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
@@ -23,8 +78,7 @@ app.get("/github", async (c) => {
     return c.json({ error: "GitHub OAuth is not configured" }, 501);
   }
 
-  const state = crypto.randomUUID().replace(/-/g, "");
-  await c.env.STATE.put(`oauth_state:${state}`, "1", { expirationTtl: 600 });
+  const state = await issueOAuthState(c, c.env.STATE);
 
   const params = new URLSearchParams({
     client_id: clientId,
@@ -60,13 +114,10 @@ app.get("/github/callback", async (c) => {
     return c.json({ error: "Missing state parameter" }, 400);
   }
 
-  const stateKey = `oauth_state:${state}`;
-  const storedState = await c.env.STATE.get(stateKey);
-  if (!storedState) {
-    logger.warn("Invalid or expired state", { statePrefix: state.slice(0, 8) });
+  if (!(await consumeOAuthState(c, c.env.STATE, state))) {
+    logger.warn("Invalid, expired, or unbound state", { statePrefix: state.slice(0, 8) });
     return c.json({ error: "Invalid or expired state" }, 400);
   }
-  await c.env.STATE.delete(stateKey);
 
   if (!code) {
     logger.warn("Missing code parameter");
@@ -214,8 +265,7 @@ app.get("/google", async (c) => {
     return c.json({ error: "Google OAuth is not configured" }, 501);
   }
 
-  const state = crypto.randomUUID().replace(/-/g, "");
-  await c.env.STATE.put(`oauth_state:${state}`, "1", { expirationTtl: 600 });
+  const state = await issueOAuthState(c, c.env.STATE);
 
   const params = new URLSearchParams({
     client_id: clientId,
@@ -250,13 +300,10 @@ app.get("/google/callback", async (c) => {
   if (!state) {
     return c.json({ error: "Missing state parameter" }, 400);
   }
-  const stateKey = `oauth_state:${state}`;
-  const storedState = await c.env.STATE.get(stateKey);
-  if (!storedState) {
-    logger.warn("Invalid or expired state", { statePrefix: state.slice(0, 8) });
+  if (!(await consumeOAuthState(c, c.env.STATE, state))) {
+    logger.warn("Invalid, expired, or unbound state", { statePrefix: state.slice(0, 8) });
     return c.json({ error: "Invalid or expired state" }, 400);
   }
-  await c.env.STATE.delete(stateKey);
 
   if (!code) {
     return c.json({ error: "Missing code parameter" }, 400);
