@@ -76,7 +76,7 @@ app.post("/:namespace/:slug/issues", async (c) => {
   const { project } = result;
 
   // Anyone who can read the project can open issues against it.
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     return notFound("Project", `${project.namespace}/${project.slug}`);
   }
 
@@ -153,7 +153,7 @@ app.get("/:namespace/:slug/issues", async (c) => {
   if ("response" in result) return result.response;
   const { project } = result;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     return notFound("Project", `${project.namespace}/${project.slug}`);
   }
 
@@ -185,7 +185,7 @@ app.get("/:namespace/:slug/issues/:number", async (c) => {
   if ("response" in result) return result.response;
   const { project } = result;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     return notFound("Project", `${project.namespace}/${project.slug}`);
   }
 
@@ -218,7 +218,8 @@ app.patch("/:namespace/:slug/issues/:number", async (c) => {
   const { project } = result;
 
   // Editing and closing issues requires write access to the project.
-  if (!canWriteProject(project, userId)) return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, userId)))
+    return forbidden("Project access denied");
 
   const number = parseIssueNumber(c.req.param("number"));
   if (number === null) return badRequest("Invalid issue number");
@@ -312,7 +313,8 @@ app.post("/:namespace/:slug/issues/:number/close", async (c) => {
   if ("response" in result) return result.response;
   const { project } = result;
 
-  if (!canWriteProject(project, userId)) return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, userId)))
+    return forbidden("Project access denied");
 
   const number = parseIssueNumber(c.req.param("number"));
   if (number === null) return badRequest("Invalid issue number");

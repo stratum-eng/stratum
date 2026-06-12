@@ -13,6 +13,7 @@ import {
   recoverStalledImport,
   updateImportStatus,
 } from "../storage/imports";
+import { getOrgAccessLevel, getOrgBySlug } from "../storage/orgs";
 import { listProvenance } from "../storage/provenance";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { getProjectByPath, listProjectsByNamespace, setProject } from "../storage/state";
@@ -86,18 +87,39 @@ app.post("/", async (c) => {
   const username = c.get("username");
   if (!userId || !username) return unauthorized("Authentication required");
 
-  let body: { name?: unknown; files?: unknown; visibility?: unknown; seed?: unknown };
+  let body: {
+    name?: unknown;
+    files?: unknown;
+    visibility?: unknown;
+    seed?: unknown;
+    org?: unknown;
+  };
   const contentType = c.req.header("content-type") ?? "";
   if (contentType.includes("application/json")) {
     body = await c.req.json<typeof body>();
   } else {
     const form = await c.req.parseBody();
-    body = { name: form.name, visibility: form.visibility, seed: form.seed };
+    body = { name: form.name, visibility: form.visibility, seed: form.seed, org: form.org };
   }
 
   if (!isValidSlug(body.name)) return badRequest("name must be a 1-64 char alphanumeric slug");
 
-  const namespace = getUserNamespace(username);
+  // Optional org ownership: the project lives under the org's namespace and
+  // access follows org/team membership instead of personal ownership.
+  let owner: { id: string; type: "user" | "org" } = { id: userId, type: "user" };
+  let namespace = getUserNamespace(username);
+  if (body.org !== undefined && body.org !== "") {
+    if (typeof body.org !== "string") return badRequest("org must be a string slug");
+    const orgResult = await getOrgBySlug(c.env.DB, logger, body.org);
+    if (!orgResult.success) return notFound("Organization", body.org);
+    const org = orgResult.data;
+    const accessLevel = await getOrgAccessLevel(c.env.DB, logger, org.id, userId);
+    if (accessLevel !== "write" && accessLevel !== "admin") {
+      return forbidden("Creating projects in this organization requires write access");
+    }
+    owner = { id: org.id, type: "org" };
+    namespace = `@${org.slug}`;
+  }
 
   // Validate namespace format
   if (!isValidNamespace(namespace)) {
@@ -185,8 +207,8 @@ app.post("/", async (c) => {
     name: String(body.name),
     slug,
     namespace,
-    ownerId: userId,
-    ownerType: "user",
+    ownerId: owner.id,
+    ownerType: owner.type,
     remote: repo.remote,
     token: repo.token,
     createdAt: new Date().toISOString(),
@@ -251,7 +273,12 @@ app.get("/", async (c) => {
     return internalError(projectsResult.error.message);
   }
 
-  const projects = filterReadableProjects(projectsResult.data, userId, agentOwnerId);
+  const projects = await filterReadableProjects(
+    c.env.DB,
+    projectsResult.data,
+    userId,
+    agentOwnerId,
+  );
   logger.info("Projects listed", { count: projects.length });
 
   return ok({
@@ -291,7 +318,7 @@ app.get("/:namespace/:slug", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId))
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   logger.info("Project retrieved", { namespace, slug });
@@ -793,7 +820,7 @@ app.get("/:namespace/:slug/files", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId))
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const filesResult = await listFilesInRepo(project.remote, project.token, logger);
@@ -837,7 +864,7 @@ app.get("/:namespace/:slug/content", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId))
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const contentResult = await getFileContent(project.remote, project.token, filePath, logger);
@@ -882,7 +909,7 @@ app.get("/:namespace/:slug/log", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId))
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const depth = Number(c.req.query("depth") ?? 20);
@@ -929,7 +956,7 @@ app.get("/:namespace/:slug/provenance", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId))
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const limitParam = c.req.query("limit");
@@ -979,7 +1006,7 @@ app.get("/:namespace/:slug/activity", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId))
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const limitParam = c.req.query("limit");
@@ -1027,7 +1054,7 @@ app.get("/:namespace/:slug/import/status", async (c) => {
     return notFound("Project", `${namespace}/${slug}`);
   }
 
-  if (!canReadProject(projectResult.data, userId, agentOwnerId))
+  if (!(await canReadProject(c.env.DB, projectResult.data, userId, agentOwnerId)))
     return notFound("Project", `${namespace}/${slug}`);
 
   const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
@@ -1096,7 +1123,7 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
 
   const userId = c.get("userId");
   const agentOwnerId = c.get("agentOwnerId");
-  if (!canReadProject(projectResult.data, userId, agentOwnerId))
+  if (!(await canReadProject(c.env.DB, projectResult.data, userId, agentOwnerId)))
     return notFound("Project", `${namespace}/${slug}`);
 
   // Set up SSE response
@@ -1531,7 +1558,7 @@ app.get("/:namespace/:slug/sync/status", async (c) => {
 
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId))
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${namespace}/${slug}`);
 
   // Get detailed sync status

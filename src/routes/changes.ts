@@ -104,7 +104,8 @@ app.post("/projects/:name/changes", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canWriteProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, userId, agentOwnerId)))
+    return forbidden("Project access denied");
 
   const body = await c.req.json<{ workspace?: unknown }>().catch(() => ({ workspace: undefined }));
   if (typeof body.workspace !== "string" || !body.workspace.trim()) {
@@ -328,7 +329,7 @@ app.get("/projects/:name/changes", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId))
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const statusParam = c.req.query("status");
@@ -388,7 +389,7 @@ app.get("/changes/:id", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId))
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const evalRunsResult = await listEvalRuns(c.env.DB, logger, id);
@@ -446,7 +447,8 @@ app.post("/changes/:id/merge", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canWriteProject(project, userId)) return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, userId)))
+    return forbidden("Project access denied");
 
   // Branch protection: the policy's merge rules gate every merge path.
   const mergePolicy = await loadPolicy(project.remote, project.token, logger);
@@ -687,7 +689,8 @@ app.post("/changes/:id/reject", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canWriteProject(project, userId)) return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, userId)))
+    return forbidden("Project access denied");
 
   if (change.status === "merged") {
     return badRequest("Cannot reject a merged change");
@@ -748,7 +751,8 @@ app.post("/changes/:id/evaluate", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canWriteProject(project, userId)) return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, userId)))
+    return forbidden("Project access denied");
 
   if (change.status === "merged" || change.status === "rejected" || change.status === "promoted") {
     return badRequest(`Cannot re-evaluate a ${change.status} change`);
@@ -926,7 +930,8 @@ app.post("/changes/:id/github-pr", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canWriteProject(project, userId)) return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, userId)))
+    return forbidden("Project access denied");
   if (!project?.githubUrl) return badRequest("Project is not connected to GitHub");
 
   const repo = parseGitHubRepo(project.githubUrl);

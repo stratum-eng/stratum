@@ -76,7 +76,7 @@ app.post("/changes/:id/comments", async (c) => {
   if ("response" in loaded) return loaded.response;
   const { change, project } = loaded;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     return notFound("Change", change.id);
   }
 
@@ -136,7 +136,7 @@ app.get("/changes/:id/comments", async (c) => {
   if ("response" in loaded) return loaded.response;
   const { change, project } = loaded;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     return notFound("Change", change.id);
   }
 
@@ -164,7 +164,8 @@ app.post("/changes/:id/reviews", async (c) => {
   if ("response" in loaded) return loaded.response;
   const { change, project } = loaded;
 
-  if (!canWriteProject(project, userId)) return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, userId)))
+    return forbidden("Project access denied");
 
   if (!REVIEWABLE_STATUSES.includes(change.status)) {
     return badRequest(`Cannot review a ${change.status} change`);
@@ -238,7 +239,7 @@ app.get("/changes/:id/reviews", async (c) => {
   if ("response" in loaded) return loaded.response;
   const { change, project } = loaded;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     return notFound("Change", change.id);
   }
 

@@ -11,6 +11,7 @@ import {
   updateProjectAfterSync,
 } from "../storage/sync";
 import type { Env } from "../types";
+import { canWriteProject } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import { notFound, ok } from "../utils/response";
 
@@ -20,45 +21,19 @@ const app = new Hono<{ Bindings: Env }>();
 app.use("*", authMiddleware);
 
 /**
- * Determines whether the caller is authorized to access the project identified by `namespace/slug`.
- *
- * Currently authorization succeeds only when the project exists and its `namespace` equals the requested `namespace`; storage failures or missing projects result in `false`.
- *
- * @param _userId - The authenticated user's ID (currently unused; reserved for future permission checks)
- * @returns `true` if access is allowed, `false` otherwise.
+ * Whether the caller may manage sync for `namespace/slug`. Sync mutates the
+ * project, so this requires write access (owner, or org write/admin).
  */
 async function verifyProjectAccess(
   env: Env,
   namespace: string,
   slug: string,
-  _userId: string,
+  userId: string,
   logger: ReturnType<typeof createLogger>,
 ): Promise<boolean> {
-  // Get project to verify ownership
-  const projectResult = await getProject(env.STATE, `${namespace}/${slug}`, logger);
-
-  if (!projectResult.success) {
-    return false;
-  }
-
-  const project = projectResult.data;
-
-  // Check if user owns the project or has access
-  // For now, we check if the namespace matches the user's namespace
-  // TODO: Add proper organization/team access control
-  // IMPORTANT: This is a placeholder implementation. In production, you must:
-  // 1. Check project.ownerId against the authenticated userId
-  // 2. Check project.members array for userId
-  // 3. Implement organization/team-based permissions
-  // 4. Add role-based access control (owner, admin, member, etc.)
-  // The current implementation only validates the project exists and namespace matches.
-  if (project.namespace === namespace) {
-    // Additional check: verify the user is the owner
-    // This is a simplified check - in production you'd check project.members or project.ownerId
-    return true;
-  }
-
-  return false;
+  const projectResult = await getProjectByPath(env.STATE, namespace, slug, logger);
+  if (!projectResult.success) return false;
+  return canWriteProject(env.DB, projectResult.data, userId);
 }
 
 /**
