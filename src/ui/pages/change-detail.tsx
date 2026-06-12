@@ -1,6 +1,7 @@
 import type { FC } from "hono/jsx";
 import type { ChangeComment, ChangeReview } from "../../storage/change-reviews";
 import type { CostSummaryEntry } from "../../storage/costs";
+import { type DiffFile, DiffView } from "../components/diff-view";
 import { Layout } from "../layout";
 
 interface ChangeDetailProps {
@@ -35,6 +36,8 @@ interface ChangeDetailProps {
   comments?: ChangeComment[];
   reviews?: ChangeReview[];
   costs?: CostSummaryEntry[];
+  /** Parsed diff between workspace and project; null when unavailable. */
+  diff?: DiffFile[] | null;
   /** Whether the current user may submit review verdicts. */
   canReview?: boolean;
   user?: { id: string; email: string; username: string } | null;
@@ -84,11 +87,16 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   comments = [],
   reviews = [],
   costs = [],
+  diff = null,
   canReview = false,
   user,
 }) => {
   return (
-    <Layout title={`Change ${change.id}`} user={user}>
+    <Layout
+      title={`Change ${change.id}`}
+      user={user}
+      {...(change.status === "open" ? { refreshSeconds: 10 } : {})}
+    >
       <div class="page-header">
         <h1>
           <span class="mono">{change.id}</span>{" "}
@@ -239,6 +247,13 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
             <dt>Merged</dt>
             <dd>{new Date(provenance.mergedAt).toLocaleString()}</dd>
           </dl>
+        </div>
+      )}
+
+      {diff !== null && (
+        <div class="card">
+          <h2>Files changed</h2>
+          <DiffView files={diff} />
         </div>
       )}
 

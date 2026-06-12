@@ -43,8 +43,10 @@ describe("FileViewerPage", () => {
         user={user}
       />,
     );
-    expect(html).toContain('class="language-typescript"');
-    expect(html).toContain("const x = 1;");
+    expect(html).toContain("language-typescript");
+    // Content is now server-side highlighted into token spans.
+    expect(html).toContain('<span class="tok-keyword">const</span>');
+    expect(html).toContain('<span class="tok-number">1</span>');
   });
 
   it("HTML-escapes file content — XSS test", () => {

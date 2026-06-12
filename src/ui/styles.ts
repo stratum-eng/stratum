@@ -523,6 +523,34 @@ a:hover { text-decoration: underline; }
   padding: 0.5rem; border-radius: 4px; font-family: inherit;
 }
 
+/* Syntax highlighting (server-side lexer) */
+.tok-comment { color: #6a737d; font-style: italic; }
+.tok-string { color: #9ecbff; }
+.tok-number { color: #f8c555; }
+.tok-keyword { color: #f97583; }
+
+/* Diff viewer */
+.diff-view { display: flex; flex-direction: column; gap: 0.75rem; }
+.diff-empty { color: #666; font-size: 0.85rem; }
+.diff-file { border: 1px solid #2a2a2a; border-radius: 6px; overflow: hidden; }
+.diff-file-header {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+  padding: 0.5rem 0.75rem; background: #181818; cursor: pointer;
+  font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
+}
+.diff-file-path { color: #e8e8e8; word-break: break-all; }
+.diff-file-stats { flex-shrink: 0; }
+.diff-stat-add { color: #4ade80; }
+.diff-stat-del { color: #f87171; }
+.diff-file-body {
+  margin: 0; padding: 0.5rem 0; overflow-x: auto;
+  font-size: 0.8rem; line-height: 1.5; background: #0d0d0d;
+}
+.diff-line { display: block; padding: 0 0.75rem; white-space: pre; }
+.diff-add { background: rgba(74, 222, 128, 0.12); color: #b9f0cd; }
+.diff-del { background: rgba(248, 113, 113, 0.12); color: #f5c2c2; }
+.diff-hunk { color: #7cb7ff; background: #14181f; }
+
 /* Costs */
 .cost-list { list-style: none; padding: 0; margin: 0; font-size: 0.9rem; color: #ccc; }
 .cost-list li { padding: 0.2rem 0; }
