@@ -100,14 +100,9 @@ export const NewProjectPage: FC<NewProjectProps> = ({ user, error }) => {
             </label>
           </div>
 
-          <div style={{ display: "flex", gap: "0.75rem" }}>
-            <button type="submit" class="btn btn-primary">
-              Create Project
-            </button>
-            <a href="/" class="btn">
-              Cancel
-            </a>
-          </div>
+          <button type="submit" class="btn btn-primary">
+            Create Project
+          </button>
         </form>
       </div>
 

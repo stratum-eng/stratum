@@ -66,6 +66,9 @@ function statusBadgeClass(status: string): string {
 
 const REVIEWABLE_STATUSES = ["open", "needs_changes", "accepted", "approved"];
 
+/** Mirrors MERGEABLE_STATUSES in routes/changes.ts — the API rejects other statuses. */
+const MERGEABLE_STATUSES = ["approved", "accepted", "promoted"];
+
 function describeCost(entry: CostSummaryEntry): string {
   const prefix = entry.estimated ? "~" : "";
   switch (entry.kind) {
@@ -116,6 +119,13 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
             </a>
           ) : (
             <>
+              {canReview && MERGEABLE_STATUSES.includes(change.status) && (
+                <form method="post" action={`/api/changes/${change.id}/merge`}>
+                  <button type="submit" class="btn btn-primary">
+                    Merge change
+                  </button>
+                </form>
+              )}
               {(change.status === "accepted" || change.status === "promoted") && (
                 <form method="post" action={`/api/changes/${change.id}/github-pr`}>
                   <button type="submit" class="btn btn-primary">
@@ -192,41 +202,43 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
             <p>No evaluator evidence recorded.</p>
           </div>
         ) : (
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Evaluator</th>
-                <th>Status</th>
-                <th>Score</th>
-                <th>Reason</th>
-              </tr>
-            </thead>
-            <tbody>
-              {evalRuns.map((run) => (
-                <tr key={run.id}>
-                  <td>{run.evaluatorType}</td>
-                  <td>
-                    {run.passed ? (
-                      <span class="badge badge-approved">passed</span>
-                    ) : (
-                      <span class="badge badge-rejected">failed</span>
-                    )}
-                  </td>
-                  <td>{Math.round(run.score * 100)}%</td>
-                  <td>
-                    {run.reason}
-                    {run.issues !== undefined && run.issues.length > 0 && (
-                      <ul class="issue-list">
-                        {run.issues.map((issue) => (
-                          <li key={issue}>{issue}</li>
-                        ))}
-                      </ul>
-                    )}
-                  </td>
+          <div class="table-scroll">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Evaluator</th>
+                  <th>Status</th>
+                  <th>Score</th>
+                  <th>Reason</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {evalRuns.map((run) => (
+                  <tr key={run.id}>
+                    <td>{run.evaluatorType}</td>
+                    <td>
+                      {run.passed ? (
+                        <span class="badge badge-approved">passed</span>
+                      ) : (
+                        <span class="badge badge-rejected">failed</span>
+                      )}
+                    </td>
+                    <td>{Math.round(run.score * 100)}%</td>
+                    <td>
+                      {run.reason}
+                      {run.issues !== undefined && run.issues.length > 0 && (
+                        <ul class="issue-list">
+                          {run.issues.map((issue) => (
+                            <li key={issue}>{issue}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 

@@ -18,9 +18,15 @@ a:hover { text-decoration: underline; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.25rem;
   padding: 0.75rem 1.5rem;
   border-bottom: 1px solid #1e1e1e;
   background: #0d0d0d;
+}
+
+@media (max-width: 600px) {
+  .nav { padding: 0.6rem 1rem; }
 }
 
 .nav-brand {
@@ -69,10 +75,12 @@ a:hover { text-decoration: underline; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
   margin-bottom: 1.5rem;
 }
 
-.page-header h1 { font-size: 1.4rem; font-weight: 700; }
+.page-header h1 { font-size: 1.4rem; font-weight: 700; overflow-wrap: anywhere; }
 
 .card {
   background: #111;
@@ -100,6 +108,8 @@ a:hover { text-decoration: underline; }
 .card-title { font-weight: 600; color: #f0f0f0; margin-bottom: 0.25rem; }
 .card-meta { font-size: 0.8rem; color: #666; }
 
+.table-scroll { overflow-x: auto; }
+
 .table { width: 100%; border-collapse: collapse; }
 .table th { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #1e1e1e; color: #888; font-weight: 500; font-size: 0.85rem; }
 .table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #111; vertical-align: middle; }
@@ -114,6 +124,8 @@ a:hover { text-decoration: underline; }
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  background: #1a1a1a;
+  color: #888;
 }
 .badge-open     { background: #1a3a6e; color: #7ca9f7; }
 .badge-approved { background: #1a3d2b; color: #4ade80; }
@@ -218,16 +230,6 @@ a:hover { text-decoration: underline; }
 .icon-success { color: #4ade80; }
 .icon-error { color: #f87171; }
 .icon-cancelled { color: #888; }
-
-.badge {
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  background: #1a1a1a;
-  color: #888;
-}
 
 .badge-queued { background: #1a1a1a; color: #888; }
 .badge-cloning { background: #1a3a6e; color: #7ca9f7; }
@@ -491,7 +493,6 @@ a:hover { text-decoration: underline; }
 .webhook-delivery-meta { color: #777; }
 .webhook-delivery-time { color: #555; margin-left: auto; }
 .btn-small { font-size: 0.75rem; padding: 0.25rem 0.6rem; }
-.btn-danger { color: #f87171; border-color: #5f1e1e; }
 
 /* Issues */
 .page-header-actions { display: flex; gap: 0.5rem; }
@@ -566,6 +567,38 @@ a:hover { text-decoration: underline; }
   padding: 0.5rem; border-radius: 4px; font-family: inherit;
 }
 
+/* Sync page */
+.status-header { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.status-indicator { font-size: 1.1rem; flex-shrink: 0; }
+.status-info { flex: 1; min-width: 200px; }
+.status-info h2 { margin-bottom: 0.15rem; }
+.status-meta { color: #777; font-size: 0.85rem; margin: 0; }
+.status-actions { flex-shrink: 0; }
+.icon-idle { color: #888; }
+.info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.85rem 1.5rem; }
+.info-item label {
+  display: block; color: #666; font-size: 0.75rem;
+  text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.2rem;
+}
+.info-item a, .info-item span, .info-item code { font-size: 0.85rem; word-break: break-all; }
+.form-group { margin-bottom: 1rem; }
+.form-group > label { display: block; color: #aaa; font-size: 0.85rem; margin-bottom: 0.25rem; }
+.form-group select {
+  background: #111; border: 1px solid #333; color: #eee;
+  padding: 0.5rem; border-radius: 4px; font-family: inherit; font-size: 0.85rem;
+}
+.form-group select:disabled { color: #555; }
+.checkbox-label, .form-group > label.checkbox-label {
+  display: flex; align-items: center; gap: 0.5rem; color: #ccc; cursor: pointer; margin-bottom: 0;
+}
+.help-text { color: #666; font-size: 0.8rem; margin-top: 0.25rem; }
+.error-message {
+  margin-top: 0.75rem; padding: 0.6rem 0.75rem; border-radius: 4px;
+  background: #1a0a0a; border: 1px solid #3d1a1a; color: #fca5a5; font-size: 0.85rem;
+}
+.btn-success { background: #1a3d2b; border-color: #2a6e4a; color: #4ade80; }
+.btn-info { background: #1a3a6e; border-color: #2a5aae; color: #7ca9f7; }
+
 /* Costs */
 .cost-list { list-style: none; padding: 0; margin: 0; font-size: 0.9rem; color: #ccc; }
 .cost-list li { padding: 0.2rem 0; }
@@ -592,6 +625,7 @@ a:hover { text-decoration: underline; }
   background: #111; border: 1px solid #333; color: #eee;
   padding: 0.5rem; border-radius: 4px; font-family: inherit;
 }
+.comment-form button { align-self: flex-start; }
 
 /* File Viewer */
 .file-viewer-breadcrumb {

@@ -52,16 +52,18 @@ interface SyncPageProps {
     commitsSynced: number;
     error?: string;
   }>;
+  user?: { id: string; email: string; username: string } | null;
 }
 
-export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }) => {
+export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory, user }) => {
   const isSyncing = syncStatus.lastSyncStatus === "in_progress";
   const hasError = syncStatus.lastSyncStatus === "failed";
   const hasUpdates =
     syncStatus.hasUpdates && syncStatus.commitsBehind && syncStatus.commitsBehind > 0;
+  const hasSource = syncStatus.sourceUrl !== "";
 
   return (
-    <Layout title={`Sync - ${project.name}`}>
+    <Layout title={`Sync — ${project.name}`} user={user}>
       <div class="container">
         <div class="page-header">
           <h1>Sync Status</h1>
@@ -72,157 +74,173 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
           </div>
         </div>
 
-        {/* Status Card */}
-        <div class={`card sync-status-card status-${syncStatus.lastSyncStatus}`}>
-          <div class="status-header">
-            <div class="status-indicator">
-              {isSyncing && <span class="spinner" />}
-              {syncStatus.lastSyncStatus === "success" && <span class="icon-success">✓</span>}
-              {hasError && <span class="icon-error">✗</span>}
-              {syncStatus.lastSyncStatus === "idle" && <span class="icon-idle">○</span>}
-            </div>
-            <div class="status-info">
-              <h2>
-                {isSyncing && "Syncing..."}
-                {syncStatus.lastSyncStatus === "success" && "Up to Date"}
-                {hasError && "Sync Failed"}
-                {syncStatus.lastSyncStatus === "idle" && "Not Synced"}
-              </h2>
-              <p class="status-meta">
-                {syncStatus.lastSyncedAt
-                  ? `Last synced: ${new Date(syncStatus.lastSyncedAt).toLocaleString()}`
-                  : "Never synced"}
-              </p>
-            </div>
-            <div class="status-actions">
-              {!isSyncing && (
-                <form
-                  method="post"
-                  action={`/api/projects/${project.namespace}/${project.slug}/sync`}
-                  onsubmit="event.preventDefault(); handleSyncSubmit(this);"
-                >
-                  <button
-                    type="submit"
-                    id="sync-button"
-                    class={`btn ${hasUpdates ? "btn-primary" : "btn-secondary"}`}
-                    data-original-class={hasUpdates ? "btn-primary" : "btn-secondary"}
-                    disabled={isSyncing}
-                  >
-                    {hasUpdates
-                      ? `Sync Now (${syncStatus.commitsBehind} commit${syncStatus.commitsBehind === 1 ? "" : "s"} behind)`
-                      : "Check for Updates"}
-                  </button>
-                </form>
-              )}
-            </div>
+        {!hasSource && (
+          <div class="card">
+            <h3>Not connected</h3>
+            <p class="help-text">
+              This project was not imported from an external repository, so there is nothing to
+              sync.
+            </p>
           </div>
+        )}
 
-          {hasError && syncStatus.lastSyncError && (
-            <div class="error-message">
-              <strong>Error:</strong> {syncStatus.lastSyncError}
+        {/* Status Card */}
+        {hasSource && (
+          <div class={`card sync-status-card status-${syncStatus.lastSyncStatus}`}>
+            <div class="status-header">
+              <div class="status-indicator">
+                {isSyncing && <span class="spinner" />}
+                {syncStatus.lastSyncStatus === "success" && <span class="icon-success">✓</span>}
+                {hasError && <span class="icon-error">✗</span>}
+                {syncStatus.lastSyncStatus === "idle" && <span class="icon-idle">○</span>}
+              </div>
+              <div class="status-info">
+                <h2>
+                  {isSyncing && "Syncing..."}
+                  {syncStatus.lastSyncStatus === "success" && "Up to Date"}
+                  {hasError && "Sync Failed"}
+                  {syncStatus.lastSyncStatus === "idle" && "Not Synced"}
+                </h2>
+                <p class="status-meta">
+                  {syncStatus.lastSyncedAt
+                    ? `Last synced: ${new Date(syncStatus.lastSyncedAt).toLocaleString()}`
+                    : "Never synced"}
+                </p>
+              </div>
+              <div class="status-actions">
+                {!isSyncing && (
+                  <form
+                    method="post"
+                    action={`/api/projects/${project.namespace}/${project.slug}/sync`}
+                    onsubmit="event.preventDefault(); handleSyncSubmit(this);"
+                  >
+                    <button
+                      type="submit"
+                      id="sync-button"
+                      class={`btn ${hasUpdates ? "btn-primary" : "btn-secondary"}`}
+                      data-original-class={hasUpdates ? "btn-primary" : "btn-secondary"}
+                      disabled={isSyncing}
+                    >
+                      {hasUpdates
+                        ? `Sync Now (${syncStatus.commitsBehind} commit${syncStatus.commitsBehind === 1 ? "" : "s"} behind)`
+                        : "Check for Updates"}
+                    </button>
+                  </form>
+                )}
+              </div>
             </div>
-          )}
-        </div>
+
+            {hasError && syncStatus.lastSyncError && (
+              <div class="error-message">
+                <strong>Error:</strong> {syncStatus.lastSyncError}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Source Info */}
-        <div class="card source-info-card">
-          <h3>Source Repository</h3>
-          <div class="info-grid">
-            <div class="info-item">
-              <label>URL</label>
-              {(() => {
-                const safeUrl = validateSafeUrl(syncStatus.sourceUrl);
-                if (safeUrl) {
-                  return (
-                    <a href={safeUrl} target="_blank" rel="noreferrer">
-                      {syncStatus.sourceUrl}
-                    </a>
-                  );
-                }
-                return <span class="text-muted">{syncStatus.sourceUrl || "Not available"}</span>;
-              })()}
-            </div>
-            <div class="info-item">
-              <label>Branch</label>
-              <code>{syncStatus.sourceBranch}</code>
-            </div>
-            <div class="info-item">
-              <label>Latest Commit</label>
-              <code>{syncStatus.latestCommit?.slice(0, 7) || "N/A"}</code>
-            </div>
-            <div class="info-item">
-              <label>Last Checked</label>
-              <span>{new Date(syncStatus.lastCheckedAt).toLocaleString()}</span>
+        {hasSource && (
+          <div class="card source-info-card">
+            <h3>Source Repository</h3>
+            <div class="info-grid">
+              <div class="info-item">
+                <label>URL</label>
+                {(() => {
+                  const safeUrl = validateSafeUrl(syncStatus.sourceUrl);
+                  if (safeUrl) {
+                    return (
+                      <a href={safeUrl} target="_blank" rel="noreferrer">
+                        {syncStatus.sourceUrl}
+                      </a>
+                    );
+                  }
+                  return <span class="text-muted">{syncStatus.sourceUrl || "Not available"}</span>;
+                })()}
+              </div>
+              <div class="info-item">
+                <label>Branch</label>
+                <code>{syncStatus.sourceBranch}</code>
+              </div>
+              <div class="info-item">
+                <label>Latest Commit</label>
+                <code>{syncStatus.latestCommit?.slice(0, 7) || "N/A"}</code>
+              </div>
+              <div class="info-item">
+                <label>Last Checked</label>
+                <span>{new Date(syncStatus.lastCheckedAt).toLocaleString()}</span>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {/* Auto-Sync Settings */}
-        <div class="card auto-sync-card">
-          <h3>Auto-Sync Settings</h3>
-          <form
-            method="post"
-            action={`/api/projects/${project.namespace}/${project.slug}/sync/settings`}
-            class="auto-sync-form"
-            onsubmit="event.preventDefault(); handleSettingsSubmit(this);"
-          >
-            <div class="form-group">
-              <label class="checkbox-label">
-                <input
-                  type="checkbox"
-                  name="autoSyncEnabled"
-                  checked={syncStatus.autoSyncEnabled}
-                  onchange="toggleSyncFrequency(this)"
-                />
-                Enable automatic sync
-              </label>
-              <p class="help-text">
-                When enabled, the project will automatically sync when new commits are detected.
-              </p>
-            </div>
+        {hasSource && (
+          <div class="card auto-sync-card">
+            <h3>Auto-Sync Settings</h3>
+            <form
+              method="post"
+              action={`/api/projects/${project.namespace}/${project.slug}/sync/settings`}
+              class="auto-sync-form"
+              onsubmit="event.preventDefault(); handleSettingsSubmit(this);"
+            >
+              <div class="form-group">
+                <label class="checkbox-label">
+                  <input
+                    type="checkbox"
+                    name="autoSyncEnabled"
+                    checked={syncStatus.autoSyncEnabled}
+                    onchange="toggleSyncFrequency(this)"
+                  />
+                  Enable automatic sync
+                </label>
+                <p class="help-text">
+                  When enabled, the project will automatically sync when new commits are detected.
+                </p>
+              </div>
 
-            <div class="form-group">
-              <label>Sync Frequency</label>
-              <select
-                id="syncFrequency"
-                name="syncFrequency"
-                disabled={!syncStatus.autoSyncEnabled}
-              >
-                <option
-                  value="5"
-                  selected={
-                    syncStatus.syncFrequency === 5 ||
-                    (!syncStatus.syncFrequency && syncStatus.autoSyncEnabled)
-                  }
+              <div class="form-group">
+                <label>Sync Frequency</label>
+                <select
+                  id="syncFrequency"
+                  name="syncFrequency"
+                  disabled={!syncStatus.autoSyncEnabled}
                 >
-                  Every 5 minutes
-                </option>
-                <option value="15" selected={syncStatus.syncFrequency === 15}>
-                  Every 15 minutes
-                </option>
-                <option value="30" selected={syncStatus.syncFrequency === 30}>
-                  Every 30 minutes
-                </option>
-                <option value="60" selected={syncStatus.syncFrequency === 60}>
-                  Every hour
-                </option>
-                <option value="360" selected={syncStatus.syncFrequency === 360}>
-                  Every 6 hours
-                </option>
-                <option value="720" selected={syncStatus.syncFrequency === 720}>
-                  Every 12 hours
-                </option>
-                <option value="1440" selected={syncStatus.syncFrequency === 1440}>
-                  Every 24 hours
-                </option>
-              </select>
-            </div>
+                  <option
+                    value="5"
+                    selected={
+                      syncStatus.syncFrequency === 5 ||
+                      (!syncStatus.syncFrequency && syncStatus.autoSyncEnabled)
+                    }
+                  >
+                    Every 5 minutes
+                  </option>
+                  <option value="15" selected={syncStatus.syncFrequency === 15}>
+                    Every 15 minutes
+                  </option>
+                  <option value="30" selected={syncStatus.syncFrequency === 30}>
+                    Every 30 minutes
+                  </option>
+                  <option value="60" selected={syncStatus.syncFrequency === 60}>
+                    Every hour
+                  </option>
+                  <option value="360" selected={syncStatus.syncFrequency === 360}>
+                    Every 6 hours
+                  </option>
+                  <option value="720" selected={syncStatus.syncFrequency === 720}>
+                    Every 12 hours
+                  </option>
+                  <option value="1440" selected={syncStatus.syncFrequency === 1440}>
+                    Every 24 hours
+                  </option>
+                </select>
+              </div>
 
-            <button type="submit" class="btn btn-secondary" data-original-class="btn-secondary">
-              Save Settings
-            </button>
-          </form>
-        </div>
+              <button type="submit" class="btn btn-secondary" data-original-class="btn-secondary">
+                Save Settings
+              </button>
+            </form>
+          </div>
+        )}
 
         {/* Sync History */}
         <div class="card sync-history-card">
@@ -230,40 +248,42 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory }
           {syncHistory.length === 0 ? (
             <p class="empty-state">No sync history yet.</p>
           ) : (
-            <table class="table sync-history-table">
-              <thead>
-                <tr>
-                  <th>Started</th>
-                  <th>Status</th>
-                  <th>Commits</th>
-                  <th>Duration</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {syncHistory.map((sync) => (
-                  <tr key={sync.id} class={`sync-row status-${sync.status}`}>
-                    <td>{new Date(sync.startedAt).toLocaleString()}</td>
-                    <td>
-                      <span class={`badge badge-${sync.status}`}>{sync.status}</span>
-                    </td>
-                    <td>{sync.commitsSynced}</td>
-                    <td>
-                      {sync.completedAt
-                        ? `${Math.round((new Date(sync.completedAt).getTime() - new Date(sync.startedAt).getTime()) / 1000)}s`
-                        : "-"}
-                    </td>
-                    <td>
-                      {sync.error && (
-                        <span class="error-hint" title={sync.error}>
-                          Error details
-                        </span>
-                      )}
-                    </td>
+            <div class="table-scroll">
+              <table class="table sync-history-table">
+                <thead>
+                  <tr>
+                    <th>Started</th>
+                    <th>Status</th>
+                    <th>Commits</th>
+                    <th>Duration</th>
+                    <th>Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {syncHistory.map((sync) => (
+                    <tr key={sync.id} class={`sync-row status-${sync.status}`}>
+                      <td>{new Date(sync.startedAt).toLocaleString()}</td>
+                      <td>
+                        <span class={`badge badge-${sync.status}`}>{sync.status}</span>
+                      </td>
+                      <td>{sync.commitsSynced}</td>
+                      <td>
+                        {sync.completedAt
+                          ? `${Math.round((new Date(sync.completedAt).getTime() - new Date(sync.startedAt).getTime()) / 1000)}s`
+                          : "-"}
+                      </td>
+                      <td>
+                        {sync.error && (
+                          <span class="error-hint" title={sync.error}>
+                            Error details
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
 
