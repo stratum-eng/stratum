@@ -11,6 +11,8 @@ interface ProjectRef {
 interface IssuesPageProps {
   project: ProjectRef;
   issues: Issue[];
+  /** Author display names keyed by author id. */
+  authors: Record<string, string>;
   filter: "open" | "closed" | "all";
   canWrite: boolean;
   user?: { id: string; email: string; username: string } | null;
@@ -19,7 +21,14 @@ interface IssuesPageProps {
 const statusBadge = (status: Issue["status"]) =>
   status === "open" ? "badge badge-open" : "badge badge-merged";
 
-export const IssuesPage: FC<IssuesPageProps> = ({ project, issues, filter, canWrite, user }) => {
+export const IssuesPage: FC<IssuesPageProps> = ({
+  project,
+  issues,
+  authors,
+  filter,
+  canWrite,
+  user,
+}) => {
   const base = `/${project.namespace}/${project.slug}/issues`;
   return (
     <Layout title={`Issues — ${project.name}`} user={user}>
@@ -67,7 +76,8 @@ export const IssuesPage: FC<IssuesPageProps> = ({ project, issues, filter, canWr
                 </a>
               )}
               <span class="issues-meta">
-                opened {new Date(issue.createdAt).toLocaleDateString()} by {issue.authorType}
+                opened {new Date(issue.createdAt).toLocaleDateString()} by{" "}
+                {authors[issue.authorId] ?? issue.authorType}
               </span>
             </li>
           ))}
@@ -80,11 +90,19 @@ export const IssuesPage: FC<IssuesPageProps> = ({ project, issues, filter, canWr
 interface IssueDetailPageProps {
   project: ProjectRef;
   issue: Issue;
+  /** Author display names keyed by author id. */
+  authors: Record<string, string>;
   canWrite: boolean;
   user?: { id: string; email: string; username: string } | null;
 }
 
-export const IssueDetailPage: FC<IssueDetailPageProps> = ({ project, issue, canWrite, user }) => {
+export const IssueDetailPage: FC<IssueDetailPageProps> = ({
+  project,
+  issue,
+  authors,
+  canWrite,
+  user,
+}) => {
   const base = `/${project.namespace}/${project.slug}/issues`;
   const apiBase = `/api/projects/${project.namespace}/${project.slug}/issues`;
   return (
@@ -101,7 +119,8 @@ export const IssueDetailPage: FC<IssueDetailPageProps> = ({ project, issue, canW
       <div class="issue-status-row">
         <span class={statusBadge(issue.status)}>{issue.status}</span>
         <span class="issues-meta">
-          opened {new Date(issue.createdAt).toLocaleString()} by {issue.authorType}
+          opened {new Date(issue.createdAt).toLocaleString()} by{" "}
+          {authors[issue.authorId] ?? issue.authorType}
           {issue.closedAt ? ` · closed ${new Date(issue.closedAt).toLocaleString()}` : ""}
           {issue.closedBy === "system" ? " (auto-closed by merged change)" : ""}
         </span>

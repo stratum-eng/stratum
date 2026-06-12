@@ -7,7 +7,7 @@ interface WorkspacesProps {
     namespace: string;
     slug: string;
   };
-  workspaces: Array<{ name: string; parent: string; createdAt: string }>;
+  workspaces: Array<{ name: string; createdAt: string }>;
   user?: { id: string; email: string; username: string } | null;
 }
 
@@ -26,24 +26,24 @@ export const WorkspacesPage: FC<WorkspacesProps> = ({ project, workspaces, user 
           <p>No workspaces yet.</p>
         </div>
       ) : (
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Parent</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {workspaces.map((ws) => (
-              <tr key={ws.name}>
-                <td>{ws.name}</td>
-                <td>{ws.parent}</td>
-                <td>{new Date(ws.createdAt).toLocaleDateString()}</td>
+        <div class="table-scroll">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Created</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {workspaces.map((ws) => (
+                <tr key={ws.name}>
+                  <td>{ws.name}</td>
+                  <td>{new Date(ws.createdAt).toLocaleDateString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Layout>
   );

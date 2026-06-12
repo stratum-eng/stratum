@@ -58,6 +58,30 @@ async function getCurrentUser(
   return { id: user.id, email: user.email, username: user.username };
 }
 
+/**
+ * Resolve issue author ids to display names ("@username" for users, the agent's
+ * name for agents). Unresolvable authors fall back to their author type.
+ */
+async function resolveIssueAuthors(
+  db: D1Database,
+  issues: Array<{ authorType: "user" | "agent"; authorId: string }>,
+  logger: ReturnType<typeof createLogger>,
+): Promise<Record<string, string>> {
+  const entries = await Promise.all(
+    [...new Map(issues.map((issue) => [issue.authorId, issue.authorType]))].map(
+      async ([authorId, authorType]): Promise<readonly [string, string]> => {
+        if (authorType === "user") {
+          const result = await getUser(db, authorId, logger);
+          return [authorId, result.success ? `@${result.data.username}` : "user"];
+        }
+        const result = await getAgent(db, authorId, logger);
+        return [authorId, result.success ? `${result.data.name} (agent)` : "agent"];
+      },
+    ),
+  );
+  return Object.fromEntries(entries);
+}
+
 // GET / — Dashboard (list projects)
 app.get("/", async (c) => {
   const userId = c.get("userId");
@@ -623,7 +647,6 @@ app.get("/p/:name/workspaces", async (c) => {
 
   const view = workspacesResult.data.map((ws) => ({
     name: ws.name,
-    parent: ws.parent,
     createdAt: ws.createdAt,
   }));
 
@@ -823,12 +846,18 @@ app.get("/:namespace/:slug/issues", async (c) => {
     return c.html(issuePageError(500), 500);
   }
 
+  const [authors, canWrite] = await Promise.all([
+    resolveIssueAuthors(c.env.DB, issuesResult.data, logger),
+    canWriteProject(c.env.DB, project, userId),
+  ]);
+
   return c.html(
     <IssuesPage
       project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
       issues={issuesResult.data}
+      authors={authors}
       filter={filter}
-      canWrite={await canWriteProject(c.env.DB, project, userId)}
+      canWrite={canWrite}
       user={user}
     />,
   );
@@ -873,11 +902,17 @@ app.get("/:namespace/:slug/issues/:number", async (c) => {
     );
   }
 
+  const [authors, canWrite] = await Promise.all([
+    resolveIssueAuthors(c.env.DB, [issueResult.data], logger),
+    canWriteProject(c.env.DB, project, userId),
+  ]);
+
   return c.html(
     <IssueDetailPage
       project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
       issue={issueResult.data}
-      canWrite={await canWriteProject(c.env.DB, project, userId)}
+      authors={authors}
+      canWrite={canWrite}
       user={user}
     />,
   );
@@ -1000,7 +1035,6 @@ app.get("/:namespace/:slug/workspaces", async (c) => {
 
   const workspaces = workspacesResult.data.map((ws) => ({
     name: ws.name,
-    parent: ws.parent,
     createdAt: ws.createdAt,
   }));
 
@@ -1031,7 +1065,7 @@ app.get("/:namespace/:slug/sync", async (c) => {
     return c.redirect("/auth/email");
   }
 
-  const [_userResult, projectResult] = await Promise.all([
+  const [userResult, projectResult] = await Promise.all([
     getCurrentUser(c, logger),
     getProjectByPath(c.env.STATE, namespace, slug, logger),
   ]);
@@ -1060,7 +1094,9 @@ app.get("/:namespace/:slug/sync", async (c) => {
   const syncStatus = {
     namespace,
     slug,
-    sourceUrl: project.remote || "",
+    // Only external import sources are shown; the internal artifacts remote is not a
+    // sync source and must not leak into the page.
+    sourceUrl: getProjectSourceUrl(project) ?? "",
     sourceBranch: "main",
     lastSyncStatus: (stored?.lastSyncStatus ?? "idle") as
       | "success"
@@ -1087,6 +1123,7 @@ app.get("/:namespace/:slug/sync", async (c) => {
       }}
       syncStatus={syncStatus}
       syncHistory={[]}
+      user={userResult}
     />,
   );
 });

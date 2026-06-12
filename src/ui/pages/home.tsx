@@ -62,6 +62,9 @@ export const HomePage: FC<HomeProps> = ({ projects, user }) => {
                 {project.name}
                 {project.visibility === "public" && <span class="badge badge-public">public</span>}
               </div>
+              <div class="card-meta">
+                {project.namespace}/{project.slug}
+              </div>
               <div class="card-meta">{new Date(project.createdAt).toLocaleDateString()}</div>
             </a>
           ))}

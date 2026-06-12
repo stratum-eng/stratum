@@ -89,7 +89,7 @@ async function main() {
     let project: Awaited<ReturnType<typeof createProject>>;
     try {
       project = await createProject(name, true);
-      console.log(`✓  ${BASE_URL}/${project.path}`);
+      console.log(`✓  ${BASE_URL}${project.path}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("already exists")) {

@@ -23,10 +23,14 @@ function statusBadgeClass(status: string): string {
     case "open":
       return "badge badge-open";
     case "approved":
+    case "accepted":
       return "badge badge-approved";
     case "merged":
+    case "promoted":
       return "badge badge-merged";
     case "rejected":
+    case "reverted":
+    case "needs_changes":
       return "badge badge-rejected";
     default:
       return "badge";
@@ -48,34 +52,36 @@ export const ChangesPage: FC<ChangesProps> = ({ project, changes, user }) => {
           <p>No changes yet.</p>
         </div>
       ) : (
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Workspace</th>
-              <th>Status</th>
-              <th>Eval score</th>
-              <th>Created</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {changes.map((change) => (
-              <tr key={change.id}>
-                <td>{change.workspace}</td>
-                <td>
-                  <span class={statusBadgeClass(change.status)}>{change.status}</span>
-                </td>
-                <td>
-                  {change.evalScore !== undefined ? `${Math.round(change.evalScore * 100)}%` : "—"}
-                </td>
-                <td>{new Date(change.createdAt).toLocaleDateString()}</td>
-                <td>
-                  <a href={`/changes/${change.id}`}>View</a>
-                </td>
+        <div class="table-scroll">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Workspace</th>
+                <th>Status</th>
+                <th>Eval score</th>
+                <th>Created</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {changes.map((change) => (
+                <tr key={change.id}>
+                  <td>
+                    <a href={`/changes/${change.id}`}>{change.workspace}</a>
+                  </td>
+                  <td>
+                    <span class={statusBadgeClass(change.status)}>{change.status}</span>
+                  </td>
+                  <td>
+                    {change.evalScore !== undefined
+                      ? `${Math.round(change.evalScore * 100)}%`
+                      : "—"}
+                  </td>
+                  <td>{new Date(change.createdAt).toLocaleDateString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Layout>
   );

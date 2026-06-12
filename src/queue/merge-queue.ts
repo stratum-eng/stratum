@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import { getChange, updateChangeStatus } from "../storage/changes";
 import { mergeWorkspaceIntoProject } from "../storage/git-ops";
 import { recordProvenance } from "../storage/provenance";
@@ -14,15 +15,9 @@ export interface MergeOutcome {
   error?: string;
 }
 
-export class MergeQueue {
-  env: Env;
-  ctx: DurableObjectState;
-
-  constructor(ctx: DurableObjectState, env: Env) {
-    this.ctx = ctx;
-    this.env = env;
-  }
-
+// Must extend DurableObject: callers invoke merge() over RPC, which the runtime
+// only enables for classes that extend the special base class.
+export class MergeQueue extends DurableObject<Env> {
   async merge(changeId: string, logger?: Logger): Promise<MergeOutcome> {
     const log = logger ?? createLogger({ changeId });
     const changeResult = await getChange(this.env.DB, log, changeId);
