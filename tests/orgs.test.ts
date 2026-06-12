@@ -7,6 +7,11 @@ import { NotFoundError } from "../src/utils/errors";
 
 vi.mock("../src/storage/users", () => ({
   getUserByToken: vi.fn(),
+  // Default: no username collides with the org slug.
+  getUserByUsername: vi.fn().mockResolvedValue({
+    success: false,
+    error: new Error("not found"),
+  }),
 }));
 
 vi.mock("../src/storage/agents", () => ({

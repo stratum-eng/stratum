@@ -63,7 +63,7 @@ async function requireProjectAdmin(
   const project = projectResult.data;
 
   // Webhook URLs and secrets are sensitive: writers only, even for reads.
-  if (!canWriteProject(project, userId)) {
+  if (!(await canWriteProject(c.env.DB, project, userId))) {
     return { response: forbidden("Project access denied") };
   }
 

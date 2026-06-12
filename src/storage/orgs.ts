@@ -224,6 +224,56 @@ export async function isOrgMember(
   }
 }
 
+export type OrgAccessLevel = "none" | "read" | "write" | "admin";
+
+interface AccessRow {
+  org_role: string;
+  team_level: number | null;
+}
+
+/**
+ * A user's effective access to an org's projects:
+ * - org owner/admin → admin
+ * - member of a team with write/admin permissions → write
+ * - plain org member → read
+ * - not a member → none
+ *
+ * Team permissions are org-wide (no per-project team grants yet).
+ * Fails closed: database errors report "none".
+ */
+export async function getOrgAccessLevel(
+  db: D1Database,
+  logger: Logger,
+  orgId: string,
+  userId: string,
+): Promise<OrgAccessLevel> {
+  try {
+    const row = await db
+      .prepare(
+        `SELECT om.role AS org_role,
+                MAX(CASE t.permissions WHEN 'admin' THEN 3 WHEN 'write' THEN 2 WHEN 'read' THEN 1 ELSE 0 END) AS team_level
+         FROM org_members om
+         LEFT JOIN team_members tm ON tm.user_id = om.user_id
+         LEFT JOIN teams t ON t.id = tm.team_id AND t.org_id = om.org_id
+         WHERE om.org_id = ? AND om.user_id = ?
+         GROUP BY om.role`,
+      )
+      .bind(orgId, userId)
+      .first<AccessRow>();
+
+    if (!row) return "none";
+    if (row.org_role === "owner" || row.org_role === "admin") return "admin";
+    if ((row.team_level ?? 0) >= 2) return "write";
+    return "read";
+  } catch (error) {
+    logger.error("Failed to resolve org access level", error instanceof Error ? error : undefined, {
+      orgId,
+      userId,
+    });
+    return "none";
+  }
+}
+
 export async function isOrgAdmin(
   db: D1Database,
   logger: Logger,

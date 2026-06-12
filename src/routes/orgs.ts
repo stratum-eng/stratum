@@ -15,6 +15,7 @@ import {
   listTeams,
   removeTeamMember,
 } from "../storage/teams";
+import { getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 import { badRequest, created, notFound, ok } from "../utils/response";
@@ -37,6 +38,13 @@ app.post("/", async (c) => {
   }
   if (!isValidSlug(body.slug)) {
     return badRequest("slug must be a 1-64 char alphanumeric slug");
+  }
+
+  // Org projects live under the @slug namespace; a slug that matches an
+  // existing username would collide with that user's namespace.
+  const existingUser = await getUserByUsername(c.env.DB, body.slug, logger);
+  if (existingUser.success) {
+    return badRequest("slug is already taken by a user namespace");
   }
 
   const orgResult = await createOrg(c.env.DB, logger, userId, body.name, body.slug);

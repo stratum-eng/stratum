@@ -72,7 +72,12 @@ app.get("/", async (c) => {
   }
 
   const user = userResult;
-  const projects = filterReadableProjects(allProjectsResult.data, userId, agentOwnerId);
+  const projects = await filterReadableProjects(
+    c.env.DB,
+    allProjectsResult.data,
+    userId,
+    agentOwnerId,
+  );
   const view = projects.map((p) => ({
     name: p.name,
     namespace: p.namespace,
@@ -130,7 +135,7 @@ app.get("/p/:name", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     logger.warn("Project not found or access denied", { name, userId });
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">
@@ -288,7 +293,7 @@ app.get("/p/:name/changes", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     logger.warn("Project not found or access denied", { name, userId });
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">
@@ -363,7 +368,7 @@ app.get("/changes/:id", async (c) => {
     );
   }
 
-  if (!canReadProject(projectResult.data, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, projectResult.data, userId, agentOwnerId))) {
     logger.warn("Change not found or access denied", { id, userId });
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">Not found.</div>,
@@ -410,7 +415,7 @@ app.get("/changes/:id", async (c) => {
       comments={commentsResult.success ? commentsResult.data : []}
       reviews={reviewsResult.success ? reviewsResult.data : []}
       costs={costsResult.success ? costsResult.data : []}
-      canReview={!!userResult && canWriteProject(projectResult.data, userId)}
+      canReview={!!userResult && (await canWriteProject(c.env.DB, projectResult.data, userId))}
       user={userResult}
     />,
   );
@@ -442,7 +447,7 @@ app.get("/p/:name/workspaces", async (c) => {
     );
   }
 
-  if (!canReadProject(projectResult.data, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, projectResult.data, userId, agentOwnerId))) {
     logger.warn("Project not found or access denied", { name, userId });
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">Not found.</div>,
@@ -508,7 +513,7 @@ app.get("/:namespace/:slug/changes", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">
         Project '{namespace}/{slug}' not found.
@@ -576,7 +581,7 @@ app.get("/:namespace/:slug/activity", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">
         Project '{namespace}/{slug}' not found.
@@ -633,7 +638,7 @@ async function loadIssuePageContext(c: {
   ]);
   if (!projectResult.success) return { errorStatus: 404 };
   const project = projectResult.data;
-  if (!canReadProject(project, userId, agentOwnerId)) return { errorStatus: 404 };
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) return { errorStatus: 404 };
 
   return { project, user, userId, logger };
 }
@@ -670,7 +675,7 @@ app.get("/:namespace/:slug/issues", async (c) => {
       project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
       issues={issuesResult.data}
       filter={filter}
-      canWrite={canWriteProject(project, userId)}
+      canWrite={await canWriteProject(c.env.DB, project, userId)}
       user={user}
     />,
   );
@@ -682,7 +687,7 @@ app.get("/:namespace/:slug/issues/new", async (c) => {
   if ("errorStatus" in ctx) return c.html(issuePageError(ctx.errorStatus), ctx.errorStatus);
   const { project, user, userId } = ctx;
 
-  if (!canWriteProject(project, userId)) {
+  if (!(await canWriteProject(c.env.DB, project, userId))) {
     return c.html(issuePageError(404), 404);
   }
 
@@ -719,7 +724,7 @@ app.get("/:namespace/:slug/issues/:number", async (c) => {
     <IssueDetailPage
       project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
       issue={issueResult.data}
-      canWrite={canWriteProject(project, userId)}
+      canWrite={await canWriteProject(c.env.DB, project, userId)}
       user={user}
     />,
   );
@@ -754,7 +759,7 @@ app.get("/:namespace/:slug/webhooks", async (c) => {
   const project = projectResult.data;
 
   // Webhook URLs and secrets are sensitive: writers only.
-  if (!canWriteProject(project, userId)) {
+  if (!(await canWriteProject(c.env.DB, project, userId))) {
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">
         Project '{namespace}/{slug}' not found.
@@ -820,7 +825,7 @@ app.get("/:namespace/:slug/workspaces", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">
         Project '{namespace}/{slug}' not found.
@@ -888,7 +893,7 @@ app.get("/:namespace/:slug/sync", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">
         Project '{namespace}/{slug}' not found.
@@ -979,7 +984,7 @@ app.get("/:namespace/:slug/blob/*", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">
         Project '{namespace}/{slug}' not found.
@@ -1070,7 +1075,7 @@ app.get("/:namespace/:slug", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId)) {
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     logger.warn("Project not found or access denied", { namespace, slug, userId });
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">

@@ -43,7 +43,8 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canWriteProject(project, userId, agentOwnerId)) return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, userId, agentOwnerId)))
+    return forbidden("Project access denied");
 
   const body = await c.req.json<{ name?: unknown }>().catch(() => ({ name: undefined }));
   const workspaceName = isValidSlug(body.name) ? body.name : `ws-${Date.now()}`;
@@ -117,7 +118,7 @@ app.get("/:namespace/:slug/workspaces", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!canReadProject(project, userId, agentOwnerId))
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const workspacesResult = await listWorkspaces(c.env.STATE, project.id, logger);
