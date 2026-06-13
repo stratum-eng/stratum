@@ -23,6 +23,10 @@ export interface AdmitResult {
   referrerUserId: string | null;
 }
 
+// Cap how long a signup can wait on the referral service. validateInviteCode
+// runs inline in the signup request, so a hung service must not hang signup.
+const REFERRAL_TIMEOUT_MS = 5000;
+
 /** True only when the gate is explicitly enabled AND a service URL is configured. */
 export function betaGateEnabled(env: Env): boolean {
   return env.BETA_GATE === "1" && !!env.REFERRAL_SERVICE_URL;
@@ -50,6 +54,7 @@ export async function validateInviteCode(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code: trimmed }),
+      signal: AbortSignal.timeout(REFERRAL_TIMEOUT_MS),
     });
     if (!res.ok) {
       logger.warn("Invite validation returned non-OK", { status: res.status });
@@ -90,6 +95,7 @@ export async function admitUser(
         code: params.code.trim().toUpperCase(),
         source: params.source,
       }),
+      signal: AbortSignal.timeout(REFERRAL_TIMEOUT_MS),
     });
     if (!res.ok) {
       logger.error("admitUser returned non-OK", undefined, { status: res.status });

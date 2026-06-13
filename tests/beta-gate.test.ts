@@ -115,4 +115,14 @@ describe("admitUser", () => {
     );
     expect(result.codes).toEqual([]);
   });
+
+  it("returns no codes on a non-OK response", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unauthorized", { status: 401 }));
+    const result = await admitUser(
+      e,
+      { userId: "u", email: "a@b.com", code: "X", source: "magic_link" },
+      noopLogger,
+    );
+    expect(result).toEqual({ codes: [], referrerUserId: null });
+  });
 });

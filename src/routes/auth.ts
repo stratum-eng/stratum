@@ -197,8 +197,13 @@ app.get("/github/callback", async (c) => {
   // or email) must be created through the invite-gated magic-link flow first.
   if (betaGateEnabled(c.env)) {
     const byGithub = await getUserByGitHubId(c.env.DB, String(githubUser.id), logger);
-    const byEmail = await getUserByEmail(c.env.DB, primaryEmail, logger);
-    if (!byGithub.success && !byEmail.success) {
+    // Match an existing account only by a *verified* email — never the unverified
+    // fallback used for primaryEmail, which could be attacker-controlled and let
+    // someone slip past the gate by claiming a beta user's address.
+    const verifiedEmail =
+      emails.find((e) => e.primary && e.verified)?.email ?? emails.find((e) => e.verified)?.email;
+    const byEmail = verifiedEmail ? await getUserByEmail(c.env.DB, verifiedEmail, logger) : null;
+    if (!byGithub.success && !byEmail?.success) {
       logger.warn("Blocked GitHub signup — closed beta", { githubId: githubUser.id });
       return c.redirect("/auth/signup?error=invite_required");
     }
