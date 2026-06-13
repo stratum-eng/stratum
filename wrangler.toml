@@ -1,36 +1,48 @@
+# =============================================================================
+# Stratum Worker configuration
+#
+# The TOP-LEVEL config below is a GENERIC self-hosting template. To run your own
+# instance: replace the binding ids (KV/D1) with your own, set your domain/OAuth
+# values, then `wrangler deploy`.
+#
+# The maintainer's hosted instance is NOT the default — it lives in
+# [env.production] (and [env.staging]) and is deployed with:
+#   wrangler deploy --env production
+# See .github/workflows/deploy-production.yml and ci.yml.
+# =============================================================================
+
 name = "stratum"
 main = "src/index.ts"
 compatibility_date = "2026-04-29"
 compatibility_flags = ["nodejs_compat"]
 
-# Production custom domain. With custom_domain = true, Cloudflare provisions the
-# DNS record + TLS cert for this hostname on deploy (the usestratum.dev zone is in
-# this account). The workers.dev URL keeps working alongside it.
-routes = [
-  { pattern = "app.usestratum.dev", custom_domain = true }
-]
+# Durable Object migrations — defined once, inherited by all environments.
+[[migrations]]
+tag = "v1"
+new_classes = ["MergeQueue"]
 
 # Observability - Workers Logs and Traces
 [observability]
 enabled = true
-head_sampling_rate = 1.0  # 100% sampling for full visibility
+head_sampling_rate = 1.0
 
 [observability.traces]
 enabled = true
-head_sampling_rate = 0.1  # 10% sampling for traces to manage cost
+head_sampling_rate = 0.1
 
+# --- Bindings: replace the ids with your own Cloudflare resources -------------
 [[artifacts]]
 binding = "ARTIFACTS"
-namespace = "stratum-prod"
+namespace = "stratum"
 
 [[kv_namespaces]]
 binding = "STATE"
-id = "2285977f426647cf9e3db347cbc0f03b"
+id = "0000000000000000000000000000000a"  # replace: wrangler kv namespace create STATE
 
 [[d1_databases]]
 binding = "DB"
 database_name = "stratum"
-database_id = "de9b583b-d5f3-4868-a1eb-2208b76c7062"
+database_id = "00000000-0000-0000-0000-00000000000a"  # replace: wrangler d1 create stratum
 migrations_dir = "migrations"
 
 [[analytics_engine_datasets]]
@@ -67,13 +79,6 @@ retry_delay = 30    # Wait 30 seconds between retries
 [triggers]
 crons = ["0 6 * * *", "*/5 * * * *"]
 
-[vars]
-POSTHOG_HOST = "https://app.posthog.com"
-# Production OAuth callbacks must use the production host. The matching callback
-# URLs must also be registered in the GitHub and Google OAuth app settings.
-OAUTH_REDIRECT_URI = "https://app.usestratum.dev/auth/github/callback"
-GOOGLE_REDIRECT_URI = "https://app.usestratum.dev/auth/google/callback"
-
 # Email Sending — configure via: wrangler email sending enable yourdomain.com
 [[send_email]]
 name = "EMAIL"
@@ -82,6 +87,17 @@ name = "EMAIL"
 # [[sandboxes]]
 # binding = "SANDBOX"
 
+[vars]
+POSTHOG_HOST = "https://app.posthog.com"
+# Set these to your own host when self-hosting (and register the callback URLs
+# in your GitHub/Google OAuth apps):
+OAUTH_REDIRECT_URI = "http://localhost:8787/auth/github/callback"
+# GOOGLE_REDIRECT_URI = "https://your-app.example.com/auth/google/callback"
+# Closed-beta gate (hosted-only; leave unset/commented for ungated self-hosting).
+# The gate turns ON only when BETA_GATE = "1" AND REFERRAL_SERVICE_URL is set.
+# BETA_GATE = "1"
+# REFERRAL_SERVICE_URL = "https://your-referral-service.example.com"
+
 # Secrets — set via: wrangler secret put <NAME>
 # POSTHOG_API_KEY =
 # STRATUM_TELEMETRY_DISABLED = "true"  # uncomment to disable telemetry for self-hosted
@@ -89,10 +105,92 @@ name = "EMAIL"
 # GITHUB_CLIENT_SECRET =
 # GOOGLE_CLIENT_ID =
 # GOOGLE_CLIENT_SECRET =
-# GOOGLE_REDIRECT_URI = "https://yourdomain.com/auth/google/callback"
 # EMAIL_FROM_ADDRESS = "noreply@yourdomain.com"  # for magic link emails
+# REFERRAL_SERVICE_SECRET =  # closed-beta gate shared secret (must match the referral service)
 
-# Staging environment
+# =============================================================================
+# [env.production] — the maintainer's hosted instance (app.usestratum.dev).
+# Deploy with: wrangler deploy --env production
+# Named environments do NOT inherit top-level bindings/vars/routes, so the real
+# configuration is fully declared here.
+# =============================================================================
+[env.production]
+name = "stratum"
+
+# Production custom domain. With custom_domain = true, Cloudflare provisions the
+# DNS record + TLS cert for this hostname on deploy. workers.dev keeps working.
+routes = [
+  { pattern = "app.usestratum.dev", custom_domain = true }
+]
+
+[env.production.observability]
+enabled = true
+head_sampling_rate = 1.0
+
+[env.production.observability.traces]
+enabled = true
+head_sampling_rate = 0.1
+
+[[env.production.artifacts]]
+binding = "ARTIFACTS"
+namespace = "stratum-prod"
+
+[[env.production.kv_namespaces]]
+binding = "STATE"
+id = "2285977f426647cf9e3db347cbc0f03b"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "stratum"
+database_id = "de9b583b-d5f3-4868-a1eb-2208b76c7062"
+migrations_dir = "migrations"
+
+[[env.production.analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "stratum_requests"
+
+[env.production.ai]
+binding = "AI"
+
+[[env.production.durable_objects.bindings]]
+name = "MERGE_QUEUE"
+class_name = "MergeQueue"
+script_name = "stratum"
+
+[[env.production.queues.producers]]
+binding = "EVENTS_QUEUE"
+queue = "stratum-events"
+
+[[env.production.queues.producers]]
+binding = "IMPORT_QUEUE"
+queue = "stratum-imports"
+
+[[env.production.queues.consumers]]
+queue = "stratum-events"
+
+[[env.production.queues.consumers]]
+queue = "stratum-imports"
+max_batch_size = 1
+max_retries = 3
+retry_delay = 30
+
+[env.production.triggers]
+crons = ["0 6 * * *", "*/5 * * * *"]
+
+[[env.production.send_email]]
+name = "EMAIL"
+
+[env.production.vars]
+POSTHOG_HOST = "https://app.posthog.com"
+# Production OAuth callbacks. The matching callback URLs must also be registered
+# in the GitHub and Google OAuth app settings.
+OAUTH_REDIRECT_URI = "https://app.usestratum.dev/auth/github/callback"
+GOOGLE_REDIRECT_URI = "https://app.usestratum.dev/auth/google/callback"
+
+# =============================================================================
+# [env.staging]
+# Deploy with: wrangler deploy --env staging
+# =============================================================================
 [env.staging]
 name = "stratum-staging"
 
@@ -104,10 +202,6 @@ head_sampling_rate = 1.0
 [env.staging.observability.traces]
 enabled = true
 head_sampling_rate = 1.0  # 100% sampling in staging for debugging
-
-[[migrations]]
-tag = "v1"
-new_classes = ["MergeQueue"]
 
 [[env.staging.artifacts]]
 binding = "ARTIFACTS"
@@ -148,7 +242,7 @@ queue = "stratum-imports"
 # Enable when running integration tests: wrangler deploy --env=staging
 # [[env.staging.queues.consumers]]
 # queue = "stratum-events-staging"
-# 
+#
 # [[env.staging.queues.consumers]]
 # queue = "stratum-imports-staging"
 # max_batch_size = 1
