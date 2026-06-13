@@ -194,6 +194,11 @@ GOOGLE_REDIRECT_URI = "https://app.usestratum.dev/auth/google/callback"
 [env.staging]
 name = "stratum-staging"
 
+# Staging custom domain (matches the staging OAuth callback host below).
+routes = [
+  { pattern = "staging.app.usestratum.dev", custom_domain = true }
+]
+
 # Observability for staging - full sampling for debugging
 [env.staging.observability]
 enabled = true
