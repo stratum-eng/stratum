@@ -116,6 +116,9 @@ OAUTH_REDIRECT_URI = "http://localhost:8787/auth/github/callback"
 # =============================================================================
 [env.production]
 name = "stratum"
+# Keep the *.workers.dev URL enabled alongside the custom domain (wrangler
+# disables it by default once `routes` is set). The deploy smoke tests hit it.
+workers_dev = true
 
 # Production custom domain. With custom_domain = true, Cloudflare provisions the
 # DNS record + TLS cert for this hostname on deploy. workers.dev keeps working.
@@ -199,6 +202,8 @@ GOOGLE_REDIRECT_URI = "https://app.usestratum.dev/auth/google/callback"
 # =============================================================================
 [env.staging]
 name = "stratum-staging"
+# Keep *.workers.dev enabled alongside the custom domain (the smoke tests use it).
+workers_dev = true
 
 # Staging custom domain (matches the staging OAuth callback host below).
 routes = [
