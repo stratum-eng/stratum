@@ -186,6 +186,12 @@ POSTHOG_HOST = "https://app.posthog.com"
 # in the GitHub and Google OAuth app settings.
 OAUTH_REDIRECT_URI = "https://app.usestratum.dev/auth/github/callback"
 GOOGLE_REDIRECT_URI = "https://app.usestratum.dev/auth/google/callback"
+# Closed beta — uncomment BOTH lines to require an invite code at signup.
+# ⚠️ Only AFTER usestratum.dev is cut over to the landing Worker, or this hits the
+# old Pages site (405) and blocks ALL signups. REFERRAL_SERVICE_SECRET must
+# already be set (wrangler secret put) and match the referral service.
+# BETA_GATE = "1"
+# REFERRAL_SERVICE_URL = "https://usestratum.dev"
 
 # =============================================================================
 # [env.staging]
