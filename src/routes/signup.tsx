@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { betaGateEnabled } from "../beta/gate";
 import type { Env } from "../types";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -15,6 +16,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   send_failed: "Failed to send email. Please try again later.",
   signup_failed: "Failed to create account. Please try again.",
   rate_limited: "Too many requests. Please try again later.",
+  invite_required: "Stratum is in closed beta — an invite code is required to sign up.",
+  invalid_invite: "That invite code isn't valid or has already been used.",
 };
 
 const SUCCESS_MESSAGES: Record<string, string> = {
@@ -26,6 +29,8 @@ app.get("/", (c) => {
   const errorCode = c.req.query("error");
   const successCode = c.req.query("success");
   const prefillEmail = c.req.query("email") ?? "";
+  const betaGate = betaGateEnabled(c.env);
+  const prefillInvite = c.req.query("ref") ?? c.req.query("invite") ?? "";
   const error =
     errorCode !== undefined
       ? (ERROR_MESSAGES[errorCode] ?? "Signup failed. Please try again.")
@@ -423,6 +428,28 @@ app.get("/", (c) => {
                     </div>
                     <div class="username-status" id="usernameStatus" />
                   </div>
+
+                  {betaGate ? (
+                    <div class="form-group">
+                      <label class="form-label" for="inviteCode">
+                        Invite code <span>(required during beta)</span>
+                      </label>
+                      <input
+                        type="text"
+                        id="inviteCode"
+                        name="inviteCode"
+                        class="form-input"
+                        placeholder="ABCDE12345"
+                        value={prefillInvite}
+                        required
+                        autocomplete="off"
+                        spellcheck={false}
+                      />
+                      <div class="input-hint">
+                        Have a referral link? Your code is filled in automatically.
+                      </div>
+                    </div>
+                  ) : null}
 
                   <div class="checkbox-group">
                     <input

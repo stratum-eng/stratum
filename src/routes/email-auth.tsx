@@ -1,12 +1,13 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { getMagicLinkEmail } from "../email/templates";
+import { admitUser, betaGateEnabled, validateInviteCode } from "../beta/gate";
+import { getInviteCodesEmail, getMagicLinkEmail } from "../email/templates";
 import { recordAudit } from "../storage/audit";
 import { createSession } from "../storage/sessions";
 import { createUser, getUserByEmail, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
-import { createLogger } from "../utils/logger";
+import { type Logger, createLogger } from "../utils/logger";
 import { validateUsername } from "../utils/username-validation";
 import { validateEmail } from "../utils/validation";
 
@@ -270,6 +271,8 @@ app.post("/send-signup", async (c) => {
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const username = typeof body.username === "string" ? body.username.trim().toLowerCase() : "";
   const rememberMe = body.rememberMe === "true";
+  const inviteCode =
+    typeof body.inviteCode === "string" ? body.inviteCode.trim().toUpperCase() : "";
 
   // Validate email format
   const emailValidation = validateEmail(email, logger);
@@ -287,6 +290,19 @@ app.post("/send-signup", async (c) => {
 
   const emailHash = hashEmail(email);
   logger.info("Processing signup request", { emailHash, username });
+
+  // Closed-beta gate: require a valid invite code before sending the magic link
+  // (fast feedback). The code is re-checked and consumed at verify time.
+  if (betaGateEnabled(c.env)) {
+    if (!inviteCode) {
+      return emailAuthRedirect(c, "error", "invite_required", "/auth/signup");
+    }
+    const inviteCheck = await validateInviteCode(c.env, inviteCode, logger);
+    if (!inviteCheck.valid) {
+      logger.warn("Invalid invite code at signup", { emailHash });
+      return emailAuthRedirect(c, "error", "invalid_invite", "/auth/signup");
+    }
+  }
 
   // Check if email sending is configured
   if (!c.env.EMAIL) {
@@ -345,6 +361,7 @@ app.post("/send-signup", async (c) => {
         intent: "signup",
         createdAt: Date.now(),
         rememberMe,
+        inviteCode,
       }),
       { expirationTtl: 15 * 60 }, // 15 minutes TTL
     );
@@ -626,7 +643,7 @@ app.get("/verify", async (c) => {
 
     if (intent === "signup") {
       // Signup flow
-      const { username } = tokenData;
+      const { username, inviteCode = "" } = tokenData;
       logger.info("Processing signup verification", { emailHash, username });
 
       // Double-check email doesn't already exist (race condition protection)
@@ -636,6 +653,15 @@ app.get("/verify", async (c) => {
         // User already exists, treat as login
         const userId = existingUserByEmail.data.id;
         return await createSessionAndRedirect(c, userId, emailHash, rememberMe, logger);
+      }
+
+      // Closed-beta gate: re-validate the invite code before creating the account.
+      if (betaGateEnabled(c.env)) {
+        const inviteCheck = await validateInviteCode(c.env, inviteCode, logger);
+        if (!inviteCheck.valid) {
+          logger.warn("Invite code no longer valid at verification", { emailHash });
+          return emailAuthRedirect(c, "error", "invalid_invite", "/auth/signup");
+        }
       }
 
       // Double-check username is still available (race condition protection)
@@ -654,6 +680,12 @@ app.get("/verify", async (c) => {
 
       const userId = createResult.data.user.id;
       logger.info("New user created via signup", { userId, emailHash, username });
+
+      // Beta program: record the redemption, mint this user's 5 codes, and email
+      // them. Best-effort — never blocks the now-created account.
+      if (betaGateEnabled(c.env)) {
+        await admitAndDeliverCodes(c, { userId, email, inviteCode, source: "magic_link" }, logger);
+      }
 
       // Create session and redirect to welcome/onboarding
       return await createSessionAndRedirect(c, userId, emailHash, rememberMe, logger, "/welcome");
@@ -685,6 +717,50 @@ app.get("/verify", async (c) => {
     return emailAuthRedirect(c, "error", "verify_failed");
   }
 });
+
+// Beta program: redeem the invite code, mint the user's 5 shareable codes, and
+// email them. Best-effort — failures are logged and swallowed so a created
+// account is never left in a broken state by a referral-service hiccup.
+async function admitAndDeliverCodes(
+  c: Context<{ Bindings: Env }>,
+  params: { userId: string; email: string; inviteCode: string; source: string },
+  logger: Logger,
+): Promise<void> {
+  try {
+    const result = await admitUser(
+      c.env,
+      {
+        userId: params.userId,
+        email: params.email,
+        code: params.inviteCode,
+        source: params.source,
+      },
+      logger,
+    );
+    if (result.codes.length === 0) {
+      logger.warn("No invite codes minted for new user", { userId: params.userId });
+      return;
+    }
+    const fromAddress = c.env.EMAIL_FROM_ADDRESS;
+    if (!c.env.EMAIL || !fromAddress) return;
+    const emailContent = getInviteCodesEmail({
+      email: params.email,
+      codes: result.codes,
+      shareBaseUrl: c.env.REFERRAL_SERVICE_URL,
+    });
+    await c.env.EMAIL.send({
+      to: params.email,
+      from: { email: fromAddress, name: "Stratum" },
+      subject: emailContent.subject,
+      text: emailContent.text,
+      html: emailContent.html,
+    });
+  } catch (err) {
+    logger.error("Failed to deliver invite codes", err instanceof Error ? err : undefined, {
+      userId: params.userId,
+    });
+  }
+}
 
 // Helper function to create session and redirect
 async function createSessionAndRedirect(

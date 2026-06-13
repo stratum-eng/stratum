@@ -120,6 +120,12 @@ export interface Env {
   EMAIL_FROM_ADDRESS?: string;
   ADMIN_EMAIL?: string;
   ADMIN_API_KEY?: string;
+  // Closed-beta gate (optional; OSS self-hosters leave these unset → no gating).
+  // When BETA_GATE is enabled AND REFERRAL_SERVICE_URL is set, new-account creation
+  // requires a valid referral/invite code validated against the cloud referral service.
+  BETA_GATE?: string;
+  REFERRAL_SERVICE_URL?: string;
+  REFERRAL_SERVICE_SECRET?: string;
   ANALYTICS?: AnalyticsEngineDataset;
   SANDBOX?: SandboxBinding;
   AI?: AiBinding;

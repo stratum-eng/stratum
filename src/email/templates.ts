@@ -234,6 +234,66 @@ Your code management platform`;
   return { subject, text, html };
 }
 
+export interface InviteCodesEmailData {
+  email: string;
+  codes: string[];
+  /** Origin for building share links, e.g. https://usestratum.dev */
+  shareBaseUrl?: string;
+}
+
+/**
+ * Beta-program email delivering a newly admitted user their personal referral
+ * codes to share. Sent after account creation when the closed-beta gate is on.
+ */
+export function getInviteCodesEmail(data: InviteCodesEmailData): {
+  subject: string;
+  text: string;
+  html: string;
+} {
+  const { codes } = data;
+  const base = (data.shareBaseUrl ?? "").replace(/\/$/, "");
+  const subject = "Your Stratum invite codes";
+
+  const shareLine = (code: string) => (base ? `${base}/?ref=${code}` : code);
+
+  const text = `Welcome to the Stratum beta!
+
+You have ${codes.length} invite codes to share. Each lets one person join:
+
+${codes.map((c) => `  ${c}${base ? `   (${shareLine(c)})` : ""}`).join("\n")}
+
+Share a link and you'll see who joins from it.
+
+--
+Stratum
+Your code management platform`;
+
+  const rows = codes
+    .map(
+      (code) => `
+      <tr>
+        <td style="padding: 10px 14px; border: 1px solid #333; border-radius: 8px; font-family: 'SFMono-Regular', Menlo, monospace; font-size: 18px; letter-spacing: 2px; color: #e5e5e5; background-color: #0f0f0f;">
+          ${escapeHtml(code)}
+        </td>
+      </tr>
+      <tr><td style="height: 10px;"></td></tr>`,
+    )
+    .join("");
+
+  const body = `
+    <div class="text-primary" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 20px; font-weight: 600; color: #e5e5e5; padding-bottom: 16px;">
+      Welcome to the Stratum beta
+    </div>
+    <div class="text-secondary" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 16px; line-height: 1.6; color: #a0a0a0; padding-bottom: 24px;">
+      You've got <strong style="color: #e5e5e5;">${codes.length} invite codes</strong> to share. Each one lets a friend join the beta${base ? ` &mdash; share <code style="color:#e5e5e5;">${escapeHtml(base)}/?ref=CODE</code>` : ""}.
+    </div>
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+      ${rows}
+    </table>`;
+
+  return { subject, text, html: wrapEmail({ title: subject, body }) };
+}
+
 /**
  * Generic email template wrapper with Stratum branding
  * TODO: Use this for future email templates (notifications, invites, etc.)

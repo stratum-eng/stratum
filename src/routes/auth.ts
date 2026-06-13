@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { betaGateEnabled } from "../beta/gate";
 import { recordAudit } from "../storage/audit";
 import { createSession, deleteSession, getSession } from "../storage/sessions";
-import { createUser, getUserByEmail, upsertGitHubUser } from "../storage/users";
+import { createUser, getUserByEmail, getUserByGitHubId, upsertGitHubUser } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 
@@ -192,6 +193,17 @@ app.get("/github/callback", async (c) => {
   const emailPrefix = primaryEmail.split("@")[0];
   logger.info("Upserting GitHub user", { githubId: githubUser.id, emailPrefix });
 
+  // Closed beta: OAuth is login-only. A brand-new account (no match by GitHub id
+  // or email) must be created through the invite-gated magic-link flow first.
+  if (betaGateEnabled(c.env)) {
+    const byGithub = await getUserByGitHubId(c.env.DB, String(githubUser.id), logger);
+    const byEmail = await getUserByEmail(c.env.DB, primaryEmail, logger);
+    if (!byGithub.success && !byEmail.success) {
+      logger.warn("Blocked GitHub signup — closed beta", { githubId: githubUser.id });
+      return c.redirect("/auth/signup?error=invite_required");
+    }
+  }
+
   const userResult = await upsertGitHubUser(
     c.env.DB,
     {
@@ -360,6 +372,11 @@ app.get("/google/callback", async (c) => {
   if (existing.success) {
     userId = existing.data.id;
   } else {
+    // Closed beta: OAuth is login-only — new accounts require an invite code.
+    if (betaGateEnabled(c.env)) {
+      logger.warn("Blocked Google signup — closed beta");
+      return c.redirect("/auth/signup?error=invite_required");
+    }
     const createdResult = await createUser(c.env.DB, googleUser.email, logger);
     if (!createdResult.success) {
       logger.error("Failed to create user from Google sign-in", createdResult.error);

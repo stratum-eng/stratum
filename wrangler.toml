@@ -63,6 +63,11 @@ crons = ["0 6 * * *", "*/5 * * * *"]
 [vars]
 POSTHOG_HOST = "https://app.posthog.com"
 OAUTH_REDIRECT_URI = "http://localhost:8787/auth/github/callback"
+# Closed-beta gate (Stratum Cloud only — leave unset/commented for ungated self-hosting).
+# The gate turns ON only when BETA_GATE = "1" AND REFERRAL_SERVICE_URL is set.
+# REFERRAL_SERVICE_URL is the landing/cloud origin that serves /api/referral/*.
+# BETA_GATE = "1"
+# REFERRAL_SERVICE_URL = "https://usestratum.dev"
 
 # Email Sending — configure via: wrangler email sending enable yourdomain.com
 [[send_email]]
@@ -81,6 +86,8 @@ name = "EMAIL"
 # GOOGLE_CLIENT_SECRET =
 # GOOGLE_REDIRECT_URI = "https://yourdomain.com/auth/google/callback"
 # EMAIL_FROM_ADDRESS = "noreply@yourdomain.com"  # for magic link emails
+# REFERRAL_SERVICE_SECRET =  # closed-beta gate shared secret; must match the value
+#                            # set on the referral service. set via: wrangler secret put REFERRAL_SERVICE_SECRET
 
 # Staging environment
 [env.staging]
