@@ -18,6 +18,7 @@ vi.mock("../src/storage/git-ops", async (importActual) => {
     getDiffBetweenRepos: vi.fn(),
     mergeWorkspaceIntoProject: vi.fn(),
     getCommitLog: vi.fn(),
+    freshRepoToken: vi.fn(async () => ({ success: true, data: "test-token" })),
   };
 });
 
@@ -180,14 +181,12 @@ const mockProject = {
   ownerId: "user_test",
   ownerType: "user" as const,
   remote: "https://artifacts.example.com/repos/my-project",
-  token: "tok_project",
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
 const mockWorkspace = {
   name: "fix-bug",
   remote: "https://artifacts.example.com/repos/fix-bug",
-  token: "tok_workspace",
   parent: "my-project",
   createdAt: "2026-01-01T01:00:00.000Z",
 };
@@ -866,9 +865,9 @@ describe("POST /api/changes/:id/merge", () => {
     expect(body.commit).toBe("sha_merged");
     expect(mergeWorkspaceIntoProject).toHaveBeenCalledWith(
       "https://artifacts.example.com/repos/my-project",
-      "tok_project",
+      "test-token",
       "https://artifacts.example.com/repos/fix-bug",
-      "tok_workspace",
+      "test-token",
       expect.any(Object),
       { strategy: "merge" },
     );
@@ -991,9 +990,9 @@ describe("POST /api/changes/:id/merge", () => {
     expect(res.status).toBe(200);
     expect(mergeWorkspaceIntoProject).toHaveBeenCalledWith(
       "https://artifacts.example.com/repos/my-project",
-      "tok_project",
+      "test-token",
       "https://artifacts.example.com/repos/fix-bug",
-      "tok_workspace",
+      "test-token",
       expect.any(Object),
       { strategy: "squash" },
     );

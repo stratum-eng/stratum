@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { type EventActor, emitEvent } from "../queue/events";
-import { cloneRepo, commitAndPush } from "../storage/git-ops";
+import { cloneRepo, commitAndPush, freshRepoToken } from "../storage/git-ops";
 import {
   deleteWorkspace,
   getProjectByPath,
@@ -60,7 +60,6 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
     {
       name: workspaceName,
       remote: forked.remote,
-      token: forked.token,
       parent: project.id, // Store project ID instead of name
       createdAt: new Date().toISOString(),
       branchName: workspaceName, // Artifacts fork name IS the branch ref
@@ -190,7 +189,15 @@ app.post("/:name/commit", async (c) => {
   // For now, we'll skip detailed permission check in this simplified endpoint
   // In production, you'd want to look up project by ID
 
-  const cloneResult = await cloneRepo(workspace.remote, workspace.token, logger);
+  // Committing clones then pushes to the workspace fork. Mint a fresh write token.
+  const tokenResult = await freshRepoToken(c.env.ARTIFACTS, workspace.remote, "write", logger);
+  if (!tokenResult.success) {
+    logger.error("Failed to mint workspace token", tokenResult.error);
+    return badRequest(tokenResult.error.message);
+  }
+  const workspaceToken = tokenResult.data;
+
+  const cloneResult = await cloneRepo(workspace.remote, workspaceToken, logger);
   if (!cloneResult.success) {
     logger.error("Failed to clone repo", cloneResult.error);
     return badRequest(cloneResult.error.message);
@@ -201,7 +208,7 @@ app.post("/:name/commit", async (c) => {
     fs,
     dir,
     workspace.remote,
-    workspace.token,
+    workspaceToken,
     body.files,
     body.message,
     logger,

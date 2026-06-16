@@ -82,6 +82,10 @@ vi.mock("../src/storage/git-ops", () => ({
     ],
   })),
   readFileFromRepo: vi.fn(async () => ({ success: true, data: "# README" })),
+  freshRepoToken: vi.fn(async (_artifacts: unknown, _remote: string, _scope: string) => ({
+    success: true,
+    data: "mock-token",
+  })),
 }));
 
 // Mock changes storage
@@ -224,7 +228,6 @@ async function createTestProject(
     ownerId,
     ownerType: "user",
     remote: `https://artifacts.example.com/repos/${namespace.replace("@", "")}-${slug}`,
-    token: `tok_${namespace.replace("@", "")}_${slug}`,
     createdAt: new Date().toISOString(),
     visibility,
   };
@@ -248,7 +251,6 @@ async function createLegacyProject(
     ownerId,
     ownerType: "user",
     remote: `https://artifacts.example.com/repos/${name}`,
-    token: `tok_${name}`,
     createdAt: new Date().toISOString(),
     visibility,
   };

@@ -122,6 +122,58 @@ function makeAuth(token: string) {
   return () => ({ username: "x", password: secret });
 }
 
+/**
+ * Parse the Artifacts repo name out of a clone remote URL.
+ * Remotes look like `https://<account>.artifacts.cloudflare.net/git/<namespace>/<repoName>.git`.
+ * The trailing `<repoName>` is the name `ARTIFACTS.get()` expects. Returns null if the
+ * URL doesn't match (e.g. a non-Artifacts remote).
+ */
+export function artifactsRepoNameFromRemote(remote: string): string | null {
+  const match = remote.match(/\/git\/[^/]+\/([^/]+?)(?:\.git)?\/?$/);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Mint a fresh, short-lived Artifacts token for a repo just before a git operation.
+ *
+ * Artifacts tokens carry an embedded `?expires=` timestamp, so a token is only good for
+ * about an hour after it's minted. Rather than persist one and watch it go stale (which
+ * yields `403 Invalid or expired token`), every git operation mints its own token scoped
+ * to what it needs (`read` for clone/fetch, `write` for push). The repo identity is
+ * derived from the remote URL.
+ */
+export async function freshRepoToken(
+  artifacts: ArtifactsNamespace,
+  remote: string,
+  scope: "read" | "write",
+  logger: Logger,
+): Promise<Result<string, AppError>> {
+  const name = artifactsRepoNameFromRemote(remote);
+  if (!name) {
+    logger.error("Could not derive Artifacts repo name from remote", undefined, { remote });
+    return err(
+      new ExternalServiceError("Artifacts", `Could not derive repo name from remote: ${remote}`),
+    );
+  }
+  const minted = await fromPromise(
+    (async () => {
+      const repo = await artifacts.get(name);
+      return repo.createToken(scope, 3600);
+    })(),
+  );
+  if (!minted.success) {
+    logger.error(
+      "Failed to mint Artifacts token",
+      minted.error instanceof Error ? minted.error : undefined,
+      { remote, name, scope },
+    );
+    return err(
+      new ExternalServiceError("Artifacts", "Failed to mint repository token", minted.error),
+    );
+  }
+  return ok(minted.data.plaintext);
+}
+
 export async function initAndPush(
   remote: string,
   token: string,

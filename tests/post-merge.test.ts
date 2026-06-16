@@ -11,6 +11,10 @@ vi.mock("../src/storage/git-ops", () => ({
   readRepoFiles: vi.fn(),
   getCommitParent: vi.fn(),
   revertToCommit: vi.fn(),
+  freshRepoToken: vi.fn(async (_artifacts: unknown, _remote: string, _scope: string) => ({
+    success: true,
+    data: "minted-token",
+  })),
 }));
 
 vi.mock("../src/storage/changes", () => ({
@@ -141,13 +145,13 @@ describe("runPostMergeCheck", () => {
     expect(result.revertCommit).toBe("sha_revert");
     expect(getCommitParent).toHaveBeenCalledWith(
       project.remote,
-      project.token,
+      "minted-token",
       "sha_merge",
       mockLogger,
     );
     expect(revertToCommit).toHaveBeenCalledWith(
       project.remote,
-      project.token,
+      "minted-token",
       "sha_premerge",
       expect.stringContaining("Revert merge"),
       mockLogger,

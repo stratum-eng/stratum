@@ -268,7 +268,6 @@ async function processImportJob(
     const updatedProject: ProjectEntry = {
       ...project,
       remote: importResult.data.remote,
-      token: importResult.data.token,
       importCompleted: true,
     };
 
@@ -321,7 +320,8 @@ async function processImportJob(
     // Write repo snapshot to KV so page loads skip git clones going forward
     await writeSnapshotFromRepo(
       env.STATE,
-      { remote: updatedProject.remote, token: updatedProject.token, namespace, slug },
+      env.ARTIFACTS,
+      { remote: updatedProject.remote, namespace, slug },
       logger,
     );
 
@@ -511,7 +511,6 @@ async function processSyncJob(
     const updatedProject: ProjectEntry = {
       ...project,
       remote: importResult.data.remote,
-      token: importResult.data.token,
       lastSyncedAt: new Date().toISOString(),
       lastSyncedCommit: latestCommitSha,
       lastSyncStatus: "success",
@@ -553,7 +552,8 @@ async function processSyncJob(
     // Write repo snapshot to KV so page loads skip git clones going forward
     await writeSnapshotFromRepo(
       env.STATE,
-      { remote: updatedProject.remote, token: updatedProject.token, namespace, slug },
+      env.ARTIFACTS,
+      { remote: updatedProject.remote, namespace, slug },
       logger,
     );
 

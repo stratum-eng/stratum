@@ -182,7 +182,6 @@ describe("handlePullRequest", () => {
         name: "ws-1234",
         branchName: "ws-1234",
         remote: "r",
-        token: "t",
         parent: "proj-1",
         createdAt: new Date().toISOString(),
       },

@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { getChange, updateChangeStatus } from "../storage/changes";
-import { mergeWorkspaceIntoProject } from "../storage/git-ops";
+import { freshRepoToken, mergeWorkspaceIntoProject } from "../storage/git-ops";
 import { recordProvenance } from "../storage/provenance";
 import { getProject, getWorkspace } from "../storage/state";
 import type { Env } from "../types";
@@ -43,11 +43,20 @@ export class MergeQueue extends DurableObject<Env> {
       }
       const workspace = workspaceResult.data;
 
+      // Merge clones the workspace fork (read) and pushes to the project (write).
+      // Mint both tokens fresh: no token is persisted.
+      const [projectToken, workspaceToken] = await Promise.all([
+        freshRepoToken(this.env.ARTIFACTS, project.remote, "write", log),
+        freshRepoToken(this.env.ARTIFACTS, workspace.remote, "read", log),
+      ]);
+      if (!projectToken.success) return { success: false, error: projectToken.error.message };
+      if (!workspaceToken.success) return { success: false, error: workspaceToken.error.message };
+
       const commitResult = await mergeWorkspaceIntoProject(
         project.remote,
-        project.token,
+        projectToken.data,
         workspace.remote,
-        workspace.token,
+        workspaceToken.data,
         log,
         { strategy: "merge" },
       );

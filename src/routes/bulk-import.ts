@@ -162,7 +162,6 @@ async function processRepoImport(
       ownerId,
       ownerType: "user",
       remote: repo.remote,
-      token: repo.token,
       createdAt: new Date().toISOString(),
       sourceUrl: url,
       sourceProvider: provider || undefined,

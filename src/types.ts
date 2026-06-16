@@ -176,7 +176,6 @@ export interface ProjectEntry {
   ownerId: string; // User/Agent/Org ID
   ownerType: "user" | "org" | "agent";
   remote: string;
-  token: string;
   createdAt: string;
   // Legacy GitHub-specific fields (kept for backward compatibility)
   githubUrl?: string;
@@ -225,7 +224,6 @@ export function artifactsRepoName(project: ProjectEntry): string {
 export interface WorkspaceEntry {
   name: string;
   remote: string;
-  token: string;
   parent: string;
   createdAt: string;
   /** The Artifacts fork ref name. Equals `name` for workspaces created after this field was added.

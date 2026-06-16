@@ -83,7 +83,6 @@ describe("pushChangeToGitHub — branch resolution", () => {
         name: "ws-1234",
         branchName: "ws-1234",
         remote: "https://artifacts.example.com/fork",
-        token: "fork-token",
         parent: "proj-1",
         createdAt: new Date().toISOString(),
       },
@@ -127,7 +126,6 @@ describe("pushChangeToGitHub — branch resolution", () => {
         name: "ws-legacy",
         // branchName absent — old workspace
         remote: "https://artifacts.example.com/fork",
-        token: "fork-token",
         parent: "proj-1",
         createdAt: new Date().toISOString(),
       },

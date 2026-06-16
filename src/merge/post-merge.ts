@@ -2,7 +2,7 @@ import type { EvalPolicy } from "../evaluation/types";
 import { emitEvent } from "../queue/events";
 import { updateChangeStatus } from "../storage/changes";
 import { recordCosts } from "../storage/costs";
-import { getCommitParent, readRepoFiles, revertToCommit } from "../storage/git-ops";
+import { freshRepoToken, getCommitParent, readRepoFiles, revertToCommit } from "../storage/git-ops";
 import type { Env, ProjectEntry } from "../types";
 import type { Logger } from "../utils/logger";
 
@@ -41,9 +41,17 @@ export async function runPostMergeCheck(
     return { status: "skipped", reason: "Sandbox binding is not configured" };
   }
 
+  // A write-scoped token: this may read the merged tree and, on failure, push a
+  // revert. Minted fresh because no token is persisted.
+  const tokenResult = await freshRepoToken(env.ARTIFACTS, project.remote, "write", logger);
+  if (!tokenResult.success) {
+    return { status: "skipped", reason: `Could not mint repo token: ${tokenResult.error.message}` };
+  }
+  const projectToken = tokenResult.data;
+
   let failureReason: string;
   try {
-    const filesResult = await readRepoFiles(project.remote, project.token, logger);
+    const filesResult = await readRepoFiles(project.remote, projectToken, logger);
     if (!filesResult.success) {
       return {
         status: "skipped",
@@ -85,7 +93,7 @@ export async function runPostMergeCheck(
   // Revert to the merge commit's first parent — the pre-merge HEAD.
   const parentResult = await getCommitParent(
     project.remote,
-    project.token,
+    projectToken,
     opts.mergeCommit,
     logger,
   );
@@ -98,7 +106,7 @@ export async function runPostMergeCheck(
 
   const revertResult = await revertToCommit(
     project.remote,
-    project.token,
+    projectToken,
     parentResult.data,
     `Revert merge ${opts.mergeCommit.slice(0, 7)}: post-merge check failed`,
     logger,
