@@ -165,7 +165,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           echo "Applying D1 migrations for production..."
-          npx wrangler d1 migrations apply stratum
+          npx wrangler d1 migrations apply stratum --env=production
           echo "✓ Migrations applied successfully"
 
       - name: Deploy to Cloudflare Production
@@ -174,7 +174,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          npx wrangler deploy
+          npx wrangler deploy --env=production
           SUBDOMAIN=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
             | jq -r '.result.subdomain')
