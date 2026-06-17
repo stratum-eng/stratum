@@ -874,9 +874,9 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
     return badRequest(`merge-batch accepts at most ${MAX_MERGE_BATCH} changes per request`);
   }
 
-  // Kick off the write-token mint + project clone NOW, overlapping it with the
-  // resolve phase (R2 gets) below — neither depends on the other, so the ~300ms
-  // clone+token finishes "for free" during the staged-tree loads.
+  // Mint the write token + clone NOW, overlapping it with the resolve phase (R2
+  // gets) below — the clone (~300-600ms) finishes within the resolve window, so it's
+  // off the critical path. (Measured: sequencing it after resolve is strictly worse.)
   const clonePromise = (async () => {
     const token = await freshRepoToken(c.env.ARTIFACTS, project.remote, "write", logger);
     if (!token.success) throw new Error(token.error.message);
