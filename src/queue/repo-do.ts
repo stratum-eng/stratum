@@ -249,7 +249,9 @@ export class RepoDO extends DurableObject<Env> {
     });
     if (!updateResult.success) return { success: false, error: updateResult.error.message };
 
-    await recordProvenance(this.env.DB, log, {
+    // The commit is already durable; provenance is bookkeeping — log a failure for
+    // observability but don't fail the (successful) merge.
+    const provenanceResult = await recordProvenance(this.env.DB, log, {
       commitSha: result.commit,
       project: change.project,
       workspace: change.workspace,
@@ -257,9 +259,17 @@ export class RepoDO extends DurableObject<Env> {
       ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
       ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
     });
+    if (!provenanceResult.success) {
+      log.error("Failed to record provenance after R2 merge", provenanceResult.error);
+    }
 
     // GC the staged tree now that it has landed (Task 6).
-    await bucket.delete(key).catch(() => {});
+    await bucket.delete(key).catch((error) => {
+      log.warn("Failed to delete staged tree", {
+        key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
     return { success: true, commit: result.commit };
   }
 
@@ -382,7 +392,7 @@ export class RepoDO extends DurableObject<Env> {
         return { success: false, error: updateResult.error.message };
       }
 
-      await timer.measure("provenanceMs", () =>
+      const provenanceResult = await timer.measure("provenanceMs", () =>
         recordProvenance(this.env.DB, log, {
           commitSha: mergedCommit,
           project: change.project,
@@ -392,6 +402,9 @@ export class RepoDO extends DurableObject<Env> {
           ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
         }),
       );
+      if (!provenanceResult.success) {
+        log.error("Failed to record provenance after merge", provenanceResult.error);
+      }
 
       const metricsResult = await recordCommitMetrics(
         this.env.DB,

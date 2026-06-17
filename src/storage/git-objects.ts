@@ -29,6 +29,11 @@ async function sha1Hex(bytes: Uint8Array): Promise<string> {
 }
 
 function hexToBytes(hex: string): Uint8Array {
+  // Hard-fail on malformed oids: NaN would coerce to 0 and silently corrupt the
+  // tree bytes (and thus the computed oid).
+  if (!/^[0-9a-f]{40}$/i.test(hex)) {
+    throw new Error(`Invalid git oid hex: ${hex}`);
+  }
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
     out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);

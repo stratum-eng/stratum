@@ -60,12 +60,22 @@ export function parseArgs(argv: string[]): BenchArgs {
     return eq === -1 ? "true" : hit.slice(eq + 1);
   };
 
+  const parseIntFlag = (name: string, fallback: number, min: number): number => {
+    const raw = get(name);
+    if (raw === undefined) return fallback;
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed)) throw new Error(`--${name} must be an integer, got '${raw}'`);
+    return Math.max(min, parsed);
+  };
+
   const conflictRaw = get("conflict") ?? "none";
   if (conflictRaw !== "none" && conflictRaw !== "same") {
     throw new Error(`--conflict must be 'none' or 'same', got '${conflictRaw}'`);
   }
 
-  const concurrencies = (get("n") ?? "1,5,25,100")
+  const batch = get("batch") === "true";
+  // Batch mode's server cap is 80; keep the default levels within bounds.
+  const concurrencies = (get("n") ?? (batch ? "1,5,25,50,64" : "1,5,25,100"))
     .split(",")
     .map((s) => Number.parseInt(s.trim(), 10))
     .filter((n) => Number.isInteger(n) && n > 0);
@@ -75,14 +85,14 @@ export function parseArgs(argv: string[]): BenchArgs {
     baseUrl: (get("url") ?? process.env.STRATUM_URL ?? "http://localhost:8787").replace(/\/$/, ""),
     concurrencies,
     conflict: conflictRaw,
-    repeat: Math.max(1, Number.parseInt(get("repeat") ?? "1", 10)),
-    warmup: Math.max(0, Number.parseInt(get("warmup") ?? "1", 10)),
+    repeat: parseIntFlag("repeat", 1, 1),
+    warmup: parseIntFlag("warmup", 1, 0),
     project: get("project") ?? "bench-throughput",
     allowProd: get("i-understand-this-writes-real-commits") === "true",
     r2Bench: get("r2-bench") === "true",
-    batch: get("batch") === "true",
-    bytes: Math.max(1, Number.parseInt(get("bytes") ?? "256", 10)),
-    durationMs: Math.max(200, Number.parseInt(get("duration") ?? "3000", 10)),
+    batch,
+    bytes: parseIntFlag("bytes", 256, 1),
+    durationMs: parseIntFlag("duration", 3000, 200),
   };
 }
 
@@ -297,9 +307,13 @@ async function runR2Bench(args: BenchArgs): Promise<void> {
     const workers = Array.from({ length: n }, async (_u, worker) => {
       const url = `${args.baseUrl}/api/admin/metrics/bench?repo=${repo}&bytes=${args.bytes}&path=${pathFor(worker)}`;
       while (!stop) {
-        const res = await fetch(url, { method: "POST", headers });
-        if (res.ok) completed += 1;
-        else failed += 1;
+        try {
+          const res = await fetch(url, { method: "POST", headers });
+          if (res.ok) completed += 1;
+          else failed += 1;
+        } catch {
+          failed += 1;
+        }
       }
     });
     await new Promise((r) => setTimeout(r, args.durationMs));
@@ -371,7 +385,10 @@ async function runBatchMerge(
     );
 
     const t0 = Date.now();
-    const res = await post(`/api/projects/${project.name}/changes/merge-batch`, { changeIds });
+    const res = await post(`/api/projects/${project.name}/changes/merge-batch`, {
+      changeIds,
+      force: true,
+    });
     const ms = Date.now() - t0;
     const bodyJson = (res.ok ? await res.json() : { error: await res.text() }) as {
       merged?: string[];
@@ -474,8 +491,12 @@ async function runBatch(
   const results = await Promise.all(
     changeIds.map(async (id) => {
       const t0 = Date.now();
-      const res = await post(`/api/changes/${id}/merge?force=true`, {});
-      return { ok: res.ok, ms: Date.now() - t0, status: res.status };
+      try {
+        const res = await post(`/api/changes/${id}/merge?force=true`, {});
+        return { ok: res.ok, ms: Date.now() - t0, status: res.status };
+      } catch {
+        return { ok: false, ms: Date.now() - t0, status: 0 };
+      }
     }),
   );
   const wallMs = Date.now() - wallStart;

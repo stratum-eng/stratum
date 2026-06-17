@@ -67,6 +67,56 @@ const POLICY_CACHE_TTL_MS = 60_000;
 const policyCache = new Map<string, { policy: EvalPolicy; expires: number }>();
 const policyInflight = new Map<string, Promise<EvalPolicy>>();
 
+const policyKvKey = (projectId: string) => `policy:${projectId}`;
+
+/**
+ * Load a project's merge policy through a two-level cache so the hot merge paths
+ * don't clone the repo just to read `.stratum/policy.yaml`:
+ *   in-isolate Map  ->  KV (shared across isolates)  ->  clone (loadPolicy).
+ * Request-coalesced per project. Gated on REPO_DO_ENABLED so tests always load
+ * fresh (no KV access). The cache TTL bounds how long a branch-protection change
+ * takes to apply on these paths. Throws if the read token can't be minted.
+ */
+async function loadMergePolicyCached(
+  env: Env,
+  project: ProjectEntry,
+  logger: Logger,
+): Promise<EvalPolicy> {
+  const cacheable = env.REPO_DO_ENABLED === "true";
+  const cached = cacheable ? policyCache.get(project.id) : undefined;
+  if (cached && cached.expires > Date.now()) return cached.policy;
+  let inflight = cacheable ? policyInflight.get(project.id) : undefined;
+  if (!inflight) {
+    inflight = (async () => {
+      // Cross-isolate KV cache — avoids the repo clone on a cold isolate.
+      if (cacheable) {
+        const kvHit = await env.STATE.get<EvalPolicy>(policyKvKey(project.id), "json").catch(
+          () => null,
+        );
+        if (kvHit) {
+          policyCache.set(project.id, { policy: kvHit, expires: Date.now() + POLICY_CACHE_TTL_MS });
+          return kvHit;
+        }
+      }
+      const tok = await freshRepoToken(env.ARTIFACTS, project.remote, "read", logger);
+      if (!tok.success) throw new Error(tok.error.message);
+      const loaded = await loadPolicy(project.remote, tok.data, logger);
+      if (cacheable) {
+        policyCache.set(project.id, { policy: loaded, expires: Date.now() + POLICY_CACHE_TTL_MS });
+        await env.STATE.put(policyKvKey(project.id), JSON.stringify(loaded), {
+          expirationTtl: 60,
+        }).catch(() => {});
+      }
+      return loaded;
+    })();
+    if (cacheable) {
+      policyInflight.set(project.id, inflight);
+      void inflight.finally(() => policyInflight.delete(project.id));
+    }
+  }
+  return inflight;
+}
+
 function parseGitHubRepo(url: string): { owner: string; repo: string } | null {
   const match = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/\s]+?)(?:\.git|\/)?$/i);
   if (!match || !match[1] || !match[2]) return null;
@@ -509,38 +559,13 @@ app.post("/changes/:id/merge", async (c) => {
   if (!(await canWriteProject(c.env.DB, project, userId)))
     return forbidden("Project access denied");
 
-  // Branch protection: the policy's merge rules gate every merge path. See the
-  // policy-cache note above — avoid a per-merge clone under concurrency.
-  const cacheable = c.env.REPO_DO_ENABLED === "true";
-  const cachedPolicy = cacheable ? policyCache.get(project.id) : undefined;
+  // Branch protection: the policy's merge rules gate every merge path. Cached +
+  // coalesced so a swarm of merges doesn't each clone the repo for the policy file.
   let mergePolicy: EvalPolicy;
-  if (cachedPolicy && cachedPolicy.expires > Date.now()) {
-    mergePolicy = cachedPolicy.policy;
-  } else {
-    let inflight = cacheable ? policyInflight.get(project.id) : undefined;
-    if (!inflight) {
-      inflight = (async () => {
-        const tok = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
-        if (!tok.success) throw new Error(tok.error.message);
-        const loaded = await loadPolicy(project.remote, tok.data, logger);
-        if (cacheable) {
-          policyCache.set(project.id, {
-            policy: loaded,
-            expires: Date.now() + POLICY_CACHE_TTL_MS,
-          });
-        }
-        return loaded;
-      })();
-      if (cacheable) {
-        policyInflight.set(project.id, inflight);
-        void inflight.finally(() => policyInflight.delete(project.id));
-      }
-    }
-    try {
-      mergePolicy = await inflight;
-    } catch (e) {
-      return internalError(e instanceof Error ? e.message : "Failed to load policy");
-    }
+  try {
+    mergePolicy = await loadMergePolicyCached(c.env, project, logger);
+  } catch (e) {
+    return internalError(e instanceof Error ? e.message : "Failed to load policy");
   }
   const forceAllowed = mergePolicy.merge?.allowForce !== false;
   if (force && !forceAllowed) {
@@ -810,15 +835,33 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
 
   const { name: projectName } = c.req.param();
   const projectResult = await getProject(c.env.STATE, projectName, logger);
-  if (!projectResult.success) return notFound("Project", projectName);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") return notFound("Project", projectName);
+    logger.error("Failed to get project", projectResult.error);
+    return internalError(projectResult.error.message);
+  }
   const project = projectResult.data;
   if (!(await canWriteProject(c.env.DB, project, userId)))
     return forbidden("Project access denied");
 
-  const body = await c.req.json<{ changeIds?: unknown }>().catch(() => ({ changeIds: undefined }));
+  const body = await c.req
+    .json<{ changeIds?: unknown; force?: unknown }>()
+    .catch(() => ({ changeIds: undefined, force: undefined }));
   if (!Array.isArray(body.changeIds) || body.changeIds.length === 0) {
     return badRequest("changeIds (non-empty array) is required");
   }
+  const force = body.force === true;
+
+  // Branch-protection gate (same as the single-merge path; the batch path must not
+  // be a bypass). The policy + current-head reads are independent of the staged-tree
+  // resolve, so load them in PARALLEL with it — the policy-file read doesn't add
+  // serial latency to the hot path. Marked handled to avoid an unhandled rejection
+  // on an early return; the real awaits below surface failures.
+  const policyPromise = loadMergePolicyCached(c.env, project, logger);
+  void policyPromise.catch(() => {});
+  const headPromise: Promise<string | null> = force
+    ? Promise.resolve(null)
+    : resolveProjectHead(c.env, project, logger);
   // Dedupe: a repeated id would otherwise merge twice and write two provenance rows.
   const changeIds = [
     ...new Set(body.changeIds.filter((id): id is string => typeof id === "string")),
@@ -860,6 +903,23 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
         return { id, skip: "wrong project" };
       if (!MERGEABLE_STATUSES.includes(change.status)) return { id, skip: "not mergeable" };
       if (!change.baseSha) return { id, skip: "no base" };
+      if (!force) {
+        let mergePolicy: EvalPolicy;
+        try {
+          mergePolicy = await policyPromise;
+        } catch {
+          return { id, skip: "policy load failed" };
+        }
+        const protection = await checkMergeProtection(c.env.DB, logger, change, mergePolicy);
+        if (!protection.success) return { id, skip: "protection check failed" };
+        if (!protection.data.allowed) return { id, skip: "blocked by branch protection" };
+        if (mergePolicy.merge?.requireFreshBase === true) {
+          const currentHead = await headPromise;
+          if (currentHead !== null && change.baseSha !== currentHead) {
+            return { id, skip: "stale base" };
+          }
+        }
+      }
       const staged = await loadStagedTree(bucket, `repos/${project.id}/ws/${change.workspace}`);
       if (!staged) return { id, skip: "not staged" };
       return { id, change, item: { changeId: id, baseSha: change.baseSha, staged } };
@@ -871,6 +931,22 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
     } else if ("item" in r && r.item) {
       items.push(r.item);
       changeById.set(r.id, r.change);
+    }
+  }
+
+  // Enforce the force-allowed policy (loaded in parallel above). Done after resolve
+  // so the policy read overlaps the R2 loads rather than gating them.
+  if (force) {
+    let mergePolicy: EvalPolicy;
+    try {
+      mergePolicy = await policyPromise;
+    } catch (e) {
+      clonePromise.catch(() => {});
+      return internalError(e instanceof Error ? e.message : "Failed to load policy");
+    }
+    if (mergePolicy.merge?.allowForce === false) {
+      clonePromise.catch(() => {});
+      return badRequest("Force merge is disabled by this project's policy");
     }
   }
 

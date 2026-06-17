@@ -85,7 +85,7 @@ export class MergeQueue extends DurableObject<Env> {
         return { success: false, error: updateResult.error.message };
       }
 
-      await timer.measure("provenanceMs", () =>
+      const provenanceResult = await timer.measure("provenanceMs", () =>
         recordProvenance(this.env.DB, log, {
           commitSha: commit,
           project: change.project,
@@ -95,6 +95,9 @@ export class MergeQueue extends DurableObject<Env> {
           ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
         }),
       );
+      if (!provenanceResult.success) {
+        log.error("Failed to record provenance after merge", provenanceResult.error);
+      }
 
       // The classic MergeQueue always runs the full cold merge path.
       const metricsResult = await recordCommitMetrics(

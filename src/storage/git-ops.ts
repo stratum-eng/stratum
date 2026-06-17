@@ -775,7 +775,10 @@ export async function mergeStagedCommits(
   const cloneMs = Date.now() - cloneStart;
 
   const loadStart = Date.now();
-  await loadStaged(fs, `${dir === "/" ? "" : dir}/.git`);
+  const loaded = await fromPromise(loadStaged(fs, `${dir === "/" ? "" : dir}/.git`));
+  if (!loaded.success) {
+    return err(new ExternalServiceError("Git", "Failed to load staged objects", loaded.error));
+  }
   const loadMs = Date.now() - loadStart;
 
   const landed: string[] = [];
@@ -796,8 +799,13 @@ export async function mergeStagedCommits(
       conflicted.push(oid);
       continue;
     }
+    const checkout = await fromPromise(git.checkout({ fs, dir, ref: "main" }));
+    if (!checkout.success) {
+      return err(
+        new ExternalServiceError("Git", "Failed to checkout main after merge", checkout.error),
+      );
+    }
     landed.push(oid);
-    await fromPromise(git.checkout({ fs, dir, ref: "main" }));
   }
   const mergeMs = Date.now() - mergeStart;
 
@@ -842,7 +850,11 @@ export async function stageWorkspaceTree(
     return err(new ExternalServiceError("Git", "Failed to read commit for staging", commit.error));
   }
   const treeOid = commit.data.commit.tree;
-  const objects = await extractTreeObjects(fs, dir, treeOid);
+  const extracted = await fromPromise(extractTreeObjects(fs, dir, treeOid));
+  if (!extracted.success) {
+    return err(new ExternalServiceError("Git", "Failed to extract tree objects", extracted.error));
+  }
+  const objects = extracted.data;
   const pack = packObjects(objects);
   const header = new TextEncoder().encode(treeOid);
   const value = new Uint8Array(header.length + pack.length);
@@ -958,10 +970,26 @@ export async function batchMergeStagedTrees(
       results.push({ changeId: item.changeId, merged: true, commit: attempt.data });
     } else {
       // Conflict/error: restore main to the checkpoint so the next merge is clean.
-      await fromPromise(
+      // If restoration itself fails the FS is corrupt — abort the whole batch
+      // rather than merge subsequent items against a dirty state.
+      const restoreRef = await fromPromise(
         git.writeRef({ fs, dir, ref: "main", value: checkpoint.data, force: true }),
       );
-      await fromPromise(git.checkout({ fs, dir, ref: "main" }));
+      if (!restoreRef.success) {
+        return err(
+          new ExternalServiceError("Git", "Failed to restore ref after conflict", restoreRef.error),
+        );
+      }
+      const restoreCheckout = await fromPromise(git.checkout({ fs, dir, ref: "main" }));
+      if (!restoreCheckout.success) {
+        return err(
+          new ExternalServiceError(
+            "Git",
+            "Failed to checkout after conflict restore",
+            restoreCheckout.error,
+          ),
+        );
+      }
       results.push({ changeId: item.changeId, merged: false });
     }
   }

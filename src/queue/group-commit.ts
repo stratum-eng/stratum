@@ -58,7 +58,11 @@ export class GroupCommitCoordinator<T, R = void> {
   private items = 0;
   private maxBatch = 0;
 
-  constructor(private readonly opts: GroupCommitOptions<T, R>) {}
+  constructor(private readonly opts: GroupCommitOptions<T, R>) {
+    if (!Number.isInteger(opts.maxBatchSize) || opts.maxBatchSize < 1) {
+      throw new Error("GroupCommitCoordinator.maxBatchSize must be an integer >= 1");
+    }
+  }
 
   /** Submit one advance; resolves with its per-item value (or rejects per-item). */
   submit(item: T): Promise<R> {

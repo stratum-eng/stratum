@@ -64,4 +64,10 @@ describe("git-objects (real git SHA-1 oids)", () => {
     const { bytes } = await hashObject("blob", new TextEncoder().encode("hi"));
     expect(new TextDecoder().decode(bytes.slice(0, 7))).toBe("blob 2\0");
   });
+
+  it("rejects a malformed entry oid instead of silently corrupting the tree", () => {
+    expect(() => treeObject([{ mode: "100644", name: "f", oid: "not-a-valid-oid" }])).toThrow(
+      /invalid git oid/i,
+    );
+  });
 });

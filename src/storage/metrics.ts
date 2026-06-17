@@ -486,7 +486,7 @@ export async function getCommitMetrics(
         `SELECT outcome, total_ms, token_mint_ms, project_clone_ms, workspace_fetch_ms,
                 merge_ms, push_ms, ref_advance_ms, d1_update_ms, provenance_ms
          FROM commit_metrics
-         ORDER BY recorded_at DESC
+         ORDER BY recorded_at DESC, id DESC
          LIMIT ?`,
       )
       .bind(limit)

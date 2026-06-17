@@ -220,13 +220,11 @@ app.post("/bench", async (c) => {
   if (!c.env.REPO_OBJECTS) return internalError("REPO_OBJECTS not bound");
   const repo = c.req.query("repo") ?? "bench-repo";
   const path = c.req.query("path") ?? "shared.txt";
-  const bytes = Number.parseInt(c.req.query("bytes") ?? "256", 10);
+  const bytes = clampInt(c.req.query("bytes"), 256, 1, 100_000);
   try {
     // Object plane: build + write the real git blob HERE, in the Worker — this
     // parallelizes across requests instead of serializing through the single DO.
-    const content = crypto.getRandomValues(
-      new Uint8Array(Math.max(1, Number.isFinite(bytes) ? bytes : 256)),
-    );
+    const content = crypto.getRandomValues(new Uint8Array(bytes));
     const blob = await blobObject(content);
     const put = await putObject(c.env.REPO_OBJECTS, blob.oid, blob.bytes, logger);
     if (!put.success) return internalError("object write failed");

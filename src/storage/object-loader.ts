@@ -66,16 +66,21 @@ export function packObjects(objs: { oid: string; bytes: Uint8Array }[]): Uint8Ar
 }
 
 export function unpackObjects(buf: Uint8Array): { oid: string; bytes: Uint8Array }[] {
+  // Validate the framing as we go — a truncated/corrupt payload must fail loudly,
+  // not read out of bounds and crash the merge path.
+  if (buf.byteLength < 4) throw new Error("Invalid object pack: missing count header");
   const dec = new TextDecoder();
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const count = view.getUint32(0, true);
   const out: { oid: string; bytes: Uint8Array }[] = [];
   let off = 4;
   for (let i = 0; i < count; i++) {
+    if (off + 44 > buf.byteLength) throw new Error("Invalid object pack: truncated entry header");
     const oid = dec.decode(buf.subarray(off, off + 40));
     off += 40;
     const len = view.getUint32(off, true);
     off += 4;
+    if (off + len > buf.byteLength) throw new Error("Invalid object pack: truncated object bytes");
     out.push({ oid, bytes: buf.subarray(off, off + len) });
     off += len;
   }

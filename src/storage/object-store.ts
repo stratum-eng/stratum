@@ -44,6 +44,14 @@ export async function getObject(
     return err(new AppError("Failed to read object from object store", "STORAGE_ERROR", 500));
   }
   if (!res.data) return ok(null);
-  const buf = await res.data.arrayBuffer();
-  return ok(new Uint8Array(buf));
+  const bufRes = await fromPromise(res.data.arrayBuffer());
+  if (!bufRes.success) {
+    logger.error(
+      "Failed to decode object body from R2",
+      bufRes.error instanceof Error ? bufRes.error : undefined,
+      { oid },
+    );
+    return err(new AppError("Failed to decode object from object store", "STORAGE_ERROR", 500));
+  }
+  return ok(new Uint8Array(bufRes.data));
 }

@@ -74,6 +74,16 @@ describe("GroupCommitCoordinator correctness", () => {
     await expect(coord.submit("y")).resolves.toBeUndefined();
   });
 
+  it("rejects a non-positive maxBatchSize at construction (would never drain)", () => {
+    expect(
+      () =>
+        new GroupCommitCoordinator<string>({
+          maxBatchSize: 0,
+          durableWrite: async (batch) => batch.map(() => ({ ok: true, value: undefined })),
+        }),
+    ).toThrow(/maxBatchSize/);
+  });
+
   it("rejects the batch if durableWrite returns a wrong-length outcome list", async () => {
     const coord = new GroupCommitCoordinator<string>({
       maxBatchSize: 64,
