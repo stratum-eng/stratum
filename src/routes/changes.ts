@@ -33,8 +33,8 @@ import {
   freshRepoToken,
   getCommitLog,
   getDiffBetweenRepos,
-  loadStagedTree,
   mergeWorkspaceIntoProject,
+  parseStagedTree,
 } from "../storage/git-ops";
 import { recordProvenance } from "../storage/provenance";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
@@ -830,8 +830,6 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   const logger = createLogger({ requestId: crypto.randomUUID(), userId: c.get("userId") });
   const userId = c.get("userId");
   if (!userId) return unauthorized("Authentication required");
-  if (!c.env.REPO_OBJECTS) return internalError("R2 object store not bound");
-  const bucket = c.env.REPO_OBJECTS;
 
   const { name: projectName } = c.req.param();
   const projectResult = await getProject(c.env.STATE, projectName, logger);
@@ -874,24 +872,13 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
     return badRequest(`merge-batch accepts at most ${MAX_MERGE_BATCH} changes per request`);
   }
 
-  // Mint the write token + clone NOW, overlapping it with the resolve phase (R2
-  // gets) below — the clone (~300-600ms) finishes within the resolve window, so it's
-  // off the critical path. (Measured: sequencing it after resolve is strictly worse.)
-  const clonePromise = (async () => {
-    const token = await freshRepoToken(c.env.ARTIFACTS, project.remote, "write", logger);
-    if (!token.success) throw new Error(token.error.message);
-    const cloned = await cloneRepo(project.remote, token.data, logger);
-    if (!cloned.success) throw new Error(cloned.error.message);
-    return { token: token.data, fs: cloned.data.fs, dir: cloned.data.dir };
-  })();
-
-  // Resolve each change to a staged-tree item; skip (report) ones not eligible.
+  // Resolve every change in ONE D1 query and policy-gate it here; the MERGE runs in
+  // the per-repo Durable Object, which reads staged trees from its LOCAL SQLite hot
+  // index (microseconds) instead of a per-change R2 GET, on a warm reused clone.
   const tResolve = Date.now();
-  const items: StagedTreeItem[] = [];
   const skipped: { changeId: string; reason: string }[] = [];
   const changeById = new Map<string, Change>();
-  // Fetch all changes in ONE D1 query, then load their staged trees CONCURRENTLY.
-  // (Per-change getChange + sequential awaits dominated the request — ~7s for 50.)
+  const mergeItems: { changeId: string; workspace: string; baseSha: string }[] = [];
   const changesResult = await getChangesByIds(c.env.DB, logger, changeIds);
   if (!changesResult.success) return internalError(changesResult.error.message);
   const changeMap = new Map(changesResult.data.map((ch) => [ch.id, ch]));
@@ -920,51 +907,84 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
           }
         }
       }
-      const staged = await loadStagedTree(bucket, `repos/${project.id}/ws/${change.workspace}`);
-      if (!staged) return { id, skip: "not staged" };
-      return { id, change, item: { changeId: id, baseSha: change.baseSha, staged } };
+      return { id, change };
     }),
   );
   for (const r of resolved) {
     if ("skip" in r && r.skip) {
       skipped.push({ changeId: r.id, reason: r.skip });
-    } else if ("item" in r && r.item) {
-      items.push(r.item);
+    } else if ("change" in r && r.change && r.change.baseSha) {
       changeById.set(r.id, r.change);
+      mergeItems.push({ changeId: r.id, workspace: r.change.workspace, baseSha: r.change.baseSha });
     }
   }
 
-  // Enforce the force-allowed policy (loaded in parallel above). Done after resolve
-  // so the policy read overlaps the R2 loads rather than gating them.
+  // Enforce the force-allowed policy (loaded in parallel above).
   if (force) {
     let mergePolicy: EvalPolicy;
     try {
       mergePolicy = await policyPromise;
     } catch (e) {
-      clonePromise.catch(() => {});
       return internalError(e instanceof Error ? e.message : "Failed to load policy");
     }
     if (mergePolicy.merge?.allowForce === false) {
-      clonePromise.catch(() => {});
       return badRequest("Force merge is disabled by this project's policy");
     }
   }
 
+  if (mergeItems.length === 0) {
+    return badRequest(`No eligible changes to merge (${skipped.length} skipped)`);
+  }
+  const resolveMs = Date.now() - tResolve;
+
+  // Merge inside the per-repo DO: local SQLite hot-index reads + warm reused clone +
+  // one push. Keyed by project.id (same key the commit route seeds the index under).
+  if (!c.env.REPO_DO) return internalError("RepoDO not bound");
+  const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(project.id)) as unknown as {
+    getStagedTrees(workspaces: string[]): Promise<{ workspace: string; value: Uint8Array }[]>;
+    gcStagedTrees(workspaces: string[]): Promise<void>;
+  };
+
+  const tBatch = Date.now();
+  // Clone in the Worker (the merge runs faster here than inside the DO), overlapped
+  // with the SINGLE SQLite hot-index read that replaces N per-change R2 GETs.
+  const clonePromise = (async () => {
+    const token = await freshRepoToken(c.env.ARTIFACTS, project.remote, "write", logger);
+    if (!token.success) throw new Error(token.error.message);
+    const cloned = await cloneRepo(project.remote, token.data, logger);
+    if (!cloned.success) throw new Error(cloned.error.message);
+    return { token: token.data, fs: cloned.data.fs, dir: cloned.data.dir };
+  })();
+
+  const workspaces = [...new Set(mergeItems.map((m) => m.workspace))];
+  let stagedList: { workspace: string; value: Uint8Array }[];
+  try {
+    stagedList = await stub.getStagedTrees(workspaces);
+  } catch (e) {
+    clonePromise.catch(() => {});
+    return internalError(e instanceof Error ? e.message : "Failed to read staged trees");
+  }
+  const stagedByWs = new Map(stagedList.map((s) => [s.workspace, s.value]));
+  const items: StagedTreeItem[] = [];
+  for (const m of mergeItems) {
+    const value = stagedByWs.get(m.workspace);
+    if (!value) {
+      skipped.push({ changeId: m.changeId, reason: "not staged" });
+      continue;
+    }
+    items.push({ changeId: m.changeId, baseSha: m.baseSha, staged: parseStagedTree(value) });
+  }
   if (items.length === 0) {
-    clonePromise.catch(() => {}); // swallow the now-unused clone
+    clonePromise.catch(() => {});
     return badRequest(`No eligible changes to merge (${skipped.length} skipped)`);
   }
 
-  const resolveMs = Date.now() - tResolve;
-
-  const tBatch = Date.now();
   let cloneData: { token: string; fs: NodeFS; dir: string };
   try {
     cloneData = await clonePromise;
   } catch (e) {
     return internalError(e instanceof Error ? e.message : "Failed to prepare repo");
   }
-
   const mergeResult = await batchMergeStagedTrees(
     cloneData.fs,
     cloneData.dir,
@@ -976,14 +996,14 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   if (!mergeResult.success) return internalError(mergeResult.error.message);
   const batchMs = Date.now() - tBatch;
 
-  // Persist with just TWO statements regardless of N — one `UPDATE ... WHERE id IN`
-  // and one multi-row provenance INSERT — instead of 2N. Per-statement D1 cost (even
-  // batched) was halving throughput. GC the staged trees concurrently.
+  // Bookkeeping after a durable push (deferred): status + provenance, and GC both the
+  // SQLite hot index (DO) and the R2 mirror of the staged tree.
   const tPersist = Date.now();
   const merged: string[] = [];
   const conflicted: string[] = [];
   const landed: { changeId: string; commit: string; change: Change | undefined }[] = [];
   const gcKeys: string[] = [];
+  const mergedWorkspaces: string[] = [];
   for (const r of mergeResult.data) {
     if (!r.merged || !r.commit) {
       conflicted.push(r.changeId);
@@ -992,12 +1012,9 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
     const change = changeById.get(r.changeId);
     landed.push({ changeId: r.changeId, commit: r.commit, change });
     gcKeys.push(`repos/${project.id}/ws/${change?.workspace}`);
+    if (change?.workspace) mergedWorkspaces.push(change.workspace);
     merged.push(r.changeId);
   }
-
-  // The merges are already DURABLE (pushed to Artifacts) — the D1 status/provenance
-  // writes and staged-tree GC are derived bookkeeping. Defer them past the response
-  // (waitUntil) so D1 transaction-commit latency (~1s) doesn't gate throughput.
   const mergedAt = new Date().toISOString();
   // D1 caps bound parameters at 100/statement: chunk so UPDATE (1 + ids) and the
   // multi-row INSERT (8 binds/row) stay under it. All chunks ride one batch().
@@ -1035,7 +1052,9 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
 
   const persist = (async () => {
     if (statements.length > 0) await c.env.DB.batch(statements);
-    await Promise.all(gcKeys.map((k) => bucket.delete(k).catch(() => {})));
+    await stub.gcStagedTrees(mergedWorkspaces).catch(() => {});
+    const objects = c.env.REPO_OBJECTS;
+    if (objects) await Promise.all(gcKeys.map((k) => objects.delete(k).catch(() => {})));
   })();
   if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(persist);
   else await persist;

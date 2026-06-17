@@ -273,6 +273,62 @@ export class RepoDO extends DurableObject<Env> {
     return { success: true, commit: result.commit };
   }
 
+  // --- Hot object index (ADR 004): staged tip trees in the DO's local SQLite ---
+  // Reading them at merge time is a microsecond-scale local read instead of a
+  // ~30ms-per-change R2 GET — the resolve phase was the batch path's dominant cost.
+  private stagedTableReady = false;
+  private ensureStagedTable(): void {
+    if (this.stagedTableReady) return;
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS staged_trees (workspace TEXT PRIMARY KEY, value BLOB NOT NULL, updated_at INTEGER NOT NULL)",
+    );
+    this.stagedTableReady = true;
+  }
+
+  /** Stage (upsert) a workspace's packed tip tree into the DO's local SQLite. */
+  async stageTree(workspace: string, value: ArrayBuffer): Promise<void> {
+    this.ensureStagedTable();
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO staged_trees (workspace, value, updated_at) VALUES (?, ?, ?)",
+      workspace,
+      value,
+      Date.now(),
+    );
+  }
+
+  private readStagedTree(workspace: string): Uint8Array | null {
+    this.ensureStagedTable();
+    const rows = this.ctx.storage.sql
+      .exec<{ value: ArrayBuffer }>("SELECT value FROM staged_trees WHERE workspace = ?", workspace)
+      .toArray();
+    const row = rows[0];
+    return row ? new Uint8Array(row.value) : null;
+  }
+
+  /**
+   * Read many staged trees from the LOCAL SQLite hot index in one RPC — replaces the
+   * batch path's N per-change R2 GETs (~30ms each) with a single fast call. The
+   * caller does the actual clone+merge+push in the Worker (the merge runs measurably
+   * faster there than inside the DO).
+   */
+  async getStagedTrees(workspaces: string[]): Promise<{ workspace: string; value: Uint8Array }[]> {
+    const out: { workspace: string; value: Uint8Array }[] = [];
+    for (const ws of workspaces) {
+      const value = this.readStagedTree(ws);
+      if (value) out.push({ workspace: ws, value });
+    }
+    return out;
+  }
+
+  /** GC staged trees from the hot index after their changes have landed. */
+  async gcStagedTrees(workspaces: string[]): Promise<void> {
+    if (workspaces.length === 0) return;
+    this.ensureStagedTable();
+    for (const ws of workspaces) {
+      this.ctx.storage.sql.exec("DELETE FROM staged_trees WHERE workspace = ?", ws);
+    }
+  }
+
   private async getHead(): Promise<string | undefined> {
     return this.ctx.storage.get<string>(HEAD_KEY);
   }

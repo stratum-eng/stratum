@@ -844,7 +844,7 @@ export async function stageWorkspaceTree(
   dir: string,
   commitSha: string,
   logger: Logger,
-): Promise<Result<{ treeOid: string; objectCount: number }, AppError>> {
+): Promise<Result<{ treeOid: string; objectCount: number; value: Uint8Array }, AppError>> {
   const commit = await fromPromise(git.readCommit({ fs, dir, oid: commitSha }));
   if (!commit.success) {
     return err(new ExternalServiceError("Git", "Failed to read commit for staging", commit.error));
@@ -868,7 +868,7 @@ export async function stageWorkspaceTree(
     );
     return err(new AppError("Failed to stage workspace tree", "STORAGE_ERROR", 500));
   }
-  return ok({ treeOid, objectCount: objects.length });
+  return ok({ treeOid, objectCount: objects.length, value });
 }
 
 export interface StagedTree {
@@ -876,14 +876,18 @@ export interface StagedTree {
   objects: { oid: string; bytes: Uint8Array }[];
 }
 
+/** Parse the `[40-byte tipTreeOid][packed objects]` staged-tree value. */
+export function parseStagedTree(value: Uint8Array): StagedTree {
+  const treeOid = new TextDecoder().decode(value.subarray(0, TREE_OID_HEX_LEN));
+  const objects = unpackObjects(value.subarray(TREE_OID_HEX_LEN));
+  return { treeOid, objects };
+}
+
 /** Load a workspace's staged tip tree from R2 (see stageWorkspaceTree). */
 export async function loadStagedTree(bucket: R2Bucket, key: string): Promise<StagedTree | null> {
   const obj = await bucket.get(key);
   if (!obj) return null;
-  const value = new Uint8Array(await obj.arrayBuffer());
-  const treeOid = new TextDecoder().decode(value.subarray(0, TREE_OID_HEX_LEN));
-  const objects = unpackObjects(value.subarray(TREE_OID_HEX_LEN));
-  return { treeOid, objects };
+  return parseStagedTree(new Uint8Array(await obj.arrayBuffer()));
 }
 
 export interface StagedTreeItem {

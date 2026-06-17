@@ -242,6 +242,20 @@ app.post("/:name/commit", async (c) => {
       logger.warn("Failed to stage workspace tree to R2; merge will use cold path", {
         workspaceName,
       });
+    } else if (c.env.REPO_DO) {
+      // Also seed the per-repo DO's local hot index so the batch-merge path reads
+      // staged trees from SQLite (microseconds) instead of R2 (~30ms/change).
+      const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(body.projectId)) as unknown as {
+        stageTree(workspace: string, value: ArrayBuffer): Promise<void>;
+      };
+      await stub
+        .stageTree(workspaceName, stageResult.data.value.buffer as ArrayBuffer)
+        .catch((error) => {
+          logger.warn("Failed to seed DO hot index; batch merge will skip this change", {
+            workspaceName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
     }
   }
 
