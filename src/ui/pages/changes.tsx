@@ -50,6 +50,9 @@ export const ChangesPage: FC<ChangesProps> = ({ project, changes, user }) => {
       {changes.length === 0 ? (
         <div class="empty-state">
           <p>No changes yet.</p>
+          <p class="empty-state-hint">
+            Open a change to propose edits and gate them on tests and review before they merge.
+          </p>
         </div>
       ) : (
         <div class="table-scroll">

@@ -34,12 +34,9 @@ a:hover { text-decoration: underline; }
   font-weight: 700;
   color: #f0f0f0;
   letter-spacing: 0.05em;
+  margin-right: auto;
 }
 .nav-brand:hover { text-decoration: none; color: #7ca9f7; }
-
-.nav-links { display: flex; gap: 1.25rem; margin-right: auto; }
-.nav-links a { color: #999; font-size: 0.9rem; }
-.nav-links a:hover { color: #f0f0f0; text-decoration: none; }
 
 .nav-auth {
   display: flex;
@@ -171,6 +168,7 @@ a:hover { text-decoration: underline; }
 .btn-danger:hover  { background: #4d2020; color: #fca5a5; }
 
 .empty-state { padding: 2rem 0; color: #555; text-align: center; }
+.empty-state-hint { margin-top: 0.4rem; font-size: 0.85rem; color: #4d4d4d; }
 
 .file-list { list-style: none; }
 .file-item { padding: 0.3rem 0; border-bottom: 1px solid #161616; font-size: 0.85rem; color: #ccc; }

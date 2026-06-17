@@ -29,9 +29,6 @@ export const Layout: FC<LayoutProps> = ({ title, user, refreshSeconds, children 
           <a class="nav-brand" href="/">
             stratum
           </a>
-          <div class="nav-links">
-            <a href="/">projects</a>
-          </div>
           <div class="nav-auth">
             {user ? (
               <>
