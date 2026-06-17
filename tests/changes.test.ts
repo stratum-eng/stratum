@@ -128,6 +128,7 @@ import { getAgentByToken } from "../src/storage/agents";
 import { createChange, getChange, listChanges, updateChangeStatus } from "../src/storage/changes";
 import { listEvalRuns, recordEvalRuns } from "../src/storage/eval-runs";
 import {
+  freshRepoToken,
   getCommitLog,
   getDiffBetweenRepos,
   mergeWorkspaceIntoProject,
@@ -827,6 +828,14 @@ describe("POST /api/changes/:id/merge", () => {
       success: true,
       data: "sha_merged",
     });
+    // Distinct tokens per repo so merge assertions catch a project/workspace swap.
+    // The merge path mints three tokens (policy-read + merge-write on the project,
+    // merge-read on the workspace), so we key the mock on the remote rather than
+    // relying on call order.
+    vi.mocked(freshRepoToken).mockImplementation(async (_artifacts, remote) => ({
+      success: true,
+      data: remote === mockWorkspace.remote ? "workspace-token" : "project-token",
+    }));
     vi.mocked(updateChangeStatus).mockResolvedValue({
       success: true,
       data: undefined,
@@ -865,9 +874,9 @@ describe("POST /api/changes/:id/merge", () => {
     expect(body.commit).toBe("sha_merged");
     expect(mergeWorkspaceIntoProject).toHaveBeenCalledWith(
       "https://artifacts.example.com/repos/my-project",
-      "test-token",
+      "project-token",
       "https://artifacts.example.com/repos/fix-bug",
-      "test-token",
+      "workspace-token",
       expect.any(Object),
       { strategy: "merge" },
     );
@@ -990,9 +999,9 @@ describe("POST /api/changes/:id/merge", () => {
     expect(res.status).toBe(200);
     expect(mergeWorkspaceIntoProject).toHaveBeenCalledWith(
       "https://artifacts.example.com/repos/my-project",
-      "test-token",
+      "project-token",
       "https://artifacts.example.com/repos/fix-bug",
-      "test-token",
+      "workspace-token",
       expect.any(Object),
       { strategy: "squash" },
     );

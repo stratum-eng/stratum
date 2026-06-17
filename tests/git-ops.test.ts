@@ -55,6 +55,27 @@ describe("artifactsRepoNameFromRemote", () => {
   it("returns null for a non-Artifacts remote", () => {
     expect(artifactsRepoNameFromRemote("https://github.com/owner/repo.git")).toBeNull();
   });
+
+  it("returns null for a non-Artifacts host even with an Artifacts-shaped path", () => {
+    // Guards against minting a real Artifacts token for a remote we don't control.
+    expect(
+      artifactsRepoNameFromRemote("https://evil.example.com/git/stratum-prod/owner__repo.git"),
+    ).toBeNull();
+  });
+
+  it("returns null for a non-HTTPS Artifacts remote", () => {
+    expect(
+      artifactsRepoNameFromRemote("http://acct.artifacts.cloudflare.net/git/ns/owner__repo.git"),
+    ).toBeNull();
+  });
+
+  it("rejects a host that merely contains the Artifacts domain as a prefix", () => {
+    expect(
+      artifactsRepoNameFromRemote(
+        "https://acct.artifacts.cloudflare.net.evil.com/git/ns/owner__repo.git",
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("freshRepoToken", () => {

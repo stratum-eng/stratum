@@ -127,9 +127,23 @@ function makeAuth(token: string) {
  * Remotes look like `https://<account>.artifacts.cloudflare.net/git/<namespace>/<repoName>.git`.
  * The trailing `<repoName>` is the name `ARTIFACTS.get()` expects. Returns null if the
  * URL doesn't match (e.g. a non-Artifacts remote).
+ *
+ * The hostname is constrained to `*.artifacts.cloudflare.net` over HTTPS: `freshRepoToken`
+ * mints a real Artifacts credential from the returned name and uses it to auth against the
+ * remote, so a non-Artifacts remote slipping through here could exfiltrate that token.
  */
 export function artifactsRepoNameFromRemote(remote: string): string | null {
-  const match = remote.match(/\/git\/[^/]+\/([^/]+?)(?:\.git)?\/?$/);
+  let url: URL;
+  try {
+    url = new URL(remote);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "https:") return null;
+  if (!url.hostname.endsWith(".artifacts.cloudflare.net")) return null;
+
+  const match = url.pathname.match(/^\/git\/[^/]+\/([^/]+?)(?:\.git)?\/?$/);
   return match?.[1] ?? null;
 }
 

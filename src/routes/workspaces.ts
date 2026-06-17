@@ -12,7 +12,15 @@ import type { Env } from "../types";
 import { getArtifactsRepoName } from "../types";
 import { canReadProject, canWriteProject } from "../utils/authz";
 import { createLogger } from "../utils/logger";
-import { badRequest, created, forbidden, notFound, ok, unauthorized } from "../utils/response";
+import {
+  badRequest,
+  created,
+  forbidden,
+  internalError,
+  notFound,
+  ok,
+  unauthorized,
+} from "../utils/response";
 import { isStringRecord, isValidSlug } from "../utils/validation";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -193,7 +201,7 @@ app.post("/:name/commit", async (c) => {
   const tokenResult = await freshRepoToken(c.env.ARTIFACTS, workspace.remote, "write", logger);
   if (!tokenResult.success) {
     logger.error("Failed to mint workspace token", tokenResult.error);
-    return badRequest(tokenResult.error.message);
+    return internalError(tokenResult.error.message);
   }
   const workspaceToken = tokenResult.data;
 
