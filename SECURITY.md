@@ -19,7 +19,7 @@ and the deployed instances. There is no long-term-support branch yet.
 discussions.**
 
 Instead, report privately through **GitHub Security Advisories** —
-[open a private advisory](https://github.com/jlamoreaux/stratum/security/advisories/new). This keeps
+[open a private advisory](https://github.com/stratum-eng/stratum/security/advisories/new). This keeps
 the report confidential and lets us collaborate on a fix before disclosure.
 
 Please include:
