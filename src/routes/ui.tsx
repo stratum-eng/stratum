@@ -41,12 +41,7 @@ import { SettingsPage } from "../ui/pages/settings";
 import { SyncPage } from "../ui/pages/sync";
 import { WebhooksPage } from "../ui/pages/webhooks";
 import { WorkspacesPage } from "../ui/pages/workspaces";
-import {
-  canReadProject,
-  canWriteProject,
-  filterMemberProjects,
-  filterReadableProjects,
-} from "../utils/authz";
+import { canReadProject, canWriteProject, filterMemberProjects } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import { isValidNamespace, isValidSlug } from "../utils/validation";
 import { SUBSCRIBABLE_EVENTS } from "./webhooks";
@@ -117,14 +112,23 @@ app.get("/", async (c) => {
   }
 
   const user = userResult;
-  // The dashboard is the caller's personal workspace: signed-in users see only
-  // the projects that are theirs (owned + org/team), NOT the whole instance's
-  // public projects. Signed-out visitors still get a public showcase.
-  const isAuthenticated = userId !== undefined || agentOwnerId !== undefined;
-  const projects = isAuthenticated
-    ? await filterMemberProjects(c.env.DB, allProjectsResult.data, userId, agentOwnerId)
-    : await filterReadableProjects(c.env.DB, allProjectsResult.data, userId, agentOwnerId);
-  const view = projects.map((p) => ({
+  // The dashboard is the caller's personal workspace: it lists only the projects
+  // that are theirs (owned + org/team), never the whole instance's public
+  // projects. Signed-out visitors get an empty list and a sign-in prompt; public
+  // projects remain reachable by direct URL.
+  const memberProjects = await filterMemberProjects(
+    c.env.DB,
+    allProjectsResult.data,
+    userId,
+    agentOwnerId,
+  );
+  // Most-recently-created first. createdAt is ISO-8601, so lexicographic order
+  // matches chronological order.
+  memberProjects.sort((a, b) => {
+    if (a.createdAt === b.createdAt) return 0;
+    return a.createdAt < b.createdAt ? 1 : -1;
+  });
+  const view = memberProjects.map((p) => ({
     name: p.name,
     namespace: p.namespace,
     slug: p.slug,

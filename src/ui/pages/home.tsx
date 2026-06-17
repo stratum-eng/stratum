@@ -39,13 +39,13 @@ export const HomePage: FC<HomeProps> = ({ projects, user }) => {
             </>
           ) : (
             <>
-              <p>No public projects available.</p>
+              <p>Sign in to view your projects.</p>
               <a
                 href="/auth/email"
                 class="btn btn-primary"
                 style={{ marginTop: "1rem", display: "inline-block" }}
               >
-                Sign in to see your projects
+                Sign in
               </a>
             </>
           )}

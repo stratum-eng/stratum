@@ -61,6 +61,9 @@ export const IssuesPage: FC<IssuesPageProps> = ({
       {issues.length === 0 ? (
         <div class="empty-state">
           <p>No {filter === "all" ? "" : `${filter} `}issues.</p>
+          <p class="empty-state-hint">
+            Open an issue to track work, bugs, or ideas for this project.
+          </p>
         </div>
       ) : (
         <ul class="issues-list">
