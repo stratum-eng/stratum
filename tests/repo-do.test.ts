@@ -32,12 +32,29 @@ const env = { DB: {}, STATE: {}, ARTIFACTS: {} } as unknown as Env;
 
 function makeCtx(): { ctx: DurableObjectState; store: Map<string, unknown> } {
   const store = new Map<string, unknown>();
+  // Minimal in-memory stand-in for the DO's SQLite — pattern-matches the exact
+  // statements RepoDO's hot index issues.
+  const rows = new Map<string, ArrayBuffer>();
+  const sql = {
+    exec: (query: string, ...args: unknown[]) => {
+      if (query.startsWith("INSERT OR REPLACE INTO staged_trees")) {
+        rows.set(args[0] as string, args[1] as ArrayBuffer);
+      } else if (query.startsWith("SELECT value FROM staged_trees")) {
+        const value = rows.get(args[0] as string);
+        return { toArray: () => (value ? [{ value }] : []) };
+      } else if (query.startsWith("DELETE FROM staged_trees")) {
+        rows.delete(args[0] as string);
+      }
+      return { toArray: () => [] };
+    },
+  };
   const ctx = {
     storage: {
       get: async (k: string) => store.get(k),
       put: async (k: string, v: unknown) => {
         store.set(k, v);
       },
+      sql,
     },
     blockConcurrencyWhile: <T>(fn: () => Promise<T>): Promise<T> => fn(),
   } as unknown as DurableObjectState;
@@ -179,5 +196,57 @@ describe("RepoDO.advance cold fallback", () => {
     const repo = new RepoDO(ctx, env);
     const result = await repo.advance("chg_1");
     expect(result.success).toBe(false);
+  });
+});
+
+describe("RepoDO hot index (staged trees in local SQLite)", () => {
+  const bytes = (arr: number[]) => new Uint8Array(arr).buffer;
+
+  it("stageTree -> getStagedTrees round-trips the packed bytes", async () => {
+    const { ctx } = makeCtx();
+    const repo = new RepoDO(ctx, env);
+    await repo.stageTree("ws_1", bytes([1, 2, 3, 4]));
+
+    const out = await repo.getStagedTrees(["ws_1", "ws_missing"]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.workspace).toBe("ws_1");
+    expect([...(out[0]?.value ?? [])]).toEqual([1, 2, 3, 4]);
+  });
+
+  it("stageTree upserts — the latest tip wins", async () => {
+    const { ctx } = makeCtx();
+    const repo = new RepoDO(ctx, env);
+    await repo.stageTree("ws_1", bytes([1]));
+    await repo.stageTree("ws_1", bytes([9, 9]));
+
+    const out = await repo.getStagedTrees(["ws_1"]);
+    expect([...(out[0]?.value ?? [])]).toEqual([9, 9]);
+  });
+
+  it("getStagedTrees returns only present workspaces (missing are skipped)", async () => {
+    const { ctx } = makeCtx();
+    const repo = new RepoDO(ctx, env);
+    await repo.stageTree("a", bytes([1]));
+    const out = await repo.getStagedTrees(["a", "b", "c"]);
+    expect(out.map((o) => o.workspace)).toEqual(["a"]);
+  });
+
+  it("gcStagedTrees removes only the landed workspaces", async () => {
+    const { ctx } = makeCtx();
+    const repo = new RepoDO(ctx, env);
+    await repo.stageTree("a", bytes([1]));
+    await repo.stageTree("b", bytes([2]));
+    await repo.gcStagedTrees(["a"]);
+
+    const out = await repo.getStagedTrees(["a", "b"]);
+    expect(out.map((o) => o.workspace)).toEqual(["b"]);
+  });
+
+  it("gcStagedTrees on an empty list is a no-op", async () => {
+    const { ctx } = makeCtx();
+    const repo = new RepoDO(ctx, env);
+    await repo.stageTree("a", bytes([1]));
+    await repo.gcStagedTrees([]);
+    expect(await repo.getStagedTrees(["a"])).toHaveLength(1);
   });
 });
