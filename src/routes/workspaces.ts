@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { type EventActor, emitEvent } from "../queue/events";
-import { cloneRepo, commitAndPush, freshRepoToken } from "../storage/git-ops";
+import { cloneRepo, commitAndPush, freshRepoToken, stageWorkspaceTree } from "../storage/git-ops";
 import {
   deleteWorkspace,
   getProjectByPath,
@@ -224,6 +224,39 @@ app.post("/:name/commit", async (c) => {
   if (!commitResult.success) {
     logger.error("Failed to commit and push", commitResult.error);
     return badRequest(commitResult.error.message);
+  }
+
+  // Stage the tip tree to R2 for the fetch-free merge path (ADR 004). Best-effort:
+  // a staging failure must not fail the commit — the merge falls back to the cold
+  // path when no staged tree is present.
+  if (c.env.REPO_DO_ENABLED === "true" && c.env.REPO_OBJECTS) {
+    const stageResult = await stageWorkspaceTree(
+      c.env.REPO_OBJECTS,
+      `repos/${body.projectId}/ws/${workspaceName}`,
+      fs,
+      dir,
+      commitResult.data,
+      logger,
+    );
+    if (!stageResult.success) {
+      logger.warn("Failed to stage workspace tree to R2; merge will use cold path", {
+        workspaceName,
+      });
+    } else if (c.env.REPO_DO) {
+      // Also seed the per-repo DO's local hot index so the batch-merge path reads
+      // staged trees from SQLite (microseconds) instead of R2 (~30ms/change).
+      const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(body.projectId)) as unknown as {
+        stageTree(workspace: string, value: ArrayBuffer): Promise<void>;
+      };
+      await stub
+        .stageTree(workspaceName, stageResult.data.value.buffer as ArrayBuffer)
+        .catch((error) => {
+          logger.warn("Failed to seed DO hot index; batch merge will skip this change", {
+            workspaceName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    }
   }
 
   logger.info("Changes committed", { workspaceName, commit: commitResult.data });

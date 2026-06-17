@@ -328,6 +328,202 @@ export async function getMetricsSummary(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Commit/merge hot-path metrics (ADR 004, Phase 0)
+// ---------------------------------------------------------------------------
+
+export type CommitOutcome = "fast_forward" | "cold_fallback" | "squash";
+
+/** Per-phase wall-clock spans (ms). Undefined when a phase did not run. */
+export interface CommitPhaseSpans {
+  tokenMintMs?: number;
+  projectCloneMs?: number;
+  workspaceFetchMs?: number;
+  mergeMs?: number;
+  pushMs?: number;
+  refAdvanceMs?: number;
+  d1UpdateMs?: number;
+  provenanceMs?: number;
+}
+
+export interface CommitMetricInput {
+  project: string;
+  changeId: string;
+  outcome: CommitOutcome;
+  /** Benchmark context; omit outside the load harness. */
+  conflictMode?: "none" | "same";
+  concurrencyN?: number;
+  phases: CommitPhaseSpans;
+  totalMs: number;
+}
+
+export interface PhaseStat {
+  avg: number;
+  p50: number;
+  p95: number;
+  count: number;
+}
+
+export interface CommitMetricsSummary {
+  count: number;
+  outcomes: Record<CommitOutcome, number>;
+  total: PhaseStat;
+  phases: Record<keyof CommitPhaseSpans, PhaseStat>;
+}
+
+const COMMIT_PHASE_COLUMNS: Array<[keyof CommitPhaseSpans, string]> = [
+  ["tokenMintMs", "token_mint_ms"],
+  ["projectCloneMs", "project_clone_ms"],
+  ["workspaceFetchMs", "workspace_fetch_ms"],
+  ["mergeMs", "merge_ms"],
+  ["pushMs", "push_ms"],
+  ["refAdvanceMs", "ref_advance_ms"],
+  ["d1UpdateMs", "d1_update_ms"],
+  ["provenanceMs", "provenance_ms"],
+];
+
+/** Map a PhaseTimer's raw spans to the typed phase fields (drops unknown keys). */
+export function commitPhasesFromSpans(spans: Record<string, number>): CommitPhaseSpans {
+  const out: CommitPhaseSpans = {};
+  for (const [key] of COMMIT_PHASE_COLUMNS) {
+    const value = spans[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Record one row of commit/merge phase timings. A single batched INSERT (not
+ * one row per phase) keeps D1 write pressure to one statement per merge — D1 is
+ * a single writer, so the hot path must not fan out writes.
+ */
+export async function recordCommitMetrics(
+  db: D1Database,
+  metric: CommitMetricInput,
+  logger: Logger,
+): Promise<Result<void, AppError>> {
+  try {
+    await db
+      .prepare(
+        `INSERT INTO commit_metrics (
+          project, change_id, outcome, conflict_mode, concurrency_n,
+          token_mint_ms, project_clone_ms, workspace_fetch_ms, merge_ms,
+          push_ms, ref_advance_ms, d1_update_ms, provenance_ms, total_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        metric.project,
+        metric.changeId,
+        metric.outcome,
+        metric.conflictMode ?? null,
+        metric.concurrencyN ?? null,
+        metric.phases.tokenMintMs ?? null,
+        metric.phases.projectCloneMs ?? null,
+        metric.phases.workspaceFetchMs ?? null,
+        metric.phases.mergeMs ?? null,
+        metric.phases.pushMs ?? null,
+        metric.phases.refAdvanceMs ?? null,
+        metric.phases.d1UpdateMs ?? null,
+        metric.phases.provenanceMs ?? null,
+        metric.totalMs,
+      )
+      .run();
+
+    return ok(undefined);
+  } catch (error) {
+    logger.error("Failed to record commit metric", error instanceof Error ? error : undefined);
+    return err(new AppError("Failed to record commit metric", "STORAGE_ERROR", 500));
+  }
+}
+
+function percentile(sortedAsc: number[], p: number): number {
+  if (sortedAsc.length === 0) return 0;
+  const rank = Math.ceil((p / 100) * sortedAsc.length) - 1;
+  const idx = Math.min(Math.max(rank, 0), sortedAsc.length - 1);
+  return sortedAsc[idx] ?? 0;
+}
+
+function statOf(values: number[]): PhaseStat {
+  const present = values.filter((v): v is number => typeof v === "number" && !Number.isNaN(v));
+  if (present.length === 0) return { avg: 0, p50: 0, p95: 0, count: 0 };
+  const sorted = [...present].sort((a, b) => a - b);
+  const sum = present.reduce((acc, v) => acc + v, 0);
+  return {
+    avg: Math.round((sum / present.length) * 100) / 100,
+    p50: percentile(sorted, 50),
+    p95: percentile(sorted, 95),
+    count: present.length,
+  };
+}
+
+interface CommitMetricRow {
+  outcome: CommitOutcome;
+  total_ms: number;
+  token_mint_ms: number | null;
+  project_clone_ms: number | null;
+  workspace_fetch_ms: number | null;
+  merge_ms: number | null;
+  push_ms: number | null;
+  ref_advance_ms: number | null;
+  d1_update_ms: number | null;
+  provenance_ms: number | null;
+}
+
+/**
+ * Summarize recent commit metrics: per-phase avg/p50/p95 + outcome counts.
+ * Percentiles are computed in JS over a bounded recent window rather than in
+ * SQL (D1/SQLite has no native percentile and an unbounded scan would grow with
+ * commit volume — exactly the high-frequency workload this measures).
+ */
+export async function getCommitMetrics(
+  db: D1Database,
+  logger: Logger,
+  limit = 5000,
+): Promise<Result<CommitMetricsSummary, AppError>> {
+  try {
+    const result = await db
+      .prepare(
+        `SELECT outcome, total_ms, token_mint_ms, project_clone_ms, workspace_fetch_ms,
+                merge_ms, push_ms, ref_advance_ms, d1_update_ms, provenance_ms
+         FROM commit_metrics
+         ORDER BY recorded_at DESC, id DESC
+         LIMIT ?`,
+      )
+      .bind(limit)
+      .all<CommitMetricRow>();
+
+    const rows = result.results ?? [];
+
+    const outcomes: Record<CommitOutcome, number> = {
+      fast_forward: 0,
+      cold_fallback: 0,
+      squash: 0,
+    };
+    for (const row of rows) {
+      if (row.outcome in outcomes) outcomes[row.outcome] += 1;
+    }
+
+    const phases = {} as Record<keyof CommitPhaseSpans, PhaseStat>;
+    for (const [key, column] of COMMIT_PHASE_COLUMNS) {
+      phases[key] = statOf(
+        rows
+          .map((r) => r[column as keyof CommitMetricRow] as number | null)
+          .filter((v): v is number => v !== null),
+      );
+    }
+
+    return ok({
+      count: rows.length,
+      outcomes,
+      total: statOf(rows.map((r) => r.total_ms)),
+      phases,
+    });
+  } catch (error) {
+    logger.error("Failed to get commit metrics", error instanceof Error ? error : undefined);
+    return err(new AppError("Failed to get commit metrics", "STORAGE_ERROR", 500));
+  }
+}
+
 /**
  * Get current queue depth (active imports)
  */

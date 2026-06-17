@@ -15,15 +15,26 @@ import { checkMergeProtection } from "../merge/protection";
 import { type EventActor, emitEvent } from "../queue/events";
 import type { MergeOutcome } from "../queue/merge-queue";
 import { recordAudit } from "../storage/audit";
-import { createChange, getChange, listChanges, updateChangeStatus } from "../storage/changes";
+import {
+  createChange,
+  getChange,
+  getChangesByIds,
+  listChanges,
+  updateChangeStatus,
+} from "../storage/changes";
 import { type CostSample, getChangeCostSummary, recordCosts } from "../storage/costs";
 import { listEvalRuns, recordEvalRuns } from "../storage/eval-runs";
 import {
   MergeConflictError,
+  type NodeFS,
+  type StagedTreeItem,
+  batchMergeStagedTrees,
+  cloneRepo,
   freshRepoToken,
   getCommitLog,
   getDiffBetweenRepos,
   mergeWorkspaceIntoProject,
+  parseStagedTree,
 } from "../storage/git-ops";
 import { recordProvenance } from "../storage/provenance";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
@@ -31,6 +42,7 @@ import { getProject, getWorkspace } from "../storage/state";
 import type { Change, Env, ProjectEntry } from "../types";
 import { canReadProject, canWriteProject } from "../utils/authz";
 import type { AppError } from "../utils/errors";
+import { newId } from "../utils/ids";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
 import {
@@ -45,6 +57,66 @@ import {
 import { ok as okResult } from "../utils/result";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Merge-policy cache (ADR 004). Reading the policy clones the repo; under a swarm
+// of concurrent merges that per-request clone both throttles and de-coalesces the
+// DO group-commit. Cache per project with a short TTL AND deduplicate concurrent
+// loads (one clone per burst, not N). Gated on REPO_DO_ENABLED so tests — which
+// don't set the flag — always call loadPolicy fresh (no cross-test pollution).
+const POLICY_CACHE_TTL_MS = 60_000;
+const policyCache = new Map<string, { policy: EvalPolicy; expires: number }>();
+const policyInflight = new Map<string, Promise<EvalPolicy>>();
+
+const policyKvKey = (projectId: string) => `policy:${projectId}`;
+
+/**
+ * Load a project's merge policy through a two-level cache so the hot merge paths
+ * don't clone the repo just to read `.stratum/policy.yaml`:
+ *   in-isolate Map  ->  KV (shared across isolates)  ->  clone (loadPolicy).
+ * Request-coalesced per project. Gated on REPO_DO_ENABLED so tests always load
+ * fresh (no KV access). The cache TTL bounds how long a branch-protection change
+ * takes to apply on these paths. Throws if the read token can't be minted.
+ */
+async function loadMergePolicyCached(
+  env: Env,
+  project: ProjectEntry,
+  logger: Logger,
+): Promise<EvalPolicy> {
+  const cacheable = env.REPO_DO_ENABLED === "true";
+  const cached = cacheable ? policyCache.get(project.id) : undefined;
+  if (cached && cached.expires > Date.now()) return cached.policy;
+  let inflight = cacheable ? policyInflight.get(project.id) : undefined;
+  if (!inflight) {
+    inflight = (async () => {
+      // Cross-isolate KV cache — avoids the repo clone on a cold isolate.
+      if (cacheable) {
+        const kvHit = await env.STATE.get<EvalPolicy>(policyKvKey(project.id), "json").catch(
+          () => null,
+        );
+        if (kvHit) {
+          policyCache.set(project.id, { policy: kvHit, expires: Date.now() + POLICY_CACHE_TTL_MS });
+          return kvHit;
+        }
+      }
+      const tok = await freshRepoToken(env.ARTIFACTS, project.remote, "read", logger);
+      if (!tok.success) throw new Error(tok.error.message);
+      const loaded = await loadPolicy(project.remote, tok.data, logger);
+      if (cacheable) {
+        policyCache.set(project.id, { policy: loaded, expires: Date.now() + POLICY_CACHE_TTL_MS });
+        await env.STATE.put(policyKvKey(project.id), JSON.stringify(loaded), {
+          expirationTtl: 60,
+        }).catch(() => {});
+      }
+      return loaded;
+    })();
+    if (cacheable) {
+      policyInflight.set(project.id, inflight);
+      void inflight.finally(() => policyInflight.delete(project.id));
+    }
+  }
+  return inflight;
+}
+
 function parseGitHubRepo(url: string): { owner: string; repo: string } | null {
   const match = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/\s]+?)(?:\.git|\/)?$/i);
   if (!match || !match[1] || !match[2]) return null;
@@ -487,10 +559,14 @@ app.post("/changes/:id/merge", async (c) => {
   if (!(await canWriteProject(c.env.DB, project, userId)))
     return forbidden("Project access denied");
 
-  // Branch protection: the policy's merge rules gate every merge path.
-  const policyReadToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
-  if (!policyReadToken.success) return internalError(policyReadToken.error.message);
-  const mergePolicy = await loadPolicy(project.remote, policyReadToken.data, logger);
+  // Branch protection: the policy's merge rules gate every merge path. Cached +
+  // coalesced so a swarm of merges doesn't each clone the repo for the policy file.
+  let mergePolicy: EvalPolicy;
+  try {
+    mergePolicy = await loadMergePolicyCached(c.env, project, logger);
+  } catch (e) {
+    return internalError(e instanceof Error ? e.message : "Failed to load policy");
+  }
   const forceAllowed = mergePolicy.merge?.allowForce !== false;
   if (force && !forceAllowed) {
     return badRequest("Force merge is disabled by this project's policy");
@@ -533,12 +609,32 @@ app.post("/changes/:id/merge", async (c) => {
     }
   }
 
-  if (c.env.MERGE_QUEUE && strategy === "merge") {
-    const doId = c.env.MERGE_QUEUE.idFromName(change.project);
-    const stub = c.env.MERGE_QUEUE.get(doId);
-    const result = await (
-      stub as unknown as { merge(changeId: string): Promise<MergeOutcome> }
-    ).merge(id);
+  // Route serialized merges through a per-repo Durable Object. When REPO_DO_ENABLED
+  // is set, use the RepoDO ref authority (fast-forward fast path, ADR 004 Phase 1);
+  // otherwise the classic MergeQueue cold path. Both share the post-merge tail below.
+  // RepoDO is keyed by the canonical project.id so one repo maps to exactly one DO
+  // (change.project may be a name OR id depending on the creating path, which would
+  // otherwise split a repo's ref cache across DOs).
+  const useRepoDo = c.env.REPO_DO_ENABLED === "true" && c.env.REPO_DO !== undefined;
+  if ((useRepoDo || c.env.MERGE_QUEUE) && strategy === "merge") {
+    let result: MergeOutcome;
+    if (useRepoDo && c.env.REPO_DO) {
+      const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(project.id)) as unknown as {
+        mergeViaR2(changeId: string): Promise<MergeOutcome | { fallback: true }>;
+        advance(changeId: string): Promise<MergeOutcome>;
+      };
+      // Prefer the R2 fetch-free path; fall back to the Phase-1 FF/cold path when the
+      // change has no staged tree (e.g. committed before R2 staging was enabled).
+      const r2 = await stub.mergeViaR2(id);
+      result = "fallback" in r2 ? await stub.advance(id) : r2;
+    } else {
+      // biome-ignore lint/style/noNonNullAssertion: guarded by the if condition
+      const queue = c.env.MERGE_QUEUE!;
+      const stub = queue.get(queue.idFromName(change.project));
+      result = await (stub as unknown as { merge(changeId: string): Promise<MergeOutcome> }).merge(
+        id,
+      );
+    }
 
     if (!result.success) {
       return badRequest(result.error ?? "Merge failed");
@@ -556,6 +652,7 @@ app.post("/changes/:id/merge", async (c) => {
       changeId: id,
       project: change.project,
       commit: result.commit,
+      via: useRepoDo ? "repo-do" : "merge-queue",
     });
 
     if (force) {
@@ -720,6 +817,258 @@ app.post("/changes/:id/merge", async (c) => {
     workspace: change.workspace,
     commit,
     postMerge,
+  });
+});
+
+// POST /api/projects/:name/changes/merge-batch — merge MANY changes into one repo
+// in a single request (ADR 004). Per-request merge RPCs serialize at the Durable
+// Object (~one at a time), so the way to realize the group-commit throughput
+// (proven ~31 c/s) is to batch server-side: clone once, 3-way merge each staged
+// change onto the head, ONE push. Body: { changeIds: string[] }.
+app.post("/projects/:name/changes/merge-batch", async (c) => {
+  const tStart = Date.now();
+  const logger = createLogger({ requestId: crypto.randomUUID(), userId: c.get("userId") });
+  const userId = c.get("userId");
+  if (!userId) return unauthorized("Authentication required");
+
+  const { name: projectName } = c.req.param();
+  const projectResult = await getProject(c.env.STATE, projectName, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") return notFound("Project", projectName);
+    logger.error("Failed to get project", projectResult.error);
+    return internalError(projectResult.error.message);
+  }
+  const project = projectResult.data;
+  if (!(await canWriteProject(c.env.DB, project, userId)))
+    return forbidden("Project access denied");
+
+  const body = await c.req
+    .json<{ changeIds?: unknown; force?: unknown }>()
+    .catch(() => ({ changeIds: undefined, force: undefined }));
+  if (!Array.isArray(body.changeIds) || body.changeIds.length === 0) {
+    return badRequest("changeIds (non-empty array) is required");
+  }
+  const force = body.force === true;
+
+  // Branch-protection gate (same as the single-merge path; the batch path must not
+  // be a bypass). The policy + current-head reads are independent of the staged-tree
+  // resolve, so load them in PARALLEL with it — the policy-file read doesn't add
+  // serial latency to the hot path. Marked handled to avoid an unhandled rejection
+  // on an early return; the real awaits below surface failures.
+  const policyPromise = loadMergePolicyCached(c.env, project, logger);
+  void policyPromise.catch(() => {});
+  const headPromise: Promise<string | null> = force
+    ? Promise.resolve(null)
+    : resolveProjectHead(c.env, project, logger);
+  // Dedupe: a repeated id would otherwise merge twice and write two provenance rows.
+  const changeIds = [
+    ...new Set(body.changeIds.filter((id): id is string => typeof id === "string")),
+  ];
+  // Bound the per-request batch: very large N risks the Worker CPU/time limit in the
+  // single-FS merge loop. Callers should chunk above this; throughput is already
+  // maximized well under it (~27-30 c/s server-side at N=40-64).
+  const MAX_MERGE_BATCH = 80;
+  if (changeIds.length > MAX_MERGE_BATCH) {
+    return badRequest(`merge-batch accepts at most ${MAX_MERGE_BATCH} changes per request`);
+  }
+
+  // Resolve every change in ONE D1 query and policy-gate it here; the MERGE runs in
+  // the per-repo Durable Object, which reads staged trees from its LOCAL SQLite hot
+  // index (microseconds) instead of a per-change R2 GET, on a warm reused clone.
+  const tResolve = Date.now();
+  const skipped: { changeId: string; reason: string }[] = [];
+  const changeById = new Map<string, Change>();
+  const mergeItems: { changeId: string; workspace: string; baseSha: string }[] = [];
+  const changesResult = await getChangesByIds(c.env.DB, logger, changeIds);
+  if (!changesResult.success) return internalError(changesResult.error.message);
+  const changeMap = new Map(changesResult.data.map((ch) => [ch.id, ch]));
+  const resolved = await Promise.all(
+    changeIds.map(async (id) => {
+      const change = changeMap.get(id);
+      if (!change) return { id, skip: "not found" };
+      if (change.project !== projectName && change.project !== project.id)
+        return { id, skip: "wrong project" };
+      if (!MERGEABLE_STATUSES.includes(change.status)) return { id, skip: "not mergeable" };
+      if (!change.baseSha) return { id, skip: "no base" };
+      if (!force) {
+        let mergePolicy: EvalPolicy;
+        try {
+          mergePolicy = await policyPromise;
+        } catch {
+          return { id, skip: "policy load failed" };
+        }
+        const protection = await checkMergeProtection(c.env.DB, logger, change, mergePolicy);
+        if (!protection.success) return { id, skip: "protection check failed" };
+        if (!protection.data.allowed) return { id, skip: "blocked by branch protection" };
+        if (mergePolicy.merge?.requireFreshBase === true) {
+          const currentHead = await headPromise;
+          if (currentHead !== null && change.baseSha !== currentHead) {
+            return { id, skip: "stale base" };
+          }
+        }
+      }
+      return { id, change };
+    }),
+  );
+  for (const r of resolved) {
+    if ("skip" in r && r.skip) {
+      skipped.push({ changeId: r.id, reason: r.skip });
+    } else if ("change" in r && r.change && r.change.baseSha) {
+      changeById.set(r.id, r.change);
+      mergeItems.push({ changeId: r.id, workspace: r.change.workspace, baseSha: r.change.baseSha });
+    }
+  }
+
+  // Enforce the force-allowed policy (loaded in parallel above).
+  if (force) {
+    let mergePolicy: EvalPolicy;
+    try {
+      mergePolicy = await policyPromise;
+    } catch (e) {
+      return internalError(e instanceof Error ? e.message : "Failed to load policy");
+    }
+    if (mergePolicy.merge?.allowForce === false) {
+      return badRequest("Force merge is disabled by this project's policy");
+    }
+  }
+
+  if (mergeItems.length === 0) {
+    return badRequest(`No eligible changes to merge (${skipped.length} skipped)`);
+  }
+  const resolveMs = Date.now() - tResolve;
+
+  // Merge inside the per-repo DO: local SQLite hot-index reads + warm reused clone +
+  // one push. Keyed by project.id (same key the commit route seeds the index under).
+  if (!c.env.REPO_DO) return internalError("RepoDO not bound");
+  const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(project.id)) as unknown as {
+    getStagedTrees(workspaces: string[]): Promise<{ workspace: string; value: Uint8Array }[]>;
+    gcStagedTrees(workspaces: string[]): Promise<void>;
+  };
+
+  const tBatch = Date.now();
+  // Clone in the Worker (the merge runs faster here than inside the DO), overlapped
+  // with the SINGLE SQLite hot-index read that replaces N per-change R2 GETs.
+  const clonePromise = (async () => {
+    const token = await freshRepoToken(c.env.ARTIFACTS, project.remote, "write", logger);
+    if (!token.success) throw new Error(token.error.message);
+    const cloned = await cloneRepo(project.remote, token.data, logger);
+    if (!cloned.success) throw new Error(cloned.error.message);
+    return { token: token.data, fs: cloned.data.fs, dir: cloned.data.dir };
+  })();
+
+  const workspaces = [...new Set(mergeItems.map((m) => m.workspace))];
+  let stagedList: { workspace: string; value: Uint8Array }[];
+  try {
+    stagedList = await stub.getStagedTrees(workspaces);
+  } catch (e) {
+    clonePromise.catch(() => {});
+    return internalError(e instanceof Error ? e.message : "Failed to read staged trees");
+  }
+  const stagedByWs = new Map(stagedList.map((s) => [s.workspace, s.value]));
+  const items: StagedTreeItem[] = [];
+  for (const m of mergeItems) {
+    const value = stagedByWs.get(m.workspace);
+    if (!value) {
+      skipped.push({ changeId: m.changeId, reason: "not staged" });
+      continue;
+    }
+    items.push({ changeId: m.changeId, baseSha: m.baseSha, staged: parseStagedTree(value) });
+  }
+  if (items.length === 0) {
+    clonePromise.catch(() => {});
+    return badRequest(`No eligible changes to merge (${skipped.length} skipped)`);
+  }
+
+  let cloneData: { token: string; fs: NodeFS; dir: string };
+  try {
+    cloneData = await clonePromise;
+  } catch (e) {
+    return internalError(e instanceof Error ? e.message : "Failed to prepare repo");
+  }
+  const mergeResult = await batchMergeStagedTrees(
+    cloneData.fs,
+    cloneData.dir,
+    project.remote,
+    cloneData.token,
+    items,
+    logger,
+  );
+  if (!mergeResult.success) return internalError(mergeResult.error.message);
+  const batchMs = Date.now() - tBatch;
+
+  // Bookkeeping after a durable push (deferred): status + provenance, and GC both the
+  // SQLite hot index (DO) and the R2 mirror of the staged tree.
+  const tPersist = Date.now();
+  const merged: string[] = [];
+  const conflicted: string[] = [];
+  const landed: { changeId: string; commit: string; change: Change | undefined }[] = [];
+  const gcKeys: string[] = [];
+  const mergedWorkspaces: string[] = [];
+  for (const r of mergeResult.data) {
+    if (!r.merged || !r.commit) {
+      conflicted.push(r.changeId);
+      continue;
+    }
+    const change = changeById.get(r.changeId);
+    landed.push({ changeId: r.changeId, commit: r.commit, change });
+    gcKeys.push(`repos/${project.id}/ws/${change?.workspace}`);
+    if (change?.workspace) mergedWorkspaces.push(change.workspace);
+    merged.push(r.changeId);
+  }
+  const mergedAt = new Date().toISOString();
+  // D1 caps bound parameters at 100/statement: chunk so UPDATE (1 + ids) and the
+  // multi-row INSERT (8 binds/row) stay under it. All chunks ride one batch().
+  const UPDATE_CHUNK = 99;
+  const INSERT_CHUNK = 12;
+  const statements: D1PreparedStatement[] = [];
+  for (let i = 0; i < landed.length; i += UPDATE_CHUNK) {
+    const chunk = landed.slice(i, i + UPDATE_CHUNK);
+    const placeholders = chunk.map(() => "?").join(", ");
+    statements.push(
+      c.env.DB.prepare(
+        `UPDATE changes SET status = 'merged', merged_at = ? WHERE id IN (${placeholders})`,
+      ).bind(mergedAt, ...chunk.map((l) => l.changeId)),
+    );
+  }
+  for (let i = 0; i < landed.length; i += INSERT_CHUNK) {
+    const chunk = landed.slice(i, i + INSERT_CHUNK);
+    const rows = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
+    const binds = chunk.flatMap((l) => [
+      newId("prv"),
+      l.commit,
+      projectName,
+      l.change?.workspace ?? "",
+      l.changeId,
+      l.change?.agentId ?? null,
+      l.change?.evalScore ?? null,
+      mergedAt,
+    ]);
+    statements.push(
+      c.env.DB.prepare(
+        `INSERT INTO provenance (id, commit_sha, project, workspace, change_id, agent_id, eval_score, merged_at) VALUES ${rows}`,
+      ).bind(...binds),
+    );
+  }
+
+  const persist = (async () => {
+    if (statements.length > 0) await c.env.DB.batch(statements);
+    await stub.gcStagedTrees(mergedWorkspaces).catch(() => {});
+    const objects = c.env.REPO_OBJECTS;
+    if (objects) await Promise.all(gcKeys.map((k) => objects.delete(k).catch(() => {})));
+  })();
+  if (c.executionCtx?.waitUntil) c.executionCtx.waitUntil(persist);
+  else await persist;
+
+  return ok({
+    merged,
+    conflicted,
+    skipped,
+    timings: {
+      resolveMs,
+      batchMs,
+      persistMs: Date.now() - tPersist,
+      serverMs: Date.now() - tStart,
+    },
   });
 });
 

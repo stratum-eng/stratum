@@ -7,8 +7,9 @@ import type { Change, Env } from "../src/types";
 vi.mock("../src/storage/changes", () => ({
   createChange: vi.fn(),
   getChange: vi.fn(),
+  getChangesByIds: vi.fn(),
   listChanges: vi.fn(),
-  updateChangeStatus: vi.fn(),
+  updateChangeStatus: vi.fn(async () => ({ success: true, data: undefined })),
 }));
 
 vi.mock("../src/storage/git-ops", async (importActual) => {
@@ -19,6 +20,8 @@ vi.mock("../src/storage/git-ops", async (importActual) => {
     mergeWorkspaceIntoProject: vi.fn(),
     getCommitLog: vi.fn(),
     freshRepoToken: vi.fn(async () => ({ success: true, data: "test-token" })),
+    cloneRepo: vi.fn(async () => ({ success: true, data: { fs: {}, dir: "/" } })),
+    batchMergeStagedTrees: vi.fn(),
   };
 });
 
@@ -125,14 +128,22 @@ vi.mock("../src/storage/agents", () => ({
 
 import { CompositeEvaluator, SecretScanEvaluator, loadPolicy } from "../src/evaluation";
 import { getAgentByToken } from "../src/storage/agents";
-import { createChange, getChange, listChanges, updateChangeStatus } from "../src/storage/changes";
+import {
+  createChange,
+  getChange,
+  getChangesByIds,
+  listChanges,
+  updateChangeStatus,
+} from "../src/storage/changes";
 import { listEvalRuns, recordEvalRuns } from "../src/storage/eval-runs";
 import {
+  batchMergeStagedTrees,
   freshRepoToken,
   getCommitLog,
   getDiffBetweenRepos,
   mergeWorkspaceIntoProject,
 } from "../src/storage/git-ops";
+import { packObjects } from "../src/storage/object-loader";
 import { getProject, getWorkspace } from "../src/storage/state";
 import { getUserByToken } from "../src/storage/users";
 
@@ -1344,5 +1355,160 @@ describe("POST /api/changes/:id/reject", () => {
       env,
     );
     expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/projects/:name/changes/merge-batch", () => {
+  let app: ReturnType<typeof makeApp>;
+  let env: Env;
+  let gcCalls: string[][];
+  let waitUntils: Promise<unknown>[];
+
+  // Minimal valid staged-tree value: [40-byte oid][packObjects([])].
+  const stagedValue = (() => {
+    const oid = "a".repeat(40);
+    const pack = packObjects([]);
+    const v = new Uint8Array(40 + pack.length);
+    v.set(new TextEncoder().encode(oid));
+    v.set(pack, 40);
+    return v;
+  })();
+
+  const exec = () => ({
+    waitUntil: (p: Promise<unknown>) => {
+      waitUntils.push(p);
+    },
+    passThroughOnException: () => {},
+  });
+
+  beforeEach(() => {
+    app = makeApp();
+    env = makeEnv();
+    vi.clearAllMocks();
+    gcCalls = [];
+    waitUntils = [];
+
+    vi.mocked(getUserByToken).mockImplementation(async (_db, token) =>
+      token === "stratum_user_testtoken00000000000000000"
+        ? {
+            success: true,
+            data: {
+              id: "user_test",
+              email: "test@example.com",
+              username: "test",
+              tokenHash: "hash",
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+          }
+        : { success: false, error: new NotFoundError("User", token) },
+    );
+    vi.mocked(getAgentByToken).mockResolvedValue({
+      success: false,
+      error: new NotFoundError("Agent", "x"),
+    });
+    // biome-ignore lint/suspicious/noExplicitAny: minimal stub
+    vi.mocked(getProject).mockResolvedValue({ success: true, data: mockProject } as any);
+    vi.mocked(loadPolicy).mockResolvedValue(mockPolicy);
+    vi.mocked(getChangesByIds).mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: "chg_b1",
+          project: "my-project",
+          workspace: "fix-bug",
+          status: "approved",
+          baseSha: "base1",
+        },
+        {
+          id: "chg_b2",
+          project: "my-project",
+          workspace: "feat-x",
+          status: "approved",
+          baseSha: "base1",
+        },
+      ],
+      // biome-ignore lint/suspicious/noExplicitAny: minimal Change stubs
+    } as any);
+    vi.mocked(batchMergeStagedTrees).mockResolvedValue({
+      success: true,
+      data: [
+        { changeId: "chg_b1", merged: true, commit: "merge-1" },
+        { changeId: "chg_b2", merged: false },
+      ],
+      // biome-ignore lint/suspicious/noExplicitAny: minimal result stub
+    } as any);
+
+    const stub = {
+      getStagedTrees: vi.fn(async (ws: string[]) =>
+        ws.map((w) => ({ workspace: w, value: stagedValue })),
+      ),
+      gcStagedTrees: vi.fn(async (ws: string[]) => {
+        gcCalls.push(ws);
+      }),
+    };
+    // biome-ignore lint/suspicious/noExplicitAny: minimal DO + D1 stubs
+    env.REPO_DO = { idFromName: (n: string) => n, get: () => stub } as any;
+    // biome-ignore lint/suspicious/noExplicitAny: minimal D1 stub
+    env.DB = { prepare: () => ({ bind: () => ({}) }), batch: vi.fn(async () => []) } as any;
+  });
+
+  it("merges eligible changes via the DO hot index, dedupes ids, reports per-change outcomes", async () => {
+    const res = await app.fetch(
+      request(
+        "POST",
+        "/api/projects/my-project/changes/merge-batch",
+        { changeIds: ["chg_b1", "chg_b2", "chg_b1"], force: true },
+        USER_AUTH,
+      ),
+      env,
+      // biome-ignore lint/suspicious/noExplicitAny: minimal ExecutionContext
+      exec() as any,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { merged: string[]; conflicted: string[] };
+    expect(body.merged).toEqual(["chg_b1"]);
+    expect(body.conflicted).toEqual(["chg_b2"]);
+
+    // Dedupe: chg_b1 supplied twice but merged once (two distinct items total).
+    const items = vi.mocked(batchMergeStagedTrees).mock.calls[0]?.[4] as { changeId: string }[];
+    expect(items.map((i) => i.changeId).sort()).toEqual(["chg_b1", "chg_b2"]);
+
+    // Deferred bookkeeping GCs only the landed workspace from the hot index.
+    await Promise.all(waitUntils);
+    expect(gcCalls).toEqual([["fix-bug"]]);
+  });
+
+  it("rejects a batch above the size cap", async () => {
+    const ids = Array.from({ length: 81 }, (_u, i) => `c${i}`);
+    const res = await app.fetch(
+      request(
+        "POST",
+        "/api/projects/my-project/changes/merge-batch",
+        { changeIds: ids, force: true },
+        USER_AUTH,
+      ),
+      env,
+      // biome-ignore lint/suspicious/noExplicitAny: minimal ExecutionContext
+      exec() as any,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("skips changes whose tree is absent from the hot index", async () => {
+    const stub = { getStagedTrees: vi.fn(async () => []), gcStagedTrees: vi.fn(async () => {}) };
+    // biome-ignore lint/suspicious/noExplicitAny: minimal DO stub
+    env.REPO_DO = { idFromName: (n: string) => n, get: () => stub } as any;
+    const res = await app.fetch(
+      request(
+        "POST",
+        "/api/projects/my-project/changes/merge-batch",
+        { changeIds: ["chg_b1"], force: true },
+        USER_AUTH,
+      ),
+      env,
+      // biome-ignore lint/suspicious/noExplicitAny: minimal ExecutionContext
+      exec() as any,
+    );
+    expect(res.status).toBe(400);
   });
 });

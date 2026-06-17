@@ -118,6 +118,35 @@ export async function createChange(
   }
 }
 
+/** Fetch many changes in ONE query (avoids N round-trips for batch merge). */
+export async function getChangesByIds(
+  db: D1Database,
+  logger: Logger,
+  ids: string[],
+): Promise<Result<Change[], AppError>> {
+  if (ids.length === 0) return ok([]);
+  try {
+    const placeholders = ids.map(() => "?").join(", ");
+    const result = await db
+      .prepare(`SELECT * FROM changes WHERE id IN (${placeholders})`)
+      .bind(...ids)
+      .all<ChangeRow>();
+    return ok((result.results ?? []).map(rowToChange));
+  } catch (error) {
+    const appError =
+      error instanceof AppError
+        ? error
+        : new AppError(
+            error instanceof Error ? error.message : "Failed to get changes",
+            "DATABASE_ERROR",
+            500,
+            { operation: "getChangesByIds" },
+          );
+    logger.error("Failed to get changes by ids", appError);
+    return err(appError);
+  }
+}
+
 export async function getChange(
   db: D1Database,
   logger: Logger,

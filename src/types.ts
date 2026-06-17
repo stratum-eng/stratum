@@ -130,6 +130,11 @@ export interface Env {
   SANDBOX?: SandboxBinding;
   AI?: AiBinding;
   MERGE_QUEUE?: DurableObjectNamespace;
+  REPO_DO?: DurableObjectNamespace;
+  /** Content-addressed git object plane (ADR 004 Phase 2). */
+  REPO_OBJECTS?: R2Bucket;
+  /** Gates the RepoDO fast-forward path (ADR 004). Off -> classic cold merge. */
+  REPO_DO_ENABLED?: string;
   EVENTS_QUEUE?: Queue;
   IMPORT_QUEUE?: Queue<ImportJobMessage | SyncJobMessage>;
 }
