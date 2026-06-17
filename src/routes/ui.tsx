@@ -41,7 +41,12 @@ import { SettingsPage } from "../ui/pages/settings";
 import { SyncPage } from "../ui/pages/sync";
 import { WebhooksPage } from "../ui/pages/webhooks";
 import { WorkspacesPage } from "../ui/pages/workspaces";
-import { canReadProject, canWriteProject, filterReadableProjects } from "../utils/authz";
+import {
+  canReadProject,
+  canWriteProject,
+  filterMemberProjects,
+  filterReadableProjects,
+} from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import { isValidNamespace, isValidSlug } from "../utils/validation";
 import { SUBSCRIBABLE_EVENTS } from "./webhooks";
@@ -112,12 +117,13 @@ app.get("/", async (c) => {
   }
 
   const user = userResult;
-  const projects = await filterReadableProjects(
-    c.env.DB,
-    allProjectsResult.data,
-    userId,
-    agentOwnerId,
-  );
+  // The dashboard is the caller's personal workspace: signed-in users see only
+  // the projects that are theirs (owned + org/team), NOT the whole instance's
+  // public projects. Signed-out visitors still get a public showcase.
+  const isAuthenticated = userId !== undefined || agentOwnerId !== undefined;
+  const projects = isAuthenticated
+    ? await filterMemberProjects(c.env.DB, allProjectsResult.data, userId, agentOwnerId)
+    : await filterReadableProjects(c.env.DB, allProjectsResult.data, userId, agentOwnerId);
   const view = projects.map((p) => ({
     name: p.name,
     namespace: p.namespace,

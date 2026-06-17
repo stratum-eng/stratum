@@ -94,3 +94,39 @@ export async function filterReadableProjects(
     return false;
   });
 }
+
+/**
+ * Filter a project list down to the ones that belong to the caller: projects
+ * they directly own, plus org-owned projects they're a member of. Unlike
+ * {@link filterReadableProjects}, this deliberately EXCLUDES other people's
+ * public projects — it answers "what's mine?", not "what can I see?". This is
+ * what the personal dashboard wants, so a user's home shows their own work
+ * rather than the whole instance's public firehose. Returns an empty list for
+ * an unauthenticated caller (no actor to own anything).
+ */
+export async function filterMemberProjects(
+  db: D1Database,
+  projects: ProjectEntry[],
+  userId?: string,
+  agentOwnerId?: string,
+): Promise<ProjectEntry[]> {
+  const actor = userId ?? agentOwnerId;
+  if (!actor) return [];
+
+  const orgLevels = new Map<string, OrgAccessLevel>();
+  const orgIds = new Set(projects.filter((p) => p.ownerType === "org").map((p) => p.ownerId));
+  for (const orgId of orgIds) {
+    orgLevels.set(orgId, await getOrgAccessLevel(db, logger, orgId, actor));
+  }
+  const orgLevel = (orgId: string): OrgAccessLevel => orgLevels.get(orgId) ?? "none";
+
+  return projects.filter((project) => {
+    if (project.importCompleted === false) {
+      if (isDirectOwner(project, userId, agentOwnerId)) return true;
+      return project.ownerType === "org" && levelAllowsWrite(orgLevel(project.ownerId));
+    }
+    if (isDirectOwner(project, userId, agentOwnerId)) return true;
+    if (project.ownerType === "org") return orgLevel(project.ownerId) !== "none";
+    return false;
+  });
+}

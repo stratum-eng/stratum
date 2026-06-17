@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getOrgAccessLevel } from "../src/storage/orgs";
 import type { ProjectEntry } from "../src/types";
-import { canReadProject, canWriteProject, filterReadableProjects } from "../src/utils/authz";
+import {
+  canReadProject,
+  canWriteProject,
+  filterMemberProjects,
+  filterReadableProjects,
+} from "../src/utils/authz";
 import type { Logger } from "../src/utils/logger";
 
 vi.mock("../src/storage/orgs", () => ({
@@ -117,5 +122,50 @@ describe("org project authorization", () => {
     vi.mocked(getOrgAccessLevel).mockResolvedValue("write");
     const writable = await filterReadableProjects(db, [incomplete], "user_writer");
     expect(writable).toHaveLength(1);
+  });
+});
+
+describe("filterMemberProjects (personal dashboard scope)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("includes the caller's own + org projects but NOT others' public projects", async () => {
+    // Caller is a member of org_1 only; org_2 is someone else's org.
+    vi.mocked(getOrgAccessLevel).mockImplementation(async (_db, _logger, orgId) =>
+      orgId === "org_1" ? "read" : "none",
+    );
+    const projects = [
+      makeProject({ id: "mine", ownerId: "user_me" }),
+      makeProject({ id: "myorg", ownerId: "org_1", ownerType: "org" }),
+      // Other people's public projects — readable, but NOT mine.
+      makeProject({ id: "pub", ownerId: "user_other", visibility: "public" }),
+      makeProject({ id: "pub_org", ownerId: "org_2", ownerType: "org", visibility: "public" }),
+    ];
+
+    const mine = await filterMemberProjects(db, projects, "user_me");
+    expect(mine.map((p) => p.id)).toEqual(["mine", "myorg"]);
+  });
+
+  it("still includes my own project even when it is public", async () => {
+    vi.mocked(getOrgAccessLevel).mockResolvedValue("none");
+    const projects = [makeProject({ id: "mine_pub", ownerId: "user_me", visibility: "public" })];
+    const mine = await filterMemberProjects(db, projects, "user_me");
+    expect(mine.map((p) => p.id)).toEqual(["mine_pub"]);
+  });
+
+  it("returns an empty list for an unauthenticated caller", async () => {
+    const projects = [makeProject({ id: "pub", ownerId: "user_other", visibility: "public" })];
+    const mine = await filterMemberProjects(db, projects);
+    expect(mine).toHaveLength(0);
+    // No actor — no org lookups needed.
+    expect(getOrgAccessLevel).not.toHaveBeenCalled();
+  });
+
+  it("excludes org projects the caller is not a member of", async () => {
+    vi.mocked(getOrgAccessLevel).mockResolvedValue("none");
+    const projects = [makeProject({ id: "foreign_org", ownerId: "org_x", ownerType: "org" })];
+    const mine = await filterMemberProjects(db, projects, "user_me");
+    expect(mine).toHaveLength(0);
   });
 });
