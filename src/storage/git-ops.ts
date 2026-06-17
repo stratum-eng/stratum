@@ -878,7 +878,15 @@ export interface StagedTree {
 
 /** Parse the `[40-byte tipTreeOid][packed objects]` staged-tree value. */
 export function parseStagedTree(value: Uint8Array): StagedTree {
+  // Fail fast at the parser boundary on a truncated/corrupt payload (40-byte oid
+  // header + at least the 4-byte pack count) rather than deeper in object unpacking.
+  if (value.byteLength < TREE_OID_HEX_LEN + 4) {
+    throw new Error("Invalid staged tree: truncated header");
+  }
   const treeOid = new TextDecoder().decode(value.subarray(0, TREE_OID_HEX_LEN));
+  if (!/^[0-9a-f]{40}$/i.test(treeOid)) {
+    throw new Error("Invalid staged tree: malformed tree oid");
+  }
   const objects = unpackObjects(value.subarray(TREE_OID_HEX_LEN));
   return { treeOid, objects };
 }

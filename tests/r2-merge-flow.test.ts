@@ -1,11 +1,36 @@
 import git from "isomorphic-git";
 import { describe, expect, it } from "vitest";
 import { commitObject } from "../src/storage/git-objects";
-import { extractTreeObjects } from "../src/storage/git-ops";
+import { extractTreeObjects, parseStagedTree } from "../src/storage/git-ops";
 import { MemoryFS } from "../src/storage/memory-fs";
 import { packObjects, placeLooseObject, unpackObjects } from "../src/storage/object-loader";
 
 const author = { name: "Stratum", email: "system@usestratum.dev" };
+
+describe("parseStagedTree validation", () => {
+  const valid = (() => {
+    const v = new Uint8Array(40 + packObjects([]).length);
+    v.set(new TextEncoder().encode("a".repeat(40)));
+    v.set(packObjects([]), 40);
+    return v;
+  })();
+
+  it("parses a well-formed staged-tree value", () => {
+    const out = parseStagedTree(valid);
+    expect(out.treeOid).toBe("a".repeat(40));
+    expect(out.objects).toEqual([]);
+  });
+
+  it("fails fast on a truncated header", () => {
+    expect(() => parseStagedTree(new Uint8Array(10))).toThrow(/truncated header/i);
+  });
+
+  it("fails fast on a malformed tree oid", () => {
+    const bad = new Uint8Array(valid);
+    bad.set(new TextEncoder().encode("ZZ"), 0); // non-hex oid bytes
+    expect(() => parseStagedTree(bad)).toThrow(/malformed tree oid/i);
+  });
+});
 
 // Task 3+5 core: extract a workspace tip TREE's objects, round-trip through the
 // R2 pack format, then merge it onto a divergent project head via a SYNTHETIC
