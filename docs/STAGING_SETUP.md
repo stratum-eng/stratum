@@ -10,8 +10,8 @@ The staging environment provides an isolated copy of the production infrastructu
 
 ### Cloudflare Workers
 
-- **Production**: `stratum` (jlmx.workers.dev)
-- **Staging**: `stratum-staging` (stratum-staging.jlmx.workers.dev)
+- **Production**: `stratum` (your-instance.workers.dev)
+- **Staging**: `stratum-staging` (your-instance-staging.workers.dev)
 
 ### D1 Database
 
@@ -145,7 +145,7 @@ Run smoke tests against staging:
 
 ```bash
 # Set the staging URL
-export STAGING_URL=https://stratum-staging.jlmx.workers.dev
+export STAGING_URL=https://your-instance-staging.workers.dev
 
 # Run smoke tests
 npm run test:smoke
@@ -162,14 +162,14 @@ npm run test:smoke
 
 ```bash
 # Health check
-curl https://stratum-staging.jlmx.workers.dev/health
+curl https://your-instance-staging.workers.dev/health
 
 # Test API endpoint
-curl https://stratum-staging.jlmx.workers.dev/api/projects
+curl https://your-instance-staging.workers.dev/api/projects
 
 # With authentication
 curl -H "Authorization: Bearer YOUR_TOKEN" \
-  https://stratum-staging.jlmx.workers.dev/api/projects
+  https://your-instance-staging.workers.dev/api/projects
 ```
 
 ## Environment Variables
@@ -179,7 +179,7 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 ```toml
 [env.staging.vars]
 POSTHOG_HOST = "https://app.posthog.com"
-OAUTH_REDIRECT_URI = "https://stratum-staging.jlmx.workers.dev/auth/github/callback"
+OAUTH_REDIRECT_URI = "https://your-instance-staging.workers.dev/auth/github/callback"
 ```
 
 ### Secrets

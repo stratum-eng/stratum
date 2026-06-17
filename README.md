@@ -5,9 +5,8 @@
 
 A code collaboration platform for the AI engineering era. Built on Cloudflare Workers with Artifacts, D1, KV, and Queues.
 
-**Live Instances:**
-- Production: https://stratum.jlmx.workers.dev
-- Staging: https://stratum-staging.jlmx.workers.dev
+Stratum is self-hostable on your own Cloudflare account — see [Quick Start](#quick-start). Examples
+below use `https://your-instance.workers.dev` as a placeholder for your deployment.
 
 ## What is Stratum?
 
@@ -52,7 +51,7 @@ Stratum is a GitHub alternative where both humans and AI agents are first-class 
 |---------|--------|-------------|
 | Organizations | 🚧 | Basic support (in progress) |
 | Teams | 🚧 | Team-based permissions |
-| CLI Tool | 📋 | Planned |
+| CLI Tool | 🚧 | `@stratum/cli` built (`cli/`), not yet published to npm |
 | Bidirectional GitHub Sync | 📋 | Planned |
 
 **Legend:** ✅ Working | 🚧 In Progress | 📋 Planned
@@ -201,7 +200,7 @@ Stratum supports multiple authentication methods:
 **Email Magic Links (Recommended):**
 ```bash
 # Visit the login page
-curl https://stratum.jlmx.workers.dev/auth/email
+curl https://your-instance.workers.dev/auth/email
 
 # Enter your email and click "Send Magic Link"
 # Check your inbox and click the secure link to sign in
@@ -210,7 +209,7 @@ curl https://stratum.jlmx.workers.dev/auth/email
 **GitHub OAuth:**
 ```bash
 # Initiate login
-curl https://stratum.jlmx.workers.dev/auth/github
+curl https://your-instance.workers.dev/auth/github
 
 # After OAuth callback, you'll have a session cookie
 ```
@@ -219,7 +218,7 @@ curl https://stratum.jlmx.workers.dev/auth/github
 ```bash
 # Create an agent identity (via web UI or API)
 # Then use the token in requests:
-curl https://stratum.jlmx.workers.dev/api/projects \
+curl https://your-instance.workers.dev/api/projects \
   -H "Authorization: Bearer stratum_agent_xxxxx"
 ```
 
