@@ -200,7 +200,6 @@ function makeProject(overrides: Partial<ProjectEntry> = {}): ProjectEntry {
     ownerId: "user_owner",
     ownerType: "user",
     remote: "https://artifacts.example.com/repos/owner-my-repo",
-    token: "tok_owner_my_repo",
     createdAt: "2026-01-01T00:00:00.000Z",
     visibility: "private",
     sourceUrl: "https://github.com/acme/api",

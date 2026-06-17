@@ -20,10 +20,11 @@ import { type CostSample, getChangeCostSummary, recordCosts } from "../storage/c
 import { listEvalRuns, recordEvalRuns } from "../storage/eval-runs";
 import {
   MergeConflictError,
+  freshRepoToken,
+  getCommitLog,
   getDiffBetweenRepos,
   mergeWorkspaceIntoProject,
 } from "../storage/git-ops";
-import { getCommitLog } from "../storage/git-ops";
 import { recordProvenance } from "../storage/provenance";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
 import { getProject, getWorkspace } from "../storage/state";
@@ -32,7 +33,15 @@ import { canReadProject, canWriteProject } from "../utils/authz";
 import type { AppError } from "../utils/errors";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
-import { badRequest, created, forbidden, notFound, ok, unauthorized } from "../utils/response";
+import {
+  badRequest,
+  created,
+  forbidden,
+  internalError,
+  notFound,
+  ok,
+  unauthorized,
+} from "../utils/response";
 import { ok as okResult } from "../utils/result";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -73,7 +82,9 @@ async function resolveProjectHead(
       if (sha) return sha;
     }
   }
-  const logResult = await getCommitLog(project.remote, project.token, logger, 1);
+  const readToken = await freshRepoToken(env.ARTIFACTS, project.remote, "read", logger);
+  if (!readToken.success) return null;
+  const logResult = await getCommitLog(project.remote, readToken.data, logger, 1);
   return logResult.success ? (logResult.data[0]?.sha ?? null) : null;
 }
 
@@ -176,13 +187,20 @@ app.post("/projects/:name/changes", async (c) => {
     logger,
   );
 
-  const policy = await loadPolicy(project.remote, project.token, logger);
+  const [projectReadToken, workspaceReadToken] = await Promise.all([
+    freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger),
+    freshRepoToken(c.env.ARTIFACTS, workspace.remote, "read", logger),
+  ]);
+  if (!projectReadToken.success) return internalError(projectReadToken.error.message);
+  if (!workspaceReadToken.success) return internalError(workspaceReadToken.error.message);
+
+  const policy = await loadPolicy(project.remote, projectReadToken.data, logger);
 
   const diffResult = await getDiffBetweenRepos(
     project.remote,
-    project.token,
+    projectReadToken.data,
     workspace.remote,
-    workspace.token,
+    workspaceReadToken.data,
     logger,
   );
   if (!diffResult.success) {
@@ -470,7 +488,9 @@ app.post("/changes/:id/merge", async (c) => {
     return forbidden("Project access denied");
 
   // Branch protection: the policy's merge rules gate every merge path.
-  const mergePolicy = await loadPolicy(project.remote, project.token, logger);
+  const policyReadToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
+  if (!policyReadToken.success) return internalError(policyReadToken.error.message);
+  const mergePolicy = await loadPolicy(project.remote, policyReadToken.data, logger);
   const forceAllowed = mergePolicy.merge?.allowForce !== false;
   if (force && !forceAllowed) {
     return badRequest("Force merge is disabled by this project's policy");
@@ -577,11 +597,19 @@ app.post("/changes/:id/merge", async (c) => {
   }
   const workspace = workspaceResult.data;
 
+  // Merge clones the workspace fork (read) and pushes to the project (write).
+  const [projectMergeToken, workspaceMergeToken] = await Promise.all([
+    freshRepoToken(c.env.ARTIFACTS, project.remote, "write", logger),
+    freshRepoToken(c.env.ARTIFACTS, workspace.remote, "read", logger),
+  ]);
+  if (!projectMergeToken.success) return internalError(projectMergeToken.error.message);
+  if (!workspaceMergeToken.success) return internalError(workspaceMergeToken.error.message);
+
   const mergeResult = await mergeWorkspaceIntoProject(
     project.remote,
-    project.token,
+    projectMergeToken.data,
     workspace.remote,
-    workspace.token,
+    workspaceMergeToken.data,
     logger,
     { strategy },
   );
@@ -807,13 +835,20 @@ app.post("/changes/:id/evaluate", async (c) => {
   }
   const workspace = workspaceResult.data;
 
-  const policy = await loadPolicy(project.remote, project.token, logger);
+  const [projectReadToken, workspaceReadToken] = await Promise.all([
+    freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger),
+    freshRepoToken(c.env.ARTIFACTS, workspace.remote, "read", logger),
+  ]);
+  if (!projectReadToken.success) return internalError(projectReadToken.error.message);
+  if (!workspaceReadToken.success) return internalError(workspaceReadToken.error.message);
+
+  const policy = await loadPolicy(project.remote, projectReadToken.data, logger);
 
   const diffResult = await getDiffBetweenRepos(
     project.remote,
-    project.token,
+    projectReadToken.data,
     workspace.remote,
-    workspace.token,
+    workspaceReadToken.data,
     logger,
   );
   if (!diffResult.success) {
@@ -980,6 +1015,11 @@ app.post("/changes/:id/github-pr", async (c) => {
     .json<{ title?: string; body?: string; base?: string; draft?: boolean }>()
     .catch(() => ({}) as { title?: string; body?: string; base?: string; draft?: boolean });
 
+  // GitHub PR creation needs a GitHub credential — the Artifacts repo token (now
+  // never persisted) was never valid here. Use the app's configured GitHub token.
+  const githubToken = c.env.GITHUB_TOKEN;
+  if (!githubToken) return badRequest("GitHub integration is not configured");
+
   const branch = `stratum/${change.id}`;
   const prBody =
     `## Stratum review\n\n- Change: \`${change.id}\`\n- Workspace: \`${change.workspace}\`\n- Evaluation: ${change.evalPassed ? "passed" : "failed"}, score ${change.evalScore ?? "n/a"}\n\n${body.body ?? ""}`.trim();
@@ -988,7 +1028,7 @@ app.post("/changes/:id/github-pr", async (c) => {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${project.token}`,
+      Authorization: `Bearer ${githubToken}`,
       "User-Agent": "stratum",
     },
     body: JSON.stringify({

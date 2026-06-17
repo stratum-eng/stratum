@@ -2,7 +2,13 @@ import { Hono } from "hono";
 import { importRateLimitMiddleware, releaseImportLock } from "../middleware/rate-limit";
 import { emitEvent } from "../queue/events";
 import { listProjectEvents } from "../storage/events";
-import { getCommitLog, importFromGitHub, initAndPush, listFilesInRepo } from "../storage/git-ops";
+import {
+  freshRepoToken,
+  getCommitLog,
+  importFromGitHub,
+  initAndPush,
+  listFilesInRepo,
+} from "../storage/git-ops";
 import { buildAuthConfig } from "../storage/git-providers";
 import {
   cancelImportJob,
@@ -210,7 +216,6 @@ app.post("/", async (c) => {
     ownerId: owner.id,
     ownerType: owner.type,
     remote: repo.remote,
-    token: repo.token,
     createdAt: new Date().toISOString(),
     visibility,
   };
@@ -556,7 +561,6 @@ app.post(
         ownerId: userId,
         ownerType: "user",
         remote: repo.remote,
-        token: repo.token,
         createdAt: new Date().toISOString(),
         // Legacy fields for backward compatibility
         githubUrl: body.url,
@@ -740,7 +744,6 @@ async function processImportJob(
     const updatedProject: ProjectEntry = {
       ...project,
       remote: importResult.data.remote,
-      token: importResult.data.token,
       importCompleted: true,
     };
 
@@ -765,7 +768,8 @@ async function processImportJob(
     // Write repo snapshot to KV so page loads skip git clones going forward
     await writeSnapshotFromRepo(
       env.STATE,
-      { remote: updatedProject.remote, token: updatedProject.token, namespace, slug },
+      env.ARTIFACTS,
+      { remote: updatedProject.remote, namespace, slug },
       logger,
     );
 
@@ -823,7 +827,9 @@ app.get("/:namespace/:slug/files", async (c) => {
   if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
-  const filesResult = await listFilesInRepo(project.remote, project.token, logger);
+  const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
+  if (!readToken.success) return internalError(readToken.error.message);
+  const filesResult = await listFilesInRepo(project.remote, readToken.data, logger);
   if (!filesResult.success) {
     logger.error("Failed to list files in repo", filesResult.error);
     return internalError(filesResult.error.message);
@@ -867,7 +873,9 @@ app.get("/:namespace/:slug/content", async (c) => {
   if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
-  const contentResult = await getFileContent(project.remote, project.token, filePath, logger);
+  const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
+  if (!readToken.success) return internalError(readToken.error.message);
+  const contentResult = await getFileContent(project.remote, readToken.data, filePath, logger);
   if (!contentResult.success) {
     return internalError(contentResult.error.message);
   }
@@ -913,7 +921,9 @@ app.get("/:namespace/:slug/log", async (c) => {
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const depth = Number(c.req.query("depth") ?? 20);
-  const logResult = await getCommitLog(project.remote, project.token, logger, depth);
+  const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
+  if (!readToken.success) return internalError(readToken.error.message);
+  const logResult = await getCommitLog(project.remote, readToken.data, logger, depth);
   if (!logResult.success) {
     logger.error("Failed to get commit log", logResult.error);
     return internalError(logResult.error.message);
@@ -1703,7 +1713,8 @@ async function processSyncJob(
     // Write repo snapshot to KV so page loads skip git clones going forward
     await writeSnapshotFromRepo(
       env.STATE,
-      { remote: importResult.data.remote, token: importResult.data.token, namespace, slug },
+      env.ARTIFACTS,
+      { remote: importResult.data.remote, namespace, slug },
       logger,
     );
 

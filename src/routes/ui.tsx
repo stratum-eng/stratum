@@ -6,8 +6,13 @@ import { getChange, listChanges } from "../storage/changes";
 import { getChangeCostSummary } from "../storage/costs";
 import { listEvalRuns } from "../storage/eval-runs";
 import { listProjectEvents } from "../storage/events";
-import { getDiffBetweenRepos } from "../storage/git-ops";
-import { getCommitLog, listFilesInRepo, readFileFromRepo } from "../storage/git-ops";
+import {
+  freshRepoToken,
+  getCommitLog,
+  getDiffBetweenRepos,
+  listFilesInRepo,
+  readFileFromRepo,
+} from "../storage/git-ops";
 import { getImportProgress } from "../storage/imports";
 import { getIssueByNumber, listIssues } from "../storage/issues";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
@@ -342,9 +347,12 @@ app.get("/p/:name", async (c) => {
   } else {
     // Cache miss or corrupt entry — fall back to git clone
     try {
+      const tokenResult = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
+      if (!tokenResult.success) throw tokenResult.error;
+      const readToken = tokenResult.data;
       const [filesResult, logResult] = await Promise.all([
-        listFilesInRepo(project.remote, project.token, logger),
-        getCommitLog(project.remote, project.token, logger, 20),
+        listFilesInRepo(project.remote, readToken, logger),
+        getCommitLog(project.remote, readToken, logger, 20),
       ]);
 
       if (filesResult.success) {
@@ -362,12 +370,7 @@ app.get("/p/:name", async (c) => {
       // Try to read README.md if it exists
       const readmePath = files.find((f) => f.toLowerCase() === "readme.md");
       if (readmePath) {
-        const readmeResult = await readFileFromRepo(
-          project.remote,
-          project.token,
-          readmePath,
-          logger,
-        );
+        const readmeResult = await readFileFromRepo(project.remote, readToken, readmePath, logger);
         if (readmeResult.success) {
           readme = readmeResult.data;
         }
@@ -544,17 +547,25 @@ app.get("/changes/:id", async (c) => {
       logger,
     );
     if (workspaceResult.success) {
-      const diffResult = await getDiffBetweenRepos(
-        projectResult.data.remote,
-        projectResult.data.token,
-        workspaceResult.data.remote,
-        workspaceResult.data.token,
-        logger,
-      );
-      if (diffResult.success) {
-        diffFiles = parseUnifiedDiff(diffResult.data);
+      const [projectToken, workspaceToken] = await Promise.all([
+        freshRepoToken(c.env.ARTIFACTS, projectResult.data.remote, "read", logger),
+        freshRepoToken(c.env.ARTIFACTS, workspaceResult.data.remote, "read", logger),
+      ]);
+      if (projectToken.success && workspaceToken.success) {
+        const diffResult = await getDiffBetweenRepos(
+          projectResult.data.remote,
+          projectToken.data,
+          workspaceResult.data.remote,
+          workspaceToken.data,
+          logger,
+        );
+        if (diffResult.success) {
+          diffFiles = parseUnifiedDiff(diffResult.data);
+        } else {
+          logger.warn("Failed to load change diff", { changeId: change.id });
+        }
       } else {
-        logger.warn("Failed to load change diff", { changeId: change.id });
+        logger.warn("Failed to mint tokens for change diff", { changeId: change.id });
       }
     }
   }
@@ -1183,7 +1194,14 @@ app.get("/:namespace/:slug/blob/*", async (c) => {
     );
   }
 
-  const contentResult = await getFileContent(project.remote, project.token, filePath, logger);
+  const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
+  if (!readToken.success) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Error loading file.</div>,
+      500,
+    );
+  }
+  const contentResult = await getFileContent(project.remote, readToken.data, filePath, logger);
   if (!contentResult.success) {
     return c.html(
       <div style="padding:2rem;font-family:monospace;color:#f87171;">Error loading file.</div>,
@@ -1309,9 +1327,12 @@ app.get("/:namespace/:slug", async (c) => {
   } else {
     // Cache miss or corrupt entry — fall back to git clone
     try {
+      const tokenResult = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
+      if (!tokenResult.success) throw tokenResult.error;
+      const readToken = tokenResult.data;
       const [filesResult, logResult] = await Promise.all([
-        listFilesInRepo(project.remote, project.token, logger),
-        getCommitLog(project.remote, project.token, logger, 20),
+        listFilesInRepo(project.remote, readToken, logger),
+        getCommitLog(project.remote, readToken, logger, 20),
       ]);
 
       if (filesResult.success) {
@@ -1329,12 +1350,7 @@ app.get("/:namespace/:slug", async (c) => {
       // Try to read README.md if it exists
       const readmePath = files.find((f) => f.toLowerCase() === "readme.md");
       if (readmePath) {
-        const readmeResult = await readFileFromRepo(
-          project.remote,
-          project.token,
-          readmePath,
-          logger,
-        );
+        const readmeResult = await readFileFromRepo(project.remote, readToken, readmePath, logger);
         if (readmeResult.success) {
           readme = readmeResult.data;
         }

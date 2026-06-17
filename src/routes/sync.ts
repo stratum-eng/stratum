@@ -95,9 +95,9 @@ export async function syncAllProjects(env: Env): Promise<{ synced: number; faile
         // NOTE: writeSnapshotFromRepo must be called after any new sync trigger added here
         await writeSnapshotFromRepo(
           env.STATE,
+          env.ARTIFACTS,
           {
             remote: result.data.remote,
-            token: result.data.token,
             namespace: project.namespace,
             slug: project.slug,
           },

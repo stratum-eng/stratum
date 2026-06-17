@@ -99,6 +99,7 @@ vi.mock("../src/storage/git-ops", async (importActual) => {
   return {
     ...actual,
     resolveConflict: vi.fn(),
+    freshRepoToken: vi.fn(async () => ({ success: true, data: "test-token" })),
   };
 });
 

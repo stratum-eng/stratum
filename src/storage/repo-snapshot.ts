@@ -1,9 +1,10 @@
 import type { KVNamespace } from "@cloudflare/workers-types";
 import git from "isomorphic-git";
+import type { ArtifactsNamespace } from "../types";
 import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, fromPromise, ok } from "../utils/result";
-import { cloneRepo } from "./git-ops";
+import { cloneRepo, freshRepoToken } from "./git-ops";
 
 export const SNAPSHOT_COMMIT_LIMIT = 20;
 
@@ -137,11 +138,21 @@ async function walkDir(fs: MinimalFS, base: string, prefix: string): Promise<str
 
 export async function writeSnapshotFromRepo(
   kv: KVNamespace,
-  project: { remote: string; token: string; namespace: string; slug: string },
+  artifacts: ArtifactsNamespace,
+  project: { remote: string; namespace: string; slug: string },
   logger: Logger,
 ): Promise<void> {
   try {
-    const cloneResult = await cloneRepo(project.remote, project.token, logger);
+    const tokenResult = await freshRepoToken(artifacts, project.remote, "read", logger);
+    if (!tokenResult.success) {
+      logger.warn("writeSnapshotFromRepo: token mint failed, skipping snapshot", {
+        namespace: project.namespace,
+        slug: project.slug,
+        error: tokenResult.error.message,
+      });
+      return;
+    }
+    const cloneResult = await cloneRepo(project.remote, tokenResult.data, logger);
 
     if (!cloneResult.success) {
       logger.warn("writeSnapshotFromRepo: clone failed, skipping snapshot", {

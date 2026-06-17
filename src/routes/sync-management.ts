@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { authMiddleware } from "../middleware/auth";
-import { resolveConflict } from "../storage/git-ops";
+import { freshRepoToken, resolveConflict } from "../storage/git-ops";
 import { getProject, getProjectByPath, getWorkspace, setProject } from "../storage/state";
 import {
   checkForSyncUpdates,
@@ -525,13 +525,22 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
     workspaceName: conflictCtx.workspaceName,
   });
 
+  // Conflict resolution clones the workspace fork (read) and pushes the merge to
+  // the project (write). Mint both fresh; no token is persisted.
+  const [projectToken, workspaceToken] = await Promise.all([
+    freshRepoToken(c.env.ARTIFACTS, project.remote, "write", logger),
+    freshRepoToken(c.env.ARTIFACTS, workspace.remote, "read", logger),
+  ]);
+  if (!projectToken.success) return c.json({ error: projectToken.error.message }, 502);
+  if (!workspaceToken.success) return c.json({ error: workspaceToken.error.message }, 502);
+
   const startedAt = Date.now();
   const resolveResult = await resolveConflict(
     {
       projectRemote: project.remote,
-      projectToken: project.token,
+      projectToken: projectToken.data,
       workspaceRemote: workspace.remote,
-      workspaceToken: workspace.token,
+      workspaceToken: workspaceToken.data,
       strategy,
       conflictingFiles: conflictCtx.conflictingFiles,
       manualResolutions:

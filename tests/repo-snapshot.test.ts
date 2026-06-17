@@ -154,10 +154,14 @@ describe("readRepoSnapshot", () => {
 describe("writeSnapshotFromRepo", () => {
   it("does not throw when clone fails", async () => {
     const kv = makeKV();
+    const artifacts = {
+      get: async () => ({ createToken: async () => ({ plaintext: "t", expiresAt: 1 }) }),
+    } as never;
     await expect(
       writeSnapshotFromRepo(
         kv as never,
-        { remote: "https://0.0.0.0/fake.git", token: "x", namespace: "@ns", slug: "repo" },
+        artifacts,
+        { remote: "https://0.0.0.0/git/ns/repo.git", namespace: "@ns", slug: "repo" },
         defaultLogger,
       ),
     ).resolves.toBeUndefined();

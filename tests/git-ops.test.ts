@@ -1,6 +1,21 @@
-import { describe, expect, it } from "vitest";
-import { buildUnifiedDiff, extractTokenSecret } from "../src/storage/git-ops";
+import { describe, expect, it, vi } from "vitest";
+import {
+  artifactsRepoNameFromRemote,
+  buildUnifiedDiff,
+  extractTokenSecret,
+  freshRepoToken,
+} from "../src/storage/git-ops";
 import { MemoryFS } from "../src/storage/memory-fs";
+import type { ArtifactsNamespace } from "../src/types";
+import type { Logger } from "../src/utils/logger";
+
+const noopLogger: Logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  fatal: () => {},
+} as unknown as Logger;
 
 describe("extractTokenSecret", () => {
   it("returns full token when no expiry suffix", () => {
@@ -17,6 +32,100 @@ describe("extractTokenSecret", () => {
 
   it("returns base when multiple ?expires= present (only first split)", () => {
     expect(extractTokenSecret("base?expires=111?expires=222")).toBe("base");
+  });
+});
+
+describe("artifactsRepoNameFromRemote", () => {
+  it("extracts the repo name from a standard Artifacts remote", () => {
+    expect(
+      artifactsRepoNameFromRemote(
+        "https://acct.artifacts.cloudflare.net/git/stratum-prod/jnacious88__apptrack.git",
+      ),
+    ).toBe("jnacious88__apptrack");
+  });
+
+  it("handles a remote without the .git suffix", () => {
+    expect(
+      artifactsRepoNameFromRemote(
+        "https://acct.artifacts.cloudflare.net/git/stratum-prod/jnacious88__apptrack",
+      ),
+    ).toBe("jnacious88__apptrack");
+  });
+
+  it("returns null for a non-Artifacts remote", () => {
+    expect(artifactsRepoNameFromRemote("https://github.com/owner/repo.git")).toBeNull();
+  });
+
+  it("returns null for a non-Artifacts host even with an Artifacts-shaped path", () => {
+    // Guards against minting a real Artifacts token for a remote we don't control.
+    expect(
+      artifactsRepoNameFromRemote("https://evil.example.com/git/stratum-prod/owner__repo.git"),
+    ).toBeNull();
+  });
+
+  it("returns null for a non-HTTPS Artifacts remote", () => {
+    expect(
+      artifactsRepoNameFromRemote("http://acct.artifacts.cloudflare.net/git/ns/owner__repo.git"),
+    ).toBeNull();
+  });
+
+  it("rejects a host that merely contains the Artifacts domain as a prefix", () => {
+    expect(
+      artifactsRepoNameFromRemote(
+        "https://acct.artifacts.cloudflare.net.evil.com/git/ns/owner__repo.git",
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("freshRepoToken", () => {
+  const remote = "https://acct.artifacts.cloudflare.net/git/stratum-prod/owner__repo.git";
+
+  it("mints a fresh token scoped to the operation", async () => {
+    const createToken = vi.fn().mockResolvedValue({ plaintext: "fresh_token", expiresAt: 999 });
+    const get = vi.fn().mockResolvedValue({ createToken });
+    const artifacts = { get } as unknown as ArtifactsNamespace;
+
+    const result = await freshRepoToken(artifacts, remote, "read", noopLogger);
+
+    expect(result.success && result.data).toBe("fresh_token");
+    expect(get).toHaveBeenCalledWith("owner__repo");
+    expect(createToken).toHaveBeenCalledWith("read", 3600);
+  });
+
+  it("requests a write-scoped token when asked", async () => {
+    const createToken = vi.fn().mockResolvedValue({ plaintext: "w", expiresAt: 1 });
+    const artifacts = {
+      get: vi.fn().mockResolvedValue({ createToken }),
+    } as unknown as ArtifactsNamespace;
+
+    await freshRepoToken(artifacts, remote, "write", noopLogger);
+
+    expect(createToken).toHaveBeenCalledWith("write", 3600);
+  });
+
+  it("returns an error when minting fails", async () => {
+    const get = vi.fn().mockRejectedValue(new Error("boom"));
+    const artifacts = { get } as unknown as ArtifactsNamespace;
+
+    const result = await freshRepoToken(artifacts, remote, "read", noopLogger);
+
+    expect(result.success).toBe(false);
+  });
+
+  it("returns an error when the remote is unrecognised", async () => {
+    const get = vi.fn();
+    const artifacts = { get } as unknown as ArtifactsNamespace;
+
+    const result = await freshRepoToken(
+      artifacts,
+      "https://github.com/owner/repo.git",
+      "read",
+      noopLogger,
+    );
+
+    expect(result.success).toBe(false);
+    expect(get).not.toHaveBeenCalled();
   });
 });
 

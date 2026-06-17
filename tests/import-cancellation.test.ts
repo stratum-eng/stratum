@@ -385,7 +385,6 @@ async function createTestProject(
     ownerId,
     ownerType: "user",
     remote: `https://artifacts.example.com/repos/${namespace.replace("@", "")}-${slug}`,
-    token: `tok_${namespace.replace("@", "")}_${slug}`,
     createdAt: new Date().toISOString(),
     visibility,
   };
