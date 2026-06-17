@@ -200,7 +200,7 @@ jobs:
           npx vitest run tests/smoke/ --reporter=verbose || true
           echo "✓ Smoke tests completed"
 
-      - name: Create deployment notification
+      - name: Record deployment summary
         if: success()
         uses: actions/github-script@v7
         with:
@@ -209,26 +209,19 @@ jobs:
             const commitSha = context.sha.substring(0, 7);
             const commitMessage = context.payload.head_commit?.message || 'No message';
 
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `✅ Production Deployment Successful - ${commitSha}`,
-              body: `## Production Deployment Complete
-
-            **Commit:** ${commitSha}
-            **Message:** ${commitMessage}
-            **URL:** ${deploymentUrl}
-
-            ### Deployment Checklist
-            - [x] D1 migrations applied
-            - [x] Build successful
-            - [x] Health checks passed
-            - [x] Smoke tests completed
-            - [x] Deployment verified
-
-            [View Workflow Run](${context.payload.repository.html_url}/actions/runs/${context.runId})`,
-              labels: ['deployment', 'production']
-            });
+            await core.summary
+              .addHeading('✅ Production Deployment Complete')
+              .addRaw(`**Commit:** ${commitSha}\n\n`)
+              .addRaw(`**Message:** ${commitMessage}\n\n`)
+              .addRaw(`**URL:** ${deploymentUrl}\n`)
+              .addList([
+                'D1 migrations applied',
+                'Build successful',
+                'Health checks passed',
+                'Smoke tests completed',
+                'Deployment verified',
+              ])
+              .write();
 
       - name: Notify on failure
         if: failure()
