@@ -1402,11 +1402,10 @@ describe("POST /api/projects/:name/changes/merge-batch", () => {
           }
         : { success: false, error: new NotFoundError("User", token) },
     );
-    // biome-ignore lint/suspicious/noExplicitAny: minimal stub
     vi.mocked(getAgentByToken).mockResolvedValue({
       success: false,
       error: new NotFoundError("Agent", "x"),
-    } as any);
+    });
     // biome-ignore lint/suspicious/noExplicitAny: minimal stub
     vi.mocked(getProject).mockResolvedValue({ success: true, data: mockProject } as any);
     vi.mocked(loadPolicy).mockResolvedValue(mockPolicy);
