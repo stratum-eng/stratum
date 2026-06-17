@@ -9,7 +9,7 @@
 ## Setup
 
 ```bash
-git clone https://github.com/jlamoreaux/stratum.git
+git clone https://github.com/stratum-eng/stratum.git
 cd stratum
 npm install
 npx wrangler login

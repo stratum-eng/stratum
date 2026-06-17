@@ -20,5 +20,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes, GitHub import/sync, server-rendered web UI, email and GitHub OAuth authentication,
   API tokens, agent identities, and provenance tracking.
 
-[Unreleased]: https://github.com/jlamoreaux/stratum/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/jlamoreaux/stratum/releases/tag/v0.1.0
+[Unreleased]: https://github.com/stratum-eng/stratum/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/stratum-eng/stratum/releases/tag/v0.1.0

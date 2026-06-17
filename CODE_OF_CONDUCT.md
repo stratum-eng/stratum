@@ -12,7 +12,7 @@ interact respectfully and in good faith.
 ## Reporting
 
 If you experience or witness a concern, report it privately to the project maintainers by
-[opening a confidential advisory](https://github.com/jlamoreaux/stratum/security/advisories/new) or
+[opening a confidential advisory](https://github.com/stratum-eng/stratum/security/advisories/new) or
 contacting a maintainer directly through GitHub. All reports will be reviewed and handled
 confidentially, and maintainers will respect the privacy of the reporter.
 

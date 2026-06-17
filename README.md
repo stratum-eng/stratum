@@ -1,6 +1,6 @@
 # Stratum
 
-[![CI Status](https://github.com/jlamoreaux/stratum/actions/workflows/ci.yml/badge.svg)](https://github.com/jlamoreaux/stratum/actions)
+[![CI Status](https://github.com/stratum-eng/stratum/actions/workflows/ci.yml/badge.svg)](https://github.com/stratum-eng/stratum/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A code collaboration platform for the AI engineering era. Built on Cloudflare Workers with Artifacts, D1, KV, and Queues.
@@ -73,7 +73,7 @@ Stratum is a GitHub alternative where both humans and AI agents are first-class 
 
 ```bash
 # Clone the repository
-git clone https://github.com/jlamoreaux/stratum.git
+git clone https://github.com/stratum-eng/stratum.git
 cd stratum
 
 # Install dependencies
