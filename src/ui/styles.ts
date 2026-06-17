@@ -17,7 +17,7 @@ a:hover { text-decoration: underline; }
 .nav {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 0.35rem 1.25rem;
   padding: 0.75rem 1.5rem;
@@ -37,7 +37,7 @@ a:hover { text-decoration: underline; }
 }
 .nav-brand:hover { text-decoration: none; color: #7ca9f7; }
 
-.nav-links { display: flex; gap: 1.25rem; }
+.nav-links { display: flex; gap: 1.25rem; margin-right: auto; }
 .nav-links a { color: #999; font-size: 0.9rem; }
 .nav-links a:hover { color: #f0f0f0; text-decoration: none; }
 
