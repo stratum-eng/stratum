@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "description": "CLI for Stratum — code hosting for the AI engineering era",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/jlamoreaux/stratum.git", "directory": "cli" },
+  "repository": { "type": "git", "url": "https://github.com/stratum-eng/stratum.git", "directory": "cli" },
   "type": "module",
   "bin": { "stratum": "./dist/index.js" },
   "files": ["dist"],

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Reference agent for Stratum — fork, edit with an LLM, commit, open a Change",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/jlamoreaux/stratum.git", "directory": "agent" },
+  "repository": { "type": "git", "url": "https://github.com/stratum-eng/stratum.git", "directory": "agent" },
   "type": "module",
   "bin": { "stratum-agent": "./dist/index.js" },
   "files": ["dist"],

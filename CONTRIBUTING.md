@@ -17,7 +17,7 @@ to uphold it. Report unacceptable behavior per the contact in that file.
 **Prerequisites:** Node.js 20+ and a Cloudflare account (for full local dev against bindings).
 
 ```bash
-git clone https://github.com/jlamoreaux/stratum.git
+git clone https://github.com/stratum-eng/stratum.git
 cd stratum
 npm install
 npm run dev        # local dev server at http://localhost:8787
