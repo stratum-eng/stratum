@@ -3,82 +3,96 @@ import git from "isomorphic-git";
 import type { ArtifactsCreateResult, ArtifactsNamespace, Author, CommitLogEntry } from "../types";
 import { AppError, ExternalServiceError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
+import type { PhaseTimer } from "../utils/phase-timer";
 import { type Result, err, fromPromise, ok } from "../utils/result";
+import { commitObject } from "./git-objects";
 import { MemoryFS } from "./memory-fs";
+import { packObjects, placeLooseObject, unpackObjects } from "./object-loader";
 
 // Custom HTTP client for Cloudflare Workers
-// isomorphic-git/http/web expects browser APIs that don't exist in Workers
-const http = {
-  async request({
-    url,
-    method = "GET",
-    headers = {},
-    body: requestBody,
-  }: {
-    url: string;
-    method?: string;
-    headers?: Record<string, string>;
-    body?: AsyncIterableIterator<Uint8Array>;
-  }) {
-    // Buffer the full body before sending — Cloudflare Workers doesn't support
-    // half-duplex streaming on outbound fetch(), so a ReadableStream body may be
-    // silently dropped, causing the git server to return an empty response.
-    let body: Uint8Array | undefined;
-    if (requestBody) {
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of requestBody) {
-        chunks.push(chunk);
-      }
-      const totalLength = chunks.reduce((sum, c) => sum + c.byteLength, 0);
-      body = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        body.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-    }
-
-    const response = await fetch(url, {
-      method,
-      headers,
-      body,
-    });
-
-    const resHeaders: Record<string, string> = {};
-    response.headers.forEach((value, key) => {
-      resHeaders[key] = value;
-    });
-
-    // Stream response body instead of materializing to avoid high memory usage
-    async function* bodyGenerator(): AsyncIterableIterator<Uint8Array> {
-      if (!response.body) return;
-      const reader = response.body.getReader();
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          yield value;
+// isomorphic-git/http/web expects browser APIs that don't exist in Workers.
+// Built via a factory so an instrumented variant can isolate the true network
+// leg (the single `await fetch`) from body-buffering and pack processing.
+export function createHttpClient(opts: { onNetworkMs?: (ms: number) => void } = {}) {
+  return {
+    async request({
+      url,
+      method = "GET",
+      headers = {},
+      body: requestBody,
+    }: {
+      url: string;
+      method?: string;
+      headers?: Record<string, string>;
+      body?: AsyncIterableIterator<Uint8Array>;
+    }) {
+      // Buffer the full body before sending — Cloudflare Workers doesn't support
+      // half-duplex streaming on outbound fetch(), so a ReadableStream body may be
+      // silently dropped, causing the git server to return an empty response.
+      let body: Uint8Array | undefined;
+      if (requestBody) {
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of requestBody) {
+          chunks.push(chunk);
         }
-      } finally {
-        reader.releaseLock();
+        const totalLength = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+        body = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          body.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
       }
-    }
 
-    return {
-      url: response.url,
-      method,
-      statusCode: response.status,
-      statusMessage: response.statusText,
-      headers: resHeaders,
-      body: bodyGenerator(),
-    };
-  },
-};
+      const fetchStart = Date.now();
+      const response = await fetch(url, {
+        method,
+        headers,
+        body,
+      });
+      opts.onNetworkMs?.(Date.now() - fetchStart);
+
+      const resHeaders: Record<string, string> = {};
+      response.headers.forEach((value, key) => {
+        resHeaders[key] = value;
+      });
+
+      // Stream response body instead of materializing to avoid high memory usage
+      async function* bodyGenerator(): AsyncIterableIterator<Uint8Array> {
+        if (!response.body) return;
+        const reader = response.body.getReader();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            yield value;
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      }
+
+      return {
+        url: response.url,
+        method,
+        statusCode: response.status,
+        statusMessage: response.statusText,
+        headers: resHeaders,
+        body: bodyGenerator(),
+      };
+    },
+  };
+}
+
+type HttpClient = ReturnType<typeof createHttpClient>;
+
+// Default (uninstrumented) client used by every non-benchmarked path.
+const http = createHttpClient();
 
 const DIR = "/";
 
 // Node.js-compatible FS interface (returned by MemoryFS.toNodeFS())
-interface NodeFS {
+export interface NodeFS {
   promises: {
     readFile(path: string, options?: { encoding?: string }): Promise<string | Uint8Array>;
     writeFile(path: string, data: string | Uint8Array): Promise<void>;
@@ -98,6 +112,8 @@ export type MergeStrategy = "merge" | "squash";
 export interface MergeWorkspaceOptions {
   author?: Author;
   strategy?: MergeStrategy;
+  /** Optional Phase 0 instrumentation; populates per-phase spans when present. */
+  timer?: PhaseTimer;
 }
 
 export class MergeConflictError extends AppError {
@@ -255,6 +271,7 @@ export async function cloneRepo(
   remote: string,
   token: string,
   logger: Logger,
+  httpClient: HttpClient = http,
 ): Promise<Result<{ fs: NodeFS; dir: string }, AppError>> {
   logger.debug("Cloning repository", { remote });
 
@@ -262,7 +279,7 @@ export async function cloneRepo(
   const cloneResult = await fromPromise(
     git.clone({
       fs,
-      http,
+      http: httpClient,
       dir: DIR,
       url: remote,
       ref: "main",
@@ -354,7 +371,13 @@ export async function mergeWorkspaceIntoProject(
   });
 
   const author = options.author ?? SYSTEM_AUTHOR;
-  const cloneResult = await cloneRepo(projectRemote, projectToken, logger);
+  const timer = options.timer;
+  const measure = <T>(name: string, fn: () => Promise<T>): Promise<T> =>
+    timer ? timer.measure(name, fn) : fn();
+
+  const cloneResult = await measure("projectCloneMs", () =>
+    cloneRepo(projectRemote, projectToken, logger),
+  );
   if (!cloneResult.success) return err(cloneResult.error);
   const { fs, dir } = cloneResult.data;
 
@@ -371,16 +394,18 @@ export async function mergeWorkspaceIntoProject(
     );
   }
 
-  const fetchResult = await fromPromise(
-    git.fetch({
-      fs,
-      http,
-      dir,
-      remote: "workspace",
-      ref: "main",
-      singleBranch: true,
-      onAuth: makeAuth(workspaceToken),
-    }),
+  const fetchResult = await measure("workspaceFetchMs", () =>
+    fromPromise(
+      git.fetch({
+        fs,
+        http,
+        dir,
+        remote: "workspace",
+        ref: "main",
+        singleBranch: true,
+        onAuth: makeAuth(workspaceToken),
+      }),
+    ),
   );
   if (!fetchResult.success) {
     logger.error("Failed to fetch workspace", fetchResult.error, { workspaceRemote });
@@ -414,15 +439,17 @@ export async function mergeWorkspaceIntoProject(
     return squashMerge(fs, dir, workspaceSha, projectRemote, projectToken, author, logger);
   }
 
-  const mergeResult = await fromPromise(
-    git.merge({
-      fs,
-      dir,
-      ours: "main",
-      theirs: workspaceSha,
-      author,
-      message: "Merge workspace into project",
-    }),
+  const mergeResult = await measure("mergeMs", () =>
+    fromPromise(
+      git.merge({
+        fs,
+        dir,
+        ours: "main",
+        theirs: workspaceSha,
+        author,
+        message: "Merge workspace into project",
+      }),
+    ),
   );
 
   if (!mergeResult.success) {
@@ -434,15 +461,17 @@ export async function mergeWorkspaceIntoProject(
     );
   }
 
-  const pushResult = await fromPromise(
-    git.push({
-      fs,
-      dir,
-      http,
-      url: projectRemote,
-      ref: "main",
-      onAuth: makeAuth(projectToken),
-    }),
+  const pushResult = await measure("pushMs", () =>
+    fromPromise(
+      git.push({
+        fs,
+        dir,
+        http,
+        url: projectRemote,
+        ref: "main",
+        onAuth: makeAuth(projectToken),
+      }),
+    ),
   );
   if (!pushResult.success) {
     logger.error("Failed to push merge result", pushResult.error, { projectRemote });
@@ -460,6 +489,492 @@ export async function mergeWorkspaceIntoProject(
     sha: mergeResult.data.oid,
   });
   return ok(mergeResult.data.oid);
+}
+
+export interface FastForwardResult {
+  /** false => a fast-forward was not possible; caller should cold-merge. */
+  fastForwarded: boolean;
+  commit?: string;
+}
+
+/**
+ * Attempt a fast-forward of the project's main to the workspace tip, skipping the
+ * project clone and the in-memory 3-way merge that {@link mergeWorkspaceIntoProject}
+ * performs. Correctness does not depend on a cached head: the non-force push is
+ * accepted by Artifacts only when the project ref is still `expectedParent` (a
+ * true fast-forward). Any race or non-descendant tip returns `fastForwarded:
+ * false` so the caller falls back to the proven cold merge.
+ *
+ * Note: this still fetches the workspace fork (its objects live in a separate
+ * Artifacts repo); what it removes is the project clone (`depth:50`) + `git.merge`.
+ */
+export async function fastForwardMerge(
+  projectRemote: string,
+  projectToken: string,
+  workspaceRemote: string,
+  workspaceToken: string,
+  expectedParent: string,
+  logger: Logger,
+  timer?: PhaseTimer,
+): Promise<Result<FastForwardResult, AppError>> {
+  const measure = <T>(name: string, fn: () => Promise<T>): Promise<T> =>
+    timer ? timer.measure(name, fn) : fn();
+
+  const cloneResult = await measure("workspaceFetchMs", () =>
+    cloneRepo(workspaceRemote, workspaceToken, logger),
+  );
+  if (!cloneResult.success) return err(cloneResult.error);
+  const { fs, dir } = cloneResult.data;
+
+  const tipResult = await fromPromise(git.resolveRef({ fs, dir, ref: "main" }));
+  if (!tipResult.success) {
+    return err(new ExternalServiceError("Git", "Failed to resolve workspace tip", tipResult.error));
+  }
+  const workspaceTip = tipResult.data;
+
+  // A fast-forward is only possible if the workspace tip descends from the
+  // project's current head. If not (or history is too shallow to tell), cold-merge.
+  const descResult = await fromPromise(
+    git.isDescendent({ fs, dir, oid: workspaceTip, ancestor: expectedParent, depth: -1 }),
+  );
+  if (!descResult.success) {
+    // Most commonly: expectedParent is older than the shallow workspace clone, so
+    // ancestry can't be proven. Log it — a repo that always lands here silently
+    // never fast-forwards and would otherwise look like the FF path "works".
+    logger.warn("Could not determine workspace descent; falling back to cold merge", {
+      workspaceRemote,
+      workspaceTip,
+      expectedParent,
+    });
+    return ok({ fastForwarded: false });
+  }
+  if (descResult.data !== true) {
+    return ok({ fastForwarded: false });
+  }
+
+  const pushResult = await measure("pushMs", () =>
+    fromPromise(
+      git.push({
+        fs,
+        dir,
+        http,
+        url: projectRemote,
+        ref: "main",
+        remoteRef: "main",
+        onAuth: makeAuth(projectToken),
+      }),
+    ),
+  );
+  if (!pushResult.success) {
+    logger.warn("Fast-forward push rejected; caller will cold-merge", { projectRemote });
+    return ok({ fastForwarded: false });
+  }
+
+  logger.info("Fast-forwarded project to workspace tip", { projectRemote, sha: workspaceTip });
+  return ok({ fastForwarded: true, commit: workspaceTip });
+}
+
+export interface BatchWorkspace {
+  changeId: string;
+  remote: string;
+  token: string;
+}
+
+export interface BatchMergeTimings {
+  cloneMs: number;
+  fetchMs: number;
+  mergeMs: number;
+  pushMs: number;
+  totalMs: number;
+}
+
+export interface BatchMergeResult {
+  commit: string;
+  landed: string[];
+  conflicted: string[];
+  timings: BatchMergeTimings;
+}
+
+/**
+ * Real-flow throughput spike (ADR 004 Task 1 gate): clone the project ONCE, fetch
+ * N workspace tips CONCURRENTLY (overlapping I/O — the read-side question), then
+ * sequentially 3-way merge each onto main, then ONE push. Measures whether the
+ * read side parallelizes and what the batched real-flow commits/sec actually is.
+ *
+ * Distinct-file (non-conflicting) workspaces merge cleanly; a conflicting one is
+ * recorded and skipped (checkpoint/restore of the dirty FS is Task 3 — not needed
+ * for the non-conflicting throughput measurement).
+ */
+export async function batchMergeWorkspaces(
+  projectRemote: string,
+  projectToken: string,
+  workspaces: BatchWorkspace[],
+  logger: Logger,
+): Promise<Result<BatchMergeResult, AppError>> {
+  const startedAt = Date.now();
+  const cloneStart = Date.now();
+  const cloneResult = await cloneRepo(projectRemote, projectToken, logger);
+  if (!cloneResult.success) return err(cloneResult.error);
+  const { fs, dir } = cloneResult.data;
+  const cloneMs = Date.now() - cloneStart;
+
+  // Register each workspace as its own remote, then fetch them all concurrently.
+  for (let i = 0; i < workspaces.length; i++) {
+    const addResult = await fromPromise(
+      git.addRemote({ fs, dir, remote: `ws${i}`, url: workspaces[i]?.remote ?? "" }),
+    );
+    if (!addResult.success) {
+      return err(
+        new ExternalServiceError("Git", "Failed to add workspace remote", addResult.error),
+      );
+    }
+  }
+
+  const fetchStart = Date.now();
+  const fetched = await Promise.all(
+    workspaces.map((ws, i) =>
+      fromPromise(
+        git.fetch({
+          fs,
+          http,
+          dir,
+          remote: `ws${i}`,
+          ref: "main",
+          singleBranch: true,
+          onAuth: makeAuth(ws.token),
+        }),
+      ),
+    ),
+  );
+  const fetchMs = Date.now() - fetchStart;
+  for (const f of fetched) {
+    if (!f.success) {
+      return err(new ExternalServiceError("Git", "Concurrent workspace fetch failed", f.error));
+    }
+  }
+
+  const landed: string[] = [];
+  const conflicted: string[] = [];
+  const mergeStart = Date.now();
+  for (let i = 0; i < workspaces.length; i++) {
+    const ws = workspaces[i];
+    if (!ws) continue;
+    const tipResult = await fromPromise(
+      git.resolveRef({ fs, dir, ref: `refs/remotes/ws${i}/main` }),
+    );
+    if (!tipResult.success) {
+      conflicted.push(ws.changeId);
+      continue;
+    }
+    const mergeResult = await fromPromise(
+      git.merge({
+        fs,
+        dir,
+        ours: "main",
+        theirs: tipResult.data,
+        author: SYSTEM_AUTHOR,
+        message: `Merge change ${ws.changeId}`,
+      }),
+    );
+    if (mergeResult.success) {
+      landed.push(ws.changeId);
+    } else {
+      conflicted.push(ws.changeId);
+    }
+  }
+  const mergeMs = Date.now() - mergeStart;
+
+  const headResult = await fromPromise(git.resolveRef({ fs, dir, ref: "main" }));
+  if (!headResult.success) {
+    return err(
+      new ExternalServiceError("Git", "Failed to resolve head after merges", headResult.error),
+    );
+  }
+
+  const pushStart = Date.now();
+  const pushResult = await fromPromise(
+    git.push({ fs, dir, http, url: projectRemote, ref: "main", onAuth: makeAuth(projectToken) }),
+  );
+  const pushMs = Date.now() - pushStart;
+  if (!pushResult.success) {
+    return err(new ExternalServiceError("Git", "Batch push failed", pushResult.error));
+  }
+
+  return ok({
+    commit: headResult.data,
+    landed,
+    conflicted,
+    timings: { cloneMs, fetchMs, mergeMs, pushMs, totalMs: Date.now() - startedAt },
+  });
+}
+
+/**
+ * Collect every object reachable from a tree (the tree, its subtrees, and the
+ * blobs) as loose-object ("wrapped") bytes — the inverse of placeLooseObject, used
+ * to stage a workspace's tip tree to R2 so the merge needs no fork fetch. Returns
+ * `[{oid, bytes}]` where bytes are `<type> <len>\0<content>` (oid = git SHA-1).
+ */
+export async function extractTreeObjects(
+  fs: NodeFS,
+  dir: string,
+  treeOid: string,
+): Promise<{ oid: string; bytes: Uint8Array }[]> {
+  const out: { oid: string; bytes: Uint8Array }[] = [];
+  const seen = new Set<string>();
+
+  const wrapped = async (oid: string): Promise<Uint8Array> => {
+    const r = await git.readObject({ fs, dir, oid, format: "wrapped" });
+    return r.object as Uint8Array;
+  };
+
+  const visit = async (oid: string): Promise<void> => {
+    if (seen.has(oid)) return;
+    seen.add(oid);
+    out.push({ oid, bytes: await wrapped(oid) });
+    const tree = await git.readTree({ fs, dir, oid });
+    for (const entry of tree.tree) {
+      if (entry.type === "tree") {
+        await visit(entry.oid);
+      } else if (entry.type === "blob" && !seen.has(entry.oid)) {
+        seen.add(entry.oid);
+        out.push({ oid: entry.oid, bytes: await wrapped(entry.oid) });
+      }
+    }
+  };
+
+  await visit(treeOid);
+  return out;
+}
+
+export interface StagedMergeResult {
+  commit: string;
+  landed: string[];
+  conflicted: string[];
+  timings: { cloneMs: number; loadMs: number; mergeMs: number; pushMs: number; totalMs: number };
+}
+
+/**
+ * Real-flow R2 path (ADR 004 Task 1c): clone the project ONCE, let `loadStaged`
+ * place the batch's staged objects into the warm FS (the caller reads them from
+ * R2 — the read side that avoids the connection-capped fork fetch), then
+ * sequentially 3-way merge each staged commit onto main, then ONE push. Measures
+ * whether the R2-fed real flow clears the throughput target.
+ */
+export async function mergeStagedCommits(
+  projectRemote: string,
+  projectToken: string,
+  commitOids: string[],
+  loadStaged: (fs: NodeFS, gitdir: string) => Promise<void>,
+  logger: Logger,
+): Promise<Result<StagedMergeResult, AppError>> {
+  const startedAt = Date.now();
+  const cloneStart = Date.now();
+  const cloneResult = await cloneRepo(projectRemote, projectToken, logger);
+  if (!cloneResult.success) return err(cloneResult.error);
+  const { fs, dir } = cloneResult.data;
+  const cloneMs = Date.now() - cloneStart;
+
+  const loadStart = Date.now();
+  await loadStaged(fs, `${dir === "/" ? "" : dir}/.git`);
+  const loadMs = Date.now() - loadStart;
+
+  const landed: string[] = [];
+  const conflicted: string[] = [];
+  const mergeStart = Date.now();
+  for (const oid of commitOids) {
+    const merged = await fromPromise(
+      git.merge({
+        fs,
+        dir,
+        ours: "main",
+        theirs: oid,
+        author: SYSTEM_AUTHOR,
+        message: `merge ${oid.slice(0, 7)}`,
+      }),
+    );
+    if (!merged.success) {
+      conflicted.push(oid);
+      continue;
+    }
+    landed.push(oid);
+    await fromPromise(git.checkout({ fs, dir, ref: "main" }));
+  }
+  const mergeMs = Date.now() - mergeStart;
+
+  const headResult = await fromPromise(git.resolveRef({ fs, dir, ref: "main" }));
+  if (!headResult.success) {
+    return err(new ExternalServiceError("Git", "Failed to resolve head", headResult.error));
+  }
+  const pushStart = Date.now();
+  const pushResult = await fromPromise(
+    git.push({ fs, dir, http, url: projectRemote, ref: "main", onAuth: makeAuth(projectToken) }),
+  );
+  const pushMs = Date.now() - pushStart;
+  if (!pushResult.success) {
+    return err(new ExternalServiceError("Git", "Staged batch push failed", pushResult.error));
+  }
+
+  return ok({
+    commit: headResult.data,
+    landed,
+    conflicted,
+    timings: { cloneMs, loadMs, mergeMs, pushMs, totalMs: Date.now() - startedAt },
+  });
+}
+
+const TREE_OID_HEX_LEN = 40;
+
+/**
+ * Stage a workspace's tip TREE to R2 (ADR 004 Task 3): one value =
+ * `[40-byte tipTreeOid][packed tree objects]`. Recomputed on every commit so the
+ * merge always sees the LIVE tip (no stale snapshot) without fetching the fork.
+ */
+export async function stageWorkspaceTree(
+  bucket: R2Bucket,
+  key: string,
+  fs: NodeFS,
+  dir: string,
+  commitSha: string,
+  logger: Logger,
+): Promise<Result<{ treeOid: string; objectCount: number }, AppError>> {
+  const commit = await fromPromise(git.readCommit({ fs, dir, oid: commitSha }));
+  if (!commit.success) {
+    return err(new ExternalServiceError("Git", "Failed to read commit for staging", commit.error));
+  }
+  const treeOid = commit.data.commit.tree;
+  const objects = await extractTreeObjects(fs, dir, treeOid);
+  const pack = packObjects(objects);
+  const header = new TextEncoder().encode(treeOid);
+  const value = new Uint8Array(header.length + pack.length);
+  value.set(header);
+  value.set(pack, header.length);
+  const put = await fromPromise(bucket.put(key, value));
+  if (!put.success) {
+    logger.error(
+      "Failed to stage workspace tree",
+      put.error instanceof Error ? put.error : undefined,
+    );
+    return err(new AppError("Failed to stage workspace tree", "STORAGE_ERROR", 500));
+  }
+  return ok({ treeOid, objectCount: objects.length });
+}
+
+export interface StagedTree {
+  treeOid: string;
+  objects: { oid: string; bytes: Uint8Array }[];
+}
+
+/** Load a workspace's staged tip tree from R2 (see stageWorkspaceTree). */
+export async function loadStagedTree(bucket: R2Bucket, key: string): Promise<StagedTree | null> {
+  const obj = await bucket.get(key);
+  if (!obj) return null;
+  const value = new Uint8Array(await obj.arrayBuffer());
+  const treeOid = new TextDecoder().decode(value.subarray(0, TREE_OID_HEX_LEN));
+  const objects = unpackObjects(value.subarray(TREE_OID_HEX_LEN));
+  return { treeOid, objects };
+}
+
+export interface StagedTreeItem {
+  changeId: string;
+  baseSha: string;
+  staged: StagedTree;
+}
+
+export interface StagedItemResult {
+  changeId: string;
+  merged: boolean;
+  commit?: string;
+}
+
+/**
+ * Group-commit batch over R2-staged workspace trees (ADR 004 Task 5): operates on
+ * a caller-provided WARM fs/dir (clone reused across batches), placing each item's
+ * staged objects, synthesizing a commit
+ * `{tree: tipTree, parent: baseSha}`, and 3-way `git.merge` it onto the head —
+ * checkpoint/restore the FS around each so a conflict can't dirty the next — then
+ * ONE push. Per-item result (merged | conflicted); a clone/push failure throws
+ * (the coordinator rejects the whole batch).
+ */
+export async function batchMergeStagedTrees(
+  fs: NodeFS,
+  dir: string,
+  projectRemote: string,
+  projectToken: string,
+  items: StagedTreeItem[],
+  _logger: Logger,
+): Promise<Result<StagedItemResult[], AppError>> {
+  const gitdir = `${dir === "/" ? "" : dir}/.git`;
+
+  // Phase 1 (off the merge critical path): place every item's objects, then build
+  // the synthetic commits. The synth SHA-1 (`commitObject`) is async crypto with real
+  // per-call overhead — running them sequentially inside the merge loop was the
+  // dominant cost; `Promise.all` lets the crypto overlap. (Placement stays sequential:
+  // concurrent writes race on MemoryFS object-dir creation.)
+  for (const item of items) {
+    for (const o of item.staged.objects) await placeLooseObject(fs, gitdir, o.oid, o.bytes);
+  }
+  const synths = await Promise.all(
+    items.map((item) =>
+      commitObject({
+        tree: item.staged.treeOid,
+        parents: [item.baseSha],
+        message: `change ${item.changeId}`,
+        timestamp: Math.floor(Date.now() / 1000),
+      }),
+    ),
+  );
+  for (const synth of synths) await placeLooseObject(fs, gitdir, synth.oid, synth.bytes);
+
+  // Phase 2: serial merge loop (the ref advance must be serialized). Checkpoint/
+  // restore around each so a conflict can't dirty the next.
+  const results: StagedItemResult[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const synthOid = synths[i]?.oid;
+    if (!item || !synthOid) continue;
+    const checkpoint = await fromPromise(git.resolveRef({ fs, dir, ref: "main" }));
+    if (!checkpoint.success) {
+      results.push({ changeId: item.changeId, merged: false });
+      continue;
+    }
+    const attempt = await fromPromise(
+      (async () => {
+        const merged = await git.merge({
+          fs,
+          dir,
+          ours: "main",
+          theirs: synthOid,
+          author: SYSTEM_AUTHOR,
+          message: `Merge change ${item.changeId}`,
+        });
+        await git.checkout({ fs, dir, ref: "main" });
+        // git.merge omits `oid` when already up to date (the change's tree is already
+        // in main) — that's a successful no-op merge, not a conflict. Fall back to the
+        // current head so it's reported merged.
+        return merged.oid ?? (await git.resolveRef({ fs, dir, ref: "main" }));
+      })(),
+    );
+    if (attempt.success && attempt.data) {
+      results.push({ changeId: item.changeId, merged: true, commit: attempt.data });
+    } else {
+      // Conflict/error: restore main to the checkpoint so the next merge is clean.
+      await fromPromise(
+        git.writeRef({ fs, dir, ref: "main", value: checkpoint.data, force: true }),
+      );
+      await fromPromise(git.checkout({ fs, dir, ref: "main" }));
+      results.push({ changeId: item.changeId, merged: false });
+    }
+  }
+
+  if (results.some((r) => r.merged)) {
+    const pushResult = await fromPromise(
+      git.push({ fs, dir, http, url: projectRemote, ref: "main", onAuth: makeAuth(projectToken) }),
+    );
+    if (!pushResult.success) {
+      return err(new ExternalServiceError("Git", "Batch push failed", pushResult.error));
+    }
+  }
+  return ok(results);
 }
 
 async function squashMerge(

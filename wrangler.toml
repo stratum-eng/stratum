@@ -21,6 +21,14 @@ compatibility_flags = ["nodejs_compat"]
 tag = "v1"
 new_classes = ["MergeQueue"]
 
+# RepoDO: per-repo ref authority (ADR 004, Phase 1). SQLite-backed so it can hold
+# the ref + a hot object index. One-way migration; rollback is the REPO_DO_ENABLED
+# kill switch, not class removal. Migrations are declared once here and apply to
+# every env; only the per-env bindings below differ (script_name).
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RepoDO"]
+
 # Observability - Workers Logs and Traces
 [observability]
 enabled = true
@@ -57,6 +65,11 @@ name = "MERGE_QUEUE"
 class_name = "MergeQueue"
 script_name = "stratum"
 
+[[durable_objects.bindings]]
+name = "REPO_DO"
+class_name = "RepoDO"
+script_name = "stratum"
+
 [[queues.producers]]
 binding = "EVENTS_QUEUE"
 queue = "stratum-events"
@@ -89,6 +102,10 @@ name = "EMAIL"
 
 [vars]
 POSTHOG_HOST = "https://app.posthog.com"
+# RepoDO fast-forward path (ADR 004, Phase 1). Default off: merges take the proven
+# cold path. Flip to "true" to enable the fast-forward ref authority (and to run
+# the benchmark "after" number). This is the kill switch / rollback.
+REPO_DO_ENABLED = "false"
 # Set these to your own host when self-hosting (and register the callback URLs
 # in your GitHub/Google OAuth apps):
 OAUTH_REDIRECT_URI = "http://localhost:8787/auth/github/callback"
@@ -160,6 +177,11 @@ name = "MERGE_QUEUE"
 class_name = "MergeQueue"
 script_name = "stratum"
 
+[[env.production.durable_objects.bindings]]
+name = "REPO_DO"
+class_name = "RepoDO"
+script_name = "stratum"
+
 [[env.production.queues.producers]]
 binding = "EVENTS_QUEUE"
 queue = "stratum-events"
@@ -185,6 +207,8 @@ name = "EMAIL"
 
 [env.production.vars]
 POSTHOG_HOST = "https://app.posthog.com"
+# RepoDO fast-forward path (ADR 004); default off until staging numbers justify it.
+REPO_DO_ENABLED = "false"
 # Production OAuth callbacks. The matching callback URLs must also be registered
 # in the GitHub and Google OAuth app settings.
 OAUTH_REDIRECT_URI = "https://app.usestratum.dev/auth/github/callback"
@@ -250,6 +274,15 @@ name = "MERGE_QUEUE"
 class_name = "MergeQueue"
 script_name = "stratum-staging"
 
+[[env.staging.durable_objects.bindings]]
+name = "REPO_DO"
+class_name = "RepoDO"
+script_name = "stratum-staging"
+
+[[env.staging.r2_buckets]]
+binding = "REPO_OBJECTS"
+bucket_name = "stratum-repo-objects-staging"
+
 [[env.staging.queues.producers]]
 binding = "EVENTS_QUEUE"
 queue = "stratum-events"
@@ -275,6 +308,9 @@ name = "EMAIL"
 
 [env.staging.vars]
 POSTHOG_HOST = "https://app.posthog.com"
+# RepoDO + R2 merge path (ADR 004). "true" on staging: workspace commits stage to
+# R2 and merges route through the fetch-free R2 path (cold path as fallback).
+REPO_DO_ENABLED = "true"
 OAUTH_REDIRECT_URI = "https://staging.app.usestratum.dev/auth/github/callback"
 EMAIL_FROM_ADDRESS = "noreply@staging.app.usestratum.dev"
 # Closed beta — validate the invite gate on staging before prod. Points at the

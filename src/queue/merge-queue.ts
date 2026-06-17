@@ -1,10 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 import { getChange, updateChangeStatus } from "../storage/changes";
 import { freshRepoToken, mergeWorkspaceIntoProject } from "../storage/git-ops";
+import { commitPhasesFromSpans, recordCommitMetrics } from "../storage/metrics";
 import { recordProvenance } from "../storage/provenance";
 import { getProject, getWorkspace } from "../storage/state";
 import type { Env } from "../types";
 import { type Logger, createLogger } from "../utils/logger";
+import { PhaseTimer } from "../utils/phase-timer";
 
 const MERGEABLE_STATUSES = new Set(["approved", "accepted", "promoted"]);
 
@@ -20,6 +22,8 @@ export interface MergeOutcome {
 export class MergeQueue extends DurableObject<Env> {
   async merge(changeId: string, logger?: Logger): Promise<MergeOutcome> {
     const log = logger ?? createLogger({ changeId });
+    const timer = new PhaseTimer();
+    const startedAt = Date.now();
     const changeResult = await getChange(this.env.DB, log, changeId);
     if (!changeResult.success) {
       return { success: false, error: changeResult.error.message };
@@ -45,10 +49,12 @@ export class MergeQueue extends DurableObject<Env> {
 
       // Merge clones the workspace fork (read) and pushes to the project (write).
       // Mint both tokens fresh: no token is persisted.
-      const [projectToken, workspaceToken] = await Promise.all([
-        freshRepoToken(this.env.ARTIFACTS, project.remote, "write", log),
-        freshRepoToken(this.env.ARTIFACTS, workspace.remote, "read", log),
-      ]);
+      const [projectToken, workspaceToken] = await timer.measure("tokenMintMs", () =>
+        Promise.all([
+          freshRepoToken(this.env.ARTIFACTS, project.remote, "write", log),
+          freshRepoToken(this.env.ARTIFACTS, workspace.remote, "read", log),
+        ]),
+      );
       if (!projectToken.success) return { success: false, error: projectToken.error.message };
       if (!workspaceToken.success) return { success: false, error: workspaceToken.error.message };
 
@@ -58,7 +64,7 @@ export class MergeQueue extends DurableObject<Env> {
         workspace.remote,
         workspaceToken.data,
         log,
-        { strategy: "merge" },
+        { strategy: "merge", timer },
       );
 
       if (!commitResult.success) {
@@ -66,25 +72,45 @@ export class MergeQueue extends DurableObject<Env> {
       }
       const commit = commitResult.data;
 
-      const updateResult = await updateChangeStatus(this.env.DB, log, changeId, "merged", {
-        ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
-        ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
-        ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
-        mergedAt: new Date().toISOString(),
-      });
+      const updateResult = await timer.measure("d1UpdateMs", () =>
+        updateChangeStatus(this.env.DB, log, changeId, "merged", {
+          ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+          ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
+          ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
+          mergedAt: new Date().toISOString(),
+        }),
+      );
 
       if (!updateResult.success) {
         return { success: false, error: updateResult.error.message };
       }
 
-      await recordProvenance(this.env.DB, log, {
-        commitSha: commit,
-        project: change.project,
-        workspace: change.workspace,
-        changeId,
-        ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
-        ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
-      });
+      await timer.measure("provenanceMs", () =>
+        recordProvenance(this.env.DB, log, {
+          commitSha: commit,
+          project: change.project,
+          workspace: change.workspace,
+          changeId,
+          ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
+          ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+        }),
+      );
+
+      // The classic MergeQueue always runs the full cold merge path.
+      const metricsResult = await recordCommitMetrics(
+        this.env.DB,
+        {
+          project: change.project,
+          changeId,
+          outcome: "cold_fallback",
+          phases: commitPhasesFromSpans(timer.toObject()),
+          totalMs: Date.now() - startedAt,
+        },
+        log,
+      );
+      if (!metricsResult.success) {
+        log.warn("Failed to record commit metrics", { changeId });
+      }
 
       return { success: true, commit };
     } catch (err) {
