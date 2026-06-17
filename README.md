@@ -155,6 +155,7 @@ npx wrangler d1 migrations apply stratum --remote  # for production
 - [ADR 001: Namespace Support](docs/adr/001-namespace-support.md)
 - [ADR 002: Queue-Based Imports](docs/adr/002-queue-based-imports.md)
 - [ADR 003: D1 for Import State](docs/adr/003-d1-for-import-state.md)
+- [ADR 004: High-Frequency Agent Commits](docs/adr/004-high-frequency-agent-commits.md)
 
 ## Architecture
 
