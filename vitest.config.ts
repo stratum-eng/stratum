@@ -17,6 +17,15 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**/*.ts"],
       exclude: ["src/index.ts"],
+      // Ratchet floor: set just below the current baseline so CI blocks
+      // regressions without breaking on run-to-run noise. Raise these as
+      // coverage improves; never lower them to make a red build pass.
+      thresholds: {
+        statements: 38,
+        branches: 72,
+        functions: 50,
+        lines: 38,
+      },
     },
   },
 });

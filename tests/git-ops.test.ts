@@ -39,17 +39,17 @@ describe("artifactsRepoNameFromRemote", () => {
   it("extracts the repo name from a standard Artifacts remote", () => {
     expect(
       artifactsRepoNameFromRemote(
-        "https://acct.artifacts.cloudflare.net/git/stratum-prod/jnacious88__apptrack.git",
+        "https://acct.artifacts.cloudflare.net/git/stratum-prod/octocat__hello-world.git",
       ),
-    ).toBe("jnacious88__apptrack");
+    ).toBe("octocat__hello-world");
   });
 
   it("handles a remote without the .git suffix", () => {
     expect(
       artifactsRepoNameFromRemote(
-        "https://acct.artifacts.cloudflare.net/git/stratum-prod/jnacious88__apptrack",
+        "https://acct.artifacts.cloudflare.net/git/stratum-prod/octocat__hello-world",
       ),
-    ).toBe("jnacious88__apptrack");
+    ).toBe("octocat__hello-world");
   });
 
   it("returns null for a non-Artifacts remote", () => {

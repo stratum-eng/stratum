@@ -1,0 +1,41 @@
+name: Bug report
+description: Report something that isn't working as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! For anything security-related, please use the
+        private advisory link instead of this form.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce it? Include the endpoint/command and any minimal input.
+      placeholder: |
+        1. Call POST /api/...
+        2. With body ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Which commit, release, or deployed instance did you hit this on?
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Environment & logs
+      description: Runtime (local wrangler dev, self-hosted Worker, etc.), relevant logs, screenshots.
+    validations:
+      required: false

@@ -2,7 +2,7 @@
 
 ## Sign In
 
-Visit https://stratum.jlmx.workers.dev/auth/email
+Visit https://your-instance.workers.dev/auth/email
 
 ## Create Project
 

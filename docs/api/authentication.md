@@ -16,7 +16,7 @@ For programmatic access:
 
 ```bash
 curl -H "Authorization: Bearer stratum_user_xxxxx" \
-  https://stratum.jlmx.workers.dev/api/projects
+  https://your-instance.workers.dev/api/projects
 ```
 
 ## Dev Login

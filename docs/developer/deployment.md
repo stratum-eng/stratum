@@ -5,8 +5,8 @@ This document covers deployment procedures for Stratum to Cloudflare Workers.
 ## Overview
 
 Stratum deploys to Cloudflare Workers with:
-- **Production**: `stratum.jlmx.workers.dev`
-- **Staging**: `stratum-staging.jlmx.workers.dev`
+- **Production**: `your-instance.workers.dev`
+- **Staging**: `your-instance-staging.workers.dev`
 
 ## Prerequisites
 
@@ -308,7 +308,7 @@ wrangler tail --format pretty | grep "ERROR"
 
 ```bash
 # Check service health
-curl https://stratum.jlmx.workers.dev/health
+curl https://your-instance.workers.dev/health
 
 # Expected response
 {"status": "ok", "service": "stratum"}
@@ -400,11 +400,11 @@ Set in `wrangler.toml`:
 ```toml
 [vars]
 POSTHOG_HOST = "https://app.posthog.com"
-OAUTH_REDIRECT_URI = "https://stratum.jlmx.workers.dev/auth/github/callback"
+OAUTH_REDIRECT_URI = "https://your-instance.workers.dev/auth/github/callback"
 STRATUM_TELEMETRY_DISABLED = "false"
 
 [env.staging.vars]
-OAUTH_REDIRECT_URI = "https://stratum-staging.jlmx.workers.dev/auth/github/callback"
+OAUTH_REDIRECT_URI = "https://your-instance-staging.workers.dev/auth/github/callback"
 STRATUM_TELEMETRY_DISABLED = "true"
 ```
 
@@ -454,7 +454,7 @@ npx wrangler deploy
 Verify security headers in responses:
 
 ```bash
-curl -I https://stratum.jlmx.workers.dev/api/projects
+curl -I https://your-instance.workers.dev/api/projects
 
 # Expected:
 # X-Content-Type-Options: nosniff
