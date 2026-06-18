@@ -1,4 +1,5 @@
 import type { MiddlewareHandler } from "hono";
+import { isGitHttpPath } from "../routes/git-http";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 
@@ -16,6 +17,12 @@ const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
  */
 export const csrfMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   if (!STATE_CHANGING_METHODS.has(c.req.method)) {
+    await next();
+    return;
+  }
+  // Git smart-HTTP is Basic/token-authenticated (not session cookies) and owns
+  // its own access checks — exempt by path to be robust to future changes.
+  if (isGitHttpPath(c.req.path)) {
     await next();
     return;
   }
