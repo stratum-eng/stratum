@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
 import { isGitHttpPath } from "../src/routes/git-http";
+import { freshRepoToken } from "../src/storage/git-ops";
 import type { Env, ProjectEntry } from "../src/types";
 
 // Real `artifactsRepoNameFromRemote` + `extractTokenSecret` (pure) are kept so
@@ -79,6 +80,16 @@ async function seedProject(env: Env, overrides: Partial<ProjectEntry> = {}): Pro
   return project;
 }
 
+const WS_REMOTE = "https://acct.artifacts.cloudflare.net/git/@owner/myws.git";
+
+async function seedWorkspace(env: Env, name = "myws", remote = WS_REMOTE): Promise<void> {
+  // Project id from seedProject is "proj_1"; workspace KV key is project-scoped.
+  await env.STATE.put(
+    `workspace:proj_1:${name}`,
+    JSON.stringify({ name, remote, parent: "proj_1", createdAt: new Date().toISOString() }),
+  );
+}
+
 function req(path: string, init: RequestInit = {}): Request {
   return new Request(`http://localhost${path}`, init);
 }
@@ -123,10 +134,17 @@ describe("isGitHttpPath — matches only the git route shape", () => {
     expect(isGitHttpPath("/org-slug/repo.git/git-receive-pack")).toBe(true);
   });
 
+  it("matches workspace git endpoints", () => {
+    expect(isGitHttpPath("/@owner/repo/workspaces/myws.git/info/refs")).toBe(true);
+    expect(isGitHttpPath("/@owner/repo/workspaces/myws/git-upload-pack")).toBe(true);
+    expect(isGitHttpPath("/@owner/repo/workspaces/myws/git-receive-pack")).toBe(true);
+  });
+
   it("does NOT match routes that merely end in a git suffix", () => {
     // The UI blob route would otherwise lose auth/CSRF/rate-limit.
     expect(isGitHttpPath("/@owner/repo.git/blob/x/info/refs")).toBe(false);
     expect(isGitHttpPath("/@owner/repo/blob/dir/git-upload-pack")).toBe(false);
+    expect(isGitHttpPath("/@owner/repo/workspaces/myws/blob/x/info/refs")).toBe(false);
     expect(isGitHttpPath("/info/refs")).toBe(false);
     expect(isGitHttpPath("/api/projects")).toBe(false);
   });
@@ -380,5 +398,208 @@ describe("git smart-HTTP proxy — receive-pack rejection (Task 4)", () => {
     await seedProject(env, { visibility: "public" });
     const res = await app.fetch(req("/@owner/repo.git/info/refs?service=git-receive-pack"), env);
     expect(res.status).toBe(403);
+  });
+});
+
+const WS_UPLOAD_ADV = "/@owner/repo/workspaces/myws.git/info/refs?service=git-upload-pack";
+const WS_RECV_ADV = "/@owner/repo/workspaces/myws.git/info/refs?service=git-receive-pack";
+const WS_RECV = "/@owner/repo/workspaces/myws.git/git-receive-pack";
+const WS_UPLOAD = "/@owner/repo/workspaces/myws.git/git-upload-pack";
+
+describe("git smart-HTTP proxy — workspace clone+push (Phase A)", () => {
+  it("anonymous clone of a workspace in a public project → proxied (200)", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "public" });
+    await seedWorkspace(env);
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await app.fetch(req(WS_UPLOAD_ADV), env);
+    expect(res.status).toBe(200);
+    const [url] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe(`${WS_REMOTE}/info/refs?service=git-upload-pack`);
+    expect(vi.mocked(freshRepoToken)).toHaveBeenCalledWith(
+      expect.anything(),
+      WS_REMOTE,
+      "read",
+      expect.anything(),
+    );
+  });
+
+  it("receive-pack advertise requires auth: anonymous → 401 challenge", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "public" });
+    await seedWorkspace(env);
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await app.fetch(req(WS_RECV_ADV), env);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("WWW-Authenticate")).toBe('Basic realm="Stratum"');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("owner push → proxied to the workspace fork with a WRITE token, body forwarded", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private" });
+    await seedWorkspace(env);
+    const fetchMock = stubFetch(
+      () =>
+        new Response("000eunpack ok\n0000", {
+          status: 200,
+          headers: { "Content-Type": "application/x-git-receive-pack-result" },
+        }),
+    );
+    const res = await app.fetch(
+      req(WS_RECV, {
+        method: "POST",
+        body: "PACKDATA",
+        headers: {
+          ...basic(OWNER_TOKEN),
+          "Content-Type": "application/x-git-receive-pack-request",
+        },
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe(`${WS_REMOTE}/git-receive-pack`);
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      `Basic ${btoa("x:secret")}`,
+    );
+    expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe("PACKDATA");
+    expect(vi.mocked(freshRepoToken)).toHaveBeenCalledWith(
+      expect.anything(),
+      WS_REMOTE,
+      "write",
+      expect.anything(),
+    );
+  });
+
+  it("agent owned by the project owner can push (200)", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private" });
+    await seedWorkspace(env);
+    stubFetch(() => okUpstream());
+    const res = await app.fetch(
+      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(AGENT_TOKEN) }),
+      env,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("non-owner push → 404 (no leak), no upstream call", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private" });
+    await seedWorkspace(env);
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await app.fetch(
+      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(OTHER_TOKEN) }),
+      env,
+    );
+    expect(res.status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("anonymous push → 401 challenge", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "public" });
+    await seedWorkspace(env);
+    const res = await app.fetch(req(WS_RECV, { method: "POST", body: "PACK" }), env);
+    expect(res.status).toBe(401);
+  });
+
+  it("push to a missing workspace → 404", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private" });
+    // no workspace seeded
+    const res = await app.fetch(
+      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(OWNER_TOKEN) }),
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("non-Artifacts workspace remote → 501 (post-authorization)", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private" });
+    await seedWorkspace(env, "myws", "https://github.com/foo/bar.git");
+    const res = await app.fetch(
+      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(OWNER_TOKEN) }),
+      env,
+    );
+    expect(res.status).toBe(501);
+  });
+
+  it("unknown service on workspace info/refs → 400", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "public" });
+    await seedWorkspace(env);
+    const res = await app.fetch(req("/@owner/repo/workspaces/myws.git/info/refs"), env);
+    expect(res.status).toBe(400);
+  });
+
+  it("workspace clone RPC uses a read token", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "public" });
+    await seedWorkspace(env);
+    const fetchMock = stubFetch(() => okUpstream());
+    await app.fetch(req(WS_UPLOAD, { method: "POST", body: "0000" }), env);
+    const [url] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe(`${WS_REMOTE}/git-upload-pack`);
+    expect(vi.mocked(freshRepoToken)).toHaveBeenCalledWith(
+      expect.anything(),
+      WS_REMOTE,
+      "read",
+      expect.anything(),
+    );
+  });
+});
+
+describe("git smart-HTTP proxy — workspace read/write asymmetry & passthrough", () => {
+  it("a reader (non-owner, public project) can clone the workspace but cannot push", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "public" });
+    await seedWorkspace(env);
+    stubFetch(() => okUpstream());
+    // canReadProject(public) → true for any caller; canWriteProject(non-owner) → false.
+    const clone = await app.fetch(req(WS_UPLOAD_ADV, { headers: basic(OTHER_TOKEN) }), env);
+    expect(clone.status).toBe(200);
+
+    const fetchMock = stubFetch(() => okUpstream());
+    const push = await app.fetch(
+      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(OTHER_TOKEN) }),
+      env,
+    );
+    expect(push.status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("streams Artifacts' rejecting (ng) report-status back verbatim", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private" });
+    await seedWorkspace(env);
+    const ngBody = "000eunpack ok\n0026ng refs/heads/main non-fast-forward\n0000";
+    stubFetch(
+      () =>
+        new Response(ngBody, {
+          status: 200,
+          headers: { "Content-Type": "application/x-git-receive-pack-result" },
+        }),
+    );
+    const res = await app.fetch(
+      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(OWNER_TOKEN) }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    // We must NOT synthesize outcomes — the client sees Artifacts' verdict unchanged.
+    expect(await res.text()).toBe(ngBody);
+  });
+
+  it("receive-pack with an empty body still proxies (0-length buffer)", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private" });
+    await seedWorkspace(env);
+    const fetchMock = stubFetch(() => new Response("000eunpack ok\n0000", { status: 200 }));
+    const res = await app.fetch(req(WS_RECV, { method: "POST", headers: basic(OWNER_TOKEN) }), env);
+    expect(res.status).toBe(200);
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    expect((init.body as ArrayBuffer).byteLength).toBe(0);
   });
 });

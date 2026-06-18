@@ -5,23 +5,33 @@ import {
   extractTokenSecret,
   freshRepoToken,
 } from "../storage/git-ops";
-import { getProjectByPath } from "../storage/state";
+import { getProjectByPath, getWorkspace } from "../storage/state";
 import { getUserByToken } from "../storage/users";
 import type { Env, ProjectEntry } from "../types";
-import { canReadProject } from "../utils/authz";
+import { canReadProject, canWriteProject } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 
 /**
- * Git smart-HTTP proxy (ADR 005, slice 1: clone/fetch only).
+ * Git smart-HTTP proxy (ADR 005).
  *
- * Lets a Stratum project be used as a git remote: `git clone <host>/@ns/slug.git`.
+ * Lets a Stratum project be used as a git remote. Two surfaces:
+ *  - Project URL `/@ns/slug.git` — clone/fetch (read). Pushing to the project
+ *    URL is refused (`pushNotSupported`); the gated `push → change → eval →
+ *    merge` path is a separate slice (Phase B / #115).
+ *  - Workspace URL `/@ns/slug/workspaces/<ws>.git` — clone/fetch (read) AND
+ *    `git push` (write), proxied verbatim to the workspace's Artifacts fork.
+ *    The client clones the workspace, so ref/old-oid semantics line up and
+ *    Artifacts' own report-status is the truthful outcome — no parsing or
+ *    synthesis needed here.
+ *
  * The router authenticates with the existing API-key system over HTTP Basic,
- * authorizes the caller, mints a short-lived Cloudflare Artifacts token, and
- * proxies the smart-HTTP request to the backing Artifacts remote. The Artifacts
- * token never leaves the Worker.
- *
- * Push (`git-receive-pack`) is intentionally refused — see `pushNotSupported`.
+ * authorizes the caller, mints a short-lived Cloudflare Artifacts token (read or
+ * write), and proxies upstream. The Artifacts token never leaves the Worker.
  */
+
+// Cap on a buffered push/clone request body. Enforced while reading so an
+// oversized (or unauthorized, pre-auth) request can't force us to buffer it all.
+const MAX_GIT_BODY_BYTES = 50 * 1024 * 1024;
 
 /**
  * Whether a request path belongs to the git smart-HTTP surface. The global
@@ -29,12 +39,13 @@ import { createLogger } from "../utils/logger";
  * requests before this router runs, so the middlewares consult this to step
  * aside and let the router own auth.
  *
- * Anchored to the exact `/<namespace>/<slug>/<git-suffix>` shape — a bare
- * `endsWith` would also exempt unrelated routes whose path merely ends in the
- * suffix (e.g. the UI `…/blob/<file>/info/refs`), stripping auth/CSRF/rate-limit
- * from them.
+ * Anchored to the exact project (`/<ns>/<slug>/<suffix>`) and workspace
+ * (`/<ns>/<slug>/workspaces/<ws>/<suffix>`) shapes — a bare `endsWith` would
+ * also exempt unrelated routes whose path merely ends in the suffix (e.g. the UI
+ * `…/blob/<file>/info/refs`), stripping auth/CSRF/rate-limit from them.
  */
-const GIT_HTTP_PATH = /^\/[^/]+\/[^/]+\/(?:info\/refs|git-upload-pack|git-receive-pack)$/;
+const GIT_HTTP_PATH =
+  /^\/[^/]+\/[^/]+(?:\/workspaces\/[^/]+)?\/(?:info\/refs|git-upload-pack|git-receive-pack)$/;
 
 export function isGitHttpPath(path: string): boolean {
   return GIT_HTTP_PATH.test(path);
@@ -140,19 +151,23 @@ function basicAuthHeader(artifactsToken: string): string {
 }
 
 /**
- * Proxy a smart-HTTP request to the project's Artifacts remote with a freshly
- * minted read token. Buffers the request body (Workers silently drop streamed
- * outbound bodies — see `git-ops.ts`) and streams the response body back.
+ * Proxy a smart-HTTP request to an Artifacts remote with a freshly minted token
+ * (read for clone/fetch, write for push). The caller passes a pre-buffered body
+ * (Workers silently drop streamed outbound bodies — see `git-ops.ts`); the
+ * response body is streamed back. `remote` must already be validated as an
+ * Artifacts host (`freshRepoToken` re-derives the repo name and refuses
+ * otherwise, so the write token is never minted against a foreign host).
  */
 async function proxyUpstream(
   c: { req: { header(name: string): string | undefined }; env: Env },
-  project: ProjectEntry,
+  remote: string,
+  scope: "read" | "write",
   upstreamUrl: string,
   method: "GET" | "POST",
   body: ArrayBuffer | undefined,
   logger: ReturnType<typeof createLogger>,
 ): Promise<Response> {
-  const tokenResult = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
+  const tokenResult = await freshRepoToken(c.env.ARTIFACTS, remote, scope, logger);
   if (!tokenResult.success) {
     logger.error("Failed to mint Artifacts token for git proxy", tokenResult.error);
     return upstreamError();
@@ -247,13 +262,113 @@ async function authorizeRead(
       slug,
       project: project.id,
     });
-    return new Response("git protocol is not available for this project\n", {
-      status: 501,
-      headers: { "Content-Type": "text/plain" },
-    });
+    return gitUnavailable("project");
   }
 
   return project;
+}
+
+const gitUnavailable = (resource: "project" | "workspace"): Response =>
+  new Response(`git protocol is not available for this ${resource}\n`, {
+    status: 501,
+    headers: { "Content-Type": "text/plain" },
+  });
+
+/**
+ * Resolve + authorize a workspace for clone/fetch (read) or push (write),
+ * applying the same no-leak truth table as `authorizeRead`. Returns the
+ * workspace's Artifacts remote on success, or a `Response` to return as-is.
+ */
+async function authorizeWorkspace(
+  c: { req: { header(name: string): string | undefined; param(name: string): string }; env: Env },
+  scope: "read" | "write",
+  logger: ReturnType<typeof createLogger>,
+): Promise<{ remote: string } | Response> {
+  const namespace = c.req.param("namespace");
+  const slug = normalizeSlug(c.req.param("slug"));
+  const workspaceName = normalizeSlug(c.req.param("workspace"));
+
+  const identity = await authenticate(c, logger);
+  const isAnonymous = identity === null;
+
+  const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code !== "NOT_FOUND") {
+      logger.error("Project lookup failed for workspace git request", projectResult.error);
+      return serverError();
+    }
+    return isAnonymous ? authChallenge() : gitNotFound();
+  }
+  const project = projectResult.data;
+
+  const allowed =
+    scope === "write"
+      ? await canWriteProject(c.env.DB, project, identity?.userId, identity?.agentOwnerId)
+      : await canReadProject(c.env.DB, project, identity?.userId, identity?.agentOwnerId);
+  if (!allowed) return isAnonymous ? authChallenge() : gitNotFound();
+
+  const workspaceResult = await getWorkspace(c.env.STATE, project.id, workspaceName, logger);
+  if (!workspaceResult.success) {
+    if (workspaceResult.error.code !== "NOT_FOUND") {
+      logger.error("Workspace lookup failed for git request", workspaceResult.error);
+      return serverError();
+    }
+    // A missing workspace is indistinguishable from unauthorized — no leak.
+    return isAnonymous ? authChallenge() : gitNotFound();
+  }
+  const workspace = workspaceResult.data;
+
+  // Validate the host before a (possibly write-scoped) token is minted against it.
+  if (!artifactsRepoNameFromRemote(workspace.remote)) {
+    logger.warn("Workspace git proxy requested for non-Artifacts remote", {
+      namespace,
+      slug,
+      workspace: workspaceName,
+      project: project.id,
+    });
+    return gitUnavailable("workspace");
+  }
+
+  return { remote: workspace.remote };
+}
+
+/**
+ * Read a request body into memory, enforcing `MAX_GIT_BODY_BYTES` *while
+ * reading* (not a post-hoc length check) so an oversized push is aborted before
+ * it is fully buffered. Returns the buffer, or a `413` Response.
+ */
+async function readCappedBody(
+  c: { req: { raw: Request } },
+  logger: ReturnType<typeof createLogger>,
+): Promise<ArrayBuffer | Response> {
+  const stream = c.req.raw.body;
+  if (!stream) return new ArrayBuffer(0);
+
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_GIT_BODY_BYTES) {
+      await reader.cancel();
+      logger.warn("git request body exceeds cap", { cap: MAX_GIT_BODY_BYTES });
+      return new Response("git request too large\n", {
+        status: 413,
+        headers: { "Content-Type": "text/plain" },
+      });
+    }
+    chunks.push(value);
+  }
+
+  const buffer = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return buffer.buffer;
 }
 
 export const gitHttpRouter = new Hono<{ Bindings: Env }>();
@@ -274,7 +389,7 @@ gitHttpRouter.get("/:namespace/:slug/info/refs", async (c) => {
   if (result instanceof Response) return result;
 
   const upstreamUrl = `${result.remote}/info/refs?service=${UPLOAD_PACK}`;
-  return proxyUpstream(c, result, upstreamUrl, "GET", undefined, logger);
+  return proxyUpstream(c, result.remote, "read", upstreamUrl, "GET", undefined, logger);
 });
 
 // POST /@:namespace/:slug.git/git-upload-pack — clone/fetch RPC
@@ -283,10 +398,57 @@ gitHttpRouter.post("/:namespace/:slug/git-upload-pack", async (c) => {
   const result = await authorizeRead(c, logger);
   if (result instanceof Response) return result;
 
-  const body = await c.req.arrayBuffer();
+  const body = await readCappedBody(c, logger);
+  if (body instanceof Response) return body;
   const upstreamUrl = `${result.remote}/${UPLOAD_PACK}`;
-  return proxyUpstream(c, result, upstreamUrl, "POST", body, logger);
+  return proxyUpstream(c, result.remote, "read", upstreamUrl, "POST", body, logger);
 });
 
-// POST /@:namespace/:slug.git/git-receive-pack — push (refused, slice 1)
+// POST /@:namespace/:slug.git/git-receive-pack — push to the project ref.
+// Refused: the gated push path (open a change + eval + merge) is a separate
+// slice (#115 / ADR 005 Phase B). Push to a workspace URL instead.
 gitHttpRouter.post("/:namespace/:slug/git-receive-pack", () => pushNotSupported());
+
+// ── Workspace URLs: /@:namespace/:slug/workspaces/:workspace.git ─────────────
+// Clone/fetch (read) and push (write), proxied verbatim to the workspace fork.
+
+gitHttpRouter.get("/:namespace/:slug/workspaces/:workspace/info/refs", async (c) => {
+  const logger = createLogger({ requestId: crypto.randomUUID(), path: c.req.path, method: "GET" });
+  const service = c.req.query("service");
+  const scope = service === RECEIVE_PACK ? "write" : service === UPLOAD_PACK ? "read" : null;
+  if (!scope) {
+    return new Response("unsupported git service\n", {
+      status: 400,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+  const result = await authorizeWorkspace(c, scope, logger);
+  if (result instanceof Response) return result;
+
+  const upstreamUrl = `${result.remote}/info/refs?service=${service}`;
+  return proxyUpstream(c, result.remote, scope, upstreamUrl, "GET", undefined, logger);
+});
+
+gitHttpRouter.post("/:namespace/:slug/workspaces/:workspace/git-upload-pack", async (c) => {
+  const logger = createLogger({ requestId: crypto.randomUUID(), path: c.req.path, method: "POST" });
+  const result = await authorizeWorkspace(c, "read", logger);
+  if (result instanceof Response) return result;
+
+  const body = await readCappedBody(c, logger);
+  if (body instanceof Response) return body;
+  const upstreamUrl = `${result.remote}/${UPLOAD_PACK}`;
+  return proxyUpstream(c, result.remote, "read", upstreamUrl, "POST", body, logger);
+});
+
+gitHttpRouter.post("/:namespace/:slug/workspaces/:workspace/git-receive-pack", async (c) => {
+  const logger = createLogger({ requestId: crypto.randomUUID(), path: c.req.path, method: "POST" });
+  // Authorize for write BEFORE reading the body so an unauthorized caller can't
+  // force us to buffer the whole pack.
+  const result = await authorizeWorkspace(c, "write", logger);
+  if (result instanceof Response) return result;
+
+  const body = await readCappedBody(c, logger);
+  if (body instanceof Response) return body;
+  const upstreamUrl = `${result.remote}/${RECEIVE_PACK}`;
+  return proxyUpstream(c, result.remote, "write", upstreamUrl, "POST", body, logger);
+});
