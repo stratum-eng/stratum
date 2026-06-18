@@ -279,7 +279,9 @@ app.post("/projects/:name/changes", async (c) => {
     logger.error("Failed to get diff between repos", diffResult.error);
     return badRequest(diffResult.error.message);
   }
-  const diff = diffResult.data;
+  // Pin the exact commit the diff was computed from, so the merge consumes this
+  // sha rather than a later re-pushed tip (gate soundness — #115).
+  const { diff, workspaceSha: workspaceHeadSha } = diffResult.data;
 
   const evaluators: Array<{ type: string; evaluator: Evaluator }> = [
     { type: "secret_scan", evaluator: new SecretScanEvaluator() },
@@ -378,6 +380,7 @@ app.post("/projects/:name/changes", async (c) => {
     evalScore: evalResult.score,
     evalPassed: evalResult.passed,
     evalReason: evalResult.reason,
+    ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
   });
   if (!updateResult.success) {
     logger.error("Failed to update change status", updateResult.error);
@@ -404,6 +407,7 @@ app.post("/projects/:name/changes", async (c) => {
     evalScore: evalResult.score,
     evalPassed: evalResult.passed,
     evalReason: evalResult.reason,
+    ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
   };
 
   logger.info("Change created and evaluated", {
@@ -708,7 +712,8 @@ app.post("/changes/:id/merge", async (c) => {
     workspace.remote,
     workspaceMergeToken.data,
     logger,
-    { strategy },
+    // Merge the exact evaluated commit, not the workspace's live tip (#115).
+    { strategy, ...(change.workspaceHeadSha ? { workspaceSha: change.workspaceHeadSha } : {}) },
   );
   if (!mergeResult.success) {
     if (mergeResult.error instanceof MergeConflictError) {
@@ -1204,7 +1209,9 @@ app.post("/changes/:id/evaluate", async (c) => {
     logger.error("Failed to get diff between repos", diffResult.error);
     return badRequest(diffResult.error.message);
   }
-  const diff = diffResult.data;
+  // Pin the exact commit the diff was computed from, so the merge consumes this
+  // sha rather than a later re-pushed tip (gate soundness — #115).
+  const { diff, workspaceSha: workspaceHeadSha } = diffResult.data;
 
   const evaluators: Array<{ type: string; evaluator: Evaluator }> = [
     { type: "secret_scan", evaluator: new SecretScanEvaluator() },
@@ -1301,6 +1308,8 @@ app.post("/changes/:id/evaluate", async (c) => {
       evalScore: evalResult.score,
       evalPassed: evalResult.passed,
       evalReason: evalResult.reason,
+      // Re-pin to the commit this re-evaluation actually ran against (#115).
+      ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
     },
   );
   if (!updateResult.success) {

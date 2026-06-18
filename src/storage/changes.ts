@@ -14,6 +14,7 @@ interface ChangeRow {
   eval_passed: number | null;
   eval_reason: string | null;
   base_sha: string | null;
+  workspace_head_sha: string | null;
   created_at: string;
   merged_at: string | null;
   github_owner: string | null;
@@ -41,6 +42,7 @@ function rowToChange(row: ChangeRow): Change {
   if (row.eval_passed !== null) change.evalPassed = row.eval_passed === 1;
   if (row.eval_reason !== null) change.evalReason = row.eval_reason;
   if (row.base_sha !== null) change.baseSha = row.base_sha;
+  if (row.workspace_head_sha !== null) change.workspaceHeadSha = row.workspace_head_sha;
   if (row.merged_at !== null) change.mergedAt = row.merged_at;
   if (row.github_owner !== null) change.githubOwner = row.github_owner;
   if (row.github_repo !== null) change.githubRepo = row.github_repo;
@@ -248,6 +250,7 @@ export async function updateChangeStatus(
     evalScore?: number;
     evalPassed?: boolean;
     evalReason?: string;
+    workspaceHeadSha?: string;
     mergedAt?: string;
     githubOwner?: string;
     githubRepo?: string;
@@ -287,6 +290,7 @@ export async function updateChangeStatus(
       opts?.evalPassed !== undefined ? (opts.evalPassed ? 1 : 0) : undefined,
     );
     addOptional("eval_reason", opts?.evalReason);
+    addOptional("workspace_head_sha", opts?.workspaceHeadSha);
     addOptional("merged_at", opts?.mergedAt);
     addOptional("github_owner", opts?.githubOwner);
     addOptional("github_repo", opts?.githubRepo);
