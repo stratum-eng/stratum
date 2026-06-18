@@ -159,7 +159,7 @@ export class StratumClient {
   async createWorkspace(ref: ProjectRef, name?: string) {
     return this.request<{ workspace: string; remote: string; path: string }>(
       "POST",
-      `/api/projects/${encodeURIComponent(ref.namespace)}/${encodeURIComponent(ref.slug)}/workspaces`,
+      `/api/workspaces/${encodeURIComponent(ref.namespace)}/${encodeURIComponent(ref.slug)}/workspaces`,
       { ...(name ? { name } : {}) },
     );
   }
@@ -167,7 +167,7 @@ export class StratumClient {
   async listWorkspaces(ref: ProjectRef) {
     return this.request<{ workspaces: Array<{ name: string; createdAt: string; path: string }> }>(
       "GET",
-      `/api/projects/${encodeURIComponent(ref.namespace)}/${encodeURIComponent(ref.slug)}/workspaces`,
+      `/api/workspaces/${encodeURIComponent(ref.namespace)}/${encodeURIComponent(ref.slug)}/workspaces`,
     );
   }
 

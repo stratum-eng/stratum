@@ -46,13 +46,13 @@ describe("StratumClient", () => {
     const ref = parseProjectRef("@user/repo");
     await client.createWorkspace(ref, "ws-1");
     expect(lastCall().url).toBe(
-      "https://stratum.example.com/api/projects/%40user/repo/workspaces",
+      "https://stratum.example.com/api/workspaces/%40user/repo/workspaces",
     );
     expect(lastCall().init.method).toBe("POST");
 
     await client.listWorkspaces(ref);
     expect(lastCall().url).toBe(
-      "https://stratum.example.com/api/projects/%40user/repo/workspaces",
+      "https://stratum.example.com/api/workspaces/%40user/repo/workspaces",
     );
 
     await client.deleteWorkspace("ws-1", "proj_123");
