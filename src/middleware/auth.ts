@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
+import { isGitHttpPath } from "../routes/git-http";
 import { getAgentByToken } from "../storage/agents";
 import { deleteSession, getSession } from "../storage/sessions";
 import { getUser, getUserByToken } from "../storage/users";
@@ -33,6 +34,13 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
   });
 
   c.set("logger", logger);
+
+  // The git smart-HTTP router authenticates over HTTP Basic itself; let it own
+  // the challenge instead of rejecting the non-Bearer header here.
+  if (isGitHttpPath(c.req.path)) {
+    await next();
+    return;
+  }
 
   const authHeader = c.req.header("Authorization");
 

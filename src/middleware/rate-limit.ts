@@ -1,4 +1,5 @@
 import type { MiddlewareHandler } from "hono";
+import { isGitHttpPath } from "../routes/git-http";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 
@@ -24,6 +25,13 @@ export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<
 }> {
   return async (c, next) => {
     if (c.req.path === "/health") {
+      await next();
+      return;
+    }
+
+    // Git clone/fetch is one long request (or many subrequests); a 429 mid-clone
+    // corrupts it. The git router governs its own access — skip the limiter.
+    if (isGitHttpPath(c.req.path)) {
       await next();
       return;
     }

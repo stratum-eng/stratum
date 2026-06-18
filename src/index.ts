@@ -15,6 +15,7 @@ import { authRouter } from "./routes/auth";
 import { bulkImportRouter } from "./routes/bulk-import";
 import { changesRouter } from "./routes/changes";
 import { emailAuthRouter } from "./routes/email-auth";
+import { gitHttpRouter } from "./routes/git-http";
 import { healthRouter } from "./routes/health";
 import { issuesRouter } from "./routes/issues";
 import { loginRouter } from "./routes/login";
@@ -154,6 +155,10 @@ app.route("/api", syncRouter);
 app.route("/api", syncManagementRouter);
 app.route("/api/bulk-import", bulkImportRouter);
 app.route("/api/webhooks/github", githubWebhookRouter);
+// Git smart-HTTP proxy (clone/fetch). Mount before the UI catch-all so its
+// /@ns/slug/{info/refs,git-upload-pack,git-receive-pack} paths resolve here.
+app.route("/", gitHttpRouter);
+
 // Mount the UI router last: its /:namespace/:slug catch-all would otherwise
 // shadow two-segment API paths like GET /api/projects.
 app.route("/", uiRouter);

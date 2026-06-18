@@ -2,7 +2,18 @@
 
 ## Status
 
-Proposed
+Partially accepted — **slice 1 (clone/fetch) implemented**; push (`receive-pack`)
+remains proposed/deferred.
+
+Slice 1 ships the authenticated `git-upload-pack` proxy: a Stratum project can be
+used as a git remote for `git clone` / `git fetch` (`src/routes/git-http.ts`,
+mounted in `src/index.ts`; middlewares exempt git paths via `isGitHttpPath`).
+`git-receive-pack` (push) is refused with HTTP 403 pointing at `stratum commit`
+and is the subject of the still-deferred slice below. Two corrections surfaced
+during implementation and are reflected here: the global `authMiddleware` is
+Bearer-only and had to step aside for git's Basic-auth challenge, and outbound
+request bodies must be **buffered** (Workers drop streamed outbound bodies), so
+the proxy buffers the request and streams only the response.
 
 ## Context
 
