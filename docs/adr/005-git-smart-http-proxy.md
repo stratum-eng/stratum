@@ -2,18 +2,32 @@
 
 ## Status
 
-Partially accepted — **slice 1 (clone/fetch) implemented**; push (`receive-pack`)
-remains proposed/deferred.
+Partially accepted — **clone/fetch (slice 1) and workspace push (slice 2a)
+implemented**; the **gated default-branch push (slice 2b / Phase B) remains
+deferred**.
 
-Slice 1 ships the authenticated `git-upload-pack` proxy: a Stratum project can be
-used as a git remote for `git clone` / `git fetch` (`src/routes/git-http.ts`,
-mounted in `src/index.ts`; middlewares exempt git paths via `isGitHttpPath`).
-`git-receive-pack` (push) is refused with HTTP 403 pointing at `stratum commit`
-and is the subject of the still-deferred slice below. Two corrections surfaced
-during implementation and are reflected here: the global `authMiddleware` is
-Bearer-only and had to step aside for git's Basic-auth challenge, and outbound
-request bodies must be **buffered** (Workers drop streamed outbound bodies), so
-the proxy buffers the request and streams only the response.
+- **Slice 1 — clone/fetch.** Authenticated `git-upload-pack` proxy: a project is
+  a git remote for `git clone` / `git fetch` at `/@ns/slug.git`
+  (`src/routes/git-http.ts`, mounted in `src/index.ts`; middlewares exempt git
+  paths via `isGitHttpPath`). Two corrections surfaced during implementation: the
+  global `authMiddleware` is Bearer-only and had to step aside for git's
+  Basic-auth challenge, and outbound request bodies must be **buffered** (Workers
+  drop streamed outbound bodies), so the proxy buffers the request and streams
+  the response.
+- **Slice 2a — workspace push.** A **workspace** is its own git remote at
+  `/@ns/slug/workspaces/<ws>.git`: `git clone` (read) and **`git push`** (write,
+  `canWriteProject`) proxied verbatim to the workspace's Artifacts fork. Because
+  the client clones the workspace, ref/old-oid semantics line up and Artifacts'
+  report-status is the truthful outcome — no pkt-line parsing or report-status
+  synthesis needed. A streaming body cap bounds push size.
+- **Slice 2b — gated default-branch push (deferred, Phase B).** Pushing to the
+  **project** URL (`/@ns/slug.git`) is still refused (`403`). Routing a push
+  through the change → eval → MergeQueue gate requires: pinning the evaluated sha
+  and **merging by sha** (not the fork's mutable tip — TOCTOU/gate-bypass);
+  durable async eval (a queue + sweeper + dedupe, not `waitUntil`); idempotent
+  change creation under concurrent pushes (a DB uniqueness constraint); and
+  Gerrit-style `refs/for/main` → `ok` semantics with synthesized report-status.
+  Tracked in #115.
 
 ## Context
 
