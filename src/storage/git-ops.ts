@@ -114,6 +114,15 @@ export interface MergeWorkspaceOptions {
   strategy?: MergeStrategy;
   /** Optional Phase 0 instrumentation; populates per-phase spans when present. */
   timer?: PhaseTimer;
+  /**
+   * The exact workspace commit to merge (the sha the change was evaluated
+   * against). When set, the merge uses this commit instead of the workspace's
+   * live `main` tip — closing the TOCTOU where a re-push between evaluation and
+   * merge would otherwise land unevaluated content. Omit to merge the live tip
+   * (legacy behavior, unchanged). The sha must be reachable in the fetched
+   * workspace history, else the merge fails closed.
+   */
+  workspaceSha?: string;
 }
 
 export class MergeConflictError extends AppError {
@@ -413,26 +422,47 @@ export async function mergeWorkspaceIntoProject(
   }
 
   let workspaceSha: string;
-  const resolveFetchResult = await fromPromise(git.resolveRef({ fs, dir, ref: "FETCH_HEAD" }));
-  if (resolveFetchResult.success) {
-    workspaceSha = resolveFetchResult.data;
-  } else {
-    const resolveRemoteResult = await fromPromise(
-      git.resolveRef({ fs, dir, ref: "refs/remotes/workspace/main" }),
-    );
-    if (!resolveRemoteResult.success) {
-      logger.error("Failed to resolve workspace ref", resolveRemoteResult.error, {
+  if (options.workspaceSha) {
+    // Pin to the evaluated commit. It must be reachable in the just-fetched
+    // history; if a re-push rewound past it, readCommit throws and we fail
+    // closed rather than merge a different (unevaluated) tip.
+    const pinnedResult = await fromPromise(git.readCommit({ fs, dir, oid: options.workspaceSha }));
+    if (!pinnedResult.success) {
+      logger.error("Pinned workspace sha not reachable in workspace", pinnedResult.error, {
         workspaceRemote,
+        workspaceSha: options.workspaceSha,
       });
       return err(
         new ExternalServiceError(
           "Git",
-          "Failed to resolve workspace ref",
-          resolveRemoteResult.error,
+          "Evaluated workspace commit is no longer present in the workspace",
+          pinnedResult.error,
         ),
       );
     }
-    workspaceSha = resolveRemoteResult.data;
+    workspaceSha = options.workspaceSha;
+  } else {
+    const resolveFetchResult = await fromPromise(git.resolveRef({ fs, dir, ref: "FETCH_HEAD" }));
+    if (resolveFetchResult.success) {
+      workspaceSha = resolveFetchResult.data;
+    } else {
+      const resolveRemoteResult = await fromPromise(
+        git.resolveRef({ fs, dir, ref: "refs/remotes/workspace/main" }),
+      );
+      if (!resolveRemoteResult.success) {
+        logger.error("Failed to resolve workspace ref", resolveRemoteResult.error, {
+          workspaceRemote,
+        });
+        return err(
+          new ExternalServiceError(
+            "Git",
+            "Failed to resolve workspace ref",
+            resolveRemoteResult.error,
+          ),
+        );
+      }
+      workspaceSha = resolveRemoteResult.data;
+    }
   }
 
   if (options.strategy === "squash") {
@@ -1782,7 +1812,7 @@ export async function getDiffBetweenRepos(
   workspaceRemote: string,
   workspaceToken: string,
   logger: Logger,
-): Promise<Result<string, AppError>> {
+): Promise<Result<{ diff: string; workspaceSha: string }, AppError>> {
   logger.debug("Getting diff between repos", { baseRemote, workspaceRemote });
 
   const [workspaceCloneResult, baseCloneResult] = await Promise.all([
@@ -1793,8 +1823,24 @@ export async function getDiffBetweenRepos(
   if (!workspaceCloneResult.success) return err(workspaceCloneResult.error);
   if (!baseCloneResult.success) return err(baseCloneResult.error);
 
-  const { fs: workspaceFs } = workspaceCloneResult.data;
+  const { fs: workspaceFs, dir: workspaceDir } = workspaceCloneResult.data;
   const { fs: baseFs } = baseCloneResult.data;
+
+  // Resolve the workspace tip from this very clone, so the sha we pin for the
+  // merge is provably the same content we are about to evaluate (no second
+  // clone / re-push window — gate soundness, #115).
+  const workspaceShaResult = await fromPromise(
+    git.resolveRef({ fs: workspaceFs, dir: workspaceDir, ref: "main" }),
+  );
+  if (!workspaceShaResult.success) {
+    logger.error("Failed to resolve workspace head for diff", workspaceShaResult.error, {
+      workspaceRemote,
+    });
+    return err(
+      new ExternalServiceError("Git", "Failed to resolve workspace head", workspaceShaResult.error),
+    );
+  }
+  const workspaceSha = workspaceShaResult.data;
 
   const [workspaceFilesResult, baseFilesResult] = await Promise.all([
     listFilesAtCommit(workspaceFs, "main", logger),
@@ -1827,7 +1873,7 @@ export async function getDiffBetweenRepos(
 
   const diff = buildUnifiedDiff(baseContent, workspaceContent);
   logger.info("Successfully generated diff between repos", { baseRemote, workspaceRemote });
-  return ok(diff);
+  return ok({ diff, workspaceSha });
 }
 
 export function buildUnifiedDiff(

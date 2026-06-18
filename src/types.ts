@@ -347,6 +347,12 @@ export interface Change {
   evalReason?: string;
   /** Project HEAD at change creation — the base the evaluation ran against. */
   baseSha?: string;
+  /**
+   * The workspace commit sha the evaluation ran against. The merge gate merges
+   * *this* sha (not the workspace's live tip), so a re-push between eval and
+   * merge cannot land unevaluated content on the default branch.
+   */
+  workspaceHeadSha?: string;
   createdAt: string;
   mergedAt?: string;
   githubOwner?: string;
