@@ -6,7 +6,6 @@ import type { Env } from "../src/types";
 import { NotFoundError } from "../src/utils/errors";
 
 vi.mock("../src/storage/users", () => ({
-  createUser: vi.fn(),
   getUser: vi.fn(),
   getUserByToken: vi.fn(),
 }));
@@ -15,7 +14,7 @@ vi.mock("../src/storage/agents", () => ({
   getAgentByToken: vi.fn(),
 }));
 
-import { createUser, getUser, getUserByToken } from "../src/storage/users";
+import { getUser, getUserByToken } from "../src/storage/users";
 
 function makeApp() {
   const app = new Hono<{ Bindings: Env }>();
@@ -57,53 +56,17 @@ const mockUser = {
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
-describe("POST /api/users", () => {
-  let app: ReturnType<typeof makeApp>;
-  let env: Env;
-
-  beforeEach(() => {
-    app = makeApp();
-    env = makeEnv();
-    vi.clearAllMocks();
-    vi.mocked(createUser).mockResolvedValue({
-      success: true,
-      data: {
-        user: mockUser,
-        plaintext: "stratum_user_deadbeef",
-      },
-    });
-  });
-
-  it("creates user with valid email and returns 201", async () => {
-    const res = await app.fetch(request("POST", "/api/users", { email: "test@example.com" }), env);
-    expect(res.status).toBe(201);
-    const body = (await res.json()) as {
-      user: { id: string; email: string; createdAt: string };
-      token: string;
-    };
-    expect(body.user.id).toBe("usr_abc123");
-    expect(body.user.email).toBe("test@example.com");
-    expect(body.token).toBe("stratum_user_deadbeef");
-    expect(body.user).not.toHaveProperty("tokenHash");
-    expect(createUser).toHaveBeenCalledWith(env.DB, "test@example.com", expect.any(Object));
-  });
-
-  it("returns 400 for invalid email", async () => {
-    const res = await app.fetch(request("POST", "/api/users", { email: "not-an-email" }), env);
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toContain("email");
-  });
-
-  it("returns 400 for missing email", async () => {
-    const res = await app.fetch(request("POST", "/api/users", {}), env);
-    expect(res.status).toBe(400);
-  });
-
-  it("propagates D1 unique constraint error as 500", async () => {
-    vi.mocked(createUser).mockRejectedValue(new Error("UNIQUE constraint failed: users.email"));
-    const res = await app.fetch(request("POST", "/api/users", { email: "dupe@example.com" }), env);
-    expect(res.status).toBe(500);
+describe("POST /api/users — removed", () => {
+  // Unauthenticated user/token creation was removed: accounts are bootstrapped
+  // only through verified flows (OAuth, magic link, dev-login). The route must
+  // not exist.
+  it("no longer mints a user+token from an email", async () => {
+    const app = makeApp();
+    const res = await app.fetch(
+      request("POST", "/api/users", { email: "attacker@example.com" }),
+      makeEnv(),
+    );
+    expect(res.status).toBe(404);
   });
 });
 

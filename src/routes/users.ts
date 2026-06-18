@@ -1,42 +1,19 @@
 import { Hono } from "hono";
 import { recordAudit } from "../storage/audit";
-import { createUser, getUser, getUserByUsername, rotateUserToken } from "../storage/users";
+import { getUser, getUserByUsername, rotateUserToken } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
-import { badRequest, created, ok } from "../utils/response";
+import { ok } from "../utils/response";
 import { validateUsername } from "../utils/username-validation";
-import { isValidEmail } from "../utils/validation";
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.post("/", async (c) => {
-  const logger = createLogger({
-    requestId: crypto.randomUUID(),
-    path: c.req.path,
-    method: c.req.method,
-  });
-
-  const body = await c.req.json<{ email?: unknown }>();
-  if (!isValidEmail(body.email)) {
-    logger.warn("Invalid email in create user request");
-    return badRequest("email must be a valid email address");
-  }
-
-  const result = await createUser(c.env.DB, body.email, logger);
-
-  if (!result.success) {
-    logger.error("Failed to create user", result.error);
-    return c.json({ error: "Failed to create user" }, 500);
-  }
-
-  const { user, plaintext } = result.data;
-  logger.info("User created via API", { userId: user.id });
-
-  return created({
-    user: { id: user.id, email: user.email, createdAt: user.createdAt },
-    token: plaintext,
-  });
-});
+// NOTE: user creation has no API route. Accounts are bootstrapped only through
+// verified flows (`/auth/github`, `/auth/google`, `/auth/email` magic link, and
+// the localhost-gated `/dev-login`). API tokens are issued only to an
+// authenticated caller — see `POST /me/rotate-token` below and `POST /api/agents`.
+// An unauthenticated `email → token` endpoint previously lived here; it let
+// anyone mint a working token, bypass the closed beta, and squat emails.
 
 app.get("/me", async (c) => {
   const logger = createLogger({
