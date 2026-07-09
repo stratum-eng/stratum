@@ -28,13 +28,13 @@ export interface ImportRateLimitOptions {
  * caller has already confirmed the path is a git path via `isGitHttpPath`.
  */
 function isExemptGitRead(path: string, service: string | undefined): boolean {
-  // Push RPC path — always metered.
-  if (path.endsWith("/git-receive-pack")) return false;
   // Clone/fetch RPC path — always a read.
   if (path.endsWith("/git-upload-pack")) return true;
-  // info/refs advertise: exempt only when it advertises the upload-pack (read)
-  // service; a receive-pack advertise precedes a push and is metered.
-  return service !== "git-receive-pack";
+  // info/refs advertise: exempt ONLY the upload-pack (read) advertise. A
+  // receive-pack advertise precedes a push, and a missing/unknown service stays
+  // metered (fail closed) rather than slipping past the limiter.
+  if (path.endsWith("/info/refs")) return service === "git-upload-pack";
+  return false;
 }
 
 export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<{

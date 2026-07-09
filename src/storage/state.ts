@@ -210,9 +210,21 @@ export async function listProjects(
 ): Promise<Result<ProjectEntry[], AppError>> {
   logger.debug("Listing all projects");
   try {
-    const result = await kv.list({ prefix: PROJECT_PREFIX });
+    // KV `list` returns at most one page (~1000 keys); loop the cursor to
+    // exhaustion so callers (getProjectById → authz) never miss a project.
+    const keyNames: string[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await kv.list(
+        cursor ? { prefix: PROJECT_PREFIX, cursor } : { prefix: PROJECT_PREFIX },
+      );
+      for (const key of page.keys) keyNames.push(key.name);
+      if (page.list_complete) break;
+      cursor = page.cursor;
+      if (!cursor) break;
+    }
     const entries = await Promise.all(
-      result.keys.map(async ({ name }) => {
+      keyNames.map(async (name) => {
         const raw = await kv.get(name);
         if (!raw) return null;
         const parsed = parseEntry<ProjectEntry>(raw, name, logger);

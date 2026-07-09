@@ -33,7 +33,9 @@ const authHeaders = { Authorization: `Bearer ${TOKEN}`, "Content-Type": "applica
 beforeAll(async () => {
   if (!configured) return;
   try {
-    const health = await fetch(`${TARGET_URL}/health`, { timeout: 5000 } as RequestInit);
+    // `RequestInit.timeout` is non-standard and ignored by the runtime's fetch;
+    // use an abort signal so an unresponsive endpoint fails promptly.
+    const health = await fetch(`${TARGET_URL}/health`, { signal: AbortSignal.timeout(5000) });
     if (health.status !== 200) return;
     // Create a fresh workspace to push into.
     const [ns, slug] = PROJECT.replace(/^@/, "").split("/");
@@ -55,14 +57,17 @@ afterAll(() => {
   for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
 });
 
-describe.skipIf(!configured || !reachable)("Git push to a workspace smoke", () => {
+// `configured` is known at load time (env vars); `reachable` is only set in
+// beforeAll, so it can't gate the describe — each test skips on it at run time.
+describe.skipIf(!configured)("Git push to a workspace smoke", () => {
   function workspaceUrl(): string {
     const [ns, slug] = PROJECT.replace(/^@/, "").split("/");
     const base = TARGET_URL.replace("://", `://x:${encodeURIComponent(TOKEN)}@`);
     return `${base}/@${ns}/${slug}/workspaces/${workspaceName}.git`;
   }
 
-  it("clones the workspace, pushes a commit, and the push is accepted", () => {
+  it("clones the workspace, pushes a commit, and the push is accepted", (ctx) => {
+    if (!reachable) ctx.skip();
     const dir = mkdtempSync(join(tmpdir(), "stratum-push-"));
     tmpDirs.push(dir);
     execFileSync("git", ["clone", workspaceUrl(), dir], { stdio: "pipe", timeout: 60_000 });
@@ -91,7 +96,8 @@ describe.skipIf(!configured || !reachable)("Git push to a workspace smoke", () =
     });
   });
 
-  it("a re-clone sees the pushed commit", () => {
+  it("a re-clone sees the pushed commit", (ctx) => {
+    if (!reachable) ctx.skip();
     const dir = mkdtempSync(join(tmpdir(), "stratum-push-verify-"));
     tmpDirs.push(dir);
     execFileSync("git", ["clone", workspaceUrl(), dir], { stdio: "pipe", timeout: 60_000 });

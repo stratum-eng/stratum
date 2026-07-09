@@ -62,4 +62,12 @@ describe("rate-limit git exemption split (S2)", () => {
       await runsThroughLimiter("/@owner/repo/workspaces/myws.git/info/refs", "git-receive-pack"),
     ).toBe(true);
   });
+
+  it("info/refs with a MISSING service is metered (fail closed)", async () => {
+    expect(await runsThroughLimiter("/@owner/repo.git/info/refs", undefined)).toBe(true);
+  });
+
+  it("info/refs with a BOGUS service is metered (fail closed)", async () => {
+    expect(await runsThroughLimiter("/@owner/repo.git/info/refs", "git-evil-pack")).toBe(true);
+  });
 });

@@ -256,7 +256,7 @@ app.post("/:name/commit", async (c) => {
   if (c.env.REPO_DO_ENABLED === "true" && c.env.REPO_OBJECTS) {
     const stageResult = await stageWorkspaceTree(
       c.env.REPO_OBJECTS,
-      `repos/${body.projectId}/ws/${workspaceName}`,
+      `repos/${project.id}/ws/${workspaceName}`,
       fs,
       dir,
       commitResult.data,
@@ -269,7 +269,7 @@ app.post("/:name/commit", async (c) => {
     } else if (c.env.REPO_DO) {
       // Also seed the per-repo DO's local hot index so the batch-merge path reads
       // staged trees from SQLite (microseconds) instead of R2 (~30ms/change).
-      const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(body.projectId)) as unknown as {
+      const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(project.id)) as unknown as {
         stageTree(workspace: string, value: ArrayBuffer): Promise<void>;
       };
       await stub
