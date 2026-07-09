@@ -64,7 +64,12 @@ export class MergeQueue extends DurableObject<Env> {
         workspace.remote,
         workspaceToken.data,
         log,
-        { strategy: "merge", timer },
+        // Merge the exact evaluated commit, not the workspace's live tip (#115).
+        {
+          strategy: "merge",
+          timer,
+          ...(change.workspaceHeadSha ? { workspaceSha: change.workspaceHeadSha } : {}),
+        },
       );
 
       if (!commitResult.success) {

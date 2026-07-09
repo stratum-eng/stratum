@@ -570,7 +570,7 @@ app.get("/changes/:id", async (c) => {
           logger,
         );
         if (diffResult.success) {
-          diffFiles = parseUnifiedDiff(diffResult.data);
+          diffFiles = parseUnifiedDiff(diffResult.data.diff);
         } else {
           logger.warn("Failed to load change diff", { changeId: change.id });
         }
