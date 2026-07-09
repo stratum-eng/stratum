@@ -89,6 +89,17 @@ describe("analyticsMiddleware", () => {
     expect(captured[0]?.properties.$process_person_profile).toBeUndefined();
   });
 
+  it("prefers the user over the agent when both are set", async () => {
+    const captured = stubCapture();
+    await makeApp({ userId: "user-123", agentId: "agent-42" }).fetch(
+      new Request("https://api.example.com/api/changes"),
+      env,
+    );
+    await flushCapture();
+
+    expect(captured[0]?.distinct_id).toBe("user-123");
+  });
+
   it("attributes events to the agent when no user is set", async () => {
     const captured = stubCapture();
     await makeApp({ agentId: "agent-42" }).fetch(
