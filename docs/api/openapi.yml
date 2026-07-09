@@ -36,3 +36,54 @@ paths:
       responses:
         '201':
           description: Project created
+
+  /api/projects/{namespace}/{slug}:
+    delete:
+      summary: Delete project (owner-only, cascading, async)
+      parameters:
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                confirm:
+                  type: string
+                  description: Must exactly equal "@namespace/slug".
+      responses:
+        '202':
+          description: Deletion enqueued (jobId returned)
+        '400':
+          description: Confirmation mismatch
+        '404':
+          description: Not found or not the owner
+
+  /api/users/me:
+    delete:
+      summary: Delete account (GDPR erasure, self-only, async)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                confirm:
+                  type: string
+                  description: Must exactly equal the caller's username.
+      responses:
+        '202':
+          description: Erasure enqueued; credentials invalidated immediately
+        '400':
+          description: Confirmation mismatch
