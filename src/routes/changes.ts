@@ -232,6 +232,7 @@ app.post("/projects/:name/changes", async (c) => {
 
   const changeResult = await createChange(c.env.DB, logger, {
     project: projectName,
+    projectId: project.id,
     workspace: body.workspace,
     ...(agentId !== undefined ? { agentId } : {}),
     ...(baseSha !== null ? { baseSha } : {}),
@@ -257,6 +258,7 @@ app.post("/projects/:name/changes", async (c) => {
     },
     actor,
     logger,
+    project.id,
   );
 
   const [projectReadToken, workspaceReadToken] = await Promise.all([
@@ -370,7 +372,7 @@ app.post("/projects/:name/changes", async (c) => {
   await recordCosts(
     c.env.DB,
     logger,
-    { project: projectName, changeId: change.id, workspace: body.workspace },
+    { project: projectName, projectId: project.id, changeId: change.id, workspace: body.workspace },
     createCostSamples,
   );
 
@@ -396,6 +398,7 @@ app.post("/projects/:name/changes", async (c) => {
     },
     { type: "system" },
     logger,
+    project.id,
   );
 
   const updatedChange: Change = {
@@ -646,6 +649,7 @@ app.post("/changes/:id/merge", async (c) => {
       { type: "change.merged", project: change.project, changeId: id, commit: result.commit ?? "" },
       { type: "user", id: userId },
       logger,
+      change.projectId,
     );
 
     logger.info("Change merged via queue", {
@@ -761,13 +765,19 @@ app.post("/changes/:id/merge", async (c) => {
   await recordCosts(
     c.env.DB,
     logger,
-    { project: change.project, changeId: id, workspace: change.workspace },
+    {
+      project: change.project,
+      ...(change.projectId !== undefined ? { projectId: change.projectId } : {}),
+      changeId: id,
+      workspace: change.workspace,
+    },
     [{ kind: "git_ops", quantity: 2 }],
   );
 
   const provenanceResult = await recordProvenance(c.env.DB, logger, {
     commitSha: commit,
     project: change.project,
+    ...(change.projectId !== undefined ? { projectId: change.projectId } : {}),
     workspace: change.workspace,
     changeId: id,
     ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
@@ -784,6 +794,7 @@ app.post("/changes/:id/merge", async (c) => {
     { type: "change.merged", project: change.project, changeId: id, commit },
     { type: "user", id: userId },
     logger,
+    change.projectId,
   );
 
   logger.info("Change merged", {
@@ -1032,11 +1043,12 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   }
   for (let i = 0; i < landed.length; i += INSERT_CHUNK) {
     const chunk = landed.slice(i, i + INSERT_CHUNK);
-    const rows = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
+    const rows = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
     const binds = chunk.flatMap((l) => [
       newId("prv"),
       l.commit,
       projectName,
+      project.id,
       l.change?.workspace ?? "",
       l.changeId,
       l.change?.agentId ?? null,
@@ -1045,7 +1057,7 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
     ]);
     statements.push(
       c.env.DB.prepare(
-        `INSERT INTO provenance (id, commit_sha, project, workspace, change_id, agent_id, eval_score, merged_at) VALUES ${rows}`,
+        `INSERT INTO provenance (id, commit_sha, project, project_id, workspace, change_id, agent_id, eval_score, merged_at) VALUES ${rows}`,
       ).bind(...binds),
     );
   }
@@ -1128,6 +1140,7 @@ app.post("/changes/:id/reject", async (c) => {
     { type: "change.rejected", project: change.project, changeId: id },
     { type: "user", id: userId },
     logger,
+    change.projectId,
   );
 
   logger.info("Change rejected", { changeId: id, project: change.project });
@@ -1288,7 +1301,12 @@ app.post("/changes/:id/evaluate", async (c) => {
   await recordCosts(
     c.env.DB,
     logger,
-    { project: change.project, changeId: id, workspace: change.workspace },
+    {
+      project: change.project,
+      ...(change.projectId !== undefined ? { projectId: change.projectId } : {}),
+      changeId: id,
+      workspace: change.workspace,
+    },
     evaluateCostSamples,
   );
 

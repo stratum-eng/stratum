@@ -239,6 +239,7 @@ app.post("/", async (c) => {
     { type: "project.created", project: project.name },
     { type: "user", id: userId },
     logger,
+    project.id,
   );
 
   return created({

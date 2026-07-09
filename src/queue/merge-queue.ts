@@ -89,6 +89,7 @@ export class MergeQueue extends DurableObject<Env> {
         recordProvenance(this.env.DB, log, {
           commitSha: commit,
           project: change.project,
+          projectId: change.projectId ?? project.id,
           workspace: change.workspace,
           changeId,
           ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
@@ -104,6 +105,7 @@ export class MergeQueue extends DurableObject<Env> {
         this.env.DB,
         {
           project: change.project,
+          projectId: change.projectId ?? project.id,
           changeId,
           outcome: "cold_fallback",
           phases: commitPhasesFromSpans(timer.toObject()),

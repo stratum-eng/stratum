@@ -175,6 +175,7 @@ describe("events storage", () => {
       id: "evt_bad",
       type: "change.created",
       project: "p",
+      project_id: null,
       actor_type: "system",
       actor_id: null,
       payload: "not-json{",

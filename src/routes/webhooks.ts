@@ -122,6 +122,7 @@ app.post("/:namespace/:slug/webhooks", async (c) => {
 
   const webhookResult = await createWebhook(c.env.DB, logger, {
     project: project.name,
+    projectId: project.id,
     url: urlResult.data,
     events,
     createdBy: userId,

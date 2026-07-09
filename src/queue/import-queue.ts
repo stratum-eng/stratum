@@ -335,6 +335,7 @@ async function processImportJob(
       },
       { type: "system" },
       logger,
+      updatedProject.id,
     );
 
     logger.info("Import completed successfully", { importId, namespace, slug, duration });
@@ -567,6 +568,7 @@ async function processSyncJob(
       },
       { type: "system" },
       logger,
+      updatedProject.id,
     );
 
     logger.info("Sync completed successfully", {

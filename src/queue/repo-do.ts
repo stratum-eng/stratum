@@ -254,6 +254,7 @@ export class RepoDO extends DurableObject<Env> {
     const provenanceResult = await recordProvenance(this.env.DB, log, {
       commitSha: result.commit,
       project: change.project,
+      projectId: change.projectId ?? project.id,
       workspace: change.workspace,
       changeId,
       ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
@@ -452,6 +453,7 @@ export class RepoDO extends DurableObject<Env> {
         recordProvenance(this.env.DB, log, {
           commitSha: mergedCommit,
           project: change.project,
+          projectId: change.projectId ?? project.id,
           workspace: change.workspace,
           changeId,
           ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
@@ -466,6 +468,7 @@ export class RepoDO extends DurableObject<Env> {
         this.env.DB,
         {
           project: change.project,
+          projectId: change.projectId ?? project.id,
           changeId,
           outcome,
           phases: commitPhasesFromSpans(timer.toObject()),

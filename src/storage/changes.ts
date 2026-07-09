@@ -7,6 +7,7 @@ import { type Result, err, ok } from "../utils/result";
 interface ChangeRow {
   id: string;
   project: string;
+  project_id: string | null;
   workspace: string;
   status: string;
   agent_id: string | null;
@@ -36,6 +37,7 @@ function rowToChange(row: ChangeRow): Change {
     status: row.status as Change["status"],
     createdAt: row.created_at,
   };
+  if (row.project_id !== null) change.projectId = row.project_id;
   if (row.agent_id !== null) change.agentId = row.agent_id;
   if (row.eval_score !== null) change.evalScore = row.eval_score;
   if (row.eval_passed !== null) change.evalPassed = row.eval_passed === 1;
@@ -60,6 +62,10 @@ export async function createChange(
   logger: Logger,
   opts: {
     project: string;
+    // Globally-unique project UUID (from the KV ProjectEntry). Optional for
+    // backward compatibility: callers that lack it write NULL, which the future
+    // cascade-delete treats as a name-based (pre-migration) row.
+    projectId?: string;
     workspace: string;
     agentId?: string;
     baseSha?: string;
@@ -71,11 +77,12 @@ export async function createChange(
   try {
     await db
       .prepare(
-        "INSERT INTO changes (id, project, workspace, status, agent_id, base_sha, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO changes (id, project, project_id, workspace, status, agent_id, base_sha, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         id,
         opts.project,
+        opts.projectId ?? null,
         opts.workspace,
         "open",
         opts.agentId ?? null,
@@ -91,6 +98,7 @@ export async function createChange(
       status: "open",
       createdAt,
     };
+    if (opts.projectId !== undefined) change.projectId = opts.projectId;
     if (opts.agentId !== undefined) change.agentId = opts.agentId;
     if (opts.baseSha !== undefined) change.baseSha = opts.baseSha;
 

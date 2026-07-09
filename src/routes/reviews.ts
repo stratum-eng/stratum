@@ -112,6 +112,7 @@ app.post("/changes/:id/comments", async (c) => {
     { type: "change.commented", project: change.project, changeId: change.id },
     actor,
     logger,
+    change.projectId,
   );
 
   if (!contentType.includes("application/json")) {
@@ -215,6 +216,7 @@ app.post("/changes/:id/reviews", async (c) => {
     { type: "change.reviewed", project: change.project, changeId: change.id, verdict },
     { type: "user", id: userId },
     logger,
+    change.projectId,
   );
 
   if (!contentType.includes("application/json")) {
