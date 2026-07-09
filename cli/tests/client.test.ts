@@ -37,9 +37,7 @@ describe("StratumClient", () => {
     await client.listProjects();
     const { url, init } = lastCall();
     expect(url).toBe("https://stratum.example.com/api/projects");
-    expect((init.headers as Record<string, string>).Authorization).toBe(
-      "Bearer stratum_user_key",
-    );
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer stratum_user_key");
   });
 
   it("hits the namespaced workspace endpoints", async () => {
@@ -75,9 +73,7 @@ describe("StratumClient", () => {
 
   it("creates and merges changes via the real endpoints", async () => {
     await client.createChange("@user/repo", "ws-1");
-    expect(lastCall().url).toBe(
-      "https://stratum.example.com/api/projects/%40user%2Frepo/changes",
-    );
+    expect(lastCall().url).toBe("https://stratum.example.com/api/projects/%40user%2Frepo/changes");
 
     await client.mergeChange("chg_1", { force: true, strategy: "squash" });
     expect(lastCall().url).toBe(

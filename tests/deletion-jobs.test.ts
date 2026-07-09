@@ -201,7 +201,10 @@ describe("runDeletionJob", () => {
     expect(JSON.parse(row?.residuals ?? "[]")).toEqual([]);
   });
 
-  it("finishes an account job incomplete until Task 5 lands the cascade", async () => {
+  it("runs the account cascade to completion when there is nothing residual", async () => {
+    // No owned projects, no owned orgs (the JobsD1 stub returns [] for the
+    // cascade's SELECTs), so the account cascade drains clean and the job
+    // finishes `completed`.
     const stub = makeJobsD1();
     const created = await createDeletionJob(stub.db, mockLogger, {
       kind: "account",
@@ -214,8 +217,8 @@ describe("runDeletionJob", () => {
 
     expect(result.success).toBe(true);
     const row = stub.jobs.get(created.data.id);
-    expect(row?.state).toBe("incomplete");
-    expect(JSON.parse(row?.residuals ?? "[]")).toEqual(["account:not-implemented"]);
+    expect(row?.state).toBe("completed");
+    expect(JSON.parse(row?.residuals ?? "[]")).toEqual([]);
   });
 
   it("skips when another driver holds a live lease", async () => {

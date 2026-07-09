@@ -1,6 +1,7 @@
 import { recordAudit } from "../storage/audit";
 import {
   type DeletionTarget,
+  deleteAccountCascade,
   deleteProjectCascade,
   verifyProjectDeleted,
 } from "../storage/deletion";
@@ -45,6 +46,20 @@ function parseProjectTarget(raw: string): DeletionTarget | null {
   }
   if (typeof candidate.nameCollision !== "boolean") return null;
   return candidate as unknown as DeletionTarget;
+}
+
+/** Parse the account target JSON ({ userId }) set by the delete-account route. */
+function parseAccountTarget(raw: string): { userId: string } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object") return null;
+  const candidate = parsed as Record<string, unknown>;
+  if (typeof candidate.userId !== "string") return null;
+  return { userId: candidate.userId };
 }
 
 /**
@@ -105,10 +120,26 @@ export async function runDeletionJob(
 
   const residuals: string[] = [];
   if (job.kind === "account") {
-    // Task 5 lands the account cascade; finishing `incomplete` keeps the job
-    // visible and re-driveable instead of silently claiming erasure.
-    log.info("Account deletion cascade not implemented yet", { jobId });
-    residuals.push("account:not-implemented");
+    const account = parseAccountTarget(job.target);
+    if (!account) {
+      log.error("Account deletion job target is unparseable", undefined, { jobId });
+      residuals.push("target:unparseable");
+    } else {
+      const cascade = await deleteAccountCascade(env, account.userId, log);
+      if (cascade.success) {
+        residuals.push(...cascade.data.residuals);
+      } else {
+        log.error("Account deletion cascade failed", cascade.error, { jobId });
+        residuals.push(`cascade:error:${cascade.error.code}`);
+      }
+      const cascaded = await heartbeat(env.DB, log, jobId, driverId, LEASE_TTL_MS, "cascade");
+      if (!cascaded.success) log.warn("Failed to record deletion heartbeat", { jobId });
+      if (cascaded.success && !cascaded.data) {
+        // A concurrent driver stole the lease. Bow out; the owner will finish.
+        log.warn("Lost deletion lease after account cascade; deferring", { jobId });
+        return ok(undefined);
+      }
+    }
   } else {
     const target = parseProjectTarget(job.target);
     if (!target) {

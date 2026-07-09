@@ -3,6 +3,15 @@ import { type AppError, toAppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 import { artifactsRepoNameFromRemote } from "./git-ops";
+import { deleteAllUserSessions } from "./sessions";
+import { listProjects } from "./state";
+
+/**
+ * Shared tombstone for anonymized cross-project contributions. A single
+ * sentinel (vs a per-deletion opaque id) keeps erasure GDPR-clean and simple:
+ * the identity is gone, the contribution stays. See PRD Open Question #3.
+ */
+export const DELETED_USER_SENTINEL = "deleted-user";
 
 /**
  * Durable inventory of everything a project deletion must touch, captured
@@ -223,6 +232,38 @@ export async function captureDeletionTarget(
     const appError = toAppError(error);
     logger.error("Failed to capture deletion target", appError, { projectId: project.id });
     return err(appError);
+  }
+}
+
+/**
+ * Whether a project's owning user is soft-`deleting`. Queue consumers call this
+ * as their first action so a merge/import/sync landing mid-delete can't
+ * re-create rows for a project whose owner is being erased.
+ *
+ * Only user-owned projects are gated here: an org owner isn't a `users` row, and
+ * the account cascade deletes org-owned projects through its own path (Task 5),
+ * so a per-consumer org lookup would add cost without changing the outcome. Fails
+ * OPEN on a DB error (returns false) — a transient lookup failure must not wedge
+ * the merge hot path; the verifier still degrades a racing writer to `incomplete`.
+ */
+export async function isTargetDeleting(
+  env: Env,
+  project: ProjectEntry,
+  logger: Logger,
+): Promise<boolean> {
+  if (project.ownerType !== "user") return false;
+  try {
+    const row = await env.DB.prepare("SELECT deleting_at FROM users WHERE id = ?")
+      .bind(project.ownerId)
+      .first<{ deleting_at: string | null }>();
+    return row?.deleting_at != null;
+  } catch (error) {
+    logger.error(
+      "Failed to check owner deleting status",
+      error instanceof Error ? error : undefined,
+      { projectId: project.id, ownerId: project.ownerId },
+    );
+    return false;
   }
 }
 
@@ -535,6 +576,227 @@ export async function verifyProjectDeleted(
     logger.error("Project deletion verification failed", appError, {
       projectId: target.projectId,
     });
+    return err(appError);
+  }
+}
+
+/**
+ * Every cross-project identity column that names a user. Anonymizing these to
+ * the shared sentinel erases the person while preserving the contribution
+ * (GDPR: right-to-erasure without destroying other tenants' history). Runs
+ * AFTER the user's owned projects are deleted, so only cross-project rows
+ * remain to rewrite.
+ */
+const IDENTITY_COLUMNS: readonly [table: string, column: string][] = [
+  ["audit_log", "actor_id"],
+  ["provenance", "agent_id"],
+  ["issues", "author_id"],
+  ["change_comments", "author_id"],
+  ["change_reviews", "reviewer_id"],
+  ["webhooks", "created_by"],
+  ["changes", "agent_id"],
+];
+
+/**
+ * Rewrite every identity column that names `userId` to the shared sentinel.
+ * Idempotent: re-running matches nothing (the id is already gone). Never
+ * deletes — the contribution stays, only the author is anonymized.
+ */
+export async function anonymizeUserContributions(
+  db: D1Database,
+  userId: string,
+  logger: Logger,
+): Promise<Result<void, AppError>> {
+  try {
+    for (const [table, column] of IDENTITY_COLUMNS) {
+      await db
+        .prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ?`)
+        .bind(DELETED_USER_SENTINEL, userId)
+        .run();
+    }
+    logger.info("Anonymized user contributions", { userId });
+    return ok(undefined);
+  } catch (error) {
+    const appError = toAppError(error);
+    logger.error("Failed to anonymize user contributions", appError, { userId });
+    return err(appError);
+  }
+}
+
+interface OrgOwnerRow {
+  id: string;
+  owner_id: string;
+}
+
+interface OrgMemberIdRow {
+  user_id: string;
+}
+
+/**
+ * Resolve an org where `userId` is the sole owner (owner_id = userId): promote
+ * a successor if the org has other members, else delete the empty org. Never
+ * blocks erasure. Deterministic + idempotent: promotion picks the lowest
+ * user_id among candidates so a re-drive reaches the same successor.
+ */
+async function resolveOrgOwnership(
+  env: Env,
+  org: OrgOwnerRow,
+  userId: string,
+  residuals: string[],
+  logger: Logger,
+): Promise<void> {
+  const db = env.DB;
+
+  // Prefer another admin; fall back to any other member. Lowest user_id wins so
+  // concurrent drivers converge on the same successor. Exclude users who are
+  // themselves being erased — promoting to a soon-to-be-deleted user would leave
+  // the org with a dangling owner and no membership row to re-promote from.
+  const nextAdmin = await db
+    .prepare(
+      "SELECT user_id FROM org_members WHERE org_id = ? AND role = 'admin' AND user_id != ? " +
+        "AND user_id IN (SELECT id FROM users WHERE deleting_at IS NULL) " +
+        "ORDER BY user_id ASC LIMIT 1",
+    )
+    .bind(org.id, userId)
+    .first<OrgMemberIdRow>();
+
+  let successor = nextAdmin?.user_id ?? null;
+  if (!successor) {
+    const nextMember = await db
+      .prepare(
+        "SELECT user_id FROM org_members WHERE org_id = ? AND user_id != ? " +
+          "AND user_id IN (SELECT id FROM users WHERE deleting_at IS NULL) " +
+          "ORDER BY user_id ASC LIMIT 1",
+      )
+      .bind(org.id, userId)
+      .first<OrgMemberIdRow>();
+    successor = nextMember?.user_id ?? null;
+  }
+
+  if (successor) {
+    await db.prepare("UPDATE orgs SET owner_id = ? WHERE id = ?").bind(successor, org.id).run();
+    logger.info("Promoted org successor during account erasure", { orgId: org.id, successor });
+    return;
+  }
+
+  // No other members: the org is empty. Cascade its owned projects, then delete
+  // the org and any residual membership/team rows so no orphan survives.
+  logger.info("Deleting empty org during account erasure", { orgId: org.id });
+  const projectsResult = await listProjects(env.STATE, logger);
+  if (projectsResult.success) {
+    for (const project of projectsResult.data) {
+      if (project.ownerType !== "org" || project.ownerId !== org.id) continue;
+      await cascadeOwnedProject(env, project, `org:${org.id}:`, residuals, logger);
+    }
+  } else {
+    residuals.push(`org:${org.id}:project-list-failed`);
+  }
+  await db.prepare("DELETE FROM org_members WHERE org_id = ?").bind(org.id).run();
+  await db
+    .prepare("DELETE FROM team_members WHERE team_id IN (SELECT id FROM teams WHERE org_id = ?)")
+    .bind(org.id)
+    .run();
+  await db.prepare("DELETE FROM teams WHERE org_id = ?").bind(org.id).run();
+  await db.prepare("DELETE FROM orgs WHERE id = ?").bind(org.id).run();
+}
+
+/** Capture + cascade + verify one owned project, prefixing any residuals. */
+async function cascadeOwnedProject(
+  env: Env,
+  project: ProjectEntry,
+  prefix: string,
+  residuals: string[],
+  logger: Logger,
+): Promise<void> {
+  const captured = await captureDeletionTarget(env, project, logger);
+  if (!captured.success) {
+    residuals.push(`${prefix}${project.slug}:capture-failed`);
+    return;
+  }
+  const cascade = await deleteProjectCascade(env, captured.data, logger);
+  if (cascade.success) {
+    for (const r of cascade.data.residuals) residuals.push(`${prefix}${project.slug}:${r}`);
+  } else {
+    residuals.push(`${prefix}${project.slug}:cascade:${cascade.error.code}`);
+  }
+  const verified = await verifyProjectDeleted(env, captured.data, logger);
+  if (verified.success) {
+    for (const r of verified.data.residuals) residuals.push(`${prefix}${project.slug}:${r}`);
+  } else {
+    residuals.push(`${prefix}${project.slug}:verify:${verified.error.code}`);
+  }
+}
+
+/**
+ * GDPR-grade account erasure. Order is load-bearing:
+ *   1. delete owned projects (so only cross-project rows remain to anonymize),
+ *   2. anonymize the remainder,
+ *   3. drop agents / sessions / memberships,
+ *   4. resolve sole-owner orgs (promote or delete — never blocks),
+ *   5. delete the users row LAST (frees email/username/token_hash/github_id
+ *      uniques only once everything else is gone).
+ * Every step is idempotent so a re-drive converges. Returns the residual set;
+ * an empty set lets the job finish `completed`.
+ */
+export async function deleteAccountCascade(
+  env: Env,
+  userId: string,
+  logger: Logger,
+): Promise<Result<{ residuals: string[] }, AppError>> {
+  const residuals: string[] = [];
+  const db = env.DB;
+  try {
+    // 1) Owned (user) projects first.
+    const projectsResult = await listProjects(env.STATE, logger);
+    if (!projectsResult.success) {
+      residuals.push("account:project-list-failed");
+    } else {
+      for (const project of projectsResult.data) {
+        if (project.ownerType !== "user" || project.ownerId !== userId) continue;
+        await cascadeOwnedProject(env, project, "project:", residuals, logger);
+      }
+    }
+
+    // 2) Anonymize the cross-project remainder.
+    const anonymized = await anonymizeUserContributions(db, userId, logger);
+    if (!anonymized.success) residuals.push(`account:anonymize:${anonymized.error.code}`);
+
+    // 3) Agents, sessions, memberships.
+    await db.prepare("DELETE FROM agents WHERE owner_id = ?").bind(userId).run();
+    const sessions = await deleteAllUserSessions(db, userId, logger);
+    if (!sessions.success) residuals.push(`account:sessions:${sessions.error.code}`);
+    await db.prepare("DELETE FROM org_members WHERE user_id = ?").bind(userId).run();
+    await db.prepare("DELETE FROM team_members WHERE user_id = ?").bind(userId).run();
+
+    // 4) Sole-owner org fallback (after membership rows are gone so an empty org
+    //    is correctly detected). Never blocks erasure.
+    const ownedOrgs = await db
+      .prepare("SELECT id, owner_id FROM orgs WHERE owner_id = ?")
+      .bind(userId)
+      .all<OrgOwnerRow>();
+    for (const org of ownedOrgs.results) {
+      await resolveOrgOwnership(env, org, userId, residuals, logger);
+    }
+
+    // 5) The user row LAST — and ONLY when erasure is fully complete. Deleting
+    //    it while residuals remain would strand PII (project rows/repos) with the
+    //    account gone and no user to re-drive against. Leaving it keeps the row
+    //    (access already revoked via deleting_at) so a re-enqueued job finishes
+    //    the job and then removes it. The `users` delete is itself idempotent.
+    if (residuals.length === 0) {
+      await db.prepare("DELETE FROM users WHERE id = ?").bind(userId).run();
+    } else {
+      residuals.push("account:user-row-retained-pending-residuals");
+      logger.warn("Account erasure incomplete; retaining user row for re-drive", {
+        userId,
+        residualCount: residuals.length,
+      });
+    }
+
+    return ok({ residuals });
+  } catch (error) {
+    const appError = toAppError(error);
+    logger.error("Account deletion cascade failed", appError, { userId });
     return err(appError);
   }
 }

@@ -275,7 +275,9 @@ async function main(): Promise<void> {
     console.log("\nServer-side commit metrics (/api/admin/metrics .commits):");
     console.log(JSON.stringify(body.commits ?? "unavailable (admin access / no rows)", null, 2));
   } else {
-    console.log(`\n/api/admin/metrics returned ${metrics.status} (need admin access for breakdown)`);
+    console.log(
+      `\n/api/admin/metrics returned ${metrics.status} (need admin access for breakdown)`,
+    );
   }
 }
 
@@ -292,8 +294,7 @@ async function runR2Bench(args: BenchArgs): Promise<void> {
   const repo = `r2bench-${Math.random().toString(36).slice(2, 8)}`;
   // conflict=same -> every writer hits one path (server-side conflict resolution
   // exercised); conflict=none -> distinct path per writer (no conflicts).
-  const pathFor = (worker: number) =>
-    args.conflict === "same" ? "shared.txt" : `f${worker}.txt`;
+  const pathFor = (worker: number) => (args.conflict === "same" ? "shared.txt" : `f${worker}.txt`);
 
   console.log(
     `\n[R2 + real git objects + group-commit] repo=${repo}, conflict=${args.conflict}, bytes=${args.bytes}, ${args.durationMs}ms/level`,
@@ -326,7 +327,9 @@ async function runR2Bench(args: BenchArgs): Promise<void> {
     stat.latency = undefined; // per-op latency not measured in the R2 throughput probe
     stat.commitsPerSec = elapsedMs > 0 ? Math.round((counted / elapsedMs) * 1000 * 100) / 100 : 0;
     stats.push(stat);
-    console.log(`  N=${n}: ${stat.commitsPerSec} commits/sec (${counted} landed, ${failed} failed)`);
+    console.log(
+      `  N=${n}: ${stat.commitsPerSec} commits/sec (${counted} landed, ${failed} failed)`,
+    );
   }
   console.log(`\n${formatReport(stats)}`);
 

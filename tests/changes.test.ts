@@ -118,6 +118,7 @@ vi.mock("../src/queue/events", () => ({
 
 vi.mock("../src/storage/users", () => ({
   getUserByToken: vi.fn(),
+  getUser: vi.fn(async () => ({ success: false, error: new Error("nf") })),
 }));
 
 // Need to setup mocks in beforeEach instead
