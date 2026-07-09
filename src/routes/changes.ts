@@ -767,7 +767,8 @@ app.post("/changes/:id/merge", async (c) => {
     logger,
     {
       project: change.project,
-      ...(change.projectId !== undefined ? { projectId: change.projectId } : {}),
+      // Backfill project_id onto legacy (pre-migration) changes as they merge.
+      projectId: change.projectId ?? project.id,
       changeId: id,
       workspace: change.workspace,
     },
@@ -777,7 +778,7 @@ app.post("/changes/:id/merge", async (c) => {
   const provenanceResult = await recordProvenance(c.env.DB, logger, {
     commitSha: commit,
     project: change.project,
-    ...(change.projectId !== undefined ? { projectId: change.projectId } : {}),
+    projectId: change.projectId ?? project.id,
     workspace: change.workspace,
     changeId: id,
     ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
@@ -1028,9 +1029,10 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   }
   const mergedAt = new Date().toISOString();
   // D1 caps bound parameters at 100/statement: chunk so UPDATE (1 + ids) and the
-  // multi-row INSERT (8 binds/row) stay under it. All chunks ride one batch().
+  // multi-row INSERT (9 binds/row — project_id added) stay under it. 11×9=99.
+  // All chunks ride one batch().
   const UPDATE_CHUNK = 99;
-  const INSERT_CHUNK = 12;
+  const INSERT_CHUNK = 11;
   const statements: D1PreparedStatement[] = [];
   for (let i = 0; i < landed.length; i += UPDATE_CHUNK) {
     const chunk = landed.slice(i, i + UPDATE_CHUNK);
