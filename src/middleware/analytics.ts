@@ -10,6 +10,9 @@ export const analyticsMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (
   await next();
   const path = c.req.path;
   if (path === "/health") return;
+  // Unmatched routes are overwhelmingly internet scanners probing for
+  // /.env, /.git/config, and the like — noise, not product traffic.
+  if (c.res.status === 404) return;
 
   const latency = Date.now() - start;
   const userId = c.get("userId");
@@ -24,15 +27,19 @@ export const analyticsMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (
     agentId,
   });
 
+  const distinctId = userId ?? agentId ?? "server";
   const client = createPostHogClient(c.env);
   const capture = client.capture({
     event: "api_request",
-    distinctId: "server",
+    distinctId,
     properties: {
       method: c.req.method,
       path,
       status: c.res.status,
       latency_ms: latency,
+      // Unattributed events would otherwise accrete on a shared "server"
+      // person profile; capture them personless instead.
+      ...(distinctId === "server" ? { $process_person_profile: false } : {}),
     },
   });
   try {
