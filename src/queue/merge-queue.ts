@@ -20,6 +20,15 @@ export interface MergeOutcome {
 // Must extend DurableObject: callers invoke merge() over RPC, which the runtime
 // only enables for classes that extend the special base class.
 export class MergeQueue extends DurableObject<Env> {
+  /**
+   * Deletion-cascade RPC: DO storage is only reachable from inside the class,
+   * so the project cascade calls this to drop any durable state this queue
+   * ever wrote for the (now deleted) project.
+   */
+  async purge(): Promise<void> {
+    await this.ctx.storage.deleteAll();
+  }
+
   async merge(changeId: string, logger?: Logger): Promise<MergeOutcome> {
     const log = logger ?? createLogger({ changeId });
     const timer = new PhaseTimer();

@@ -330,6 +330,24 @@ export class RepoDO extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Deletion-cascade RPC: DO storage is only reachable from inside the class,
+   * so the project cascade calls this to wipe the ref cache, bench state, and
+   * the staged-tree hot index. In-memory state is reset too — a warm instance
+   * surviving the purge must not serve stale refs if the name is ever reused.
+   */
+  async purge(): Promise<void> {
+    await this.ctx.storage.deleteAll();
+    this.benchTree.clear();
+    this.benchHead = undefined;
+    this.benchBatches = 0;
+    this.benchLanded = 0;
+    this.benchConflicts = 0;
+    this.warm = undefined;
+    this.projectRemote = undefined;
+    this.stagedTableReady = false;
+  }
+
   private async getHead(): Promise<string | undefined> {
     return this.ctx.storage.get<string>(HEAD_KEY);
   }
