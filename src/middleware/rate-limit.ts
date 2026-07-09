@@ -20,6 +20,23 @@ export interface ImportRateLimitOptions {
   projectLockSeconds?: number;
 }
 
+/**
+ * Whether a git smart-HTTP request is a READ (clone/fetch) that should skip the
+ * rate limiter. Reads must be exempt because a 429 mid-clone corrupts the stream;
+ * writes (`git-receive-pack`, incl. its `info/refs?service=git-receive-pack`
+ * advertise) must flow through the limiter so pushes are metered. Assumes the
+ * caller has already confirmed the path is a git path via `isGitHttpPath`.
+ */
+function isExemptGitRead(path: string, service: string | undefined): boolean {
+  // Push RPC path — always metered.
+  if (path.endsWith("/git-receive-pack")) return false;
+  // Clone/fetch RPC path — always a read.
+  if (path.endsWith("/git-upload-pack")) return true;
+  // info/refs advertise: exempt only when it advertises the upload-pack (read)
+  // service; a receive-pack advertise precedes a push and is metered.
+  return service !== "git-receive-pack";
+}
+
 export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<{
   Bindings: Env;
 }> {
@@ -30,8 +47,10 @@ export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<
     }
 
     // Git clone/fetch is one long request (or many subrequests); a 429 mid-clone
-    // corrupts it. The git router governs its own access — skip the limiter.
-    if (isGitHttpPath(c.req.path)) {
+    // corrupts it, so the read side is exempt. Push (git-receive-pack) is a
+    // metered WRITE and must NOT be exempt — otherwise writes bypass the limiter
+    // entirely. Exempt only upload-pack RPCs and the upload-pack ref advertise.
+    if (isGitHttpPath(c.req.path) && isExemptGitRead(c.req.path, c.req.query("service"))) {
       await next();
       return;
     }

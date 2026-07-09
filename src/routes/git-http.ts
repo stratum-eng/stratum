@@ -8,7 +8,7 @@ import {
 import { getProjectByPath, getWorkspace } from "../storage/state";
 import { getUserByToken } from "../storage/users";
 import type { Env, ProjectEntry } from "../types";
-import { canReadProject, canWriteProject } from "../utils/authz";
+import { canReadProject, canWriteProject, canWriteWorkspace } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 
 /**
@@ -317,6 +317,22 @@ async function authorizeWorkspace(
     return isAnonymous ? authChallenge() : gitNotFound();
   }
   const workspace = workspaceResult.data;
+
+  // Project-level write is necessary but not sufficient: a workspace fork is
+  // owned by its creator, so a project-writer who did not create it must be
+  // refused (only the creator or a project admin may push). Same no-leak
+  // response as unauthorized so ownership isn't revealed. Read/clone is
+  // unaffected — canReadProject already gated it above.
+  if (scope === "write") {
+    const canWrite = await canWriteWorkspace(
+      c.env.DB,
+      project,
+      workspace,
+      identity?.userId,
+      identity?.agentOwnerId,
+    );
+    if (!canWrite) return isAnonymous ? authChallenge() : gitNotFound();
+  }
 
   // Validate the host before a (possibly write-scoped) token is minted against it.
   if (!artifactsRepoNameFromRemote(workspace.remote)) {

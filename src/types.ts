@@ -234,6 +234,16 @@ export interface WorkspaceEntry {
   /** The Artifacts fork ref name. Equals `name` for workspaces created after this field was added.
    *  Absent on workspaces created before this field; callers should fall back to `name`. */
   branchName?: string;
+  /**
+   * The effective owning USER of this workspace: the creating user's id, or —
+   * when an agent created it — that agent's owner's id. This is the identity the
+   * write-authz check compares against, so an agent and its owner share one
+   * ownership principal. Absent on legacy workspaces created before ownership was
+   * recorded; those fail closed to project admins only. */
+  createdByUserId?: string;
+  /** Provenance only: the agent that created the workspace, when applicable. Not
+   *  used for authorization (the agent's owner in `createdByUserId` is). */
+  createdByAgentId?: string;
 }
 
 // Import progress tracking

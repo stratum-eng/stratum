@@ -39,6 +39,23 @@ vi.mock("../src/storage/agents", () => ({
   }),
 }));
 
+// Org access is mocked so we can exercise the "org writer who is NOT the
+// workspace creator" case (S1): user_other is an org writer (project write),
+// user_owner is the org admin.
+vi.mock("../src/storage/orgs", async (importActual) => {
+  const actual = await importActual<typeof import("../src/storage/orgs")>();
+  return {
+    ...actual,
+    getOrgAccessLevel: vi.fn(
+      async (_db: unknown, _logger: unknown, _orgId: string, uid: string) => {
+        if (uid === "user_owner") return "admin";
+        if (uid === "user_other") return "write";
+        return "none";
+      },
+    ),
+  };
+});
+
 const ARTIFACTS_REMOTE = "https://acct.artifacts.cloudflare.net/git/@owner/repo.git";
 
 function makeKV(): KVNamespace {
@@ -82,11 +99,22 @@ async function seedProject(env: Env, overrides: Partial<ProjectEntry> = {}): Pro
 
 const WS_REMOTE = "https://acct.artifacts.cloudflare.net/git/@owner/myws.git";
 
-async function seedWorkspace(env: Env, name = "myws", remote = WS_REMOTE): Promise<void> {
+async function seedWorkspace(
+  env: Env,
+  name = "myws",
+  remote = WS_REMOTE,
+  extra: { createdByUserId?: string; createdByAgentId?: string } = {},
+): Promise<void> {
   // Project id from seedProject is "proj_1"; workspace KV key is project-scoped.
   await env.STATE.put(
     `workspace:proj_1:${name}`,
-    JSON.stringify({ name, remote, parent: "proj_1", createdAt: new Date().toISOString() }),
+    JSON.stringify({
+      name,
+      remote,
+      parent: "proj_1",
+      createdAt: new Date().toISOString(),
+      ...extra,
+    }),
   );
 }
 
@@ -601,5 +629,90 @@ describe("git smart-HTTP proxy — workspace read/write asymmetry & passthrough"
     expect(res.status).toBe(200);
     const [, init] = fetchMock.mock.calls[0] ?? [];
     expect((init.body as ArrayBuffer).byteLength).toBe(0);
+  });
+});
+
+// S1: within a project many principals may hold project-level write, but a
+// workspace fork belongs to its creator. Push must be gated per-workspace.
+// Keep the URL namespace (@owner/repo) so getProjectByPath resolves; only flip
+// the ownership to org so org access levels drive the authz.
+const ORG_OVERRIDES = { ownerId: "org_1", ownerType: "org" as const };
+
+describe("git smart-HTTP proxy — workspace write ownership (S1)", () => {
+  it("a project-writer who did NOT create the workspace is DENIED (404, no leak)", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private", ...ORG_OVERRIDES });
+    // Workspace created by user_owner; user_other has org write but is not creator.
+    await seedWorkspace(env, "myws", WS_REMOTE, { createdByUserId: "user_owner" });
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await app.fetch(
+      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(OTHER_TOKEN) }),
+      env,
+    );
+    expect(res.status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("the creator IS allowed to push their own workspace", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private", ...ORG_OVERRIDES });
+    // Workspace created by user_other (an org writer, not an admin).
+    await seedWorkspace(env, "myws", WS_REMOTE, { createdByUserId: "user_other" });
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await app.fetch(
+      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(OTHER_TOKEN) }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("a project admin (org admin) may push any workspace they did not create", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private", ...ORG_OVERRIDES });
+    // Created by user_other; user_owner is the org admin (override).
+    await seedWorkspace(env, "myws", WS_REMOTE, { createdByUserId: "user_other" });
+    stubFetch(() => okUpstream());
+    const res = await app.fetch(
+      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(OWNER_TOKEN) }),
+      env,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("an agent whose owner created the workspace IS allowed (shared principal)", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private", ...ORG_OVERRIDES });
+    // agent_1 is owned by user_owner; the workspace records user_owner as creator.
+    await seedWorkspace(env, "myws", WS_REMOTE, { createdByUserId: "user_owner" });
+    stubFetch(() => okUpstream());
+    const res = await app.fetch(
+      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(AGENT_TOKEN) }),
+      env,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("legacy workspace (no creator) + non-admin project-writer → DENIED", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private", ...ORG_OVERRIDES });
+    // No createdByUserId → fail closed to admins only; user_other is a writer.
+    await seedWorkspace(env, "myws", WS_REMOTE);
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await app.fetch(
+      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(OTHER_TOKEN) }),
+      env,
+    );
+    expect(res.status).toBe(404);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a non-creator writer can still CLONE (read is unaffected)", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private", ...ORG_OVERRIDES });
+    await seedWorkspace(env, "myws", WS_REMOTE, { createdByUserId: "user_owner" });
+    stubFetch(() => okUpstream());
+    const res = await app.fetch(req(WS_UPLOAD_ADV, { headers: basic(OTHER_TOKEN) }), env);
+    expect(res.status).toBe(200);
   });
 });

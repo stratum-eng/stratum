@@ -100,6 +100,32 @@ export async function getProject(
   );
 }
 
+/**
+ * Resolve a project by its stable id. Scans all projects (KV is keyed by
+ * namespace:slug, not id) and matches on id. The write paths that need this
+ * (workspace commit/delete) already clone+push, so this extra list is
+ * negligible next to the git round-trips. Returns NOT_FOUND when absent.
+ */
+export async function getProjectById(
+  kv: KVNamespace,
+  projectId: string,
+  logger: Logger,
+): Promise<Result<ProjectEntry, AppError>> {
+  logger.debug("Resolving project by id", { projectId });
+  const allResult = await listProjects(kv, logger);
+  if (!allResult.success) return allResult;
+
+  const match = allResult.data.find((project) => project.id === projectId);
+  if (match) return ok(match);
+
+  return err(
+    new AppError(`Project '${projectId}' not found`, "NOT_FOUND", 404, {
+      resource: "project",
+      projectId,
+    }),
+  );
+}
+
 // Set project using new namespace-aware key
 export async function setProject(
   kv: KVNamespace,
