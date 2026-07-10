@@ -29,6 +29,12 @@ import type { Env } from "../src/types";
 const env = { DB: {}, STATE: {}, ARTIFACTS: {} } as unknown as Env;
 const ctx = {} as unknown as DurableObjectState;
 
+function makeStorageCtx(): { ctx: DurableObjectState; deleteAll: ReturnType<typeof vi.fn> } {
+  const deleteAll = vi.fn(async () => {});
+  const storageCtx = { storage: { deleteAll } } as unknown as DurableObjectState;
+  return { ctx: storageCtx, deleteAll };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getChange).mockResolvedValue({
@@ -76,5 +82,25 @@ describe("MergeQueue records commit metrics", () => {
     const queue = new MergeQueue(ctx, env);
     const result = await queue.merge("chg_1");
     expect(result.success).toBe(true);
+  });
+});
+
+describe("MergeQueue.purge (deletion-cascade RPC)", () => {
+  it("wipes the DO's durable storage", async () => {
+    const { ctx: storageCtx, deleteAll } = makeStorageCtx();
+    const queue = new MergeQueue(storageCtx, env);
+
+    await queue.purge();
+
+    expect(deleteAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("is idempotent: purging twice in a row does not throw", async () => {
+    const { ctx: storageCtx, deleteAll } = makeStorageCtx();
+    const queue = new MergeQueue(storageCtx, env);
+
+    await queue.purge();
+    await expect(queue.purge()).resolves.toBeUndefined();
+    expect(deleteAll).toHaveBeenCalledTimes(2);
   });
 });

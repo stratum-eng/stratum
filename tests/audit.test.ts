@@ -109,6 +109,33 @@ describe("audit storage", () => {
     expect(byBoth.success && byBoth.data).toHaveLength(1);
   });
 
+  it("records the deletion.* action family (started/completed/incomplete)", async () => {
+    const { db, rows } = makeAuditD1();
+    await recordAudit(db, mockLogger, {
+      action: "deletion.started",
+      actorType: "system",
+      subject: "del_1",
+      detail: { kind: "project" },
+    });
+    await recordAudit(db, mockLogger, {
+      action: "deletion.incomplete",
+      actorType: "system",
+      subject: "del_1",
+      detail: { kind: "project", residuals: ["artifacts:x"] },
+    });
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.action)).toEqual(["deletion.started", "deletion.incomplete"]);
+    expect(rows[0]?.actor_type).toBe("system");
+    expect(rows[0]?.subject).toBe("del_1");
+
+    const listed = await listAuditLog(db, mockLogger, { action: "deletion.incomplete" });
+    expect(listed.success).toBe(true);
+    if (!listed.success) return;
+    expect(listed.data).toHaveLength(1);
+    expect(listed.data[0]?.detail).toEqual({ kind: "project", residuals: ["artifacts:x"] });
+  });
+
   it("never throws when the database fails", async () => {
     const badDb = {
       prepare: () => {

@@ -30,7 +30,11 @@ import type { Env } from "../src/types";
 
 const env = { DB: {}, STATE: {}, ARTIFACTS: {} } as unknown as Env;
 
-function makeCtx(): { ctx: DurableObjectState; store: Map<string, unknown> } {
+function makeCtx(): {
+  ctx: DurableObjectState;
+  store: Map<string, unknown>;
+  rows: Map<string, ArrayBuffer>;
+} {
   const store = new Map<string, unknown>();
   // Minimal in-memory stand-in for the DO's SQLite — pattern-matches the exact
   // statements RepoDO's hot index issues.
@@ -54,11 +58,17 @@ function makeCtx(): { ctx: DurableObjectState; store: Map<string, unknown> } {
       put: async (k: string, v: unknown) => {
         store.set(k, v);
       },
+      // Mirrors real DO storage: deleteAll() wipes both the KV-style store and
+      // the local SQLite rows the hot index writes.
+      deleteAll: async () => {
+        store.clear();
+        rows.clear();
+      },
       sql,
     },
     blockConcurrencyWhile: <T>(fn: () => Promise<T>): Promise<T> => fn(),
   } as unknown as DurableObjectState;
-  return { ctx, store };
+  return { ctx, store, rows };
 }
 
 function setChange(baseSha?: string) {
@@ -248,5 +258,73 @@ describe("RepoDO hot index (staged trees in local SQLite)", () => {
     await repo.stageTree("a", bytes([1]));
     await repo.gcStagedTrees([]);
     expect(await repo.getStagedTrees(["a"])).toHaveLength(1);
+  });
+});
+
+describe("RepoDO.purge (deletion-cascade RPC)", () => {
+  const bytes = (arr: number[]) => new Uint8Array(arr).buffer;
+
+  it("wipes durable storage (ref cache + hot index) and in-memory bench/warm state", async () => {
+    const { ctx, store, rows } = makeCtx();
+    const bucket = { put: async () => {} };
+    const repo = new RepoDO(ctx, { ...env, REPO_OBJECTS: bucket } as unknown as Env);
+
+    // Populate every kind of state purge() is responsible for clearing.
+    store.set("head", "base1");
+    await repo.stageTree("ws_1", bytes([1, 2, 3]));
+    await repo.benchCommit("a.txt", 16);
+    expect(rows.size).toBe(1);
+    expect(store.size).toBeGreaterThan(0);
+    expect(repo.benchStats().landed).toBe(1);
+
+    await repo.purge();
+
+    expect(store.size).toBe(0);
+    expect(rows.size).toBe(0);
+    const stats = repo.benchStats();
+    expect(stats).toEqual({
+      head: undefined,
+      batches: 0,
+      landed: 0,
+      conflictsResolved: 0,
+      treeSize: 0,
+    });
+  });
+
+  it("a purged repo no longer fast-forwards off the old cached head", async () => {
+    const { ctx, store } = makeCtx();
+    const repo = new RepoDO(ctx, env);
+    store.set("head", "base1");
+
+    await repo.purge();
+    expect(store.get("head")).toBeUndefined();
+
+    const result = await repo.advance("chg_1");
+    expect(result).toEqual({ success: true, commit: "merge-commit" });
+    expect(fastForwardMerge).not.toHaveBeenCalled();
+    expect(mergeWorkspaceIntoProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("the staged-tree hot index is empty after purge, but usable again afterward", async () => {
+    const { ctx } = makeCtx();
+    const repo = new RepoDO(ctx, env);
+    await repo.stageTree("ws_1", bytes([9]));
+    expect(await repo.getStagedTrees(["ws_1"])).toHaveLength(1);
+
+    await repo.purge();
+    expect(await repo.getStagedTrees(["ws_1"])).toHaveLength(0);
+
+    // A warm instance surviving the purge must still be able to serve a repo
+    // reused under the same name — re-staging must not throw.
+    await repo.stageTree("ws_1", bytes([7]));
+    const out = await repo.getStagedTrees(["ws_1"]);
+    expect([...(out[0]?.value ?? [])]).toEqual([7]);
+  });
+
+  it("is idempotent: purging twice in a row does not throw", async () => {
+    const { ctx } = makeCtx();
+    const repo = new RepoDO(ctx, env);
+    await repo.purge();
+    await expect(repo.purge()).resolves.toBeUndefined();
   });
 });
