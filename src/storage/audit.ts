@@ -12,7 +12,8 @@ export type AuditAction =
   | "webhook.created"
   | "webhook.toggled"
   | "webhook.deleted"
-  | "merge.forced";
+  | "merge.forced"
+  | "backup.run";
 
 export interface AuditEntry {
   id: string;

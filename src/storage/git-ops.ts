@@ -204,6 +204,38 @@ export async function freshRepoToken(
   return ok(minted.data.plaintext);
 }
 
+/**
+ * Push the local `main` ref (its objects + the ref) to an Artifacts remote.
+ * Used by backup restore to publish a reconstructed repo. `force` overwrites a
+ * non-empty remote (restore-over-existing behind an explicit opt-in).
+ */
+export async function pushMain(
+  remote: string,
+  token: string,
+  fs: NodeFS,
+  dir: string,
+  logger: Logger,
+  opts?: { force?: boolean },
+): Promise<Result<void, AppError>> {
+  const res = await fromPromise(
+    git.push({
+      fs,
+      dir,
+      http,
+      url: remote,
+      ref: "main",
+      remoteRef: "main",
+      onAuth: makeAuth(token),
+      force: opts?.force ?? false,
+    }),
+  );
+  if (!res.success) {
+    logger.error("Failed to push main during restore", res.error, { remote });
+    return err(new ExternalServiceError("Git", "Failed to push during restore", res.error));
+  }
+  return ok(undefined);
+}
+
 export async function initAndPush(
   remote: string,
   token: string,

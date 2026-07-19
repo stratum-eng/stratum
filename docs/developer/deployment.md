@@ -40,7 +40,18 @@ id = "your-kv-id"
 binding = "DB"
 database_name = "stratum"
 database_id = "your-d1-id"
+
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "stratum-backups"
 ```
+
+Backups also read these optional vars (see the
+[backup/restore runbook](../runbooks/backup-restore.md)):
+`BACKUP_ENCRYPTION_SECRET` (set in production — encrypts backup blobs),
+`BACKUP_RETENTION` (runs to keep, default 14), `MAX_REPOS_PER_RUN` (default 25),
+`MAX_BACKUP_BYTES` (per-repo budget, default 128 MiB). The daily backup runs on
+the `0 6 * * *` cron.
 
 ### Staging
 
@@ -60,7 +71,15 @@ id = "your-staging-kv-id"
 binding = "DB"
 database_name = "stratum-staging"
 database_id = "your-staging-d1-id"
+
+[[env.staging.r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "stratum-backups-staging"
 ```
+
+Staging has no backup cron; trigger runs manually via `POST /api/admin/backup`
+to validate the restore path (including the Artifacts push, which CI cannot
+cover).
 
 ## Deployment Process
 
@@ -269,6 +288,10 @@ npx wrangler secret put EMAIL_FROM_ADDRESS
 
 # Analytics
 npx wrangler secret put POSTHOG_API_KEY
+
+# Backups — encrypts backup blobs at rest (D1 dumps contain secrets).
+# Restore requires this exact value; do not rotate without retaining the old one.
+npx wrangler secret put BACKUP_ENCRYPTION_SECRET
 ```
 
 **Staging:**

@@ -57,6 +57,12 @@ migrations_dir = "migrations"
 binding = "ANALYTICS"
 dataset = "stratum_requests"
 
+# Durable backup store (D1 dumps, KV identity, repo packs). Provision with:
+#   wrangler r2 bucket create stratum-backups
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "stratum-backups"
+
 [ai]
 binding = "AI"
 
@@ -169,6 +175,10 @@ migrations_dir = "migrations"
 binding = "ANALYTICS"
 dataset = "stratum_requests"
 
+[[env.production.r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "stratum-backups"
+
 [env.production.ai]
 binding = "AI"
 
@@ -265,6 +275,10 @@ migrations_dir = "migrations"
 [[env.staging.analytics_engine_datasets]]
 binding = "ANALYTICS"
 dataset = "stratum_requests"
+
+[[env.staging.r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "stratum-backups-staging"
 
 [env.staging.ai]
 binding = "AI"

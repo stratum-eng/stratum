@@ -133,6 +133,17 @@ export interface Env {
   REPO_DO?: DurableObjectNamespace;
   /** Content-addressed git object plane (ADR 004 Phase 2). */
   REPO_OBJECTS?: R2Bucket;
+  /** Durable backup store (D1 dumps, KV identity, repo packs). Optional: when
+   * unbound the backup subsystem no-ops. See docs/runbooks/backup-restore.md. */
+  BACKUPS?: R2Bucket;
+  /** When set, backup blobs are envelope-encrypted at rest with this secret. */
+  BACKUP_ENCRYPTION_SECRET?: string;
+  /** Number of complete backup runs to retain (default 14). */
+  BACKUP_RETENTION?: string;
+  /** Max repos snapshotted per backup run; the rest defer to a later run (default 25). */
+  MAX_REPOS_PER_RUN?: string;
+  /** Skip a repo whose reachable object bytes exceed this (default 128MB). */
+  MAX_BACKUP_BYTES?: string;
   /** Gates the RepoDO fast-forward path (ADR 004). Off -> classic cold merge. */
   REPO_DO_ENABLED?: string;
   EVENTS_QUEUE?: Queue;
