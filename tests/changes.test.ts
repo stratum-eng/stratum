@@ -986,6 +986,42 @@ describe("POST /api/changes/:id/merge", () => {
     expect(mergeWorkspaceIntoProject).toHaveBeenCalled();
   });
 
+  it("SEC-2: pins the cold merge to the evaluated sha (expectedWorkspaceSha)", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted", evaluatedSha: "sha_head" },
+    });
+
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/merge", undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const opts = vi.mocked(mergeWorkspaceIntoProject).mock.calls[0]?.[5] as {
+      expectedWorkspaceSha?: string;
+    };
+    expect(opts.expectedWorkspaceSha).toBe("sha_head");
+  });
+
+  it("SEC-2: maps a STALE_WORKSPACE cold-merge error to 409", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted", evaluatedSha: "sha_head" },
+    });
+    vi.mocked(mergeWorkspaceIntoProject).mockResolvedValue({
+      success: false,
+      error: new AppError("Workspace changed since evaluation", "STALE_WORKSPACE", 409),
+    });
+
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/merge", undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("STALE_WORKSPACE");
+  });
+
   it("returns 401 when unauthenticated", async () => {
     const approvedChange: Change = { ...mockChange, status: "accepted" };
     vi.mocked(getChange).mockResolvedValue({

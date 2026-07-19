@@ -798,7 +798,13 @@ app.post("/changes/:id/merge", async (c) => {
     workspace.remote,
     workspaceMergeToken.data,
     logger,
-    { strategy },
+    {
+      strategy,
+      // SEC-2: the cold path merges the freshly-fetched tip, so pin it to the
+      // evaluated sha (content-address check, applies even under force). Legacy
+      // changes with no evaluatedSha skip it.
+      ...(change.evaluatedSha !== undefined ? { expectedWorkspaceSha: change.evaluatedSha } : {}),
+    },
   );
   if (!mergeResult.success) {
     if (mergeResult.error instanceof MergeConflictError) {
@@ -830,6 +836,9 @@ app.post("/changes/:id/merge", async (c) => {
         },
         409,
       );
+    }
+    if (mergeResult.error.code === "STALE_WORKSPACE") {
+      return c.json({ error: mergeResult.error.message, code: "STALE_WORKSPACE" }, 409);
     }
     logger.error("Failed to merge workspace into project", mergeResult.error);
     return badRequest(mergeResult.error.message);

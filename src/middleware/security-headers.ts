@@ -17,21 +17,23 @@ import type { Env } from "../types";
  */
 export const securityHeadersMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   // Register headers BEFORE next() so they survive on the response even if a
-  // downstream handler throws and the error boundary produces the 500.
-  if (isGitHttpPath(c.req.path)) {
-    await next();
-    return;
-  }
+  // downstream handler throws and the error boundary produces the 500. Git
+  // smart-HTTP responses are not HTML and must stay untouched, so they are
+  // skipped — the single await next() below still runs for them.
+  if (!isGitHttpPath(c.req.path)) {
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("X-Frame-Options", "DENY");
+    c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+    c.header(
+      "Content-Security-Policy",
+      "frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+    );
 
-  c.header("X-Content-Type-Options", "nosniff");
-  c.header("X-Frame-Options", "DENY");
-  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
-  c.header("Content-Security-Policy", "frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
-
-  // HSTS only over HTTPS (a plain-HTTP response with HSTS is ignored by browsers
-  // and pointless; local http dev must stay usable).
-  if (new URL(c.req.url).protocol === "https:") {
-    c.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    // HSTS only over HTTPS (a plain-HTTP response with HSTS is ignored by
+    // browsers and pointless; local http dev must stay usable).
+    if (new URL(c.req.url).protocol === "https:") {
+      c.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
   }
 
   await next();

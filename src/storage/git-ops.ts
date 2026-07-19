@@ -114,6 +114,10 @@ export interface MergeWorkspaceOptions {
   strategy?: MergeStrategy;
   /** Optional Phase 0 instrumentation; populates per-phase spans when present. */
   timer?: PhaseTimer;
+  /** SEC-2: if set, the fetched workspace tip must equal this (the sha that was
+   * evaluated). Aborts the merge with STALE_WORKSPACE otherwise, closing the
+   * window between the route's pre-merge check and this fetch. */
+  expectedWorkspaceSha?: string;
 }
 
 export class MergeConflictError extends AppError {
@@ -433,6 +437,25 @@ export async function mergeWorkspaceIntoProject(
       );
     }
     workspaceSha = resolveRemoteResult.data;
+  }
+
+  // SEC-2: content is content-addressed on the staged paths; the cold path merges
+  // the freshly-fetched tip, so verify it is exactly the sha that was evaluated
+  // before merging. Closes the TOCTOU between the route's pre-merge tip check and
+  // this fetch.
+  if (options.expectedWorkspaceSha !== undefined && workspaceSha !== options.expectedWorkspaceSha) {
+    logger.warn("Workspace tip changed since evaluation; aborting cold merge", {
+      workspaceRemote,
+      expected: options.expectedWorkspaceSha,
+      actual: workspaceSha,
+    });
+    return err(
+      new AppError(
+        "Workspace changed since evaluation: tip does not match the evaluated revision",
+        "STALE_WORKSPACE",
+        409,
+      ),
+    );
   }
 
   if (options.strategy === "squash") {
