@@ -493,7 +493,7 @@ describe("loadPolicy", () => {
     expect(policy.evaluators[0]).toMatchObject({ type: "diff", maxLines: 100 });
   });
 
-  it("returns DEFAULT_POLICY on invalid JSON", async () => {
+  it("fails closed (configError) on a present-but-invalid JSON policy", async () => {
     mockReadFileFromRepo
       .mockResolvedValueOnce({
         success: false,
@@ -504,10 +504,22 @@ describe("loadPolicy", () => {
         data: "not { valid json",
       });
     const policy = await loadPolicy("https://repo.example.com", "tok", mockLogger);
+    // Evaluators still default so the change flow works, but the merge gate is
+    // marked failed-closed rather than silently downgraded.
     expect(policy.evaluators).toEqual([{ type: "diff" }]);
+    expect(policy.configError).toMatch(/invalid/i);
   });
 
-  it("returns DEFAULT_POLICY when evaluators is missing", async () => {
+  it("does NOT set configError when the policy file is simply absent", async () => {
+    mockReadFileFromRepo.mockResolvedValue({
+      success: false,
+      error: new AppError("missing", "NOT_FOUND", 404),
+    });
+    const policy = await loadPolicy("https://repo.example.com", "tok", mockLogger);
+    expect(policy.configError).toBeUndefined();
+  });
+
+  it("fails closed when a present policy is missing 'evaluators'", async () => {
     mockReadFileFromRepo
       .mockResolvedValueOnce({
         success: false,
@@ -519,6 +531,7 @@ describe("loadPolicy", () => {
       });
     const policy = await loadPolicy("https://repo.example.com", "tok", mockLogger);
     expect(policy.evaluators).toEqual([{ type: "diff" }]);
+    expect(policy.configError).toBeDefined();
   });
 
   it("returns DEFAULT_POLICY when readFileFromRepo throws", async () => {

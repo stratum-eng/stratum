@@ -81,6 +81,20 @@ describe("checkMergeProtection", () => {
     expect(result.success && result.data.allowed).toBe(true);
   });
 
+  it("blocks (fail closed) when the policy file is malformed", async () => {
+    const db = makeProtectionD1({});
+    const policy: EvalPolicy = {
+      evaluators: [{ type: "diff" }],
+      configError: "Policy file .stratum/policy.yaml is present but invalid (bad); merges blocked.",
+    };
+
+    const result = await checkMergeProtection(db, mockLogger, change, policy);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.allowed).toBe(false);
+    expect(result.data.reasons[0]).toMatch(/invalid/i);
+  });
+
   it("blocks when a required evaluator has not run", async () => {
     const db = makeProtectionD1({ runs: [] });
     const policy: EvalPolicy = { evaluators: [], merge: { requiredEvaluators: ["secret_scan"] } };

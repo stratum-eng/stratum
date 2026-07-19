@@ -20,6 +20,10 @@ export interface EvalPolicy {
   requireAll?: boolean;
   minScore?: number;
   merge?: MergePolicy;
+  /** Set when a policy file is present but malformed. The merge gate treats this
+   * as fail-closed (blocks) rather than silently running on the default, so a
+   * typo in a stricter policy can't quietly downgrade governance. */
+  configError?: string;
 }
 
 /**

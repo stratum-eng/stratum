@@ -24,6 +24,12 @@ export async function checkMergeProtection(
   change: Change,
   policy: EvalPolicy,
 ): Promise<Result<ProtectionVerdict, AppError>> {
+  // Fail closed on a malformed policy file rather than silently running on the
+  // permissive default.
+  if (policy.configError) {
+    return ok({ allowed: false, reasons: [policy.configError] });
+  }
+
   const merge = policy.merge;
   if (!merge) return ok({ allowed: true, reasons: [] });
 

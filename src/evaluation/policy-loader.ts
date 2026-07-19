@@ -9,24 +9,39 @@ const DEFAULT_POLICY: EvalPolicy = {
   minScore: 0.7,
 };
 
+type PolicyLoad =
+  | { status: "ok"; policy: EvalPolicy }
+  | { status: "absent" }
+  | { status: "malformed"; reason: string };
+
 export async function loadPolicy(
   remote: string,
   token: string,
   logger: Logger,
 ): Promise<EvalPolicy> {
-  const yamlPolicy = await readAndParsePolicy(
-    remote,
-    token,
-    ".stratum/policy.yaml",
-    "yaml",
-    logger,
-  );
-  if (yamlPolicy) return yamlPolicy;
+  const yaml = await readAndParsePolicy(remote, token, ".stratum/policy.yaml", "yaml", logger);
+  if (yaml.status === "ok") return yaml.policy;
+  if (yaml.status === "malformed")
+    return malformedPolicy(".stratum/policy.yaml", yaml.reason, logger);
 
-  const jsonPolicy = await readAndParsePolicy(remote, token, "stratum.config.json", "json", logger);
-  if (jsonPolicy) return jsonPolicy;
+  const json = await readAndParsePolicy(remote, token, "stratum.config.json", "json", logger);
+  if (json.status === "ok") return json.policy;
+  if (json.status === "malformed")
+    return malformedPolicy("stratum.config.json", json.reason, logger);
 
   return DEFAULT_POLICY;
+}
+
+/**
+ * A policy file was present but unparseable. Do NOT silently fall back to the
+ * permissive default — log loudly and carry a configError so the merge gate
+ * fails closed until the file is fixed. Evaluation still runs (on the default
+ * evaluators) so the change flow isn't wholly broken by a typo.
+ */
+function malformedPolicy(path: string, reason: string, logger: Logger): EvalPolicy {
+  const configError = `Policy file ${path} is present but invalid (${reason}); merges are blocked until it is fixed.`;
+  logger.error("Malformed policy file — failing merge gate closed", undefined, { path, reason });
+  return { ...DEFAULT_POLICY, configError };
 }
 
 async function readAndParsePolicy(
@@ -35,19 +50,19 @@ async function readAndParsePolicy(
   path: string,
   format: "json" | "yaml",
   logger: Logger,
-): Promise<EvalPolicy | null> {
+): Promise<PolicyLoad> {
   try {
     const contentResult = await readFileFromRepo(remote, token, path, logger);
-    if (!contentResult.success) return null;
+    if (!contentResult.success) return { status: "absent" };
 
     const content = contentResult.data;
-    if (content === null || content === undefined) return null;
+    if (content === null || content === undefined) return { status: "absent" };
 
     let parsed: unknown;
     try {
       parsed = format === "json" ? JSON.parse(content) : YAML.parse(content);
-    } catch {
-      return null;
+    } catch (e) {
+      return { status: "malformed", reason: e instanceof Error ? e.message : "parse error" };
     }
 
     if (
@@ -56,17 +71,23 @@ async function readAndParsePolicy(
       !("evaluators" in parsed) ||
       !Array.isArray((parsed as Record<string, unknown>).evaluators)
     ) {
-      return null;
+      return { status: "malformed", reason: "missing or non-array 'evaluators'" };
     }
 
     const merge = sanitizeMergePolicy((parsed as Record<string, unknown>).merge);
-    const { merge: _unsanitized, ...policy } = {
+    const {
+      merge: _unsanitized,
+      configError: _ce,
+      ...policy
+    } = {
       ...DEFAULT_POLICY,
       ...(parsed as Partial<EvalPolicy>),
     };
-    return merge ? { ...policy, merge } : policy;
+    return { status: "ok", policy: merge ? { ...policy, merge } : policy };
   } catch {
-    return null;
+    // A read error (not a parse error) — treat as absent so a transient repo-read
+    // blip doesn't block every merge.
+    return { status: "absent" };
   }
 }
 
