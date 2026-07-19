@@ -71,6 +71,10 @@ async function deliverToWebhook(
       },
       body,
       signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS),
+      // Don't follow a redirect that could point at an internal address after
+      // the create-time URL check; an opaque-redirect response is `ok === false`
+      // and recorded as a failed delivery below.
+      redirect: "manual",
     });
 
     await recordDelivery(db, logger, {

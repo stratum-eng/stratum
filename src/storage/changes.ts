@@ -14,6 +14,9 @@ interface ChangeRow {
   eval_passed: number | null;
   eval_reason: string | null;
   base_sha: string | null;
+  evaluated_sha: string | null;
+  agent_model: string | null;
+  agent_prompt_hash: string | null;
   created_at: string;
   merged_at: string | null;
   github_owner: string | null;
@@ -41,6 +44,9 @@ function rowToChange(row: ChangeRow): Change {
   if (row.eval_passed !== null) change.evalPassed = row.eval_passed === 1;
   if (row.eval_reason !== null) change.evalReason = row.eval_reason;
   if (row.base_sha !== null) change.baseSha = row.base_sha;
+  if (row.evaluated_sha !== null) change.evaluatedSha = row.evaluated_sha;
+  if (row.agent_model !== null) change.agentModel = row.agent_model;
+  if (row.agent_prompt_hash !== null) change.agentPromptHash = row.agent_prompt_hash;
   if (row.merged_at !== null) change.mergedAt = row.merged_at;
   if (row.github_owner !== null) change.githubOwner = row.github_owner;
   if (row.github_repo !== null) change.githubRepo = row.github_repo;
@@ -63,6 +69,8 @@ export async function createChange(
     workspace: string;
     agentId?: string;
     baseSha?: string;
+    agentModel?: string;
+    agentPromptHash?: string;
   },
 ): Promise<Result<Change, AppError>> {
   const id = newId("chg");
@@ -71,7 +79,7 @@ export async function createChange(
   try {
     await db
       .prepare(
-        "INSERT INTO changes (id, project, workspace, status, agent_id, base_sha, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO changes (id, project, workspace, status, agent_id, base_sha, agent_model, agent_prompt_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         id,
@@ -80,6 +88,8 @@ export async function createChange(
         "open",
         opts.agentId ?? null,
         opts.baseSha ?? null,
+        opts.agentModel ?? null,
+        opts.agentPromptHash ?? null,
         createdAt,
       )
       .run();
@@ -93,6 +103,8 @@ export async function createChange(
     };
     if (opts.agentId !== undefined) change.agentId = opts.agentId;
     if (opts.baseSha !== undefined) change.baseSha = opts.baseSha;
+    if (opts.agentModel !== undefined) change.agentModel = opts.agentModel;
+    if (opts.agentPromptHash !== undefined) change.agentPromptHash = opts.agentPromptHash;
 
     logger.debug("Change created", {
       changeId: id,
@@ -248,6 +260,7 @@ export async function updateChangeStatus(
     evalScore?: number;
     evalPassed?: boolean;
     evalReason?: string;
+    evaluatedSha?: string;
     mergedAt?: string;
     githubOwner?: string;
     githubRepo?: string;
@@ -287,6 +300,7 @@ export async function updateChangeStatus(
       opts?.evalPassed !== undefined ? (opts.evalPassed ? 1 : 0) : undefined,
     );
     addOptional("eval_reason", opts?.evalReason);
+    addOptional("evaluated_sha", opts?.evaluatedSha);
     addOptional("merged_at", opts?.mergedAt);
     addOptional("github_owner", opts?.githubOwner);
     addOptional("github_repo", opts?.githubRepo);

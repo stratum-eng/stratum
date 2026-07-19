@@ -197,6 +197,19 @@ describe("deliverEventToWebhooks", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("SEC-6: sends redirect:manual and records a 3xx as a failed delivery", async () => {
+    const { env, deliveries } = await setup();
+    fetchMock.mockResolvedValue(new Response(null, { status: 302 }));
+
+    await deliverEventToWebhooks(env, makeEvent(), mockLogger);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.redirect).toBe("manual");
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.status).toBe("failed");
+    expect(deliveries[0]?.status_code).toBe(302);
+  });
+
   it("skips inactive webhooks", async () => {
     const { env, db, webhook } = await setup();
     await setWebhookActive(db, mockLogger, webhook.id, false);

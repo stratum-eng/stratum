@@ -1,65 +1,16 @@
 import { Hono } from "hono";
 import { importFromGitHub } from "../storage/git-ops";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
-import { getProject, listProjects, setProject } from "../storage/state";
-import type { Env, ProjectEntry } from "../types";
+import { listProjects } from "../storage/state";
+import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
-import { badRequest, notFound, ok } from "../utils/response";
-import { isValidGitHubUrl } from "../utils/validation";
 
+// The former unauthenticated `POST /projects/:name/sync` handler was removed: it
+// let any caller repoint a project's githubUrl and trigger a destructive
+// re-import with no auth check. The authenticated, namespaced equivalent lives
+// in sync-management.ts. This router is kept as an empty mount so the
+// co-located syncAllProjects cron helper below keeps its import path.
 const app = new Hono<{ Bindings: Env }>();
-
-app.post("/projects/:name/sync", async (c) => {
-  const { name } = c.req.param();
-  const logger = createLogger({
-    path: c.req.path,
-    projectName: name,
-  });
-
-  const projectResult = await getProject(c.env.STATE, name, logger);
-  if (!projectResult.success) {
-    logger.warn("Project not found for sync", { name });
-    return notFound("Project", name);
-  }
-  const project = projectResult.data;
-
-  const body = await c.req.json<{ githubUrl?: unknown }>().catch(() => ({}));
-
-  let githubUrl = project.githubUrl;
-
-  if ("githubUrl" in body) {
-    if (!isValidGitHubUrl(body.githubUrl)) {
-      logger.warn("Invalid GitHub URL provided", { githubUrl: body.githubUrl });
-      return badRequest("githubUrl must be a valid github.com repository URL");
-    }
-    githubUrl = body.githubUrl;
-    const updated: ProjectEntry = { ...project, githubUrl };
-    const setResult = await setProject(c.env.STATE, updated, logger);
-    if (!setResult.success) {
-      logger.error("Failed to update project with GitHub URL", setResult.error, {
-        name,
-        githubUrl,
-      });
-      return c.json({ error: "Failed to update project" }, 500);
-    }
-  }
-
-  if (!githubUrl) {
-    logger.warn("No GitHub URL set for project", { name });
-    return badRequest("no githubUrl set for this project — provide one in the request body");
-  }
-
-  logger.info("Starting GitHub import", { name, githubUrl });
-  const importResult = await importFromGitHub(c.env.ARTIFACTS, name, githubUrl, logger);
-
-  if (!importResult.success) {
-    logger.error("GitHub import failed", importResult.error, { name, githubUrl });
-    return c.json({ error: "Failed to import from GitHub" }, 500);
-  }
-
-  logger.info("GitHub import completed", { name, githubUrl, remote: importResult.data.remote });
-  return ok({ synced: true, project: name, source: githubUrl });
-});
 
 export { app as syncRouter };
 

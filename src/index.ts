@@ -5,6 +5,7 @@ import { analyticsMiddleware } from "./middleware/analytics";
 import { authMiddleware } from "./middleware/auth";
 import { csrfMiddleware } from "./middleware/csrf";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
+import { securityHeadersMiddleware } from "./middleware/security-headers";
 import { handleEventQueue, sweepStaleEvents } from "./queue/event-consumer";
 import type { EventQueueMessage } from "./queue/events";
 import { handleImportQueue } from "./queue/import-queue";
@@ -41,6 +42,7 @@ export { RepoDO } from "./queue/repo-do";
 
 const app = new Hono<{ Bindings: Env }>();
 
+app.use("*", securityHeadersMiddleware);
 app.use("*", analyticsMiddleware);
 app.use("*", authMiddleware);
 app.use("*", csrfMiddleware);
@@ -53,7 +55,12 @@ app.get("/dev-login", async (c) => {
   const logger = createLogger({ path: c.req.path, method: c.req.method });
 
   try {
-    // Only allow in local development
+    // Gated on an explicit opt-in flag AND a localhost request host, so the
+    // route is inert in staging/production (where DEV_LOGIN_ENABLED is unset)
+    // even if a request somehow presents a localhost authority.
+    if (c.env.DEV_LOGIN_ENABLED !== "true") {
+      return c.json({ error: "Dev login is not enabled" }, 403);
+    }
     const url = new URL(c.req.url);
     if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
       return c.json({ error: "Dev login only available in local development" }, 403);
@@ -170,6 +177,10 @@ app.onError((err, c) => {
     path: c.req.path,
     method: c.req.method,
   });
+  // The security-headers middleware runs after next(), so a thrown error skips it;
+  // set nosniff + anti-framing on the error response too (defense in depth).
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("X-Frame-Options", "DENY");
   return c.json({ error: "Internal server error" }, 500);
 });
 

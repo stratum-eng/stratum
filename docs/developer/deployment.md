@@ -289,6 +289,24 @@ npx wrangler secret list --env=staging
 
 ⚠️ **Note:** Secret values cannot be retrieved after setting.
 
+### Dev-login (local only)
+
+`GET /dev-login` mints a session without credentials and is gated on the
+`DEV_LOGIN_ENABLED` var being `"true"` **and** a localhost request host. It is set
+in the top-level `[vars]` for local `wrangler dev`; named environments do not
+inherit top-level vars, so staging and production leave it unset and the route is
+inert there. Do **not** set `DEV_LOGIN_ENABLED` in `[env.production]` /
+`[env.staging]`.
+
+### Security headers
+
+All non-git responses carry `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, HSTS
+(over HTTPS), and a CSP of `frame-ancestors 'none'; object-src 'none'; base-uri
+'self'`. The CSP intentionally omits `script-src`: the server-rendered UI uses
+inline event handlers that a `script-src` policy would break. Git smart-HTTP
+responses are exempt.
+
 ## Monitoring Deployments
 
 ### Logs

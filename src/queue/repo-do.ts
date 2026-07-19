@@ -258,6 +258,8 @@ export class RepoDO extends DurableObject<Env> {
       changeId,
       ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
       ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+      ...(change.agentModel !== undefined ? { model: change.agentModel } : {}),
+      ...(change.agentPromptHash !== undefined ? { promptHash: change.agentPromptHash } : {}),
     });
     if (!provenanceResult.success) {
       log.error("Failed to record provenance after R2 merge", provenanceResult.error);
@@ -456,6 +458,8 @@ export class RepoDO extends DurableObject<Env> {
           changeId,
           ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
           ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+          ...(change.agentModel !== undefined ? { model: change.agentModel } : {}),
+          ...(change.agentPromptHash !== undefined ? { promptHash: change.agentPromptHash } : {}),
         }),
       );
       if (!provenanceResult.success) {

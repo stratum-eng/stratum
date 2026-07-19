@@ -215,6 +215,45 @@ describe("WebhookEvaluator", () => {
     }
   });
 
+  it("SEC-6: rejects a private-host URL without fetching (fail-closed)", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const policy = makePolicy({
+      evaluators: [{ type: "webhook", url: "http://169.254.169.254/latest/meta-data" }],
+    });
+    const result = await evaluator.evaluate("diff content", policy, mockLogger);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.passed).toBe(false);
+      expect(result.data.score).toBe(0);
+      expect(result.data.reason).toMatch(/not allowed/i);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("SEC-6: passes redirect:manual to fetch and fails a redirect response closed", async () => {
+    let capturedInit: RequestInit = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+        capturedInit = init;
+        // A 3xx followed manually surfaces as an opaque redirect: ok === false.
+        return Promise.resolve({ ok: false, status: 302, json: async () => ({}) });
+      }),
+    );
+
+    const policy = makePolicy({
+      evaluators: [{ type: "webhook", url: "https://example.com/eval" }],
+    });
+    const result = await evaluator.evaluate("diff content", policy, mockLogger);
+    expect(capturedInit.redirect).toBe("manual");
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.passed).toBe(false);
+    }
+  });
+
   it("returns failed result when fetch throws (timeout)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("The operation was aborted")));
 

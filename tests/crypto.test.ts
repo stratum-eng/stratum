@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { generateApiKey, hashToken, verifyToken } from "../src/utils/crypto";
+import { constantTimeEqual, generateApiKey, hashToken, verifyToken } from "../src/utils/crypto";
+
+describe("constantTimeEqual", () => {
+  it("returns true for identical strings", () => {
+    expect(constantTimeEqual("s3cret-key", "s3cret-key")).toBe(true);
+  });
+
+  it("returns false for same-length strings that differ", () => {
+    expect(constantTimeEqual("s3cret-key", "s3cret-kez")).toBe(false);
+  });
+
+  it("returns false for different-length strings", () => {
+    expect(constantTimeEqual("short", "longer-value")).toBe(false);
+  });
+
+  it("returns true for two empty strings", () => {
+    expect(constantTimeEqual("", "")).toBe(true);
+  });
+});
 
 describe("hashToken", () => {
   it("returns a 64-character hex string", async () => {

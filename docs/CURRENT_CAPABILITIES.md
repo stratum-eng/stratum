@@ -7,7 +7,9 @@ Last updated: 2026-06-11 — reflects completion of the master-plan feature road
 
 - Cloudflare Worker (Hono) on Artifacts, KV, D1, Queues, and a merge Durable Object.
 - Project create/import (GitHub/GitLab/Bitbucket), workspace fork/commit/delete,
-  change creation with synchronous evaluation, evaluation-gated merge, provenance.
+  change creation with synchronous evaluation, evaluation-gated merge, provenance
+  (records the agent, the model and prompt hash snapshotted at change creation, and
+  the eval score per merged commit; full per-evaluator evidence is linked by change).
 - Project resolution accepts namespace/slug refs, legacy names, and falls back to a
   scan — the change/review APIs work for all project generations.
 - Org-owned projects: org membership grants read; org owner/admin role or a
@@ -19,8 +21,11 @@ Last updated: 2026-06-11 — reflects completion of the master-plan feature road
   sandbox (Sandboxes binding; fails closed when absent). Per-change evaluator
   evidence and estimated resource costs (LLM tokens, sandbox time, git ops).
 - Branch protection in `.stratum/policy.yaml` (`merge:`): required evaluators
-  (latest run per type), required human approvals, force-merge control, and
-  `requireFreshBase` staleness rejection (409 STALE_BASE).
+  (latest run per type), required human approvals, force-merge control
+  (**deny-by-default** — force is only allowed when the policy sets
+  `merge.allowForce: true`), and staleness rejection: `requireFreshBase` blocks a
+  moved project base (409 STALE_BASE), and a merge is rejected if the workspace
+  advanced since it was evaluated (409 STALE_WORKSPACE).
 - Post-merge smoke command in a sandbox with auto-revert (forward revert commit,
   change marked `reverted`, `change.reverted` event).
 - Human reviews (approve / request changes) move the change state machine and are

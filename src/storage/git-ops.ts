@@ -1782,7 +1782,7 @@ export async function getDiffBetweenRepos(
   workspaceRemote: string,
   workspaceToken: string,
   logger: Logger,
-): Promise<Result<string, AppError>> {
+): Promise<Result<{ diff: string; workspaceOid: string }, AppError>> {
   logger.debug("Getting diff between repos", { baseRemote, workspaceRemote });
 
   const [workspaceCloneResult, baseCloneResult] = await Promise.all([
@@ -1793,8 +1793,19 @@ export async function getDiffBetweenRepos(
   if (!workspaceCloneResult.success) return err(workspaceCloneResult.error);
   if (!baseCloneResult.success) return err(baseCloneResult.error);
 
-  const { fs: workspaceFs } = workspaceCloneResult.data;
+  const { fs: workspaceFs, dir: workspaceDir } = workspaceCloneResult.data;
   const { fs: baseFs } = baseCloneResult.data;
+
+  // Resolve the workspace tip from the SAME clone the diff is computed against,
+  // so callers can pin evaluation to this exact revision (SEC-2). Resolving it
+  // separately would open a TOCTOU window between the diff and the pin.
+  const workspaceOidResult = await fromPromise(
+    git.resolveRef({ fs: workspaceFs, dir: workspaceDir, ref: "main" }),
+  );
+  if (!workspaceOidResult.success) {
+    return err(new AppError("Failed to resolve workspace tip for diff", "GIT_ERROR", 500));
+  }
+  const workspaceOid = workspaceOidResult.data;
 
   const [workspaceFilesResult, baseFilesResult] = await Promise.all([
     listFilesAtCommit(workspaceFs, "main", logger),
@@ -1827,7 +1838,7 @@ export async function getDiffBetweenRepos(
 
   const diff = buildUnifiedDiff(baseContent, workspaceContent);
   logger.info("Successfully generated diff between repos", { baseRemote, workspaceRemote });
-  return ok(diff);
+  return ok({ diff, workspaceOid });
 }
 
 export function buildUnifiedDiff(

@@ -124,10 +124,11 @@ vi.mock("../src/storage/users", () => ({
 
 vi.mock("../src/storage/agents", () => ({
   getAgentByToken: vi.fn(),
+  getAgent: vi.fn(),
 }));
 
 import { CompositeEvaluator, SecretScanEvaluator, loadPolicy } from "../src/evaluation";
-import { getAgentByToken } from "../src/storage/agents";
+import { getAgent, getAgentByToken } from "../src/storage/agents";
 import {
   createChange,
   getChange,
@@ -144,6 +145,7 @@ import {
   mergeWorkspaceIntoProject,
 } from "../src/storage/git-ops";
 import { packObjects } from "../src/storage/object-loader";
+import { recordProvenance } from "../src/storage/provenance";
 import { getProject, getWorkspace } from "../src/storage/state";
 import { getUserByToken } from "../src/storage/users";
 
@@ -285,6 +287,18 @@ describe("POST /api/projects/:name/changes", () => {
         error: new NotFoundError("Agent", token),
       };
     });
+    vi.mocked(getAgent).mockResolvedValue({
+      success: true,
+      data: {
+        id: "agent_test",
+        ownerId: "user_test",
+        name: "test-agent",
+        model: "claude-fable-5",
+        promptHash: "sha256:promptdigest",
+        tokenHash: "hash",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
     vi.mocked(getProject).mockResolvedValue({
       success: true,
       data: mockProject,
@@ -304,7 +318,10 @@ describe("POST /api/projects/:name/changes", () => {
     });
     vi.mocked(getDiffBetweenRepos).mockResolvedValue({
       success: true,
-      data: "diff --git a/src/index.ts b/src/index.ts\n+new line",
+      data: {
+        diff: "diff --git a/src/index.ts b/src/index.ts\n+new line",
+        workspaceOid: "ws_tip_sha",
+      },
     });
     vi.mocked(updateChangeStatus).mockResolvedValue({
       success: true,
@@ -368,6 +385,36 @@ describe("POST /api/projects/:name/changes", () => {
       env,
     );
     expect(res.status).toBe(201);
+  });
+
+  it("snapshots the agent's model and prompt hash onto the change (PROV)", async () => {
+    await app.fetch(
+      request("POST", "/api/projects/my-project/changes", { workspace: "fix-bug" }, AGENT_AUTH),
+      env,
+    );
+    expect(createChange).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({
+        agentId: "agent_test",
+        agentModel: "claude-fable-5",
+        agentPromptHash: "sha256:promptdigest",
+      }),
+    );
+  });
+
+  it("records the evaluated workspace sha on the change (SEC-2)", async () => {
+    await app.fetch(
+      request("POST", "/api/projects/my-project/changes", { workspace: "fix-bug" }, USER_AUTH),
+      env,
+    );
+    expect(updateChangeStatus).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({ evaluatedSha: "ws_tip_sha" }),
+    );
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -985,6 +1032,8 @@ describe("POST /api/changes/:id/merge", () => {
       success: true,
       data: mockChange,
     });
+    // Force is deny-by-default; this project opts in.
+    vi.mocked(loadPolicy).mockResolvedValue({ ...mockPolicy, merge: { allowForce: true } });
 
     const res = await app.fetch(
       request("POST", "/api/changes/chg_abc123/merge?force=true", undefined, USER_AUTH),
@@ -1144,6 +1193,23 @@ describe("POST /api/changes/:id/merge", () => {
     expect(body.error).toContain("Force merge is disabled");
   });
 
+  it("SEC-3: rejects ?force=true by default when no policy enables it", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "open" },
+    });
+    // Default policy (mockPolicy) has no merge block → force denied.
+    vi.mocked(loadPolicy).mockResolvedValue(mockPolicy);
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge?force=true`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("Force merge is disabled");
+  });
+
   it("returns 409 STALE_BASE when requireFreshBase is set and the base moved", async () => {
     vi.mocked(getChange).mockResolvedValue({
       success: true,
@@ -1162,6 +1228,117 @@ describe("POST /api/changes/:id/merge", () => {
     const body = (await res.json()) as { code: string; currentHead: string };
     expect(body.code).toBe("STALE_BASE");
     expect(body.currentHead).toBe("sha_head");
+  });
+
+  it("SEC-2: returns 409 STALE_WORKSPACE when the workspace moved since evaluation", async () => {
+    // Workspace tip resolves to "sha_head" (getCommitLog mock); this change was
+    // evaluated against a different sha.
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted", evaluatedSha: "sha_evaluated_old" },
+    });
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code: string; currentTip: string; evaluatedSha: string };
+    expect(body.code).toBe("STALE_WORKSPACE");
+    expect(body.currentTip).toBe("sha_head");
+    expect(body.evaluatedSha).toBe("sha_evaluated_old");
+    expect(mergeWorkspaceIntoProject).not.toHaveBeenCalled();
+  });
+
+  it("SEC-2: merges when the workspace tip still matches the evaluated sha", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted", evaluatedSha: "sha_head" },
+    });
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("SEC-2: fails closed with 409 when the workspace tip can't be resolved", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted", evaluatedSha: "sha_head" },
+    });
+    // Tip resolution fails (e.g. token-mint / clone failure) → currentTip null.
+    vi.mocked(getCommitLog).mockResolvedValue({
+      success: false,
+      error: new AppError("clone failed", "GIT_ERROR", 500),
+    });
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("WORKSPACE_UNVERIFIABLE");
+    expect(mergeWorkspaceIntoProject).not.toHaveBeenCalled();
+  });
+
+  it("SEC-2: legacy change with no evaluatedSha skips the check and merges", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted" },
+    });
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("SEC-2: force=true bypasses the stale-workspace check", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted", evaluatedSha: "sha_evaluated_old" },
+    });
+    vi.mocked(loadPolicy).mockResolvedValue({
+      evaluators: [],
+      merge: { allowForce: true },
+    });
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge?force=true`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("PROV: records the snapshotted model and prompt hash on merge", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: {
+        ...mockChange,
+        status: "accepted",
+        agentId: "agent_test",
+        agentModel: "claude-fable-5",
+        agentPromptHash: "sha256:promptdigest",
+      },
+    });
+
+    const res = await app.fetch(
+      request("POST", `/api/changes/${mockChange.id}/merge`, undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(recordProvenance).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({
+        model: "claude-fable-5",
+        promptHash: "sha256:promptdigest",
+      }),
+    );
   });
 
   it("merges when requireFreshBase is set and the base matches HEAD", async () => {
@@ -1188,7 +1365,7 @@ describe("POST /api/changes/:id/merge", () => {
     });
     vi.mocked(loadPolicy).mockResolvedValue({
       evaluators: [],
-      merge: { requiredEvaluators: ["secret_scan"] },
+      merge: { requiredEvaluators: ["secret_scan"], allowForce: true },
     });
     vi.mocked(listEvalRuns).mockResolvedValue({ success: true, data: [] });
 
@@ -1408,7 +1585,8 @@ describe("POST /api/projects/:name/changes/merge-batch", () => {
     });
     // biome-ignore lint/suspicious/noExplicitAny: minimal stub
     vi.mocked(getProject).mockResolvedValue({ success: true, data: mockProject } as any);
-    vi.mocked(loadPolicy).mockResolvedValue(mockPolicy);
+    // Batch tests below force; force is deny-by-default, so opt the project in.
+    vi.mocked(loadPolicy).mockResolvedValue({ ...mockPolicy, merge: { allowForce: true } });
     vi.mocked(getChangesByIds).mockResolvedValue({
       success: true,
       data: [

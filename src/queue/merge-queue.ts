@@ -93,6 +93,8 @@ export class MergeQueue extends DurableObject<Env> {
           changeId,
           ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
           ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+          ...(change.agentModel !== undefined ? { model: change.agentModel } : {}),
+          ...(change.agentPromptHash !== undefined ? { promptHash: change.agentPromptHash } : {}),
         }),
       );
       if (!provenanceResult.success) {

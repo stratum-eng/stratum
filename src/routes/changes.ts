@@ -14,6 +14,7 @@ import { runPostMergeCheck } from "../merge/post-merge";
 import { checkMergeProtection } from "../merge/protection";
 import { type EventActor, emitEvent } from "../queue/events";
 import type { MergeOutcome } from "../queue/merge-queue";
+import { getAgent } from "../storage/agents";
 import { recordAudit } from "../storage/audit";
 import {
   createChange,
@@ -160,6 +161,22 @@ async function resolveProjectHead(
   return logResult.success ? (logResult.data[0]?.sha ?? null) : null;
 }
 
+/**
+ * Resolve a workspace's current tip commit sha, or null if it can't be read.
+ * Workspaces have no KV snapshot fast-path, so this clones the workspace remote.
+ * Used to reject a merge whose workspace moved since it was evaluated (SEC-2).
+ */
+async function resolveWorkspaceTip(
+  env: Env,
+  workspaceRemote: string,
+  logger: Logger,
+): Promise<string | null> {
+  const readToken = await freshRepoToken(env.ARTIFACTS, workspaceRemote, "read", logger);
+  if (!readToken.success) return null;
+  const logResult = await getCommitLog(workspaceRemote, readToken.data, logger, 1);
+  return logResult.success ? (logResult.data[0]?.sha ?? null) : null;
+}
+
 class UnavailableEvaluator implements Evaluator {
   constructor(
     private evaluatorType: string,
@@ -230,11 +247,26 @@ app.post("/projects/:name/changes", async (c) => {
 
   const baseSha = await resolveProjectHead(c.env, project, logger);
 
+  // Snapshot the authoring agent's model + prompt hash at creation, so
+  // provenance records the model that did the work rather than the agent's
+  // current (possibly later-changed) registration.
+  let agentModel: string | undefined;
+  let agentPromptHash: string | undefined;
+  if (agentId !== undefined) {
+    const agentResult = await getAgent(c.env.DB, agentId, logger);
+    if (agentResult.success) {
+      agentModel = agentResult.data.model;
+      agentPromptHash = agentResult.data.promptHash;
+    }
+  }
+
   const changeResult = await createChange(c.env.DB, logger, {
     project: projectName,
     workspace: body.workspace,
     ...(agentId !== undefined ? { agentId } : {}),
     ...(baseSha !== null ? { baseSha } : {}),
+    ...(agentModel !== undefined ? { agentModel } : {}),
+    ...(agentPromptHash !== undefined ? { agentPromptHash } : {}),
   });
   if (!changeResult.success) {
     logger.error("Failed to create change", changeResult.error);
@@ -279,7 +311,7 @@ app.post("/projects/:name/changes", async (c) => {
     logger.error("Failed to get diff between repos", diffResult.error);
     return badRequest(diffResult.error.message);
   }
-  const diff = diffResult.data;
+  const { diff, workspaceOid: evaluatedSha } = diffResult.data;
 
   const evaluators: Array<{ type: string; evaluator: Evaluator }> = [
     { type: "secret_scan", evaluator: new SecretScanEvaluator() },
@@ -378,6 +410,7 @@ app.post("/projects/:name/changes", async (c) => {
     evalScore: evalResult.score,
     evalPassed: evalResult.passed,
     evalReason: evalResult.reason,
+    evaluatedSha,
   });
   if (!updateResult.success) {
     logger.error("Failed to update change status", updateResult.error);
@@ -404,6 +437,7 @@ app.post("/projects/:name/changes", async (c) => {
     evalScore: evalResult.score,
     evalPassed: evalResult.passed,
     evalReason: evalResult.reason,
+    evaluatedSha,
   };
 
   logger.info("Change created and evaluated", {
@@ -567,7 +601,10 @@ app.post("/changes/:id/merge", async (c) => {
   } catch (e) {
     return internalError(e instanceof Error ? e.message : "Failed to load policy");
   }
-  const forceAllowed = mergePolicy.merge?.allowForce !== false;
+  // Force merge is deny-by-default: it bypasses every evaluation and approval
+  // gate, so a new repo with no policy file must be safe. Opt in explicitly
+  // with `merge.allowForce: true`.
+  const forceAllowed = mergePolicy.merge?.allowForce === true;
   if (force && !forceAllowed) {
     return badRequest("Force merge is disabled by this project's policy");
   }
@@ -602,6 +639,49 @@ app.post("/changes/:id/merge", async (c) => {
             code: "STALE_BASE",
             baseSha: change.baseSha,
             currentHead,
+          },
+          409,
+        );
+      }
+    }
+
+    // SEC-2: the evaluation gate is only meaningful if the code merged is the
+    // code that was evaluated. Reject if the workspace tip moved since the
+    // change was evaluated. Runs for every merge backend (this block is shared,
+    // before the RepoDO/MergeQueue/cold branch). Legacy changes with no
+    // evaluatedSha (created before migration 024) skip the check.
+    //
+    // Fail CLOSED: if we can't resolve the current workspace tip, we can't prove
+    // the code is unchanged since eval, so we block rather than merge. The R2/DO
+    // backends merge a staged tree without a live clone, so a silently-skipped
+    // check here would be a real bypass.
+    if (change.evaluatedSha !== undefined) {
+      const workspaceResult = await getWorkspace(c.env.STATE, project.id, change.workspace, logger);
+      const currentTip = workspaceResult.success
+        ? await resolveWorkspaceTip(c.env, workspaceResult.data.remote, logger)
+        : null;
+      if (currentTip === null) {
+        logger.warn("Could not verify workspace freshness for merge", {
+          changeId: id,
+          workspace: change.workspace,
+        });
+        return c.json(
+          {
+            error:
+              "Could not verify the workspace is unchanged since evaluation. Try again, or re-evaluate.",
+            code: "WORKSPACE_UNVERIFIABLE",
+          },
+          409,
+        );
+      }
+      if (currentTip !== change.evaluatedSha) {
+        return c.json(
+          {
+            error:
+              "Workspace is stale: it advanced since this change was evaluated. Re-evaluate before merging.",
+            code: "STALE_WORKSPACE",
+            evaluatedSha: change.evaluatedSha,
+            currentTip,
           },
           409,
         );
@@ -772,6 +852,8 @@ app.post("/changes/:id/merge", async (c) => {
     changeId: id,
     ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
     ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+    ...(change.agentModel !== undefined ? { model: change.agentModel } : {}),
+    ...(change.agentPromptHash !== undefined ? { promptHash: change.agentPromptHash } : {}),
   });
   if (!provenanceResult.success) {
     logger.error("Failed to record provenance", provenanceResult.error);
@@ -910,16 +992,55 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
       return { id, change };
     }),
   );
+  // SEC-2 for the batch path: reject any change whose workspace advanced since
+  // it was evaluated. Resolving a workspace tip clones the workspace remote, so
+  // dedupe by distinct workspace. Skipped when forcing or for legacy changes
+  // with no evaluatedSha.
+  const staleWorkspaceSkips = new Map<string, string>();
+  if (!force) {
+    const candidates = resolved
+      .filter((r): r is { id: string; change: Change } => "change" in r && Boolean(r.change))
+      .map((r) => r.change)
+      .filter((ch) => ch.evaluatedSha !== undefined);
+    const distinctWorkspaces = [...new Set(candidates.map((ch) => ch.workspace))];
+    const tipByWorkspace = new Map<string, string | null>();
+    await Promise.all(
+      distinctWorkspaces.map(async (ws) => {
+        const wsResult = await getWorkspace(c.env.STATE, project.id, ws, logger);
+        const tip = wsResult.success
+          ? await resolveWorkspaceTip(c.env, wsResult.data.remote, logger)
+          : null;
+        tipByWorkspace.set(ws, tip);
+      }),
+    );
+    for (const ch of candidates) {
+      const tip = tipByWorkspace.get(ch.workspace) ?? null;
+      // Fail closed: a change whose workspace tip we can't resolve (null) can't be
+      // proven unchanged since eval, so skip it rather than merge it.
+      if (tip === null) {
+        staleWorkspaceSkips.set(ch.id, "workspace unverifiable");
+      } else if (tip !== ch.evaluatedSha) {
+        staleWorkspaceSkips.set(ch.id, "stale workspace");
+      }
+    }
+  }
+
   for (const r of resolved) {
     if ("skip" in r && r.skip) {
       skipped.push({ changeId: r.id, reason: r.skip });
     } else if ("change" in r && r.change && r.change.baseSha) {
+      const staleReason = staleWorkspaceSkips.get(r.id);
+      if (staleReason) {
+        skipped.push({ changeId: r.id, reason: staleReason });
+        continue;
+      }
       changeById.set(r.id, r.change);
       mergeItems.push({ changeId: r.id, workspace: r.change.workspace, baseSha: r.change.baseSha });
     }
   }
 
-  // Enforce the force-allowed policy (loaded in parallel above).
+  // Enforce the force-allowed policy (loaded in parallel above). Deny-by-default:
+  // force is only permitted when the policy explicitly sets allowForce: true.
   if (force) {
     let mergePolicy: EvalPolicy;
     try {
@@ -927,7 +1048,7 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
     } catch (e) {
       return internalError(e instanceof Error ? e.message : "Failed to load policy");
     }
-    if (mergePolicy.merge?.allowForce === false) {
+    if (mergePolicy.merge?.allowForce !== true) {
       return badRequest("Force merge is disabled by this project's policy");
     }
   }
@@ -1032,7 +1153,7 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   }
   for (let i = 0; i < landed.length; i += INSERT_CHUNK) {
     const chunk = landed.slice(i, i + INSERT_CHUNK);
-    const rows = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
+    const rows = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
     const binds = chunk.flatMap((l) => [
       newId("prv"),
       l.commit,
@@ -1041,11 +1162,13 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
       l.changeId,
       l.change?.agentId ?? null,
       l.change?.evalScore ?? null,
+      l.change?.agentModel ?? null,
+      l.change?.agentPromptHash ?? null,
       mergedAt,
     ]);
     statements.push(
       c.env.DB.prepare(
-        `INSERT INTO provenance (id, commit_sha, project, workspace, change_id, agent_id, eval_score, merged_at) VALUES ${rows}`,
+        `INSERT INTO provenance (id, commit_sha, project, workspace, change_id, agent_id, eval_score, model, prompt_hash, merged_at) VALUES ${rows}`,
       ).bind(...binds),
     );
   }
@@ -1204,7 +1327,7 @@ app.post("/changes/:id/evaluate", async (c) => {
     logger.error("Failed to get diff between repos", diffResult.error);
     return badRequest(diffResult.error.message);
   }
-  const diff = diffResult.data;
+  const { diff, workspaceOid: evaluatedSha } = diffResult.data;
 
   const evaluators: Array<{ type: string; evaluator: Evaluator }> = [
     { type: "secret_scan", evaluator: new SecretScanEvaluator() },
@@ -1301,6 +1424,7 @@ app.post("/changes/:id/evaluate", async (c) => {
       evalScore: evalResult.score,
       evalPassed: evalResult.passed,
       evalReason: evalResult.reason,
+      evaluatedSha,
     },
   );
   if (!updateResult.success) {

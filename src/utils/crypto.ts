@@ -21,10 +21,23 @@ export async function hashToken(plaintext: string): Promise<string> {
  */
 export async function verifyToken(plaintext: string, hash: string): Promise<boolean> {
   const candidate = await hashToken(plaintext);
-  if (candidate.length !== hash.length) return false;
+  return constantTimeEqual(candidate, hash);
+}
+
+/**
+ * Compare two strings without a value-dependent early exit, to avoid leaking
+ * how many leading characters matched via timing.
+ *
+ * Caveat: this short-circuits when the lengths differ, so it leaks *length* by
+ * timing. That is acceptable only for fixed-length secrets (hex hashes, the
+ * admin API key). Do not use it to compare variable-length user input where the
+ * length itself is sensitive.
+ */
+export function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
   let diff = 0;
-  for (let i = 0; i < candidate.length; i++) {
-    diff |= candidate.charCodeAt(i) ^ hash.charCodeAt(i);
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
   return diff === 0;
 }
