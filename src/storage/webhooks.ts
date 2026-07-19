@@ -7,6 +7,8 @@ import { type Result, err, ok } from "../utils/result";
 export interface Webhook {
   id: string;
   project: string;
+  /** Globally-unique project UUID; NULL on rows written before dual-write. */
+  projectId?: string;
   url: string;
   secret: string;
   /** Comma-separated event types, or "*" for all. */
@@ -31,6 +33,7 @@ export interface WebhookDelivery {
 interface WebhookRow {
   id: string;
   project: string;
+  project_id: string | null;
   url: string;
   secret: string;
   events: string;
@@ -52,7 +55,7 @@ interface DeliveryRow {
 }
 
 function rowToWebhook(row: WebhookRow): Webhook {
-  return {
+  const webhook: Webhook = {
     id: row.id,
     project: row.project,
     url: row.url,
@@ -62,6 +65,8 @@ function rowToWebhook(row: WebhookRow): Webhook {
     createdBy: row.created_by,
     createdAt: row.created_at,
   };
+  if (row.project_id !== null) webhook.projectId = row.project_id;
+  return webhook;
 }
 
 function rowToDelivery(row: DeliveryRow): WebhookDelivery {
@@ -102,7 +107,7 @@ export function webhookMatchesEvent(webhook: Webhook, eventType: string): boolea
 export async function createWebhook(
   db: D1Database,
   logger: Logger,
-  opts: { project: string; url: string; events?: string; createdBy: string },
+  opts: { project: string; projectId?: string; url: string; events?: string; createdBy: string },
 ): Promise<Result<Webhook, AppError>> {
   const id = newId("wh");
   const secret = await generateApiKey("stm_whsec");
@@ -112,13 +117,22 @@ export async function createWebhook(
   try {
     await db
       .prepare(
-        "INSERT INTO webhooks (id, project, url, secret, events, active, created_by, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+        "INSERT INTO webhooks (id, project, project_id, url, secret, events, active, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
       )
-      .bind(id, opts.project, opts.url, secret, events, opts.createdBy, createdAt)
+      .bind(
+        id,
+        opts.project,
+        opts.projectId ?? null,
+        opts.url,
+        secret,
+        events,
+        opts.createdBy,
+        createdAt,
+      )
       .run();
 
     logger.info("Webhook created", { webhookId: id, project: opts.project });
-    return ok({
+    const webhook: Webhook = {
       id,
       project: opts.project,
       url: opts.url,
@@ -127,7 +141,9 @@ export async function createWebhook(
       active: true,
       createdBy: opts.createdBy,
       createdAt,
-    });
+    };
+    if (opts.projectId !== undefined) webhook.projectId = opts.projectId;
+    return ok(webhook);
   } catch (error) {
     const appError = toAppError(error, "createWebhook", { project: opts.project });
     logger.error("Failed to create webhook", appError, { project: opts.project });

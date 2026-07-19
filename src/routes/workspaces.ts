@@ -103,6 +103,7 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
     { type: "workspace.created", project: project.name, workspace: workspaceName },
     actor,
     logger,
+    project.id,
   );
 
   return created({

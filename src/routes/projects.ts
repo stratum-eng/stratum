@@ -1,6 +1,10 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { importRateLimitMiddleware, releaseImportLock } from "../middleware/rate-limit";
 import { emitEvent } from "../queue/events";
+import { recordAudit } from "../storage/audit";
+import { captureDeletionTarget } from "../storage/deletion";
+import { createDeletionJob } from "../storage/deletion-jobs";
 import { listProjectEvents } from "../storage/events";
 import {
   freshRepoToken,
@@ -35,7 +39,7 @@ import {
 import type { ArtifactsCreateResult, Env, ProjectEntry } from "../types";
 import { getArtifactsRepoName } from "../types";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
-import { canReadProject, filterReadableProjects } from "../utils/authz";
+import { canReadProject, filterReadableProjects, isDirectOwner } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
 import {
@@ -239,6 +243,7 @@ app.post("/", async (c) => {
     { type: "project.created", project: project.name },
     { type: "user", id: userId },
     logger,
+    project.id,
   );
 
   return created({
@@ -1795,5 +1800,108 @@ app.post(
     });
   },
 );
+
+/**
+ * Owner-only project deletion. Requires a confirm token that EXACTLY equals
+ * `@namespace/slug` (no normalization) — this makes accidental deletion hard and
+ * cross-user deletion impossible. Enqueues a durable job and best-effort drives
+ * it now; the periodic sweep guarantees completion if this request dies.
+ */
+async function handleProjectDelete(c: Context<{ Bindings: Env }>) {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const namespace = c.req.param("namespace") ?? "";
+  const slug = c.req.param("slug") ?? "";
+  const isJson = c.req.header("content-type")?.includes("application/json") ?? false;
+
+  const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+  if (!projectResult.success) {
+    // 404 for a missing project — do not distinguish "not found" from
+    // "not yours" to a non-owner (they get 404 below too).
+    return notFound("Project", `${namespace}/${slug}`);
+  }
+  const project = projectResult.data;
+
+  // Owner-only: mere write access (org member/team) is NOT enough — a 404 hides
+  // the project's existence from non-owners.
+  if (!isDirectOwner(project, userId, agentOwnerId)) {
+    return notFound("Project", `${namespace}/${slug}`);
+  }
+
+  // Confirm token must EXACTLY equal "@namespace/slug".
+  let confirm: unknown;
+  if (isJson) {
+    const body = await c.req
+      .json<{ confirm?: unknown }>()
+      .catch(() => ({}) as { confirm?: unknown });
+    confirm = body.confirm;
+  } else {
+    const form = await c.req.parseBody();
+    confirm = form.confirm;
+  }
+  const expected = `${project.namespace}/${project.slug}`;
+  if (confirm !== expected) {
+    return badRequest(`Confirmation must exactly equal "${expected}"`);
+  }
+
+  const captured = await captureDeletionTarget(c.env, project, logger);
+  if (!captured.success) {
+    logger.error("Failed to capture deletion target", captured.error);
+    return internalError(captured.error.message);
+  }
+
+  const jobResult = await createDeletionJob(c.env.DB, logger, {
+    kind: "project",
+    target: captured.data,
+    targetId: project.id,
+  });
+  if (!jobResult.success) {
+    logger.error("Failed to create deletion job", jobResult.error);
+    return internalError(jobResult.error.message);
+  }
+  const { job, created } = jobResult.data;
+
+  // A concurrent/repeated delete returns the in-flight job — the partial unique
+  // index guarantees only one active cascade per project (atomic, no TOCTOU).
+  if (!created) {
+    logger.info("Project deletion already in flight", { namespace, slug, jobId: job.id });
+    return isJson ? c.json({ status: "deleting", jobId: job.id }, 202) : c.redirect("/", 302);
+  }
+
+  // Route-level "requested" — the runner records "deletion.started" once the
+  // cascade actually begins, so this must not duplicate that action.
+  await recordAudit(c.env.DB, logger, {
+    action: "deletion.requested",
+    actorType: "user",
+    actorId: userId,
+    subject: job.id,
+    detail: { kind: "project", namespace: project.namespace, slug: project.slug },
+  });
+
+  // Best-effort immediate drive; the sweep is authoritative.
+  const { runDeletionJob } = await import("../queue/deletion-runner");
+  c.executionCtx.waitUntil(
+    runDeletionJob(c.env, job.id, logger).then((r) => {
+      if (!r.success) logger.error("Project deletion drive failed", r.error);
+    }),
+  );
+
+  logger.info("Project deletion enqueued", { namespace, slug, jobId: job.id });
+  if (!isJson) {
+    return c.redirect("/", 302);
+  }
+  return c.json({ status: "deleting", jobId: job.id }, 202);
+}
+
+app.delete("/:namespace/:slug", handleProjectDelete);
+// Form-friendly alias for the UI "Danger Zone" (browsers can't send DELETE).
+app.post("/:namespace/:slug/delete", handleProjectDelete);
 
 export { app as projectsRouter };

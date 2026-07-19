@@ -211,7 +211,8 @@ export async function listProjects(
   logger.debug("Listing all projects");
   try {
     // KV `list` returns at most one page (~1000 keys); loop the cursor to
-    // exhaustion so callers (getProjectById → authz) never miss a project.
+    // exhaustion so callers (getProjectById → authz, account deletion) never
+    // miss a project.
     const keyNames: string[] = [];
     let cursor: string | undefined;
     for (;;) {

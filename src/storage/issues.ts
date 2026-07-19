@@ -8,6 +8,8 @@ export type IssueStatus = "open" | "closed";
 export interface Issue {
   id: string;
   project: string;
+  /** Globally-unique project UUID; NULL on rows written before dual-write. */
+  projectId?: string;
   number: number;
   title: string;
   body?: string;
@@ -24,6 +26,7 @@ export interface Issue {
 interface IssueRow {
   id: string;
   project: string;
+  project_id: string | null;
   number: number;
   title: string;
   body: string | null;
@@ -49,6 +52,7 @@ function rowToIssue(row: IssueRow): Issue {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+  if (row.project_id !== null) issue.projectId = row.project_id;
   if (row.body !== null) issue.body = row.body;
   if (row.linked_change_id !== null) issue.linkedChangeId = row.linked_change_id;
   if (row.closed_at !== null) issue.closedAt = row.closed_at;
@@ -72,6 +76,7 @@ export async function createIssue(
   logger: Logger,
   opts: {
     project: string;
+    projectId?: string;
     title: string;
     body?: string;
     authorType: "user" | "agent";
@@ -88,8 +93,8 @@ export async function createIssue(
     // insert as one serialized statement.
     const row = await db
       .prepare(
-        `INSERT INTO issues (id, project, number, title, body, status, author_type, author_id, linked_change_id, created_at, updated_at)
-         VALUES (?1, ?2, (SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE project = ?2), ?3, ?4, 'open', ?5, ?6, ?7, ?8, ?8)
+        `INSERT INTO issues (id, project, project_id, number, title, body, status, author_type, author_id, linked_change_id, created_at, updated_at)
+         VALUES (?1, ?2, ?9, (SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE project = ?2), ?3, ?4, 'open', ?5, ?6, ?7, ?8, ?8)
          RETURNING *`,
       )
       .bind(
@@ -101,6 +106,7 @@ export async function createIssue(
         opts.authorId,
         opts.linkedChangeId ?? null,
         now,
+        opts.projectId ?? null,
       )
       .first<IssueRow>();
 

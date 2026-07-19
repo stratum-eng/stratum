@@ -169,6 +169,7 @@ describe("runPostMergeCheck", () => {
       expect.objectContaining({ type: "change.reverted", revertCommit: "sha_revert" }),
       { type: "system" },
       mockLogger,
+      project.id,
     );
   });
 

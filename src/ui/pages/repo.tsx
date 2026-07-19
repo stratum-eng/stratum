@@ -379,6 +379,33 @@ export const RepoPage: FC<RepoProps> = ({
           </div>
         </div>
       </div>
+
+      {isOwner && (
+        <div class="card danger-zone" style={{ marginTop: "1rem", borderColor: "#f87171" }}>
+          <h3 style={{ marginTop: 0, color: "#f87171" }}>Danger Zone</h3>
+          <p style={{ color: "#aaa" }}>
+            Permanently delete this project and every byte tied to it — repo, forks, changes, and
+            all metadata. This cannot be undone. Type{" "}
+            <code>
+              {project.namespace}/{project.slug}
+            </code>{" "}
+            to confirm.
+          </p>
+          <form method="post" action={`/api/projects/${project.namespace}/${project.slug}/delete`}>
+            <input
+              type="text"
+              name="confirm"
+              required
+              autocomplete="off"
+              placeholder={`${project.namespace}/${project.slug}`}
+              style={{ marginRight: "0.5rem" }}
+            />
+            <button type="submit" class="btn btn-danger">
+              Delete project
+            </button>
+          </form>
+        </div>
+      )}
     </Layout>
   );
 };

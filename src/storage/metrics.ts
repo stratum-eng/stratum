@@ -348,6 +348,8 @@ export interface CommitPhaseSpans {
 
 export interface CommitMetricInput {
   project: string;
+  /** Globally-unique project UUID; NULL on rows written before dual-write. */
+  projectId?: string;
   changeId: string;
   outcome: CommitOutcome;
   /** Benchmark context; omit outside the load harness. */
@@ -406,13 +408,14 @@ export async function recordCommitMetrics(
     await db
       .prepare(
         `INSERT INTO commit_metrics (
-          project, change_id, outcome, conflict_mode, concurrency_n,
+          project, project_id, change_id, outcome, conflict_mode, concurrency_n,
           token_mint_ms, project_clone_ms, workspace_fetch_ms, merge_ms,
           push_ms, ref_advance_ms, d1_update_ms, provenance_ms, total_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         metric.project,
+        metric.projectId ?? null,
         metric.changeId,
         metric.outcome,
         metric.conflictMode ?? null,

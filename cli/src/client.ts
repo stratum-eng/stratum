@@ -133,6 +133,14 @@ export class StratumClient {
     );
   }
 
+  async deleteProject(ref: ProjectRef, confirm: string) {
+    return this.request<{ status: string; jobId: string }>(
+      "DELETE",
+      `/api/projects/${encodeURIComponent(ref.namespace)}/${encodeURIComponent(ref.slug)}`,
+      { confirm },
+    );
+  }
+
   async listFiles(ref: ProjectRef) {
     return this.request<{ files: string[] }>(
       "GET",
@@ -286,5 +294,9 @@ export class StratumClient {
 
   async me() {
     return this.request<{ id: string; email: string }>("GET", "/api/users/me");
+  }
+
+  async deleteAccount(confirm: string) {
+    return this.request<{ status: string; jobId: string }>("DELETE", "/api/users/me", { confirm });
   }
 }
