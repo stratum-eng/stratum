@@ -226,6 +226,19 @@ export class RepoDO extends DurableObject<Env> {
     const staged = await loadStagedTree(bucket, key);
     if (!staged) return { fallback: true }; // not staged → cold path
 
+    // SEC-2: content-address the tree we are about to land against what was
+    // evaluated. This closes the residual TOCTOU between the route's pre-merge
+    // tip check and this staged-tree read: if the workspace was re-committed in
+    // that window, the staged tree oid won't match the evaluated tree oid.
+    // Legacy changes (pre-migration 026) have no evaluatedTreeOid and skip it.
+    if (change.evaluatedTreeOid !== undefined && staged.treeOid !== change.evaluatedTreeOid) {
+      return {
+        success: false,
+        error:
+          "Workspace changed since evaluation: staged tree does not match the evaluated revision",
+      };
+    }
+
     this.projectRemote = project.remote;
     let result: StagedItemResult;
     try {

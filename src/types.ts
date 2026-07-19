@@ -353,6 +353,9 @@ export interface Change {
   baseSha?: string;
   /** Workspace tip the evaluation ran against; a merge rejects if it moved. */
   evaluatedSha?: string;
+  /** Tree oid of the evaluated workspace tip; a merge backend content-addresses
+   * the code it lands against this to close the tip-check→merge TOCTOU. */
+  evaluatedTreeOid?: string;
   /** The authoring agent's model, snapshotted at change creation (not read live). */
   agentModel?: string;
   /** The authoring agent's prompt hash, snapshotted at change creation. */

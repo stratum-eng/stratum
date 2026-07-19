@@ -257,6 +257,14 @@ app.post("/projects/:name/changes", async (c) => {
     if (agentResult.success) {
       agentModel = agentResult.data.model;
       agentPromptHash = agentResult.data.promptHash;
+    } else {
+      // Best effort: provenance metadata must not block change creation. Log so a
+      // persistent lookup failure is visible rather than silently dropping the
+      // model/prompt snapshot.
+      logger.warn("Could not load agent for provenance snapshot; continuing without it", {
+        agentId,
+        error: agentResult.error.message,
+      });
     }
   }
 
@@ -311,7 +319,7 @@ app.post("/projects/:name/changes", async (c) => {
     logger.error("Failed to get diff between repos", diffResult.error);
     return badRequest(diffResult.error.message);
   }
-  const { diff, workspaceOid: evaluatedSha } = diffResult.data;
+  const { diff, workspaceOid: evaluatedSha, workspaceTreeOid: evaluatedTreeOid } = diffResult.data;
 
   const evaluators: Array<{ type: string; evaluator: Evaluator }> = [
     { type: "secret_scan", evaluator: new SecretScanEvaluator() },
@@ -411,6 +419,7 @@ app.post("/projects/:name/changes", async (c) => {
     evalPassed: evalResult.passed,
     evalReason: evalResult.reason,
     evaluatedSha,
+    evaluatedTreeOid,
   });
   if (!updateResult.success) {
     logger.error("Failed to update change status", updateResult.error);
@@ -438,6 +447,7 @@ app.post("/projects/:name/changes", async (c) => {
     evalPassed: evalResult.passed,
     evalReason: evalResult.reason,
     evaluatedSha,
+    evaluatedTreeOid,
   };
 
   logger.info("Change created and evaluated", {
@@ -1093,7 +1103,19 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
       skipped.push({ changeId: m.changeId, reason: "not staged" });
       continue;
     }
-    items.push({ changeId: m.changeId, baseSha: m.baseSha, staged: parseStagedTree(value) });
+    const staged = parseStagedTree(value);
+    // SEC-2: content-address the staged tree against the evaluated revision, so a
+    // workspace re-committed between the pre-merge freshness check and this read
+    // can't land unevaluated code. Unconditional (even under force): it is a cheap,
+    // network-free integrity check, and recording eval evidence for a tree that
+    // was never evaluated would corrupt provenance. Only changes that were
+    // actually evaluated carry evaluatedTreeOid; the rest skip it.
+    const evaluatedTreeOid = changeById.get(m.changeId)?.evaluatedTreeOid;
+    if (evaluatedTreeOid !== undefined && staged.treeOid !== evaluatedTreeOid) {
+      skipped.push({ changeId: m.changeId, reason: "workspace changed since evaluation" });
+      continue;
+    }
+    items.push({ changeId: m.changeId, baseSha: m.baseSha, staged });
   }
   if (items.length === 0) {
     clonePromise.catch(() => {});
@@ -1138,9 +1160,10 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   }
   const mergedAt = new Date().toISOString();
   // D1 caps bound parameters at 100/statement: chunk so UPDATE (1 + ids) and the
-  // multi-row INSERT (8 binds/row) stay under it. All chunks ride one batch().
+  // multi-row INSERT stay under it. All chunks ride one batch().
   const UPDATE_CHUNK = 99;
-  const INSERT_CHUNK = 12;
+  const PROVENANCE_BINDS_PER_ROW = 10;
+  const INSERT_CHUNK = Math.floor(100 / PROVENANCE_BINDS_PER_ROW);
   const statements: D1PreparedStatement[] = [];
   for (let i = 0; i < landed.length; i += UPDATE_CHUNK) {
     const chunk = landed.slice(i, i + UPDATE_CHUNK);
@@ -1327,7 +1350,7 @@ app.post("/changes/:id/evaluate", async (c) => {
     logger.error("Failed to get diff between repos", diffResult.error);
     return badRequest(diffResult.error.message);
   }
-  const { diff, workspaceOid: evaluatedSha } = diffResult.data;
+  const { diff, workspaceOid: evaluatedSha, workspaceTreeOid: evaluatedTreeOid } = diffResult.data;
 
   const evaluators: Array<{ type: string; evaluator: Evaluator }> = [
     { type: "secret_scan", evaluator: new SecretScanEvaluator() },
@@ -1425,6 +1448,7 @@ app.post("/changes/:id/evaluate", async (c) => {
       evalPassed: evalResult.passed,
       evalReason: evalResult.reason,
       evaluatedSha,
+      evaluatedTreeOid,
     },
   );
   if (!updateResult.success) {

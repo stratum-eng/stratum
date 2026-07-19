@@ -15,6 +15,7 @@ interface ChangeRow {
   eval_reason: string | null;
   base_sha: string | null;
   evaluated_sha: string | null;
+  evaluated_tree_oid: string | null;
   agent_model: string | null;
   agent_prompt_hash: string | null;
   created_at: string;
@@ -45,6 +46,7 @@ function rowToChange(row: ChangeRow): Change {
   if (row.eval_reason !== null) change.evalReason = row.eval_reason;
   if (row.base_sha !== null) change.baseSha = row.base_sha;
   if (row.evaluated_sha !== null) change.evaluatedSha = row.evaluated_sha;
+  if (row.evaluated_tree_oid !== null) change.evaluatedTreeOid = row.evaluated_tree_oid;
   if (row.agent_model !== null) change.agentModel = row.agent_model;
   if (row.agent_prompt_hash !== null) change.agentPromptHash = row.agent_prompt_hash;
   if (row.merged_at !== null) change.mergedAt = row.merged_at;
@@ -261,6 +263,7 @@ export async function updateChangeStatus(
     evalPassed?: boolean;
     evalReason?: string;
     evaluatedSha?: string;
+    evaluatedTreeOid?: string;
     mergedAt?: string;
     githubOwner?: string;
     githubRepo?: string;
@@ -301,6 +304,7 @@ export async function updateChangeStatus(
     );
     addOptional("eval_reason", opts?.evalReason);
     addOptional("evaluated_sha", opts?.evaluatedSha);
+    addOptional("evaluated_tree_oid", opts?.evaluatedTreeOid);
     addOptional("merged_at", opts?.mergedAt);
     addOptional("github_owner", opts?.githubOwner);
     addOptional("github_repo", opts?.githubRepo);

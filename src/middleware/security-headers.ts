@@ -16,9 +16,10 @@ import type { Env } from "../types";
  * carry frame/CSP headers that could confuse git clients or proxies.
  */
 export const securityHeadersMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
-  await next();
-
+  // Register headers BEFORE next() so they survive on the response even if a
+  // downstream handler throws and the error boundary produces the 500.
   if (isGitHttpPath(c.req.path)) {
+    await next();
     return;
   }
 
@@ -32,4 +33,6 @@ export const securityHeadersMiddleware: MiddlewareHandler<{ Bindings: Env }> = a
   if (new URL(c.req.url).protocol === "https:") {
     c.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   }
+
+  await next();
 };

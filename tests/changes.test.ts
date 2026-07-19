@@ -321,6 +321,7 @@ describe("POST /api/projects/:name/changes", () => {
       data: {
         diff: "diff --git a/src/index.ts b/src/index.ts\n+new line",
         workspaceOid: "ws_tip_sha",
+        workspaceTreeOid: "ws_tree_oid",
       },
     });
     vi.mocked(updateChangeStatus).mockResolvedValue({
@@ -1654,6 +1655,53 @@ describe("POST /api/projects/:name/changes/merge-batch", () => {
     // Deferred bookkeeping GCs only the landed workspace from the hot index.
     await Promise.all(waitUntils);
     expect(gcCalls).toEqual([["fix-bug"]]);
+  });
+
+  it("SEC-2: skips a batch change whose staged tree doesn't match the evaluated tree", async () => {
+    // Staged tree oid is "a".repeat(40) for every workspace. chg_b1 was evaluated
+    // against that tree (matches → merges); chg_b2 was evaluated against a
+    // different tree (mismatch → skipped, even though this is a force batch).
+    vi.mocked(getChangesByIds).mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: "chg_b1",
+          project: "my-project",
+          workspace: "fix-bug",
+          status: "approved",
+          baseSha: "base1",
+          evaluatedTreeOid: "a".repeat(40),
+        },
+        {
+          id: "chg_b2",
+          project: "my-project",
+          workspace: "feat-x",
+          status: "approved",
+          baseSha: "base1",
+          evaluatedTreeOid: "b".repeat(40),
+        },
+      ],
+      // biome-ignore lint/suspicious/noExplicitAny: minimal Change stubs
+    } as any);
+
+    const res = await app.fetch(
+      request(
+        "POST",
+        "/api/projects/my-project/changes/merge-batch",
+        { changeIds: ["chg_b1", "chg_b2"], force: true },
+        USER_AUTH,
+      ),
+      env,
+      // biome-ignore lint/suspicious/noExplicitAny: minimal ExecutionContext
+      exec() as any,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { skipped: { changeId: string; reason: string }[] };
+    const skippedB2 = body.skipped.find((s) => s.changeId === "chg_b2");
+    expect(skippedB2?.reason).toBe("workspace changed since evaluation");
+    // Only chg_b1 reaches the merge.
+    const items = vi.mocked(batchMergeStagedTrees).mock.calls[0]?.[4] as { changeId: string }[];
+    expect(items.map((i) => i.changeId)).toEqual(["chg_b1"]);
   });
 
   it("rejects a batch above the size cap", async () => {

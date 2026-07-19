@@ -1782,7 +1782,7 @@ export async function getDiffBetweenRepos(
   workspaceRemote: string,
   workspaceToken: string,
   logger: Logger,
-): Promise<Result<{ diff: string; workspaceOid: string }, AppError>> {
+): Promise<Result<{ diff: string; workspaceOid: string; workspaceTreeOid: string }, AppError>> {
   logger.debug("Getting diff between repos", { baseRemote, workspaceRemote });
 
   const [workspaceCloneResult, baseCloneResult] = await Promise.all([
@@ -1796,9 +1796,12 @@ export async function getDiffBetweenRepos(
   const { fs: workspaceFs, dir: workspaceDir } = workspaceCloneResult.data;
   const { fs: baseFs } = baseCloneResult.data;
 
-  // Resolve the workspace tip from the SAME clone the diff is computed against,
-  // so callers can pin evaluation to this exact revision (SEC-2). Resolving it
-  // separately would open a TOCTOU window between the diff and the pin.
+  // Resolve the workspace tip + its tree from the SAME clone the diff is computed
+  // against, so callers can pin evaluation to this exact revision (SEC-2).
+  // Resolving them separately would open a TOCTOU window between the diff and the
+  // pin. The tree oid is what lets a merge backend content-address the code it is
+  // about to land against what was evaluated, closing the residual race between
+  // the pre-merge tip check and the staged-tree read.
   const workspaceOidResult = await fromPromise(
     git.resolveRef({ fs: workspaceFs, dir: workspaceDir, ref: "main" }),
   );
@@ -1806,6 +1809,13 @@ export async function getDiffBetweenRepos(
     return err(new AppError("Failed to resolve workspace tip for diff", "GIT_ERROR", 500));
   }
   const workspaceOid = workspaceOidResult.data;
+  const workspaceCommitResult = await fromPromise(
+    git.readCommit({ fs: workspaceFs, dir: workspaceDir, oid: workspaceOid }),
+  );
+  if (!workspaceCommitResult.success) {
+    return err(new AppError("Failed to read workspace tip commit for diff", "GIT_ERROR", 500));
+  }
+  const workspaceTreeOid = workspaceCommitResult.data.commit.tree;
 
   const [workspaceFilesResult, baseFilesResult] = await Promise.all([
     listFilesAtCommit(workspaceFs, "main", logger),
@@ -1838,7 +1848,7 @@ export async function getDiffBetweenRepos(
 
   const diff = buildUnifiedDiff(baseContent, workspaceContent);
   logger.info("Successfully generated diff between repos", { baseRemote, workspaceRemote });
-  return ok({ diff, workspaceOid });
+  return ok({ diff, workspaceOid, workspaceTreeOid });
 }
 
 export function buildUnifiedDiff(
