@@ -93,6 +93,7 @@ export async function processRepoImport(
   try {
     // Validate namespace
     if (!isValidNamespace(namespace)) {
+      job && job.failedRepos++;
       return { success: false, error: "Invalid namespace", repo: url };
     }
 
@@ -101,6 +102,7 @@ export async function processRepoImport(
     // under another user's @handle or an org they aren't in — namespace squatting
     // / impersonation. Mirrors the single-import path in projects.ts.
     if (namespace !== getUserNamespace(username)) {
+      job && job.failedRepos++;
       return {
         success: false,
         error: "You can only import projects into your own namespace",
@@ -110,6 +112,7 @@ export async function processRepoImport(
 
     // Validate slug
     if (!isValidSlug(slug)) {
+      job && job.failedRepos++;
       return { success: false, error: "Invalid slug", repo: url };
     }
 

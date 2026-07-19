@@ -78,4 +78,17 @@ describe("processEvent handler resume", () => {
     expect(mockAutoClose).not.toHaveBeenCalled();
     expect(mockDeliver).not.toHaveBeenCalled();
   });
+
+  it("stops and throws if progress cannot be persisted, so the message retries", async () => {
+    // Persisting after the FIRST handler fails: we must not run later handlers on
+    // unpersisted state (a subsequent failure would re-run/re-emit the first).
+    mockSetCompleted.mockResolvedValueOnce({
+      success: false,
+      error: new Error("d1 write failed"),
+    });
+    await expect(processEvent(env, makeEvent([]), logger)).rejects.toThrow(/d1 write failed/);
+    expect(mockCapture).toHaveBeenCalledTimes(1); // first handler ran
+    expect(mockAutoClose).not.toHaveBeenCalled(); // later handlers did NOT
+    expect(mockDeliver).not.toHaveBeenCalled();
+  });
 });

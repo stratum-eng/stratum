@@ -727,6 +727,11 @@ app.post("/changes/:id/merge", async (c) => {
     }
 
     if (!result.success) {
+      // Preserve the structured 409 for a stale workspace (matches the cold path),
+      // rather than flattening every queue-path failure to a generic 400.
+      if (result.code === "STALE_WORKSPACE") {
+        return c.json({ error: result.error ?? "Workspace changed", code: "STALE_WORKSPACE" }, 409);
+      }
       return badRequest(result.error ?? "Merge failed");
     }
 
@@ -1112,7 +1117,19 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
       skipped.push({ changeId: m.changeId, reason: "not staged" });
       continue;
     }
-    const staged = parseStagedTree(value);
+    let staged: ReturnType<typeof parseStagedTree>;
+    try {
+      staged = parseStagedTree(value);
+    } catch (e) {
+      // One malformed/truncated staged tree must not 500 the whole batch — skip it.
+      logger.error(
+        "Failed to parse staged tree in merge-batch",
+        e instanceof Error ? e : undefined,
+        { changeId: m.changeId },
+      );
+      skipped.push({ changeId: m.changeId, reason: "corrupt staged tree" });
+      continue;
+    }
     // SEC-2: content-address the staged tree against the evaluated revision, so a
     // workspace re-committed between the pre-merge freshness check and this read
     // can't land unevaluated code. Unconditional (even under force): it is a cheap,
@@ -1208,6 +1225,19 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
 
   const persist = (async () => {
     if (statements.length > 0) await c.env.DB.batch(statements);
+    // Force-merges bypass evaluation/approval gates, so every one must leave an
+    // audit trail — the single-merge path records `merge.forced` too (SEC-2).
+    if (force) {
+      for (const changeId of merged) {
+        await recordAudit(c.env.DB, logger, {
+          action: "merge.forced",
+          actorType: "user",
+          actorId: userId,
+          subject: changeId,
+          detail: { project: projectName, batch: true },
+        });
+      }
+    }
     await stub.gcStagedTrees(mergedWorkspaces).catch(() => {});
     const objects = c.env.REPO_OBJECTS;
     if (objects) await Promise.all(gcKeys.map((k) => objects.delete(k).catch(() => {})));

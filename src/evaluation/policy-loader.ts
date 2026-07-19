@@ -84,9 +84,14 @@ async function readAndParsePolicy(
       ...(parsed as Partial<EvalPolicy>),
     };
     return { status: "ok", policy: merge ? { ...policy, merge } : policy };
-  } catch {
-    // A read error (not a parse error) — treat as absent so a transient repo-read
-    // blip doesn't block every merge.
+  } catch (e) {
+    // Typically a transient repo-read blip — treat as absent so it doesn't block
+    // every merge. Log it: this also catches an unexpected throw from validation/
+    // sanitization, which would otherwise silently downgrade to the default policy.
+    logger.warn("Policy load failed; treating as absent", {
+      path,
+      error: e instanceof Error ? e.message : String(e),
+    });
     return { status: "absent" };
   }
 }

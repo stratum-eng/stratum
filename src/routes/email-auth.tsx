@@ -366,7 +366,7 @@ app.post("/send-signup", async (c) => {
       logger,
     );
     if (!stored.success) {
-      return c.json({ success: false, error: "Failed to send magic link" }, 500);
+      return emailAuthRedirect(c, "error", "send_failed", "/auth/signup");
     }
 
     // Build magic link URL
@@ -468,7 +468,7 @@ app.post("/send-login", async (c) => {
       logger,
     );
     if (!stored.success) {
-      return c.json({ success: false, error: "Failed to send magic link" }, 500);
+      return emailAuthRedirect(c, "error", "send_failed", "/auth/login");
     }
 
     // Build magic link URL
@@ -588,7 +588,7 @@ app.post("/send", async (c) => {
       logger,
     );
     if (!stored.success) {
-      return c.json({ success: false, error: "Failed to send magic link" }, 500);
+      return emailAuthRedirect(c, "error", "send_failed");
     }
 
     // Build magic link URL

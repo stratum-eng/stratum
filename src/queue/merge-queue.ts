@@ -15,6 +15,9 @@ export interface MergeOutcome {
   success: boolean;
   commit?: string;
   error?: string;
+  /** Structured error code (e.g. "STALE_WORKSPACE") so the route can map the
+   * failure to the right HTTP status instead of a generic 400. */
+  code?: string;
 }
 
 // Must extend DurableObject: callers invoke merge() over RPC, which the runtime
@@ -76,7 +79,11 @@ export class MergeQueue extends DurableObject<Env> {
       );
 
       if (!commitResult.success) {
-        return { success: false, error: commitResult.error.message };
+        return {
+          success: false,
+          error: commitResult.error.message,
+          code: commitResult.error.code,
+        };
       }
       const commit = commitResult.data;
 

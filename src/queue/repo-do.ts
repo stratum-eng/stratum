@@ -443,7 +443,7 @@ export class RepoDO extends DurableObject<Env> {
           },
         );
         if (!coldResult.success) {
-          return { success: false, error: coldResult.error.message };
+          return { success: false, error: coldResult.error.message, code: coldResult.error.code };
         }
         commit = coldResult.data;
         outcome = "cold_fallback";

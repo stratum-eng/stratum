@@ -73,7 +73,11 @@ export async function processEvent(env: Env, event: EventRecord, logger: Logger)
     await handler.handle(env, event, logger);
     completed.push(handler.name);
     completedSet.add(handler.name);
-    await setCompletedHandlers(env.DB, logger, event.id, completed);
+    // If we can't persist progress, stop and let the message retry rather than
+    // running later handlers on unpersisted state — otherwise a subsequent failure
+    // would re-run (re-emit) this handler, the exact idempotency hole this guards.
+    const persisted = await setCompletedHandlers(env.DB, logger, event.id, completed);
+    if (!persisted.success) throw persisted.error;
   }
 }
 
