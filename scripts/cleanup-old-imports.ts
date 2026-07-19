@@ -8,7 +8,7 @@
 import { getPlatformProxy } from "wrangler";
 
 async function cleanupOldImports() {
-  const days = parseInt(process.argv[2], 10) || 7;
+  const days = Number.parseInt(process.argv[2], 10) || 7;
 
   if (days < 1) {
     console.error("❌ Days must be at least 1");
@@ -31,7 +31,7 @@ async function cleanupOldImports() {
     const countResult = await env.DB.prepare(
       `SELECT COUNT(*) as count FROM import_jobs 
        WHERE completed_at IS NOT NULL 
-       AND completed_at < ?`
+       AND completed_at < ?`,
     )
       .bind(cutoffDate.toISOString())
       .first<{ count: number }>();
@@ -49,7 +49,7 @@ async function cleanupOldImports() {
     const deleteResult = await env.DB.prepare(
       `DELETE FROM import_jobs 
        WHERE completed_at IS NOT NULL 
-       AND completed_at < ?`
+       AND completed_at < ?`,
     )
       .bind(cutoffDate.toISOString())
       .run();

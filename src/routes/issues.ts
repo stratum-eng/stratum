@@ -109,6 +109,7 @@ app.post("/:namespace/:slug/issues", async (c) => {
 
   const issueResult = await createIssue(c.env.DB, logger, {
     project: project.name,
+    projectId: project.id,
     title,
     ...(issueBody !== undefined ? { body: issueBody } : {}),
     authorType: agentId ? "agent" : "user",
@@ -129,6 +130,7 @@ app.post("/:namespace/:slug/issues", async (c) => {
     { type: "issue.opened", project: project.name, issueNumber: issue.number, title: issue.title },
     actor,
     logger,
+    project.id,
   );
 
   if (!contentType.includes("application/json")) {
@@ -291,6 +293,7 @@ app.patch("/:namespace/:slug/issues/:number", async (c) => {
       },
       { type: "user", id: userId },
       logger,
+      project.id,
     );
   }
 
@@ -346,6 +349,7 @@ app.post("/:namespace/:slug/issues/:number/close", async (c) => {
       },
       { type: "user", id: userId },
       logger,
+      project.id,
     );
   }
 

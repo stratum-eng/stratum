@@ -36,3 +36,82 @@ paths:
       responses:
         '201':
           description: Project created
+
+  /api/projects/{namespace}/{slug}:
+    delete:
+      summary: Delete project (owner-only, cascading, async)
+      parameters:
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm:
+                  type: string
+                  description: Must exactly equal "@namespace/slug".
+      responses:
+        '202':
+          description: Deletion enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, jobId]
+                properties:
+                  status:
+                    type: string
+                    example: deleting
+                  jobId:
+                    type: string
+                    example: del_abc123
+        '400':
+          description: Confirmation mismatch
+        '404':
+          description: Not found or not the owner
+
+  /api/users/me:
+    delete:
+      summary: Delete account (GDPR erasure, self-only, async)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm:
+                  type: string
+                  description: Must exactly equal the caller's username.
+      responses:
+        '202':
+          description: Erasure enqueued (jobId returned); credentials invalidated immediately
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, jobId]
+                properties:
+                  status:
+                    type: string
+                    example: deleting
+                  jobId:
+                    type: string
+                    example: del_abc123
+        '400':
+          description: Confirmation mismatch
+        '401':
+          description: Not authenticated, or the user no longer exists

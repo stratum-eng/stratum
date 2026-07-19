@@ -232,6 +232,7 @@ app.post("/projects/:name/changes", async (c) => {
 
   const changeResult = await createChange(c.env.DB, logger, {
     project: projectName,
+    projectId: project.id,
     workspace: body.workspace,
     ...(agentId !== undefined ? { agentId } : {}),
     ...(baseSha !== null ? { baseSha } : {}),
@@ -257,6 +258,7 @@ app.post("/projects/:name/changes", async (c) => {
     },
     actor,
     logger,
+    project.id,
   );
 
   const [projectReadToken, workspaceReadToken] = await Promise.all([
@@ -372,7 +374,7 @@ app.post("/projects/:name/changes", async (c) => {
   await recordCosts(
     c.env.DB,
     logger,
-    { project: projectName, changeId: change.id, workspace: body.workspace },
+    { project: projectName, projectId: project.id, changeId: change.id, workspace: body.workspace },
     createCostSamples,
   );
 
@@ -399,6 +401,7 @@ app.post("/projects/:name/changes", async (c) => {
     },
     { type: "system" },
     logger,
+    project.id,
   );
 
   const updatedChange: Change = {
@@ -650,6 +653,7 @@ app.post("/changes/:id/merge", async (c) => {
       { type: "change.merged", project: change.project, changeId: id, commit: result.commit ?? "" },
       { type: "user", id: userId },
       logger,
+      change.projectId ?? project.id,
     );
 
     logger.info("Change merged via queue", {
@@ -766,13 +770,20 @@ app.post("/changes/:id/merge", async (c) => {
   await recordCosts(
     c.env.DB,
     logger,
-    { project: change.project, changeId: id, workspace: change.workspace },
+    {
+      project: change.project,
+      // Backfill project_id onto legacy (pre-migration) changes as they merge.
+      projectId: change.projectId ?? project.id,
+      changeId: id,
+      workspace: change.workspace,
+    },
     [{ kind: "git_ops", quantity: 2 }],
   );
 
   const provenanceResult = await recordProvenance(c.env.DB, logger, {
     commitSha: commit,
     project: change.project,
+    projectId: change.projectId ?? project.id,
     workspace: change.workspace,
     changeId: id,
     ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
@@ -789,6 +800,7 @@ app.post("/changes/:id/merge", async (c) => {
     { type: "change.merged", project: change.project, changeId: id, commit },
     { type: "user", id: userId },
     logger,
+    change.projectId ?? project.id,
   );
 
   logger.info("Change merged", {
@@ -1022,9 +1034,10 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   }
   const mergedAt = new Date().toISOString();
   // D1 caps bound parameters at 100/statement: chunk so UPDATE (1 + ids) and the
-  // multi-row INSERT (8 binds/row) stay under it. All chunks ride one batch().
+  // multi-row INSERT (9 binds/row — project_id added) stay under it. 11×9=99.
+  // All chunks ride one batch().
   const UPDATE_CHUNK = 99;
-  const INSERT_CHUNK = 12;
+  const INSERT_CHUNK = 11;
   const statements: D1PreparedStatement[] = [];
   for (let i = 0; i < landed.length; i += UPDATE_CHUNK) {
     const chunk = landed.slice(i, i + UPDATE_CHUNK);
@@ -1037,11 +1050,12 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   }
   for (let i = 0; i < landed.length; i += INSERT_CHUNK) {
     const chunk = landed.slice(i, i + INSERT_CHUNK);
-    const rows = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
+    const rows = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
     const binds = chunk.flatMap((l) => [
       newId("prv"),
       l.commit,
       projectName,
+      project.id,
       l.change?.workspace ?? "",
       l.changeId,
       l.change?.agentId ?? null,
@@ -1050,7 +1064,7 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
     ]);
     statements.push(
       c.env.DB.prepare(
-        `INSERT INTO provenance (id, commit_sha, project, workspace, change_id, agent_id, eval_score, merged_at) VALUES ${rows}`,
+        `INSERT INTO provenance (id, commit_sha, project, project_id, workspace, change_id, agent_id, eval_score, merged_at) VALUES ${rows}`,
       ).bind(...binds),
     );
   }
@@ -1133,6 +1147,7 @@ app.post("/changes/:id/reject", async (c) => {
     { type: "change.rejected", project: change.project, changeId: id },
     { type: "user", id: userId },
     logger,
+    change.projectId ?? project.id,
   );
 
   logger.info("Change rejected", { changeId: id, project: change.project });
@@ -1295,7 +1310,12 @@ app.post("/changes/:id/evaluate", async (c) => {
   await recordCosts(
     c.env.DB,
     logger,
-    { project: change.project, changeId: id, workspace: change.workspace },
+    {
+      project: change.project,
+      projectId: change.projectId ?? project.id,
+      changeId: id,
+      workspace: change.workspace,
+    },
     evaluateCostSamples,
   );
 

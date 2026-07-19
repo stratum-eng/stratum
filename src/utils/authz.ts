@@ -5,7 +5,11 @@ import { createLogger } from "./logger";
 const logger = createLogger({ component: "Authz" });
 
 /** Direct ownership: the project belongs to this user (or this agent's owner). */
-function isDirectOwner(project: ProjectEntry, userId?: string, agentOwnerId?: string): boolean {
+export function isDirectOwner(
+  project: ProjectEntry,
+  userId?: string,
+  agentOwnerId?: string,
+): boolean {
   if (!project.ownerId) return false;
   return project.ownerId === userId || project.ownerId === agentOwnerId;
 }

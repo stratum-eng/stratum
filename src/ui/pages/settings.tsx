@@ -110,6 +110,29 @@ export const SettingsPage: FC<SettingsPageProps> = ({ user, agents, freshToken }
           </button>
         </form>
       </div>
+
+      <div class="card danger-zone" style={{ borderColor: "#f87171" }}>
+        <h3 style={{ marginTop: 0, color: "#f87171" }}>Danger Zone</h3>
+        <p class="settings-help">
+          Permanently delete your account. All your projects and personal data are erased and your
+          tokens stop working immediately. Contributions you left in other people's projects are
+          anonymized, not deleted. This cannot be undone. Type <code>{user.username}</code> to
+          confirm.
+        </p>
+        <form method="post" action="/api/users/me/delete">
+          <input
+            type="text"
+            name="confirm"
+            required
+            autocomplete="off"
+            placeholder={user.username}
+            style={{ marginRight: "0.5rem" }}
+          />
+          <button type="submit" class="btn btn-danger">
+            Delete account
+          </button>
+        </form>
+      </div>
     </Layout>
   );
 };

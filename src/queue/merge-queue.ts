@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { getChange, updateChangeStatus } from "../storage/changes";
+import { isTargetDeleting } from "../storage/deletion";
 import { freshRepoToken, mergeWorkspaceIntoProject } from "../storage/git-ops";
 import { commitPhasesFromSpans, recordCommitMetrics } from "../storage/metrics";
 import { recordProvenance } from "../storage/provenance";
@@ -20,6 +21,15 @@ export interface MergeOutcome {
 // Must extend DurableObject: callers invoke merge() over RPC, which the runtime
 // only enables for classes that extend the special base class.
 export class MergeQueue extends DurableObject<Env> {
+  /**
+   * Deletion-cascade RPC: DO storage is only reachable from inside the class,
+   * so the project cascade calls this to drop any durable state this queue
+   * ever wrote for the (now deleted) project.
+   */
+  async purge(): Promise<void> {
+    await this.ctx.storage.deleteAll();
+  }
+
   async merge(changeId: string, logger?: Logger): Promise<MergeOutcome> {
     const log = logger ?? createLogger({ changeId });
     const timer = new PhaseTimer();
@@ -40,6 +50,13 @@ export class MergeQueue extends DurableObject<Env> {
         return { success: false, error: projectResult.error.message };
       }
       const project = projectResult.data;
+
+      // No-op if the owner is being erased: merging would re-create provenance/
+      // metrics/change rows the deletion cascade is removing.
+      if (await isTargetDeleting(this.env, project, log)) {
+        log.info("Skipping merge for deleting owner", { changeId, projectId: project.id });
+        return { success: false, error: "Project owner is being deleted" };
+      }
 
       const workspaceResult = await getWorkspace(this.env.STATE, project.id, change.workspace, log);
       if (!workspaceResult.success) {
@@ -94,6 +111,7 @@ export class MergeQueue extends DurableObject<Env> {
         recordProvenance(this.env.DB, log, {
           commitSha: commit,
           project: change.project,
+          projectId: change.projectId ?? project.id,
           workspace: change.workspace,
           changeId,
           ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
@@ -109,6 +127,7 @@ export class MergeQueue extends DurableObject<Env> {
         this.env.DB,
         {
           project: change.project,
+          projectId: change.projectId ?? project.id,
           changeId,
           outcome: "cold_fallback",
           phases: commitPhasesFromSpans(timer.toObject()),

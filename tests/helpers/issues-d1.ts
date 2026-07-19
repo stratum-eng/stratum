@@ -1,6 +1,7 @@
 export interface IssueTableRow {
   id: string;
   project: string;
+  project_id: string | null;
   number: number;
   title: string;
   body: string | null;
@@ -18,6 +19,7 @@ export interface OutboxRow {
   id: string;
   type: string;
   project: string;
+  project_id: string | null;
   payload: string;
 }
 
@@ -85,7 +87,8 @@ export function makeIssuesD1(): {
             id: bindings[0] as string,
             type: bindings[1] as string,
             project: bindings[2] as string,
-            payload: bindings[5] as string,
+            project_id: bindings[3] as string | null,
+            payload: bindings[6] as string,
           });
         }
         return { success: true, meta: {} };
@@ -101,6 +104,9 @@ export function makeIssuesD1(): {
           const row: IssueTableRow = {
             id: bindings[0] as string,
             project,
+            // project_id is bound as ?9 (the trailing positional param) to keep
+            // the existing ?1..?8 indices stable.
+            project_id: (bindings[8] as string | null) ?? null,
             number,
             title: bindings[2] as string,
             body: bindings[3] as string | null,

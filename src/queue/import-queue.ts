@@ -3,6 +3,7 @@
  * Handles GitHub import jobs from Cloudflare Queue for durable execution
  */
 
+import { isTargetDeleting } from "../storage/deletion";
 import { importFromGitHub } from "../storage/git-ops";
 import { getProviderFromUrl } from "../storage/git-providers";
 import { deleteImportJob, isImportCancelled, updateImportStatus } from "../storage/imports";
@@ -199,6 +200,14 @@ async function processImportJob(
       return;
     }
 
+    // No-op if the owner is being erased: re-importing would re-create rows the
+    // deletion cascade is removing. Ack (don't retry) so the message drains.
+    if (await isTargetDeleting(env, project, logger)) {
+      logger.info("Skipping import for deleting owner", { namespace, slug });
+      msg.ack();
+      return;
+    }
+
     // Check cancellation before starting
     if (await checkAndHandleCancellation(env, namespace, slug)) {
       await recordImportCancelled(env.DB, namespace, slug, logger);
@@ -335,6 +344,7 @@ async function processImportJob(
       },
       { type: "system" },
       logger,
+      updatedProject.id,
     );
 
     logger.info("Import completed successfully", { importId, namespace, slug, duration });
@@ -408,6 +418,13 @@ async function processSyncJob(
     // Verify project ID matches (security check)
     if (project.id !== projectId) {
       logger.error("Project ID mismatch", undefined, { expected: projectId, got: project.id });
+      msg.ack();
+      return;
+    }
+
+    // No-op if the owner is being erased (see processImportJob for rationale).
+    if (await isTargetDeleting(env, project, logger)) {
+      logger.info("Skipping sync for deleting owner", { namespace, slug });
       msg.ack();
       return;
     }
@@ -567,6 +584,7 @@ async function processSyncJob(
       },
       { type: "system" },
       logger,
+      updatedProject.id,
     );
 
     logger.info("Sync completed successfully", {

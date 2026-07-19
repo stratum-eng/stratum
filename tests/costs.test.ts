@@ -19,6 +19,7 @@ const mockLogger: Logger = {
 interface CostRow {
   id: string;
   project: string;
+  project_id: string | null;
   change_id: string | null;
   workspace: string | null;
   kind: string;
@@ -39,12 +40,13 @@ function makeCostsD1(): { db: D1Database; rows: CostRow[] } {
           rows.push({
             id: bindings[0] as string,
             project: bindings[1] as string,
-            change_id: bindings[2] as string | null,
-            workspace: bindings[3] as string | null,
-            kind: bindings[4] as string,
-            quantity: bindings[5] as number,
-            estimated: bindings[6] as number,
-            created_at: bindings[7] as string,
+            project_id: bindings[2] as string | null,
+            change_id: bindings[3] as string | null,
+            workspace: bindings[4] as string | null,
+            kind: bindings[5] as string,
+            quantity: bindings[6] as number,
+            estimated: bindings[7] as number,
+            created_at: bindings[8] as string,
           });
         }
         return { success: true, meta: {} };

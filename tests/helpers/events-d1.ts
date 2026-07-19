@@ -2,6 +2,7 @@ export interface EventRow {
   id: string;
   type: string;
   project: string;
+  project_id: string | null;
   actor_type: string;
   actor_id: string | null;
   payload: string;
@@ -29,12 +30,13 @@ export function makeEventsD1(): { db: D1Database; rows: EventRow[] } {
             id: bindings[0] as string,
             type: bindings[1] as string,
             project: bindings[2] as string,
-            actor_type: bindings[3] as string,
-            actor_id: bindings[4] as string | null,
-            payload: bindings[5] as string,
+            project_id: bindings[3] as string | null,
+            actor_type: bindings[4] as string,
+            actor_id: bindings[5] as string | null,
+            payload: bindings[6] as string,
             status: "pending",
             attempts: 0,
-            created_at: bindings[6] as string,
+            created_at: bindings[7] as string,
             processed_at: null,
           });
         } else if (upper.includes("SET STATUS = 'PROCESSED'")) {

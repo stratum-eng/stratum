@@ -220,6 +220,7 @@ export async function handlePullRequest(
 
       const createResult = await createChange(env.DB, logger, {
         project: project.id,
+        projectId: project.id,
         workspace: pr.head.ref,
       });
       if (!createResult.success) {

@@ -12,7 +12,11 @@ export type AuditAction =
   | "webhook.created"
   | "webhook.toggled"
   | "webhook.deleted"
-  | "merge.forced";
+  | "merge.forced"
+  | "deletion.requested"
+  | "deletion.started"
+  | "deletion.completed"
+  | "deletion.incomplete";
 
 export interface AuditEntry {
   id: string;
