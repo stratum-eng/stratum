@@ -1172,7 +1172,8 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   // multi-row INSERT stay under it. All chunks ride one batch().
   const UPDATE_CHUNK = 99;
   const PROVENANCE_BINDS_PER_ROW = 10;
-  const INSERT_CHUNK = Math.floor(100 / PROVENANCE_BINDS_PER_ROW);
+  // Leave headroom below D1's 100-param cap rather than sitting exactly on it.
+  const INSERT_CHUNK = Math.floor(90 / PROVENANCE_BINDS_PER_ROW);
   const statements: D1PreparedStatement[] = [];
   for (let i = 0; i < landed.length; i += UPDATE_CHUNK) {
     const chunk = landed.slice(i, i + UPDATE_CHUNK);

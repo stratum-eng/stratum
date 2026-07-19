@@ -176,9 +176,11 @@ app.onError((err, c) => {
     method: c.req.method,
   });
   // Belt-and-suspenders: the middleware registers headers before next(), but the
-  // error boundary builds a fresh response, so re-assert the framing headers here.
+  // error boundary builds a fresh response, so re-assert the full set here.
   c.header("X-Content-Type-Options", "nosniff");
   c.header("X-Frame-Options", "DENY");
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  c.header("Content-Security-Policy", "frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
   return c.json({ error: "Internal server error" }, 500);
 });
 
