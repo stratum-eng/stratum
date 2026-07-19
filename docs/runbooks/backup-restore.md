@@ -20,7 +20,10 @@ Each run writes one timestamped prefix `<runTs>/` (an ISO-8601 instant) to the
 | `<runTs>/_manifest.json` | Run summary. **Written last** — its presence marks the run complete. |
 
 A run whose `_manifest.json` is missing crashed partway; treat it as unusable and
-restore from the previous complete run.
+restore from the previous complete run. Retention counts only complete runs, and
+each backup collects older incomplete prefixes, so crashed runs cannot pile up and
+evict good backups — the newest prefix is always protected in case it is a run
+still in progress.
 
 ### Repo coverage and the cursor
 

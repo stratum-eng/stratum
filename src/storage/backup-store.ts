@@ -178,9 +178,12 @@ export async function listRuns(
 }
 
 /**
- * Retain the newest `keep` runs, deleting every object of older runs WHOLE (never
- * splitting a run). Incomplete runs count toward newest-by-timestamp so an
- * in-flight run's files are not pruned by a concurrent invocation.
+ * Retention. Keeps the newest `keep` COMPLETE runs, plus always the single newest
+ * prefix (the in-flight run — its `_manifest.json` is written last so it is not yet
+ * "complete"). Everything else is deleted WHOLE (never splitting a run): old
+ * complete runs beyond the window AND crashed/incomplete runs that are not the
+ * newest. Counting retention by completeness stops a string of crashed runs from
+ * occupying the keep-window and silently evicting good backups.
  */
 export async function pruneRuns(
   bucket: R2Bucket,
@@ -189,10 +192,25 @@ export async function pruneRuns(
 ): Promise<Result<{ prunedRuns: number }, AppError>> {
   const runsResult = await listRuns(bucket, logger);
   if (!runsResult.success) return err(runsResult.error);
-  // Defensive: a non-finite `keep` would make slice() coerce to 0 and delete
-  // EVERY run. Fail safe by keeping everything instead of wiping the backups.
-  const safeKeep = Number.isFinite(keep) && keep >= 0 ? keep : Number.POSITIVE_INFINITY;
-  const stale = runsResult.data.slice(safeKeep); // already newest-first
+  // Fail safe on garbage config: keep everything rather than risk wiping backups.
+  if (!Number.isFinite(keep) || keep < 0) {
+    logger.warn("Backup retention is not a valid count; keeping all runs", { keep });
+    return ok({ prunedRuns: 0 });
+  }
+
+  const runs = runsResult.data; // newest-first
+  const keepSet = new Set<string>();
+  let keptComplete = 0;
+  for (const run of runs) {
+    if (run.complete && keptComplete < keep) {
+      keepSet.add(run.runTs);
+      keptComplete++;
+    }
+  }
+  // Protect the newest prefix unconditionally: it may be the run currently writing
+  // (no manifest yet), which must not be pruned out from under itself.
+  if (runs[0]) keepSet.add(runs[0].runTs);
+  const stale = runs.filter((run) => !keepSet.has(run.runTs));
   let prunedRuns = 0;
   for (const run of stale) {
     try {

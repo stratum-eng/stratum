@@ -89,6 +89,26 @@ describe("run listing + retention", () => {
     expect([...r2.store.keys()].some((k) => k.startsWith("2026-07-01"))).toBe(false);
   });
 
+  it("counts retention by complete runs: collects crash garbage, protects the in-flight prefix", async () => {
+    const r2 = makeFakeR2();
+    await seedRun(r2, "2026-07-01T00:00:00Z", true); // old complete, beyond window
+    await seedRun(r2, "2026-07-02T00:00:00Z", true); // complete, within window
+    await seedRun(r2, "2026-07-03T00:00:00Z", false); // crashed run in the middle
+    await seedRun(r2, "2026-07-04T00:00:00Z", true); // complete, within window
+    await seedRun(r2, "2026-07-05T00:00:00Z", false); // newest = simulated in-flight
+
+    const pruned = await pruneRuns(r2, 2, logger);
+    expect(pruned.success && pruned.data.prunedRuns).toBe(2); // 07-03 garbage + 07-01 old
+
+    const survives = (ts: string) =>
+      [...r2.store.keys()].some((k) => k.startsWith(ts.slice(0, 10)));
+    expect(survives("2026-07-05")).toBe(true); // in-flight prefix protected
+    expect(survives("2026-07-04")).toBe(true); // newest complete
+    expect(survives("2026-07-02")).toBe(true); // 2nd-newest complete
+    expect(survives("2026-07-03")).toBe(false); // crash garbage collected
+    expect(survives("2026-07-01")).toBe(false); // old complete beyond window
+  });
+
   it("fails safe on a garbage retention value: keeps everything, deletes nothing", async () => {
     const r2 = makeFakeR2();
     for (const d of ["01", "02", "03"]) await seedRun(r2, `2026-07-${d}T00:00:00Z`, true);
