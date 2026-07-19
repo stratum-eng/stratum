@@ -7,6 +7,7 @@ import { type Result, err, ok } from "../utils/result";
 interface ChangeRow {
   id: string;
   project: string;
+  project_id: string | null;
   workspace: string;
   status: string;
   agent_id: string | null;
@@ -14,6 +15,7 @@ interface ChangeRow {
   eval_passed: number | null;
   eval_reason: string | null;
   base_sha: string | null;
+  workspace_head_sha: string | null;
   created_at: string;
   merged_at: string | null;
   github_owner: string | null;
@@ -36,11 +38,13 @@ function rowToChange(row: ChangeRow): Change {
     status: row.status as Change["status"],
     createdAt: row.created_at,
   };
+  if (row.project_id !== null) change.projectId = row.project_id;
   if (row.agent_id !== null) change.agentId = row.agent_id;
   if (row.eval_score !== null) change.evalScore = row.eval_score;
   if (row.eval_passed !== null) change.evalPassed = row.eval_passed === 1;
   if (row.eval_reason !== null) change.evalReason = row.eval_reason;
   if (row.base_sha !== null) change.baseSha = row.base_sha;
+  if (row.workspace_head_sha !== null) change.workspaceHeadSha = row.workspace_head_sha;
   if (row.merged_at !== null) change.mergedAt = row.merged_at;
   if (row.github_owner !== null) change.githubOwner = row.github_owner;
   if (row.github_repo !== null) change.githubRepo = row.github_repo;
@@ -60,6 +64,10 @@ export async function createChange(
   logger: Logger,
   opts: {
     project: string;
+    // Globally-unique project UUID (from the KV ProjectEntry). Optional for
+    // backward compatibility: callers that lack it write NULL, which the future
+    // cascade-delete treats as a name-based (pre-migration) row.
+    projectId?: string;
     workspace: string;
     agentId?: string;
     baseSha?: string;
@@ -71,11 +79,12 @@ export async function createChange(
   try {
     await db
       .prepare(
-        "INSERT INTO changes (id, project, workspace, status, agent_id, base_sha, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO changes (id, project, project_id, workspace, status, agent_id, base_sha, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         id,
         opts.project,
+        opts.projectId ?? null,
         opts.workspace,
         "open",
         opts.agentId ?? null,
@@ -91,6 +100,7 @@ export async function createChange(
       status: "open",
       createdAt,
     };
+    if (opts.projectId !== undefined) change.projectId = opts.projectId;
     if (opts.agentId !== undefined) change.agentId = opts.agentId;
     if (opts.baseSha !== undefined) change.baseSha = opts.baseSha;
 
@@ -248,6 +258,7 @@ export async function updateChangeStatus(
     evalScore?: number;
     evalPassed?: boolean;
     evalReason?: string;
+    workspaceHeadSha?: string;
     mergedAt?: string;
     githubOwner?: string;
     githubRepo?: string;
@@ -287,6 +298,7 @@ export async function updateChangeStatus(
       opts?.evalPassed !== undefined ? (opts.evalPassed ? 1 : 0) : undefined,
     );
     addOptional("eval_reason", opts?.evalReason);
+    addOptional("workspace_head_sha", opts?.workspaceHeadSha);
     addOptional("merged_at", opts?.mergedAt);
     addOptional("github_owner", opts?.githubOwner);
     addOptional("github_repo", opts?.githubRepo);

@@ -196,6 +196,7 @@ describe("handlePullRequest", () => {
 
     expect(createChange).toHaveBeenCalledWith(env.DB, logger, {
       project: PROJECT.id,
+      projectId: PROJECT.id,
       workspace: "ws-1234",
     });
     expect(updateChangeStatus).toHaveBeenCalled();

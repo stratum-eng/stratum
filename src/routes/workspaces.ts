@@ -1,8 +1,15 @@
 import { Hono } from "hono";
 import { type EventActor, emitEvent } from "../queue/events";
-import { cloneRepo, commitAndPush, freshRepoToken, stageWorkspaceTree } from "../storage/git-ops";
+import {
+  artifactsRepoNameFromRemote,
+  cloneRepo,
+  commitAndPush,
+  freshRepoToken,
+  stageWorkspaceTree,
+} from "../storage/git-ops";
 import {
   deleteWorkspace,
+  getProjectById,
   getProjectByPath,
   getWorkspace,
   listWorkspaces,
@@ -10,7 +17,7 @@ import {
 } from "../storage/state";
 import type { Env } from "../types";
 import { getArtifactsRepoName } from "../types";
-import { canReadProject, canWriteProject } from "../utils/authz";
+import { canReadProject, canWriteProject, canWriteWorkspace } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import {
   badRequest,
@@ -71,6 +78,11 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
       parent: project.id, // Store project ID instead of name
       createdAt: new Date().toISOString(),
       branchName: workspaceName, // Artifacts fork name IS the branch ref
+      // Record the owning principal so write-authz can restrict push/commit to
+      // the creator (or a project admin). For an agent, the effective owner is
+      // its owning user; the agent id is kept as provenance only.
+      createdByUserId: userId ?? agentOwnerId,
+      ...(agentId !== undefined ? { createdByAgentId: agentId } : {}),
     },
     logger,
   );
@@ -91,6 +103,7 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
     { type: "workspace.created", project: project.name, workspace: workspaceName },
     actor,
     logger,
+    project.id,
   );
 
   return created({
@@ -164,17 +177,10 @@ app.post("/:name/commit", async (c) => {
 
   const userId = c.get("userId");
   const agentId = c.get("agentId");
-  const _agentOwnerId = c.get("agentOwnerId");
+  const agentOwnerId = c.get("agentOwnerId");
   if (!userId && !agentId) return unauthorized("Authentication required");
 
   const { name: workspaceName } = c.req.param();
-
-  // Note: This endpoint needs project info to check permissions
-  // The workspace name should be globally unique or we need project ID in URL
-  // For now, we'll look up workspace and then project
-
-  // This is a simplified version - in production you'd want to include project in the URL
-  // e.g., POST /projects/:namespace/:slug/workspaces/:workspaceName/commit
 
   const body = await c.req.json<{ files?: unknown; message?: unknown; projectId?: unknown }>();
   if (!isStringRecord(body.files))
@@ -193,9 +199,28 @@ app.post("/:name/commit", async (c) => {
   }
   const workspace = workspaceResult.data;
 
-  // Fetch project to check permissions (we need namespace/slug from project ID)
-  // For now, we'll skip detailed permission check in this simplified endpoint
-  // In production, you'd want to look up project by ID
+  // Authorization: resolve the project from the workspace's authoritative parent
+  // id (never trust the body's projectId for authz beyond the KV lookup key), and
+  // require BOTH project-level write and workspace-level write (creator or admin).
+  // Any failure collapses to the same 404 as a missing workspace so an
+  // unauthorized caller cannot distinguish "denied" from "does not exist".
+  const projectResult = await getProjectById(c.env.STATE, workspace.parent, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") return notFound("Workspace", workspaceName);
+    logger.error("Failed to resolve project for commit authz", projectResult.error);
+    return badRequest(projectResult.error.message);
+  }
+  const project = projectResult.data;
+
+  const canWriteProj = await canWriteProject(c.env.DB, project, userId, agentOwnerId);
+  const canWriteWs = await canWriteWorkspace(c.env.DB, project, workspace, userId, agentOwnerId);
+  if (!canWriteProj || !canWriteWs) {
+    logger.warn("Commit denied — insufficient workspace write access", {
+      workspaceName,
+      projectId: project.id,
+    });
+    return notFound("Workspace", workspaceName);
+  }
 
   // Committing clones then pushes to the workspace fork. Mint a fresh write token.
   const tokenResult = await freshRepoToken(c.env.ARTIFACTS, workspace.remote, "write", logger);
@@ -232,7 +257,7 @@ app.post("/:name/commit", async (c) => {
   if (c.env.REPO_DO_ENABLED === "true" && c.env.REPO_OBJECTS) {
     const stageResult = await stageWorkspaceTree(
       c.env.REPO_OBJECTS,
-      `repos/${body.projectId}/ws/${workspaceName}`,
+      `repos/${project.id}/ws/${workspaceName}`,
       fs,
       dir,
       commitResult.data,
@@ -245,7 +270,7 @@ app.post("/:name/commit", async (c) => {
     } else if (c.env.REPO_DO) {
       // Also seed the per-repo DO's local hot index so the batch-merge path reads
       // staged trees from SQLite (microseconds) instead of R2 (~30ms/change).
-      const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(body.projectId)) as unknown as {
+      const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(project.id)) as unknown as {
         stageTree(workspace: string, value: ArrayBuffer): Promise<void>;
       };
       await stub
@@ -288,7 +313,7 @@ app.delete("/:name", async (c) => {
 
   const userId = c.get("userId");
   const agentId = c.get("agentId");
-  const _agentOwnerId = c.get("agentOwnerId");
+  const agentOwnerId = c.get("agentOwnerId");
   if (!userId && !agentId) return unauthorized("Authentication required");
 
   const { name: workspaceName } = c.req.param();
@@ -307,12 +332,45 @@ app.delete("/:name", async (c) => {
     logger.error("Failed to get workspace", workspaceResult.error);
     return badRequest(workspaceResult.error.message);
   }
+  const workspace = workspaceResult.data;
 
-  await c.env.ARTIFACTS.delete(workspaceName).catch((err: unknown) => {
-    logger.warn(`[workspaces] Failed to delete Artifacts repo "${workspaceName}"`, {
-      error: err instanceof Error ? err.message : String(err),
+  // Authorization: same rule as commit — resolve the project from the workspace's
+  // authoritative parent id and require project-write AND workspace-write (creator
+  // or admin). Failures collapse to a 404 (no leak of existence/ownership).
+  const projectResult = await getProjectById(c.env.STATE, workspace.parent, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") return notFound("Workspace", workspaceName);
+    logger.error("Failed to resolve project for delete authz", projectResult.error);
+    return badRequest(projectResult.error.message);
+  }
+  const project = projectResult.data;
+
+  const canWriteProj = await canWriteProject(c.env.DB, project, userId, agentOwnerId);
+  const canWriteWs = await canWriteWorkspace(c.env.DB, project, workspace, userId, agentOwnerId);
+  if (!canWriteProj || !canWriteWs) {
+    logger.warn("Delete denied — insufficient workspace write access", {
+      workspaceName,
+      projectId: project.id,
     });
-  });
+    return notFound("Workspace", workspaceName);
+  }
+
+  // Delete the Artifacts fork by its remote-derived repo name (the workspace name
+  // is NOT the Artifacts repo id). If the remote isn't a recognizable Artifacts
+  // host, skip the delete rather than blindly deleting a bare name.
+  const artifactsRepoName = artifactsRepoNameFromRemote(workspace.remote);
+  if (artifactsRepoName) {
+    await c.env.ARTIFACTS.delete(artifactsRepoName).catch((err: unknown) => {
+      logger.warn(`[workspaces] Failed to delete Artifacts repo "${artifactsRepoName}"`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  } else {
+    logger.warn("[workspaces] Skipping Artifacts delete — remote is not an Artifacts host", {
+      workspaceName,
+      remote: workspace.remote,
+    });
+  }
 
   const deleteResult = await deleteWorkspace(c.env.STATE, projectId, workspaceName, logger);
   if (!deleteResult.success) {

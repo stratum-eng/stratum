@@ -57,12 +57,17 @@ export async function emitEvent(
   event: StratumEvent,
   actor: EventActor,
   logger: Logger = fallbackLogger,
+  // Globally-unique project UUID. Threaded from callers that have the project
+  // in scope so the outbox row can be tenant-scoped. Callers that only know the
+  // project name pass undefined and the row's project_id stays NULL.
+  projectId?: string,
 ): Promise<void> {
   const { type, project, ...payload } = event;
 
   const insertResult = await insertEvent(db, logger, {
     type,
     project,
+    ...(projectId !== undefined ? { projectId } : {}),
     actorType: actor.type,
     ...(actor.id !== undefined ? { actorId: actor.id } : {}),
     payload,

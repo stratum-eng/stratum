@@ -7,6 +7,8 @@ export interface ProvenanceRecord {
   id: string;
   commitSha: string;
   project: string;
+  /** Globally-unique project UUID; NULL on rows written before dual-write. */
+  projectId?: string;
   workspace: string;
   changeId: string;
   agentId?: string;
@@ -18,6 +20,7 @@ interface ProvenanceRow {
   id: string;
   commit_sha: string;
   project: string;
+  project_id: string | null;
   workspace: string;
   change_id: string;
   agent_id: string | null;
@@ -34,6 +37,7 @@ function rowToRecord(row: ProvenanceRow): ProvenanceRecord {
     changeId: row.change_id,
     mergedAt: row.merged_at,
   };
+  if (row.project_id !== null) record.projectId = row.project_id;
   if (row.agent_id !== null) record.agentId = row.agent_id;
   if (row.eval_score !== null) record.evalScore = row.eval_score;
   return record;
@@ -45,6 +49,7 @@ export async function recordProvenance(
   opts: {
     commitSha: string;
     project: string;
+    projectId?: string;
     workspace: string;
     changeId: string;
     agentId?: string;
@@ -57,12 +62,13 @@ export async function recordProvenance(
 
     await db
       .prepare(
-        "INSERT INTO provenance (id, commit_sha, project, workspace, change_id, agent_id, eval_score, merged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO provenance (id, commit_sha, project, project_id, workspace, change_id, agent_id, eval_score, merged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         id,
         opts.commitSha,
         opts.project,
+        opts.projectId ?? null,
         opts.workspace,
         opts.changeId,
         opts.agentId ?? null,
@@ -79,6 +85,7 @@ export async function recordProvenance(
       changeId: opts.changeId,
       mergedAt,
     };
+    if (opts.projectId !== undefined) record.projectId = opts.projectId;
     if (opts.agentId !== undefined) record.agentId = opts.agentId;
     if (opts.evalScore !== undefined) record.evalScore = opts.evalScore;
 

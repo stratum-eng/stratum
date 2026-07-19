@@ -68,10 +68,15 @@ export async function runPostMergeCheck(
       const run = await sandbox.run(command, {
         timeout: merge?.postMergeTimeoutMs ?? DEFAULT_POST_MERGE_TIMEOUT_MS,
       });
-      await recordCosts(env.DB, logger, { project: project.name, changeId: opts.changeId }, [
-        { kind: "sandbox_ms", quantity: Date.now() - runStartedAt },
-        { kind: "git_ops", quantity: 1 },
-      ]);
+      await recordCosts(
+        env.DB,
+        logger,
+        { project: project.name, projectId: project.id, changeId: opts.changeId },
+        [
+          { kind: "sandbox_ms", quantity: Date.now() - runStartedAt },
+          { kind: "git_ops", quantity: 1 },
+        ],
+      );
       if (run.exitCode === 0) {
         logger.info("Post-merge check passed", { changeId: opts.changeId });
         return { status: "passed" };
@@ -138,6 +143,7 @@ export async function runPostMergeCheck(
     },
     { type: "system" },
     logger,
+    project.id,
   );
 
   return { status: "reverted", reason: failureReason, revertCommit: revertResult.data };

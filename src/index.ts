@@ -6,6 +6,7 @@ import { analyticsMiddleware } from "./middleware/analytics";
 import { authMiddleware } from "./middleware/auth";
 import { csrfMiddleware } from "./middleware/csrf";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
+import { sweepDeletionJobs } from "./queue/deletion-runner";
 import { handleEventQueue, sweepStaleEvents } from "./queue/event-consumer";
 import type { EventQueueMessage } from "./queue/events";
 import { handleImportQueue } from "./queue/import-queue";
@@ -182,6 +183,9 @@ export default {
     const logger = createLogger({ component: "scheduled" });
     if (event.cron === "*/5 * * * *") {
       ctx.waitUntil(sweepStaleEvents(env, logger));
+      // Authoritative deletion driver: re-drives unfinished deletion jobs with
+      // stale heartbeats (the enqueue at request time is only an optimization).
+      ctx.waitUntil(sweepDeletionJobs(env, logger));
       return;
     }
     ctx.waitUntil(

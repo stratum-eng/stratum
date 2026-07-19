@@ -42,17 +42,19 @@ function makeCommitMetricsD1(opts: { failAll?: boolean } = {}): {
       bind: (...args: unknown[]) => makeStmt(sql, args),
       run: async () => {
         if (upper.startsWith("INSERT INTO COMMIT_METRICS")) {
+          // Column order: project, project_id, change_id, outcome, conflict_mode,
+          // concurrency_n, then the phase spans and total_ms.
           rows.push({
-            outcome: bindings[2] as string,
-            token_mint_ms: bindings[5] as number | null,
-            project_clone_ms: bindings[6] as number | null,
-            workspace_fetch_ms: bindings[7] as number | null,
-            merge_ms: bindings[8] as number | null,
-            push_ms: bindings[9] as number | null,
-            ref_advance_ms: bindings[10] as number | null,
-            d1_update_ms: bindings[11] as number | null,
-            provenance_ms: bindings[12] as number | null,
-            total_ms: bindings[13] as number,
+            outcome: bindings[3] as string,
+            token_mint_ms: bindings[6] as number | null,
+            project_clone_ms: bindings[7] as number | null,
+            workspace_fetch_ms: bindings[8] as number | null,
+            merge_ms: bindings[9] as number | null,
+            push_ms: bindings[10] as number | null,
+            ref_advance_ms: bindings[11] as number | null,
+            d1_update_ms: bindings[12] as number | null,
+            provenance_ms: bindings[13] as number | null,
+            total_ms: bindings[14] as number,
             recorded_seq: seq++,
           });
         }

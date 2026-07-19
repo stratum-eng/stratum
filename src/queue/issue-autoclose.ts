@@ -49,6 +49,7 @@ export async function autoCloseLinkedIssues(
       },
       { type: "system" },
       logger,
+      issue.projectId,
     );
   }
 }

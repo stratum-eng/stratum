@@ -1,6 +1,7 @@
 export interface WebhookTableRow {
   id: string;
   project: string;
+  project_id: string | null;
   url: string;
   secret: string;
   events: string;
@@ -39,12 +40,13 @@ export function makeWebhooksD1(): {
           webhooks.push({
             id: bindings[0] as string,
             project: bindings[1] as string,
-            url: bindings[2] as string,
-            secret: bindings[3] as string,
-            events: bindings[4] as string,
+            project_id: bindings[2] as string | null,
+            url: bindings[3] as string,
+            secret: bindings[4] as string,
+            events: bindings[5] as string,
             active: 1,
-            created_by: bindings[5] as string,
-            created_at: bindings[6] as string,
+            created_by: bindings[6] as string,
+            created_at: bindings[7] as string,
           });
         } else if (upper.startsWith("INSERT INTO WEBHOOK_DELIVERIES")) {
           deliveries.push({

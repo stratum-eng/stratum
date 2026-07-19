@@ -118,6 +118,7 @@ vi.mock("../src/queue/events", () => ({
 
 vi.mock("../src/storage/users", () => ({
   getUserByToken: vi.fn(),
+  getUser: vi.fn(async () => ({ success: false, error: new Error("nf") })),
 }));
 
 // Need to setup mocks in beforeEach instead
@@ -304,7 +305,7 @@ describe("POST /api/projects/:name/changes", () => {
     });
     vi.mocked(getDiffBetweenRepos).mockResolvedValue({
       success: true,
-      data: "diff --git a/src/index.ts b/src/index.ts\n+new line",
+      data: { diff: "diff --git a/src/index.ts b/src/index.ts\n+new line", workspaceSha: "sha_ws" },
     });
     vi.mocked(updateChangeStatus).mockResolvedValue({
       success: true,
@@ -349,7 +350,8 @@ describe("POST /api/projects/:name/changes", () => {
       expect.any(Object),
       "chg_abc123",
       "accepted",
-      expect.objectContaining({ evalPassed: true }),
+      // Pins the evaluated workspace commit (from the diff's own clone) for a sound merge.
+      expect.objectContaining({ evalPassed: true, workspaceHeadSha: "sha_ws" }),
     );
     expect(recordEvalRuns).toHaveBeenCalledWith(
       env.DB,
@@ -897,6 +899,29 @@ describe("POST /api/changes/:id/merge", () => {
       "chg_abc123",
       "merged",
       expect.objectContaining({ mergedAt: expect.any(String) }),
+    );
+  });
+
+  it("merges the pinned evaluated sha, not the workspace's live tip", async () => {
+    const pinnedChange: Change = {
+      ...mockChange,
+      status: "accepted",
+      workspaceHeadSha: "sha_evaluated",
+    };
+    vi.mocked(getChange).mockResolvedValue({ success: true, data: pinnedChange });
+
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/merge", undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(mergeWorkspaceIntoProject).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+      expect.any(Object),
+      expect.objectContaining({ workspaceSha: "sha_evaluated" }),
     );
   });
 
