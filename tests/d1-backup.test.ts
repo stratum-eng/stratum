@@ -95,7 +95,12 @@ describe("D1 table export/restore", () => {
     const dump = await exportTable(src, "issues", logger);
     expect(dump.success && dump.data.rowCount).toBe(0);
     const dst = makeFakeD1();
-    const restored = await restoreTable(dst, "issues", dump.success ? dump.data.ndjson : new Uint8Array(), logger);
+    const restored = await restoreTable(
+      dst,
+      "issues",
+      dump.success ? dump.data.ndjson : new Uint8Array(),
+      logger,
+    );
     expect(restored.success && restored.data.inserted).toBe(0);
   });
 });

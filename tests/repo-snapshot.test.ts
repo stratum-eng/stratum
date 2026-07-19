@@ -1,8 +1,8 @@
 import git from "isomorphic-git";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildSnapshot, walkRepoObjects } from "../src/backup/repo-snapshot";
-import { MemoryFS } from "../src/storage/memory-fs";
 import type { NodeFS } from "../src/storage/git-ops";
+import { MemoryFS } from "../src/storage/memory-fs";
 import type { ProjectEntry } from "../src/types";
 import type { Logger } from "../src/utils/logger";
 
@@ -19,7 +19,9 @@ const logger = {
 const DIR = "/repo";
 const author = { name: "t", email: "t@x.com", timestamp: 1_700_000_000, timezoneOffset: 0 };
 
-async function buildRepo(commits: Record<string, string>[]): Promise<{ fs: NodeFS; tipSha: string }> {
+async function buildRepo(
+  commits: Record<string, string>[],
+): Promise<{ fs: NodeFS; tipSha: string }> {
   const fs = new MemoryFS().toNodeFS() as unknown as NodeFS;
   // biome-ignore lint/suspicious/noExplicitAny: isomorphic-git fs shape
   const gfs = fs as any;

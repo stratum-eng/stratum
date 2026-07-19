@@ -57,8 +57,10 @@ migrations_dir = "migrations"
 binding = "ANALYTICS"
 dataset = "stratum_requests"
 
-# Durable backup store (D1 dumps, KV identity, repo packs). Provision with:
+# Durable backup store (D1 dumps, KV identity, repo packs). Provision both the
+# production and staging buckets:
 #   wrangler r2 bucket create stratum-backups
+#   wrangler r2 bucket create stratum-backups-staging
 [[r2_buckets]]
 binding = "BACKUPS"
 bucket_name = "stratum-backups"

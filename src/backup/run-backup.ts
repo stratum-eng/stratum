@@ -12,7 +12,10 @@ const DEFAULT_MAX_REPOS_PER_RUN = 25;
 /** KV key holding the timestamp of an in-flight run; single-flights all triggers
  * (cron and manual alike) so two runs never write into overlapping prefixes. */
 const LOCK_KEY = "backup:lock";
-const LOCK_TTL_SECONDS = 3600;
+// Kept at/under Cloudflare's 15-minute cron wall-clock cap: a run that is
+// force-terminated before its `finally` releases the lock must not leave it stuck
+// for longer than a run could possibly have been alive.
+const LOCK_TTL_SECONDS = 900;
 
 /** Parse a positive-integer env var, falling back on missing/garbage input.
  * Critical: a NaN retention would make `slice(NaN)` delete every run. */
@@ -52,13 +55,22 @@ export interface BackupDeps {
 
 const defaultDeps: BackupDeps = { snapshotRepo };
 
-async function readCursors(db: D1Database): Promise<Map<string, string>> {
-  const rows = await db.prepare("SELECT project_id, last_backed_up_at FROM backup_state").all<{
-    project_id: string;
-    last_backed_up_at: string | null;
-  }>();
+async function readCursors(db: D1Database, logger: Logger): Promise<Map<string, string>> {
   const map = new Map<string, string>();
-  for (const r of rows.results ?? []) map.set(r.project_id, r.last_backed_up_at ?? "");
+  // Fail-soft: a flaky cursor read must not abort a run whose D1/KV dumps already
+  // landed. An empty map just means this run orders repos as if none were backed
+  // up yet — coverage is still correct, only the rotation is momentarily reset.
+  try {
+    const rows = await db.prepare("SELECT project_id, last_backed_up_at FROM backup_state").all<{
+      project_id: string;
+      last_backed_up_at: string | null;
+    }>();
+    for (const r of rows.results ?? []) map.set(r.project_id, r.last_backed_up_at ?? "");
+  } catch (error) {
+    logger.warn("Backup: failed to read repo cursors; using default order", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   return map;
 }
 
@@ -101,21 +113,38 @@ export async function runBackup(
 
   // Single-flight: refuse to start if another run holds the lock. Best-effort
   // (KV has no compare-and-set), but it covers both cron and the manual endpoint.
+  // A KV hiccup must NOT abort the backup — log and proceed lock-less rather than
+  // lose a run over a transient coordination read.
+  let lockHeld = false;
   if (env.STATE) {
-    const held = await env.STATE.get(LOCK_KEY);
-    if (held) {
-      logger.warn("Backup already in progress; skipping", { heldBy: held });
-      return { ...summary, skipped: "locked" };
+    try {
+      const held = await env.STATE.get(LOCK_KEY);
+      if (held) {
+        logger.warn("Backup already in progress; skipping", { heldBy: held });
+        return { ...summary, skipped: "locked" };
+      }
+      await env.STATE.put(LOCK_KEY, runTs, { expirationTtl: LOCK_TTL_SECONDS });
+      lockHeld = true;
+    } catch (error) {
+      logger.warn("Backup lock unavailable; proceeding without single-flight", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-    await env.STATE.put(LOCK_KEY, runTs, { expirationTtl: LOCK_TTL_SECONDS });
   }
 
   try {
     return await runBackupLocked(env, logger, runTs, deps, summary, bucket);
   } finally {
-    // Release only if the lock is still ours (the TTL may have reclaimed it).
-    if (env.STATE && (await env.STATE.get(LOCK_KEY)) === runTs) {
-      await env.STATE.delete(LOCK_KEY);
+    // Release only if we actually took the lock and it is still ours (the TTL may
+    // have reclaimed it). Never let a release failure mask the run's outcome.
+    if (env.STATE && lockHeld) {
+      try {
+        if ((await env.STATE.get(LOCK_KEY)) === runTs) await env.STATE.delete(LOCK_KEY);
+      } catch (error) {
+        logger.warn("Failed to release backup lock; it will expire via TTL", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 }
@@ -168,7 +197,7 @@ async function runBackupLocked(
   if (env.STATE) {
     const projectsResult = await listProjects(env.STATE, logger);
     if (projectsResult.success) {
-      const cursors = await readCursors(env.DB);
+      const cursors = await readCursors(env.DB, logger);
       const ordered = [...projectsResult.data].sort((a, b) =>
         (cursors.get(a.id) ?? "").localeCompare(cursors.get(b.id) ?? ""),
       );

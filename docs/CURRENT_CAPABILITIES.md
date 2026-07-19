@@ -71,6 +71,7 @@ Last updated: 2026-06-11 — reflects completion of the master-plan feature road
 - Team permissions are org-wide; per-project team grants are not implemented.
 - Phase 4 operational items remain: load testing at 1000+ concurrent workspaces,
   D1 hot/cold rotation, SSO/SAML, multi-tenancy/billing for Stratum Cloud.
-- Durability is covered: D1, KV identity, and full repo history back up to R2
-  daily and on demand, with a tested restore path
+- Durability is covered: D1 and KV identity back up to R2 daily and on demand,
+  along with the reachable history of a rotating slice of repos (coverage rotates
+  across runs under a per-run cap), with a tested restore path
   (`docs/runbooks/backup-restore.md`).

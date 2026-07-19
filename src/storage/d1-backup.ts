@@ -127,7 +127,13 @@ export async function restoreTable(
     const [headerLine, ...rowLines] = text.split("\n");
     const header = JSON.parse(headerLine ?? "{}") as { __table?: string; __columns?: string[] };
     if (header.__table !== table) {
-      return err(new AppError(`Dump table mismatch: expected ${table}, got ${header.__table}`, "BACKUP_ERROR", 500));
+      return err(
+        new AppError(
+          `Dump table mismatch: expected ${table}, got ${header.__table}`,
+          "BACKUP_ERROR",
+          500,
+        ),
+      );
     }
     const columns = header.__columns ?? [];
     if (columns.length === 0 || rowLines.length === 0) return ok({ inserted: 0 });

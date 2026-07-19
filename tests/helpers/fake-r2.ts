@@ -21,7 +21,8 @@ export function makeFakeR2(pageSize = 1000): R2Bucket & { store: Map<string, Uin
     if (!bytes) return null;
     return {
       key,
-      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      arrayBuffer: async () =>
+        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
       text: async () => new TextDecoder().decode(bytes),
     };
   }

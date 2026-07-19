@@ -47,13 +47,21 @@ export async function walkRepoObjects(
   maxBytes: number,
   logger: Logger,
 ): Promise<Result<WalkResult | { tooLarge: true } | { empty: true }, AppError>> {
-  // A repo with no commits has no HEAD ref, so git.log throws; treat that as an
-  // empty repo (skip) rather than a backup failure.
+  // A repo with no commits has no HEAD ref, so git.log throws a NotFoundError:
+  // treat that as an empty repo (skip). Any OTHER error is a real read failure
+  // (transient or a corrupt object) and must surface as a failure, not be
+  // silently mislabeled "empty" — which would advance the coverage cursor and
+  // never retry the repo.
   let log: Awaited<ReturnType<typeof git.log>>;
   try {
     log = await git.log({ fs, dir, depth: -1 });
-  } catch {
-    return ok({ empty: true });
+  } catch (error) {
+    if (error instanceof Error && error.name === "NotFoundError") {
+      logger.debug("Repo has no commits; skipping as empty", { dir });
+      return ok({ empty: true });
+    }
+    logger.error("Failed to read repo log", error instanceof Error ? error : undefined, { dir });
+    return err(new AppError("Failed to read repo log", "GIT_ERROR", 500));
   }
   if (log.length === 0) return ok({ empty: true });
 

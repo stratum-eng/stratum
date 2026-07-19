@@ -108,13 +108,30 @@ export async function restoreProjectRepo(
     token = created.data.token;
   }
 
+  // If we freshly created the repo but the reconstruction or push fails, delete the
+  // empty repo we just made — otherwise a retried restore sees it and (wrongly)
+  // demands `force`, even though there is nothing to protect.
+  const rollbackIfCreated = async () => {
+    if (repoExists) return;
+    const removed = await fromPromise(env.ARTIFACTS.delete(name));
+    if (!removed.success) {
+      logger.warn("Failed to roll back orphaned repo after a failed restore", { name });
+    }
+  };
+
   const rebuilt = await reconstructRepo(snapshot.pack, snapshot.manifest, logger);
-  if (!rebuilt.success) return err(rebuilt.error);
+  if (!rebuilt.success) {
+    await rollbackIfCreated();
+    return err(rebuilt.error);
+  }
 
   const pushed = await pushMain(remote, token, rebuilt.data.fs, rebuilt.data.dir, logger, {
     force: repoExists,
   });
-  if (!pushed.success) return err(pushed.error);
+  if (!pushed.success) {
+    await rollbackIfCreated();
+    return err(pushed.error);
+  }
 
   logger.info("Restored project repo", { name, tipSha: snapshot.manifest.tipSha });
   return ok({ tipSha: snapshot.manifest.tipSha });
