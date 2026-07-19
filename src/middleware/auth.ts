@@ -63,6 +63,16 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         });
         return c.json({ error: "Invalid token" }, 401);
       }
+      // A soft-`deleting` account's credentials stop working immediately — the
+      // deleting_at flag rides on the same user row (no second round-trip) and
+      // we reject BEFORE setting any context so nothing downstream trusts it.
+      if (userResult.data.deletingAt) {
+        logger.warn("Auth rejected - user is deleting", {
+          path: c.req.path,
+          userId: userResult.data.id,
+        });
+        return c.json({ error: "Invalid token" }, 401);
+      }
       c.set("userId", userResult.data.id);
       c.set("username", userResult.data.username);
       c.set("authVia", "token");
@@ -81,6 +91,14 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
           path: c.req.path,
           tokenHint: sanitizeToken(token),
         });
+        return c.json({ error: "Invalid token" }, 401);
+      }
+      // An agent inherits its owner's access, so a deleting owner's agent must
+      // stop working too — otherwise it's an authenticated write channel that
+      // re-creates rows the account cascade is erasing.
+      const ownerResult = await getUser(c.env.DB, agentResult.data.ownerId, logger);
+      if (ownerResult.success && ownerResult.data.deletingAt) {
+        logger.warn("Auth failed - agent owner is deleting", { path: c.req.path });
         return c.json({ error: "Invalid token" }, 401);
       }
       c.set("agentId", agentResult.data.id);
@@ -110,11 +128,19 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         logger.debug("Session expired, deleting", { userId });
         await deleteSession(c.env.DB, sessionId, userId, logger);
       } else {
+        // Fetch the user row FIRST so a soft-`deleting` account is rejected
+        // before any auth context is set (the deleting_at flag rides on the
+        // same row, so this is not an extra round-trip beyond the username
+        // lookup this path already did).
+        const userResult = await getUser(c.env.DB, sessionResult.data.userId, logger);
+        if (userResult.success && userResult.data.deletingAt) {
+          logger.warn("Auth rejected - session user is deleting", { userId });
+          return c.json({ error: "Unauthorized" }, 401);
+        }
+
         c.set("userId", sessionResult.data.userId);
         c.set("authVia", "session");
 
-        // Fetch username for the session user
-        const userResult = await getUser(c.env.DB, sessionResult.data.userId, logger);
         if (userResult.success) {
           // Generate username from email if missing (backward compatibility)
           const username =

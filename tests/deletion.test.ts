@@ -333,8 +333,8 @@ describe("deleteProjectCascade", () => {
     if (!result.success) return;
     expect(result.data.residuals).toEqual([]);
     // No child-table DELETE should be emitted for empty id-sets (no `IN ()`).
-    const childDeletes = executed.filter(
-      (s) => /DELETE FROM (eval_runs|change_comments|change_reviews|webhook_deliveries)/.test(s.sql),
+    const childDeletes = executed.filter((s) =>
+      /DELETE FROM (eval_runs|change_comments|change_reviews|webhook_deliveries)/.test(s.sql),
     );
     expect(childDeletes).toHaveLength(0);
     expect(executed.some((s) => s.sql.includes("IN ()"))).toBe(false);

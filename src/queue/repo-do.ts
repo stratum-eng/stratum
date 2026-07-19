@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { getChange, updateChangeStatus } from "../storage/changes";
+import { isTargetDeleting } from "../storage/deletion";
 import { blobObject, commitObject, treeObject } from "../storage/git-objects";
 import {
   type NodeFS,
@@ -222,6 +223,12 @@ export class RepoDO extends DurableObject<Env> {
     if (!projectResult.success) return { success: false, error: projectResult.error.message };
     const project = projectResult.data;
 
+    // No-op if the owner is being erased (see MergeQueue.merge for rationale).
+    if (await isTargetDeleting(this.env, project, log)) {
+      log.info("Skipping R2 merge for deleting owner", { changeId, projectId: project.id });
+      return { success: false, error: "Project owner is being deleted" };
+    }
+
     const key = `repos/${project.id}/ws/${change.workspace}`;
     const staged = await loadStagedTree(bucket, key);
     if (!staged) return { fallback: true }; // not staged → cold path
@@ -385,6 +392,12 @@ export class RepoDO extends DurableObject<Env> {
         return { success: false, error: projectResult.error.message };
       }
       const project = projectResult.data;
+
+      // No-op if the owner is being erased (see MergeQueue.merge for rationale).
+      if (await isTargetDeleting(this.env, project, log)) {
+        log.info("Skipping advance for deleting owner", { changeId, projectId: project.id });
+        return { success: false, error: "Project owner is being deleted" };
+      }
 
       const workspaceResult = await getWorkspace(this.env.STATE, project.id, change.workspace, log);
       if (!workspaceResult.success) {

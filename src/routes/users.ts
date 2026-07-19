@@ -1,9 +1,11 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { recordAudit } from "../storage/audit";
-import { getUser, getUserByUsername, rotateUserToken } from "../storage/users";
+import { createDeletionJob, findActiveJobForTarget } from "../storage/deletion-jobs";
+import { getUser, getUserByUsername, markUserDeleting, rotateUserToken } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
-import { ok } from "../utils/response";
+import { badRequest, internalError, ok } from "../utils/response";
 import { validateUsername } from "../utils/username-validation";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -69,6 +71,105 @@ app.post("/me/rotate-token", async (c) => {
   // The old key is invalid as of this response; the new one is shown once.
   return ok({ token: result.data });
 });
+
+/**
+ * DELETE /api/users/me — GDPR-grade account erasure. The caller must be the
+ * user, and must confirm with a token equal to their own username (real
+ * confirmation, hard to fire by accident). Sets users.deleting_at (which
+ * immediately invalidates their credentials via the auth middleware) and
+ * enqueues the account cascade job.
+ *
+ * v1 grace window: deleting_at marks the account and gates access immediately,
+ * while the cascade runs now via the job. A bounded soft window before the
+ * irreversible purge (PRD "Grace window") is a future refinement — kept minimal
+ * and correct here rather than over-built.
+ */
+async function handleAccountDelete(c: Context<{ Bindings: Env }>): Promise<Response> {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+    userId: c.get("userId"),
+  });
+
+  const userId = c.get("userId");
+  if (!userId) return c.json({ error: "Unauthorized" }, 401);
+
+  const userResult = await getUser(c.env.DB, userId, logger);
+  if (!userResult.success) return c.json({ error: "Unauthorized" }, 401);
+  const user = userResult.data;
+
+  const isJson = c.req.header("content-type")?.includes("application/json") ?? false;
+  let confirm: unknown;
+  if (isJson) {
+    const body = await c.req
+      .json<{ confirm?: unknown }>()
+      .catch(() => ({}) as { confirm?: unknown });
+    confirm = body.confirm;
+  } else {
+    const form = await c.req.parseBody();
+    confirm = form.confirm;
+  }
+  if (confirm !== user.username) {
+    return badRequest(`Confirmation must exactly equal your username "${user.username}"`);
+  }
+
+  // Mark deleting FIRST — this alone revokes access (auth rejects) even if the
+  // enqueue below is lost; the sweep will still find the deleting user later.
+  const marked = await markUserDeleting(c.env.DB, userId, logger);
+  if (!marked.success) {
+    logger.error("Failed to mark user deleting", marked.error);
+    return internalError(marked.error.message);
+  }
+
+  // Dedupe: a repeated delete request must not enqueue a second cascade for the
+  // same user (the cascade is idempotent, but a duplicate wastes a full run and
+  // doubles the audit trail).
+  const existing = await findActiveJobForTarget(c.env.DB, logger, "account", userId);
+  if (existing.success && existing.data) {
+    logger.info("Account deletion already in flight", { userId, jobId: existing.data });
+    return isJson
+      ? c.json({ jobId: existing.data, status: "deleting" }, 202)
+      : c.redirect("/", 302);
+  }
+
+  const jobResult = await createDeletionJob(c.env.DB, logger, {
+    kind: "account",
+    target: { userId },
+  });
+  if (!jobResult.success) {
+    logger.error("Failed to create account deletion job", jobResult.error);
+    return internalError(jobResult.error.message);
+  }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "deletion.started",
+    actorType: "user",
+    actorId: userId,
+    subject: jobResult.data.id,
+    detail: { kind: "account" },
+  });
+
+  // Best-effort immediate drive; the sweep is authoritative. We do NOT destroy
+  // the acting session here — the response is committed first (deleting_at
+  // already gates the NEXT request).
+  const { runDeletionJob } = await import("../queue/deletion-runner");
+  c.executionCtx.waitUntil(
+    runDeletionJob(c.env, jobResult.data.id, logger).then((r) => {
+      if (!r.success) logger.error("Account deletion drive failed", r.error);
+    }),
+  );
+
+  logger.info("Account deletion enqueued", { userId, jobId: jobResult.data.id });
+  if (!isJson) {
+    return c.redirect("/", 302);
+  }
+  return c.json({ status: "deleting", jobId: jobResult.data.id }, 202);
+}
+
+app.delete("/me", handleAccountDelete);
+// Form-friendly alias for the UI "Danger Zone".
+app.post("/me/delete", handleAccountDelete);
 
 // GET /api/users/check-username - Check if username is available
 app.get("/check-username", async (c) => {

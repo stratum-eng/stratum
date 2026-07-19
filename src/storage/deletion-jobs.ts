@@ -111,6 +111,33 @@ export async function createDeletionJob(
   }
 }
 
+/**
+ * The id of an existing unfinished job of `kind` whose target JSON contains
+ * `targetId` (a projectId or userId), or null. Lets a repeated delete request
+ * return the in-flight job instead of enqueuing a duplicate cascade.
+ */
+export async function findActiveJobForTarget(
+  db: D1Database,
+  logger: Logger,
+  kind: DeletionJobKind,
+  targetId: string,
+): Promise<Result<string | null, AppError>> {
+  try {
+    const row = await db
+      .prepare(
+        "SELECT id FROM deletion_jobs WHERE kind = ? AND state IN ('pending','running','verifying') " +
+          "AND target LIKE ? LIMIT 1",
+      )
+      // targetId is an opaque id (usr_/proj_/…); LIKE with the JSON-embedded
+      // quotes avoids matching a substring of a different field's value.
+      .bind(kind, `%"${targetId}"%`)
+      .first<{ id: string }>();
+    return ok(row?.id ?? null);
+  } catch (error) {
+    return err(toDbError(error, "find active", logger, targetId));
+  }
+}
+
 export async function getDeletionJob(
   db: D1Database,
   logger: Logger,
