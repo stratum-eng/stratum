@@ -1,5 +1,5 @@
 import { type OrgAccessLevel, getOrgAccessLevel } from "../storage/orgs";
-import type { ProjectEntry } from "../types";
+import type { ProjectEntry, WorkspaceEntry } from "../types";
 import { createLogger } from "./logger";
 
 const logger = createLogger({ component: "Authz" });
@@ -63,6 +63,59 @@ export async function canWriteProject(
     return levelAllowsWrite(await getOrgAccessLevel(db, logger, project.ownerId, actor));
   }
   return false;
+}
+
+/**
+ * Whether the caller is an administrator of the project: its direct owner, or —
+ * for an org-owned project — an org owner/admin. This is a strictly stronger
+ * relation than {@link canWriteProject}: a plain org *writer* is NOT an admin.
+ * Used by workspace write-authz to grant an admin override over any workspace.
+ */
+export async function isProjectAdmin(
+  db: D1Database,
+  project: ProjectEntry,
+  userId?: string,
+  agentOwnerId?: string,
+): Promise<boolean> {
+  if (isDirectOwner(project, userId, agentOwnerId)) return true;
+
+  if (project.ownerType === "org") {
+    const actor = userId ?? agentOwnerId;
+    if (!actor) return false;
+    return (await getOrgAccessLevel(db, logger, project.ownerId, actor)) === "admin";
+  }
+  return false;
+}
+
+/**
+ * Whether the caller may write (push/commit/delete) to a specific workspace.
+ *
+ * A workspace is a per-principal fork: the creator owns it, so a plain
+ * project-writer who did NOT create it must not be able to clobber someone
+ * else's in-flight work. Write is therefore granted to the creating principal
+ * (an agent shares its owner's identity via `createdByUserId`) OR to a project
+ * admin (a deliberate override for owners/org-admins to manage any fork).
+ *
+ * Legacy workspaces predate `createdByUserId`; with no recorded creator we fail
+ * closed — only project admins may write — rather than fall back to the broad
+ * project-writer set. Callers are expected to have already confirmed
+ * `canWriteProject` for the surface; this narrows within the project.
+ */
+export async function canWriteWorkspace(
+  db: D1Database,
+  project: ProjectEntry,
+  workspace: WorkspaceEntry,
+  userId?: string,
+  agentOwnerId?: string,
+): Promise<boolean> {
+  const effectiveUser = userId ?? agentOwnerId;
+  if (workspace.createdByUserId !== undefined) {
+    if (effectiveUser !== undefined && workspace.createdByUserId === effectiveUser) return true;
+    // Not the creator, but an admin may still override.
+    return isProjectAdmin(db, project, userId, agentOwnerId);
+  }
+  // Legacy (no recorded creator) OR admin-override path: admins only.
+  return isProjectAdmin(db, project, userId, agentOwnerId);
 }
 
 /**
