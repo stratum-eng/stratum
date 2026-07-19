@@ -415,6 +415,7 @@ export class RepoDO extends DurableObject<Env> {
           expectedParent,
           log,
           timer,
+          change.evaluatedSha,
         );
         if (ff.success && ff.data.fastForwarded && ff.data.commit) {
           commit = ff.data.commit;
@@ -431,7 +432,15 @@ export class RepoDO extends DurableObject<Env> {
           workspace.remote,
           workspaceToken.data,
           log,
-          { strategy: "merge", timer },
+          {
+            strategy: "merge",
+            timer,
+            // SEC-2: pin the merged tip to the evaluated sha on the RepoDO cold
+            // fallback too. Legacy changes with no evaluatedSha skip it.
+            ...(change.evaluatedSha !== undefined
+              ? { expectedWorkspaceSha: change.evaluatedSha }
+              : {}),
+          },
         );
         if (!coldResult.success) {
           return { success: false, error: coldResult.error.message };

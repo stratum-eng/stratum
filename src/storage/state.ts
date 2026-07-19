@@ -244,6 +244,26 @@ export async function projectExists(
   }
 }
 
+/**
+ * Resolve a project by its canonical id. Projects are keyed in KV by
+ * namespace/slug, not id, so this scans — acceptable on the handlers that only
+ * hold a project id (workspace commit/delete), which already do far more
+ * expensive work (a repo clone). See the identity-in-KV note in REMAINING_WORK.
+ */
+export async function getProjectById(
+  kv: KVNamespace,
+  id: string,
+  logger: Logger,
+): Promise<Result<ProjectEntry, AppError>> {
+  const listed = await listProjects(kv, logger);
+  if (!listed.success) return err(listed.error);
+  const project = listed.data.find((p) => p.id === id);
+  if (!project) {
+    return err(new AppError(`Project '${id}' not found`, "NOT_FOUND", 404, { projectId: id }));
+  }
+  return ok(project);
+}
+
 // Workspace functions (namespaced by project ID)
 export async function getWorkspace(
   kv: KVNamespace,

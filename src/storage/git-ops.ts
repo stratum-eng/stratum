@@ -539,6 +539,10 @@ export async function fastForwardMerge(
   expectedParent: string,
   logger: Logger,
   timer?: PhaseTimer,
+  /** SEC-2: if set, refuse to fast-forward unless the workspace tip equals this
+   * (the evaluated sha), so a re-committed workspace can't be FF-merged
+   * unevaluated. On mismatch the caller cold-merges, which rejects it. */
+  expectedWorkspaceSha?: string,
 ): Promise<Result<FastForwardResult, AppError>> {
   const measure = <T>(name: string, fn: () => Promise<T>): Promise<T> =>
     timer ? timer.measure(name, fn) : fn();
@@ -554,6 +558,17 @@ export async function fastForwardMerge(
     return err(new ExternalServiceError("Git", "Failed to resolve workspace tip", tipResult.error));
   }
   const workspaceTip = tipResult.data;
+
+  // SEC-2: don't fast-forward a workspace that moved since evaluation. Fall back
+  // to cold merge (pinned) which returns STALE_WORKSPACE.
+  if (expectedWorkspaceSha !== undefined && workspaceTip !== expectedWorkspaceSha) {
+    logger.warn("Workspace tip changed since evaluation; refusing fast-forward", {
+      workspaceRemote,
+      expected: expectedWorkspaceSha,
+      actual: workspaceTip,
+    });
+    return ok({ fastForwarded: false });
+  }
 
   // A fast-forward is only possible if the workspace tip descends from the
   // project's current head. If not (or history is too shallow to tell), cold-merge.

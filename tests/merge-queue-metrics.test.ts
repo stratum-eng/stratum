@@ -22,6 +22,7 @@ vi.mock("../src/storage/metrics", () => ({
 
 import { MergeQueue } from "../src/queue/merge-queue";
 import { getChange } from "../src/storage/changes";
+import { mergeWorkspaceIntoProject } from "../src/storage/git-ops";
 import { recordCommitMetrics } from "../src/storage/metrics";
 import { getProject, getWorkspace } from "../src/storage/state";
 import type { Env } from "../src/types";
@@ -76,5 +77,24 @@ describe("MergeQueue records commit metrics", () => {
     const queue = new MergeQueue(ctx, env);
     const result = await queue.merge("chg_1");
     expect(result.success).toBe(true);
+  });
+
+  it("SEC-2: pins the merge to the change's evaluated sha (prod merge path)", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: {
+        id: "chg_1",
+        project: "acme/web",
+        workspace: "ws_1",
+        status: "approved",
+        evaluatedSha: "eval_sha_1",
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: minimal Change stub
+    } as any);
+    await new MergeQueue(ctx, env).merge("chg_1");
+    const opts = vi.mocked(mergeWorkspaceIntoProject).mock.calls[0]?.[5] as {
+      expectedWorkspaceSha?: string;
+    };
+    expect(opts.expectedWorkspaceSha).toBe("eval_sha_1");
   });
 });

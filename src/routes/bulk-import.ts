@@ -59,9 +59,9 @@ function extractSlugFromUrl(url: string): string | null {
 }
 
 /**
- * Process a single repo import (async background job)
+ * Process a single repo import (async background job). Exported for tests.
  */
-async function processRepoImport(
+export async function processRepoImport(
   env: Env,
   jobId: string,
   request: RepoImportRequest,
@@ -94,6 +94,18 @@ async function processRepoImport(
     // Validate namespace
     if (!isValidNamespace(namespace)) {
       return { success: false, error: "Invalid namespace", repo: url };
+    }
+
+    // Ownership: a caller may only import into their OWN namespace. Without this
+    // check a caller-supplied `namespace` could create a project (owned by them)
+    // under another user's @handle or an org they aren't in — namespace squatting
+    // / impersonation. Mirrors the single-import path in projects.ts.
+    if (namespace !== getUserNamespace(username)) {
+      return {
+        success: false,
+        error: "You can only import projects into your own namespace",
+        repo: url,
+      };
     }
 
     // Validate slug

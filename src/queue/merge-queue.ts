@@ -64,7 +64,15 @@ export class MergeQueue extends DurableObject<Env> {
         workspace.remote,
         workspaceToken.data,
         log,
-        { strategy: "merge", timer },
+        {
+          strategy: "merge",
+          timer,
+          // SEC-2: pin the merged tip to the evaluated sha (this is the production
+          // merge path). Legacy changes with no evaluatedSha skip it.
+          ...(change.evaluatedSha !== undefined
+            ? { expectedWorkspaceSha: change.evaluatedSha }
+            : {}),
+        },
       );
 
       if (!commitResult.success) {

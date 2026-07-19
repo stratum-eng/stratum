@@ -1,8 +1,15 @@
 import { Hono } from "hono";
 import { type EventActor, emitEvent } from "../queue/events";
-import { cloneRepo, commitAndPush, freshRepoToken, stageWorkspaceTree } from "../storage/git-ops";
+import {
+  artifactsRepoNameFromRemote,
+  cloneRepo,
+  commitAndPush,
+  freshRepoToken,
+  stageWorkspaceTree,
+} from "../storage/git-ops";
 import {
   deleteWorkspace,
+  getProjectById,
   getProjectByPath,
   getWorkspace,
   listWorkspaces,
@@ -24,6 +31,10 @@ import {
 import { isStringRecord, isValidSlug } from "../utils/validation";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Commit payload bounds — the commit clones into an in-isolate MemoryFS.
+const MAX_COMMIT_FILES = 2000;
+const MAX_COMMIT_BYTES = 25 * 1024 * 1024;
 
 // POST /projects/:namespace/:slug/workspaces - Create a workspace
 app.post("/:namespace/:slug/workspaces", async (c) => {
@@ -164,17 +175,10 @@ app.post("/:name/commit", async (c) => {
 
   const userId = c.get("userId");
   const agentId = c.get("agentId");
-  const _agentOwnerId = c.get("agentOwnerId");
+  const agentOwnerId = c.get("agentOwnerId");
   if (!userId && !agentId) return unauthorized("Authentication required");
 
   const { name: workspaceName } = c.req.param();
-
-  // Note: This endpoint needs project info to check permissions
-  // The workspace name should be globally unique or we need project ID in URL
-  // For now, we'll look up workspace and then project
-
-  // This is a simplified version - in production you'd want to include project in the URL
-  // e.g., POST /projects/:namespace/:slug/workspaces/:workspaceName/commit
 
   const body = await c.req.json<{ files?: unknown; message?: unknown; projectId?: unknown }>();
   if (!isStringRecord(body.files))
@@ -182,6 +186,34 @@ app.post("/:name/commit", async (c) => {
   if (typeof body.message !== "string" || !body.message.trim())
     return badRequest("message is required");
   if (typeof body.projectId !== "string") return badRequest("projectId is required");
+
+  // Bound the payload: the commit clones the repo into a ~128MB isolate, so an
+  // unbounded file map is a memory/CPU DoS lever.
+  const fileCount = Object.keys(body.files).length;
+  if (fileCount > MAX_COMMIT_FILES) {
+    return badRequest(`too many files in one commit (max ${MAX_COMMIT_FILES})`);
+  }
+  let totalBytes = 0;
+  for (const contents of Object.values(body.files)) {
+    totalBytes += contents.length;
+    if (totalBytes > MAX_COMMIT_BYTES) {
+      return badRequest(`commit payload too large (max ${MAX_COMMIT_BYTES} bytes)`);
+    }
+  }
+
+  // Authorization: the caller must have write access to the project that owns the
+  // workspace. Without this, any reader who learns the project id (returned by
+  // GET project) and a workspace name could push arbitrary commits into a repo
+  // they can only read.
+  const projectResult = await getProjectById(c.env.STATE, body.projectId, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") return notFound("Project", body.projectId);
+    logger.error("Failed to get project", projectResult.error);
+    return badRequest(projectResult.error.message);
+  }
+  if (!(await canWriteProject(c.env.DB, projectResult.data, userId, agentOwnerId))) {
+    return forbidden("Project access denied");
+  }
 
   const workspaceResult = await getWorkspace(c.env.STATE, body.projectId, workspaceName, logger);
   if (!workspaceResult.success) {
@@ -192,10 +224,6 @@ app.post("/:name/commit", async (c) => {
     return badRequest(workspaceResult.error.message);
   }
   const workspace = workspaceResult.data;
-
-  // Fetch project to check permissions (we need namespace/slug from project ID)
-  // For now, we'll skip detailed permission check in this simplified endpoint
-  // In production, you'd want to look up project by ID
 
   // Committing clones then pushes to the workspace fork. Mint a fresh write token.
   const tokenResult = await freshRepoToken(c.env.ARTIFACTS, workspace.remote, "write", logger);
@@ -288,7 +316,7 @@ app.delete("/:name", async (c) => {
 
   const userId = c.get("userId");
   const agentId = c.get("agentId");
-  const _agentOwnerId = c.get("agentOwnerId");
+  const agentOwnerId = c.get("agentOwnerId");
   if (!userId && !agentId) return unauthorized("Authentication required");
 
   const { name: workspaceName } = c.req.param();
@@ -299,6 +327,19 @@ app.delete("/:name", async (c) => {
     return badRequest("projectId query parameter is required");
   }
 
+  // Authorization: deleting a workspace (and its Artifacts fork) requires write
+  // access to the owning project. Without this any authenticated caller who knows
+  // a project id + workspace name could destroy another tenant's workspace.
+  const projectResult = await getProjectById(c.env.STATE, projectId, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") return notFound("Project", projectId);
+    logger.error("Failed to get project", projectResult.error);
+    return badRequest(projectResult.error.message);
+  }
+  if (!(await canWriteProject(c.env.DB, projectResult.data, userId, agentOwnerId))) {
+    return forbidden("Project access denied");
+  }
+
   const workspaceResult = await getWorkspace(c.env.STATE, projectId, workspaceName, logger);
   if (!workspaceResult.success) {
     if (workspaceResult.error.code === "NOT_FOUND") {
@@ -307,9 +348,14 @@ app.delete("/:name", async (c) => {
     logger.error("Failed to get workspace", workspaceResult.error);
     return badRequest(workspaceResult.error.message);
   }
+  const workspace = workspaceResult.data;
 
-  await c.env.ARTIFACTS.delete(workspaceName).catch((err: unknown) => {
-    logger.warn(`[workspaces] Failed to delete Artifacts repo "${workspaceName}"`, {
+  // Delete the actual Artifacts fork. The authoritative name comes from the
+  // stored remote; fall back to the recorded branch/workspace name.
+  const artifactsRepo =
+    artifactsRepoNameFromRemote(workspace.remote) ?? workspace.branchName ?? workspaceName;
+  await c.env.ARTIFACTS.delete(artifactsRepo).catch((err: unknown) => {
+    logger.warn(`[workspaces] Failed to delete Artifacts repo "${artifactsRepo}"`, {
       error: err instanceof Error ? err.message : String(err),
     });
   });
