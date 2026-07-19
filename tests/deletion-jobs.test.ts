@@ -54,14 +54,19 @@ function makeEnv(stub: JobsD1Stub, artifacts?: Env["ARTIFACTS"]): Env {
   } as Env;
 }
 
-async function createProjectJob(stub: JobsD1Stub): Promise<string> {
+async function createProjectJob(stub: JobsD1Stub, projectId = "proj_1"): Promise<string> {
+  // Distinct projectId per call: the partial unique index (enforced by the stub)
+  // rejects two active jobs for the SAME project, so tests that need several
+  // concurrent jobs must target different projects.
+  const target = makeTarget({ projectId });
   const created = await createDeletionJob(stub.db, mockLogger, {
     kind: "project",
-    target: makeTarget(),
+    target,
+    targetId: target.projectId,
   });
   expect(created.success).toBe(true);
   if (!created.success) throw new Error("job creation failed");
-  return created.data.id;
+  return created.data.job.id;
 }
 
 describe("deletion job CRUD + lease", () => {
@@ -127,11 +132,34 @@ describe("deletion job CRUD + lease", () => {
     expect(row?.finished_at).not.toBeNull();
   });
 
+  it("dedups a second active job for the same target (created: false)", async () => {
+    const stub = makeJobsD1();
+    const target = makeTarget({ projectId: "proj_dupe" });
+    const first = await createDeletionJob(stub.db, mockLogger, {
+      kind: "project",
+      target,
+      targetId: "proj_dupe",
+    });
+    expect(first.success && first.data.created).toBe(true);
+
+    // The partial unique index rejects the concurrent insert; createDeletionJob
+    // returns the winning job with created: false instead of an error.
+    const second = await createDeletionJob(stub.db, mockLogger, {
+      kind: "project",
+      target,
+      targetId: "proj_dupe",
+    });
+    expect(second.success).toBe(true);
+    if (!second.success || !first.success) return;
+    expect(second.data.created).toBe(false);
+    expect(second.data.job.id).toBe(first.data.job.id);
+  });
+
   it("lists only unfinished jobs with stale or missing heartbeats", async () => {
     const stub = makeJobsD1();
-    const staleId = await createProjectJob(stub);
-    const freshId = await createProjectJob(stub);
-    const doneId = await createProjectJob(stub);
+    const staleId = await createProjectJob(stub, "proj_a");
+    const freshId = await createProjectJob(stub, "proj_b");
+    const doneId = await createProjectJob(stub, "proj_c");
     const staleRow = stub.jobs.get(staleId);
     const freshRow = stub.jobs.get(freshId);
     const doneRow = stub.jobs.get(doneId);
@@ -209,14 +237,15 @@ describe("runDeletionJob", () => {
     const created = await createDeletionJob(stub.db, mockLogger, {
       kind: "account",
       target: { userId: "user_1" },
+      targetId: "user_1",
     });
     expect(created.success).toBe(true);
     if (!created.success) return;
 
-    const result = await runDeletionJob(makeEnv(stub), created.data.id, mockLogger);
+    const result = await runDeletionJob(makeEnv(stub), created.data.job.id, mockLogger);
 
     expect(result.success).toBe(true);
-    const row = stub.jobs.get(created.data.id);
+    const row = stub.jobs.get(created.data.job.id);
     expect(row?.state).toBe("completed");
     expect(JSON.parse(row?.residuals ?? "[]")).toEqual([]);
   });
@@ -276,8 +305,8 @@ describe("runDeletionJob", () => {
 describe("sweepDeletionJobs", () => {
   it("re-drives stale jobs and leaves fresh ones alone", async () => {
     const stub = makeJobsD1();
-    const staleId = await createProjectJob(stub);
-    const freshId = await createProjectJob(stub);
+    const staleId = await createProjectJob(stub, "proj_a");
+    const freshId = await createProjectJob(stub, "proj_b");
     const staleRow = stub.jobs.get(staleId);
     const freshRow = stub.jobs.get(freshId);
     if (staleRow) {

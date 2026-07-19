@@ -113,3 +113,5 @@ paths:
                     example: del_abc123
         '400':
           description: Confirmation mismatch
+        '401':
+          description: Not authenticated, or the user no longer exists

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { recordAudit } from "../storage/audit";
-import { createDeletionJob, findActiveJobForTarget } from "../storage/deletion-jobs";
+import { createDeletionJob } from "../storage/deletion-jobs";
 import { getUser, getUserByUsername, markUserDeleting, rotateUserToken } from "../storage/users";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
@@ -122,31 +122,31 @@ async function handleAccountDelete(c: Context<{ Bindings: Env }>): Promise<Respo
     return internalError(marked.error.message);
   }
 
-  // Dedupe: a repeated delete request must not enqueue a second cascade for the
-  // same user (the cascade is idempotent, but a duplicate wastes a full run and
-  // doubles the audit trail).
-  const existing = await findActiveJobForTarget(c.env.DB, logger, "account", userId);
-  if (existing.success && existing.data) {
-    logger.info("Account deletion already in flight", { userId, jobId: existing.data });
-    return isJson
-      ? c.json({ jobId: existing.data, status: "deleting" }, 202)
-      : c.redirect("/", 302);
-  }
-
   const jobResult = await createDeletionJob(c.env.DB, logger, {
     kind: "account",
     target: { userId },
+    targetId: userId,
   });
   if (!jobResult.success) {
     logger.error("Failed to create account deletion job", jobResult.error);
     return internalError(jobResult.error.message);
   }
+  const { job, created } = jobResult.data;
 
+  // A concurrent/repeated request returns the in-flight job — the partial unique
+  // index guarantees only one active cascade per user (atomic, no TOCTOU).
+  if (!created) {
+    logger.info("Account deletion already in flight", { userId, jobId: job.id });
+    return isJson ? c.json({ jobId: job.id, status: "deleting" }, 202) : c.redirect("/", 302);
+  }
+
+  // Route-level "requested" — the runner records "deletion.started" when the
+  // cascade begins, so this must not duplicate that action.
   await recordAudit(c.env.DB, logger, {
-    action: "deletion.started",
+    action: "deletion.requested",
     actorType: "user",
     actorId: userId,
-    subject: jobResult.data.id,
+    subject: job.id,
     detail: { kind: "account" },
   });
 
@@ -155,16 +155,16 @@ async function handleAccountDelete(c: Context<{ Bindings: Env }>): Promise<Respo
   // already gates the NEXT request).
   const { runDeletionJob } = await import("../queue/deletion-runner");
   c.executionCtx.waitUntil(
-    runDeletionJob(c.env, jobResult.data.id, logger).then((r) => {
+    runDeletionJob(c.env, job.id, logger).then((r) => {
       if (!r.success) logger.error("Account deletion drive failed", r.error);
     }),
   );
 
-  logger.info("Account deletion enqueued", { userId, jobId: jobResult.data.id });
+  logger.info("Account deletion enqueued", { userId, jobId: job.id });
   if (!isJson) {
     return c.redirect("/", 302);
   }
-  return c.json({ status: "deleting", jobId: jobResult.data.id }, 202);
+  return c.json({ status: "deleting", jobId: job.id }, 202);
 }
 
 app.delete("/me", handleAccountDelete);

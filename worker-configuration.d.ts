@@ -17,6 +17,7 @@ declare namespace Cloudflare {
     AI: Ai;
     POSTHOG_HOST: "https://app.posthog.com";
     OAUTH_REDIRECT_URI: "https://stratum-staging.jlmx.workers.dev/auth/github/callback";
+    REPO_DO_ENABLED: "true";
     MERGE_QUEUE: DurableObjectNamespace /* MergeQueue from stratum-staging */;
   }
   interface Env {
@@ -32,6 +33,7 @@ declare namespace Cloudflare {
     OAUTH_REDIRECT_URI:
       | "https://stratum-staging.jlmx.workers.dev/auth/github/callback"
       | "http://localhost:8787/auth/github/callback";
+    REPO_DO_ENABLED: "false" | "true";
     MERGE_QUEUE:
       | DurableObjectNamespace /* MergeQueue from stratum-staging */
       | DurableObjectNamespace /* MergeQueue from stratum */;

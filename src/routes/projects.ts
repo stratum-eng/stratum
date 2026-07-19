@@ -4,7 +4,7 @@ import { importRateLimitMiddleware, releaseImportLock } from "../middleware/rate
 import { emitEvent } from "../queue/events";
 import { recordAudit } from "../storage/audit";
 import { captureDeletionTarget } from "../storage/deletion";
-import { createDeletionJob, findActiveJobForTarget } from "../storage/deletion-jobs";
+import { createDeletionJob } from "../storage/deletion-jobs";
 import { listProjectEvents } from "../storage/events";
 import {
   freshRepoToken,
@@ -1857,45 +1857,47 @@ async function handleProjectDelete(c: Context<{ Bindings: Env }>) {
     return internalError(captured.error.message);
   }
 
-  // Dedupe a repeated delete of the same project into the in-flight job.
-  const existing = await findActiveJobForTarget(c.env.DB, logger, "project", project.id);
-  if (existing.success && existing.data) {
-    logger.info("Project deletion already in flight", { namespace, slug, jobId: existing.data });
-    return isJson
-      ? c.json({ status: "deleting", jobId: existing.data }, 202)
-      : c.redirect("/", 302);
-  }
-
   const jobResult = await createDeletionJob(c.env.DB, logger, {
     kind: "project",
     target: captured.data,
+    targetId: project.id,
   });
   if (!jobResult.success) {
     logger.error("Failed to create deletion job", jobResult.error);
     return internalError(jobResult.error.message);
   }
+  const { job, created } = jobResult.data;
 
+  // A concurrent/repeated delete returns the in-flight job — the partial unique
+  // index guarantees only one active cascade per project (atomic, no TOCTOU).
+  if (!created) {
+    logger.info("Project deletion already in flight", { namespace, slug, jobId: job.id });
+    return isJson ? c.json({ status: "deleting", jobId: job.id }, 202) : c.redirect("/", 302);
+  }
+
+  // Route-level "requested" — the runner records "deletion.started" once the
+  // cascade actually begins, so this must not duplicate that action.
   await recordAudit(c.env.DB, logger, {
-    action: "deletion.started",
+    action: "deletion.requested",
     actorType: "user",
     actorId: userId,
-    subject: jobResult.data.id,
+    subject: job.id,
     detail: { kind: "project", namespace: project.namespace, slug: project.slug },
   });
 
   // Best-effort immediate drive; the sweep is authoritative.
   const { runDeletionJob } = await import("../queue/deletion-runner");
   c.executionCtx.waitUntil(
-    runDeletionJob(c.env, jobResult.data.id, logger).then((r) => {
+    runDeletionJob(c.env, job.id, logger).then((r) => {
       if (!r.success) logger.error("Project deletion drive failed", r.error);
     }),
   );
 
-  logger.info("Project deletion enqueued", { namespace, slug, jobId: jobResult.data.id });
+  logger.info("Project deletion enqueued", { namespace, slug, jobId: job.id });
   if (!isJson) {
     return c.redirect("/", 302);
   }
-  return c.json({ status: "deleting", jobId: jobResult.data.id }, 202);
+  return c.json({ status: "deleting", jobId: job.id }, 202);
 }
 
 app.delete("/:namespace/:slug", handleProjectDelete);

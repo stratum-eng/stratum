@@ -344,15 +344,20 @@ export class RepoDO extends DurableObject<Env> {
    * surviving the purge must not serve stale refs if the name is ever reused.
    */
   async purge(): Promise<void> {
-    await this.ctx.storage.deleteAll();
-    this.benchTree.clear();
-    this.benchHead = undefined;
-    this.benchBatches = 0;
-    this.benchLanded = 0;
-    this.benchConflicts = 0;
-    this.warm = undefined;
-    this.projectRemote = undefined;
-    this.stagedTableReady = false;
+    // Serialize the wipe with any in-flight mergeViaR2/advanceLocked: without the
+    // barrier a concurrent merge could re-populate storage or act on state we are
+    // mid-reset, leaving a "deleted" repo warm with stale refs.
+    await this.ctx.blockConcurrencyWhile(async () => {
+      await this.ctx.storage.deleteAll();
+      this.benchTree.clear();
+      this.benchHead = undefined;
+      this.benchBatches = 0;
+      this.benchLanded = 0;
+      this.benchConflicts = 0;
+      this.warm = undefined;
+      this.projectRemote = undefined;
+      this.stagedTableReady = false;
+    });
   }
 
   private async getHead(): Promise<string | undefined> {

@@ -78,11 +78,26 @@ function toDbError(error: unknown, operation: string, logger: Logger, jobId?: st
   return appError;
 }
 
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Error && /UNIQUE constraint failed/i.test(error.message);
+}
+
+/**
+ * Enqueue a deletion job for `targetId`, or return the already-active one.
+ * Dedup is enforced by a partial unique index (one active job per kind+target),
+ * so two concurrent delete requests can't both create a cascade — the loser's
+ * insert is caught and the winning job is returned with `created: false`.
+ */
 export async function createDeletionJob(
   db: D1Database,
   logger: Logger,
-  opts: { kind: DeletionJobKind; target: DeletionTarget | Record<string, unknown> },
-): Promise<Result<DeletionJob, AppError>> {
+  opts: {
+    kind: DeletionJobKind;
+    target: DeletionTarget | Record<string, unknown>;
+    /** The project/user id — deduped on via the partial unique index. */
+    targetId: string;
+  },
+): Promise<Result<{ job: DeletionJob; created: boolean }, AppError>> {
   const now = new Date().toISOString();
   const job: DeletionJob = {
     id: newId("del"),
@@ -101,12 +116,21 @@ export async function createDeletionJob(
   try {
     await db
       .prepare(
-        "INSERT INTO deletion_jobs (id, kind, target, state, created_at) VALUES (?, ?, ?, 'pending', ?)",
+        "INSERT INTO deletion_jobs (id, kind, target, target_id, state, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
       )
-      .bind(job.id, job.kind, job.target, job.createdAt)
+      .bind(job.id, job.kind, job.target, opts.targetId, job.createdAt)
       .run();
-    return ok(job);
+    return ok({ job, created: true });
   } catch (error) {
+    if (isUniqueViolation(error)) {
+      // A concurrent request already enqueued an active job for this target;
+      // return the winner rather than surfacing a constraint error.
+      const existing = await findActiveJobForTarget(db, logger, opts.kind, opts.targetId);
+      if (existing.success && existing.data) {
+        const found = await getDeletionJob(db, logger, existing.data);
+        if (found.success && found.data) return ok({ job: found.data, created: false });
+      }
+    }
     return err(toDbError(error, "create", logger, job.id));
   }
 }
@@ -123,14 +147,17 @@ export async function findActiveJobForTarget(
   targetId: string,
 ): Promise<Result<string | null, AppError>> {
   try {
+    // targetId is an opaque id (usr_/proj_/…) — which CONTAINS `_`, a LIKE
+    // wildcard. Escape `\`, `%`, and `_` and declare ESCAPE so the match is
+    // exact; otherwise `proj_abc` would also match `projXabc`, deduping the
+    // wrong job. The JSON-embedded quotes anchor it to a full field value.
+    const escaped = targetId.replace(/[\\%_]/g, (ch) => `\\${ch}`);
     const row = await db
       .prepare(
         "SELECT id FROM deletion_jobs WHERE kind = ? AND state IN ('pending','running','verifying') " +
-          "AND target LIKE ? LIMIT 1",
+          "AND target LIKE ? ESCAPE '\\' LIMIT 1",
       )
-      // targetId is an opaque id (usr_/proj_/…); LIKE with the JSON-embedded
-      // quotes avoids matching a substring of a different field's value.
-      .bind(kind, `%"${targetId}"%`)
+      .bind(kind, `%"${escaped}"%`)
       .first<{ id: string }>();
     return ok(row?.id ?? null);
   } catch (error) {

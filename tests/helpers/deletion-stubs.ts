@@ -139,6 +139,7 @@ export interface DeletionJobRowStub {
   id: string;
   kind: string;
   target: string;
+  target_id: string | null;
   state: string;
   checkpoint: string | null;
   heartbeat_at: string | null;
@@ -179,11 +180,26 @@ export function makeJobsD1(
     const norm = sql.replace(/\s+/g, " ").trim();
 
     if (norm.startsWith("INSERT INTO deletion_jobs")) {
-      const [id, kind, target, createdAt] = bindings as [string, string, string, string];
+      const [id, kind, target, targetId, createdAt] = bindings as [
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
+      // Enforce the partial unique index (one active job per kind+target_id) so
+      // the dedup path is exercised in tests as it would be against real D1.
+      const active = [...jobs.values()].find(
+        (j) => j.kind === kind && j.target_id === targetId && UNFINISHED_STATES.has(j.state),
+      );
+      if (active) {
+        throw new Error("D1_ERROR: UNIQUE constraint failed: idx_deletion_jobs_active_target");
+      }
       jobs.set(id, {
         id,
         kind,
         target,
+        target_id: targetId ?? null,
         state: "pending",
         checkpoint: null,
         heartbeat_at: null,
@@ -195,6 +211,17 @@ export function makeJobsD1(
         finished_at: null,
       });
       return { rows: [], changes: 1 };
+    }
+
+    // findActiveJobForTarget: match an active job whose target JSON embeds the id.
+    if (norm.startsWith("SELECT id FROM deletion_jobs WHERE kind = ?")) {
+      const kind = bindings[0] as string;
+      const pattern = bindings[1] as string; // %"<escaped id>"%
+      const core = pattern.replace(/^%/, "").replace(/%$/, "").replace(/\\(.)/g, "$1");
+      const match = [...jobs.values()].find(
+        (job) => job.kind === kind && UNFINISHED_STATES.has(job.state) && job.target.includes(core),
+      );
+      return { rows: match ? [{ id: match.id }] : [], changes: 0 };
     }
 
     if (norm.startsWith("SELECT * FROM deletion_jobs WHERE id = ?")) {

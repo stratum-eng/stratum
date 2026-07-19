@@ -11,8 +11,11 @@ vi.mock("../src/storage/users", () => ({
 }));
 vi.mock("../src/storage/agents", () => ({ getAgentByToken: vi.fn() }));
 vi.mock("../src/storage/deletion-jobs", () => ({
-  createDeletionJob: vi.fn(async () => ({ success: true, data: { id: "del_1" } })),
-  // No in-flight job by default → routes proceed to create one.
+  // created: true → a fresh job; the route proceeds to audit + drive.
+  createDeletionJob: vi.fn(async () => ({
+    success: true,
+    data: { job: { id: "del_1" }, created: true },
+  })),
   findActiveJobForTarget: vi.fn(async () => ({ success: true, data: null })),
 }));
 vi.mock("../src/storage/audit", () => ({ recordAudit: vi.fn(async () => ({ success: true })) }));
@@ -28,6 +31,7 @@ vi.mock("../src/storage/state", () => ({
 
 import { projectsRouter } from "../src/routes/projects";
 import { usersRouter } from "../src/routes/users";
+import { recordAudit } from "../src/storage/audit";
 import { createDeletionJob } from "../src/storage/deletion-jobs";
 import { getProjectByPath } from "../src/storage/state";
 import { getUser, markUserDeleting } from "../src/storage/users";
@@ -111,8 +115,27 @@ describe("DELETE /api/projects/:namespace/:slug", () => {
     expect(createDeletionJob).toHaveBeenCalledWith(
       env.DB,
       expect.any(Object),
-      expect.objectContaining({ kind: "project" }),
+      expect.objectContaining({ kind: "project", targetId: "proj_1" }),
     );
+  });
+
+  it("returns the in-flight job (no re-audit) when a delete is already active", async () => {
+    vi.mocked(getProjectByPath).mockResolvedValue({ success: true, data: ownedProject } as never);
+    vi.mocked(createDeletionJob).mockResolvedValueOnce({
+      success: true,
+      data: { job: { id: "del_existing" }, created: false },
+    } as never);
+    const app = makeApp("usr_1");
+    const res = await app.fetch(
+      jsonReq("DELETE", "/api/projects/@alice/api", { confirm: "@alice/api" }),
+      env,
+      ctx,
+    );
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { jobId: string };
+    expect(body.jobId).toBe("del_existing");
+    // A deduped request must not record a second deletion.requested audit entry.
+    expect(recordAudit).not.toHaveBeenCalled();
   });
 });
 

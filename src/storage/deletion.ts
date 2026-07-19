@@ -2,6 +2,7 @@ import type { Env, ProjectEntry, WorkspaceEntry } from "../types";
 import { type AppError, toAppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+import { findActiveJobForTarget } from "./deletion-jobs";
 import { artifactsRepoNameFromRemote } from "./git-ops";
 import { deleteAllUserSessions } from "./sessions";
 import { listProjects } from "./state";
@@ -251,6 +252,13 @@ export async function isTargetDeleting(
   project: ProjectEntry,
   logger: Logger,
 ): Promise<boolean> {
+  // The project itself may be mid-deletion (a project-scoped cascade), regardless
+  // of owner type. The owner-account check below only covers user-owned projects,
+  // so a project-delete would otherwise let merges/imports/syncs keep running
+  // against a repo being torn down. Check the active project job first.
+  const activeProjectJob = await findActiveJobForTarget(env.DB, logger, "project", project.id);
+  if (activeProjectJob.success && activeProjectJob.data) return true;
+
   if (project.ownerType !== "user") return false;
   try {
     const row = await env.DB.prepare("SELECT deleting_at FROM users WHERE id = ?")

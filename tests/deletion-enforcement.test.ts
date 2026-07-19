@@ -18,8 +18,10 @@ vi.mock("../src/storage/sessions", () => ({
 }));
 
 import { getAgentByToken } from "../src/storage/agents";
+import { createDeletionJob } from "../src/storage/deletion-jobs";
 import { deleteSession, getSession } from "../src/storage/sessions";
 import { getUser, getUserByToken } from "../src/storage/users";
+import { makeJobsD1 } from "./helpers/deletion-stubs";
 
 const mockLogger: Logger = {
   trace: vi.fn(),
@@ -176,15 +178,27 @@ describe("isTargetDeleting", () => {
     expect(await isTargetDeleting(envLive, makeProject(), mockLogger)).toBe(false);
   });
 
-  it("returns false for an org-owned project without a DB lookup", async () => {
-    const throwingDb = {
-      prepare: () => {
-        throw new Error("should not be called");
-      },
-    } as unknown as D1Database;
-    const orgEnv = { DB: throwingDb } as Env;
-    expect(await isTargetDeleting(orgEnv, makeProject({ ownerType: "org" }), mockLogger)).toBe(
-      false,
-    );
+  it("returns false for an org-owned project with no active project deletion job", async () => {
+    // No project-scoped job and org owner → not deleting (the owner-user check is
+    // skipped for org projects).
+    const stub = makeJobsD1();
+    expect(
+      await isTargetDeleting({ DB: stub.db } as Env, makeProject({ ownerType: "org" }), mockLogger),
+    ).toBe(false);
+  });
+
+  it("returns true when the project itself has an active deletion job, regardless of owner", async () => {
+    // A project-scoped cascade must block writes even for an org-owned project
+    // whose owner account is perfectly healthy (the gap CodeRabbit flagged).
+    const stub = makeJobsD1();
+    const created = await createDeletionJob(stub.db, mockLogger, {
+      kind: "project",
+      target: { projectId: "proj_1" },
+      targetId: "proj_1",
+    });
+    expect(created.success).toBe(true);
+    expect(
+      await isTargetDeleting({ DB: stub.db } as Env, makeProject({ ownerType: "org" }), mockLogger),
+    ).toBe(true);
   });
 });

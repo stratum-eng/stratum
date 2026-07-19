@@ -649,7 +649,7 @@ app.post("/changes/:id/merge", async (c) => {
       { type: "change.merged", project: change.project, changeId: id, commit: result.commit ?? "" },
       { type: "user", id: userId },
       logger,
-      change.projectId,
+      change.projectId ?? project.id,
     );
 
     logger.info("Change merged via queue", {
@@ -795,7 +795,7 @@ app.post("/changes/:id/merge", async (c) => {
     { type: "change.merged", project: change.project, changeId: id, commit },
     { type: "user", id: userId },
     logger,
-    change.projectId,
+    change.projectId ?? project.id,
   );
 
   logger.info("Change merged", {
@@ -1142,7 +1142,7 @@ app.post("/changes/:id/reject", async (c) => {
     { type: "change.rejected", project: change.project, changeId: id },
     { type: "user", id: userId },
     logger,
-    change.projectId,
+    change.projectId ?? project.id,
   );
 
   logger.info("Change rejected", { changeId: id, project: change.project });
@@ -1305,7 +1305,7 @@ app.post("/changes/:id/evaluate", async (c) => {
     logger,
     {
       project: change.project,
-      ...(change.projectId !== undefined ? { projectId: change.projectId } : {}),
+      projectId: change.projectId ?? project.id,
       changeId: id,
       workspace: change.workspace,
     },
