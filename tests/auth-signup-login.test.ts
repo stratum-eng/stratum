@@ -138,6 +138,21 @@ vi.mock("../src/storage/users", () => {
   };
 });
 
+// Magic links moved to D1 with atomic consume; model with an in-memory store.
+const { magicStore } = vi.hoisted(() => ({ magicStore: new Map<string, unknown>() }));
+vi.mock("../src/storage/magic-links", () => ({
+  createMagicLink: vi.fn(async (_db: unknown, token: string, payload: unknown) => {
+    magicStore.set(token, payload);
+    return { success: true, data: undefined };
+  }),
+  consumeMagicLink: vi.fn(async (_db: unknown, token: string) => {
+    if (!magicStore.has(token)) return { success: true, data: null };
+    const payload = magicStore.get(token);
+    magicStore.delete(token);
+    return { success: true, data: payload };
+  }),
+}));
+
 vi.mock("../src/storage/sessions", () => ({
   createSession: vi.fn(async (_db, userId: string, _logger, _rememberMe = true) => {
     const sessionId = `sess_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -218,20 +233,13 @@ function createFormData(data: Record<string, string>): FormData {
   return formData;
 }
 
-async function extractMagicLinkToken(env: Env): Promise<string | null> {
-  const kvStore = env.STATE as unknown as {
-    list: (opts: { prefix: string }) => Promise<{ keys: { name: string }[] }>;
-  };
-  const list = await kvStore.list({ prefix: "magic_link:" });
-  if (list.keys.length === 0) return null;
-  const firstKey = list.keys[0];
-  if (!firstKey) return null;
-  return firstKey.name.replace("magic_link:", "");
+async function extractMagicLinkToken(_env: Env): Promise<string | null> {
+  const first = magicStore.keys().next();
+  return first.done ? null : (first.value as string);
 }
 
-async function getMagicLinkData(env: Env, token: string): Promise<unknown> {
-  const data = await env.STATE.get(`magic_link:${token}`);
-  return data ? JSON.parse(data) : null;
+async function getMagicLinkData(_env: Env, token: string): Promise<unknown> {
+  return magicStore.get(token) ?? null;
 }
 
 // ============================================================================
@@ -246,6 +254,7 @@ describe("Auth Signup/Login Integration Tests", () => {
     app = makeApp();
     env = makeEnv();
     vi.clearAllMocks();
+    magicStore.clear();
     mockUsers.clear();
     mockUserIdCounter = 0;
   });
@@ -862,9 +871,7 @@ describe("Auth Signup/Login Integration Tests", () => {
           rememberMe: true,
         };
 
-        await env.STATE.put(`magic_link:${token}`, JSON.stringify(tokenData), {
-          expirationTtl: 15 * 60,
-        });
+        magicStore.set(token, tokenData);
 
         const res = await app.fetch(request(`/auth/email/verify?token=${token}`), env);
 
@@ -884,8 +891,7 @@ describe("Auth Signup/Login Integration Tests", () => {
         }
 
         // Verify token was deleted
-        const storedToken = await env.STATE.get(`magic_link:${token}`);
-        expect(storedToken).toBeNull();
+        expect(magicStore.has(token)).toBe(false);
 
         // Verify session cookie was set
         const setCookieHeader = res.headers.get("set-cookie");
@@ -904,9 +910,7 @@ describe("Auth Signup/Login Integration Tests", () => {
           rememberMe: true,
         };
 
-        await env.STATE.put(`magic_link:${token}`, JSON.stringify(tokenData), {
-          expirationTtl: 15 * 60,
-        });
+        magicStore.set(token, tokenData);
 
         const res = await app.fetch(request(`/auth/email/verify?token=${token}`), env);
 
@@ -914,8 +918,7 @@ describe("Auth Signup/Login Integration Tests", () => {
         expect(res.headers.get("location")).toBe("/");
 
         // Verify token was deleted
-        const storedToken = await env.STATE.get(`magic_link:${token}`);
-        expect(storedToken).toBeNull();
+        expect(magicStore.has(token)).toBe(false);
 
         // Verify session cookie was set
         const setCookieHeader = res.headers.get("set-cookie");
@@ -946,13 +949,9 @@ describe("Auth Signup/Login Integration Tests", () => {
           rememberMe: true,
         };
 
-        // Token would normally be expired by KV TTL, but we simulate it
-        await env.STATE.put(`magic_link:${token}`, JSON.stringify(tokenData), {
-          expirationTtl: 1,
-        });
-
-        // Simulate expiration by deleting it immediately
-        await env.STATE.delete(`magic_link:${token}`);
+        // Simulate an expired/absent token: never persisted, so the atomic
+        // consume finds nothing and reports the link expired.
+        void tokenData;
 
         const res = await app.fetch(request(`/auth/email/verify?token=${token}`), env);
 
@@ -972,9 +971,7 @@ describe("Auth Signup/Login Integration Tests", () => {
           rememberMe: true,
         };
 
-        await env.STATE.put(`magic_link:${token}`, JSON.stringify(tokenData), {
-          expirationTtl: 15 * 60,
-        });
+        magicStore.set(token, tokenData);
 
         // First use - should succeed
         const res1 = await app.fetch(request(`/auth/email/verify?token=${token}`), env);
@@ -997,9 +994,7 @@ describe("Auth Signup/Login Integration Tests", () => {
           rememberMe: true,
         };
 
-        await env.STATE.put(`magic_link:${token}`, JSON.stringify(tokenData), {
-          expirationTtl: 15 * 60,
-        });
+        magicStore.set(token, tokenData);
 
         // Create a user with the same username before verification
         const { createUser } = await import("../src/storage/users");
@@ -1021,9 +1016,7 @@ describe("Auth Signup/Login Integration Tests", () => {
           rememberMe: true,
         };
 
-        await env.STATE.put(`magic_link:${token}`, JSON.stringify(tokenData), {
-          expirationTtl: 15 * 60,
-        });
+        magicStore.set(token, tokenData);
 
         // Create a user with the same email before verification
         const { createUser } = await import("../src/storage/users");
@@ -1045,9 +1038,7 @@ describe("Auth Signup/Login Integration Tests", () => {
           rememberMe: true,
         };
 
-        await env.STATE.put(`magic_link:${token}`, JSON.stringify(tokenData), {
-          expirationTtl: 15 * 60,
-        });
+        magicStore.set(token, tokenData);
 
         const res = await app.fetch(request(`/auth/email/verify?token=${token}`), env);
 
@@ -1120,12 +1111,8 @@ describe("Auth Signup/Login Integration Tests", () => {
 
       expect(successCount).toBe(2);
 
-      // Only one token should exist
-      const kvStore = env.STATE as unknown as {
-        list: (opts: { prefix: string }) => Promise<{ keys: { name: string }[] }>;
-      };
-      const list = await kvStore.list({ prefix: "magic_link:" });
-      expect(list.keys.length).toBe(2);
+      // Two distinct magic-link tokens were stored.
+      expect(magicStore.size).toBe(2);
     });
 
     it("handles email with plus sign", async () => {

@@ -3,6 +3,23 @@ import { emailAuthRouter } from "../src/routes/email-auth";
 import type { Env } from "../src/types";
 import { NotFoundError } from "../src/utils/errors";
 
+// Magic links now live in D1 with atomic consume; model that with an in-memory
+// store shared across the router's create/consume calls (single-use enforced by
+// delete-on-consume, matching the real conditional UPDATE).
+const { magicStore } = vi.hoisted(() => ({ magicStore: new Map<string, unknown>() }));
+vi.mock("../src/storage/magic-links", () => ({
+  createMagicLink: vi.fn(async (_db: unknown, token: string, payload: unknown) => {
+    magicStore.set(token, payload);
+    return { success: true, data: undefined };
+  }),
+  consumeMagicLink: vi.fn(async (_db: unknown, token: string) => {
+    if (!magicStore.has(token)) return { success: true, data: null };
+    const payload = magicStore.get(token);
+    magicStore.delete(token);
+    return { success: true, data: payload };
+  }),
+}));
+
 // Mock the users storage module
 vi.mock("../src/storage/users", () => ({
   getUserByEmail: vi.fn(async () => ({
@@ -61,6 +78,7 @@ describe("Magic Link Authentication", () => {
   beforeEach(() => {
     env = makeEnv();
     vi.clearAllMocks();
+    magicStore.clear();
   });
 
   describe("GET / (auth choice page)", () => {
@@ -226,13 +244,12 @@ describe("Magic Link Authentication", () => {
     });
 
     it("should process valid token and delete it", async () => {
-      // Store valid token in KV
-      const tokenData = JSON.stringify({
+      // Seed a valid token in the magic-link store.
+      magicStore.set("valid-token-123", {
         email: "test@example.com",
         intent: "login",
         createdAt: Date.now(),
       });
-      await env.STATE.put("magic_link:valid-token-123", tokenData);
 
       const res = await emailAuthRouter.fetch(request("/verify?token=valid-token-123"), env);
 

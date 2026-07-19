@@ -4,6 +4,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { admitUser, betaGateEnabled, validateInviteCode } from "../beta/gate";
 import { getInviteCodesEmail, getMagicLinkEmail } from "../email/templates";
 import { recordAudit } from "../storage/audit";
+import { consumeMagicLink, createMagicLink } from "../storage/magic-links";
 import { createSession } from "../storage/sessions";
 import { createUser, getUserByEmail, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
@@ -356,19 +357,17 @@ app.post("/send-signup", async (c) => {
 
     // Generate secure magic link token
     const token = generateSecureToken();
-    // Store token in KV with signup intent
-    await c.env.STATE.put(
-      `magic_link:${token}`,
-      JSON.stringify({
-        email,
-        username,
-        intent: "signup",
-        createdAt: Date.now(),
-        rememberMe,
-        inviteCode,
-      }),
-      { expirationTtl: 15 * 60 }, // 15 minutes TTL
+    // Store token in D1 (atomic single-use at verify time) with signup intent.
+    const stored = await createMagicLink(
+      c.env.DB,
+      token,
+      { email, username, intent: "signup", createdAt: Date.now(), rememberMe, inviteCode },
+      15 * 60,
+      logger,
     );
+    if (!stored.success) {
+      return c.json({ success: false, error: "Failed to send magic link" }, 500);
+    }
 
     // Build magic link URL
     const url = new URL(c.req.url);
@@ -460,17 +459,17 @@ app.post("/send-login", async (c) => {
 
     // Generate secure magic link token
     const token = generateSecureToken();
-    // Store token in KV with login intent
-    await c.env.STATE.put(
-      `magic_link:${token}`,
-      JSON.stringify({
-        email,
-        intent: "login",
-        createdAt: Date.now(),
-        rememberMe,
-      }),
-      { expirationTtl: 15 * 60 }, // 15 minutes TTL
+    // Store token in D1 (atomic single-use at verify time) with login intent.
+    const stored = await createMagicLink(
+      c.env.DB,
+      token,
+      { email, intent: "login", createdAt: Date.now(), rememberMe },
+      15 * 60,
+      logger,
     );
+    if (!stored.success) {
+      return c.json({ success: false, error: "Failed to send magic link" }, 500);
+    }
 
     // Build magic link URL
     const url = new URL(c.req.url);
@@ -574,19 +573,23 @@ app.post("/send", async (c) => {
 
     // Generate secure magic link token
     const token = generateSecureToken();
-    // Store token in KV
-    const tokenData: Record<string, unknown> = {
-      email,
-      intent,
-      createdAt: Date.now(),
-      rememberMe,
-    };
-    if (username) {
-      tokenData.username = username;
+    // Store token in D1 (atomic single-use at verify time).
+    const stored = await createMagicLink(
+      c.env.DB,
+      token,
+      {
+        email,
+        intent: intent === "signup" ? "signup" : "login",
+        createdAt: Date.now(),
+        rememberMe,
+        ...(username ? { username } : {}),
+      },
+      15 * 60,
+      logger,
+    );
+    if (!stored.success) {
+      return c.json({ success: false, error: "Failed to send magic link" }, 500);
     }
-    await c.env.STATE.put(`magic_link:${token}`, JSON.stringify(tokenData), {
-      expirationTtl: 15 * 60, // 15 minutes TTL
-    });
 
     // Build magic link URL
     const url = new URL(c.req.url);
@@ -630,24 +633,29 @@ app.get("/verify", async (c) => {
   }
 
   try {
-    // Retrieve token data from KV
-    const tokenDataRaw = await c.env.STATE.get(`magic_link:${token}`);
-
-    if (!tokenDataRaw) {
-      logger.warn("Token not found or expired", { tokenPrefix: token.slice(0, 8) });
+    // Atomically consume the token: single-use is enforced by a conditional D1
+    // UPDATE, so two concurrent verifies can't both succeed.
+    const consumed = await consumeMagicLink(c.env.DB, token, logger);
+    if (!consumed.success) {
+      return emailAuthRedirect(c, "error", "link_expired");
+    }
+    const tokenData = consumed.data;
+    if (!tokenData) {
+      logger.warn("Token not found, expired, or already used", { tokenPrefix: token.slice(0, 8) });
       return emailAuthRedirect(c, "error", "link_expired");
     }
 
-    const tokenData = JSON.parse(tokenDataRaw);
     const { email, intent, rememberMe = true } = tokenData;
     const emailHash = hashEmail(email);
 
-    // Delete the token so it can't be reused
-    await c.env.STATE.delete(`magic_link:${token}`);
-
     if (intent === "signup") {
       // Signup flow
-      const { username, inviteCode = "" } = tokenData;
+      const { inviteCode = "" } = tokenData;
+      const { username } = tokenData;
+      if (!username) {
+        logger.warn("Signup magic link missing username", { emailHash });
+        return emailAuthRedirect(c, "error", "invalid_link", "/auth/signup");
+      }
       logger.info("Processing signup verification", { emailHash, username });
 
       // Double-check email doesn't already exist (race condition protection)
