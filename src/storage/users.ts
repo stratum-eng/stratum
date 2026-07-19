@@ -19,6 +19,9 @@ interface UserRow {
   github_username: string | null;
   token_hash: string;
   created_at: string;
+  // Added in migration 026; NULL on live accounts. `SELECT *` already fetches
+  // it, so the auth hot path gets `deletingAt` without a second round-trip.
+  deleting_at: string | null;
 }
 
 function rowToUser(row: UserRow): User {
@@ -31,6 +34,8 @@ function rowToUser(row: UserRow): User {
   };
   if (row.github_id !== null) user.githubId = row.github_id;
   if (row.github_username !== null) user.githubUsername = row.github_username;
+  // `deleting_at` may be absent when a stub/legacy read omits the column.
+  if (row.deleting_at != null) user.deletingAt = row.deleting_at;
   return user;
 }
 
@@ -147,6 +152,37 @@ export async function rotateUserToken(
       userId,
     });
     return err(new AppError("Failed to rotate API key", "STORAGE_ERROR", 500, { userId }));
+  }
+}
+
+/**
+ * Mark an account as soft-`deleting` (sets users.deleting_at = now). This
+ * immediately invalidates the caller's credentials via the auth middleware
+ * (Task 4.1) and is the marker the sweep uses to guarantee the cascade runs.
+ * Idempotent: re-marking keeps the original timestamp so the grace window
+ * isn't extended by repeated requests.
+ */
+export async function markUserDeleting(
+  db: D1Database,
+  userId: string,
+  logger: Logger,
+): Promise<Result<string, AppError>> {
+  const now = new Date().toISOString();
+  try {
+    const result = await db
+      .prepare("UPDATE users SET deleting_at = COALESCE(deleting_at, ?) WHERE id = ?")
+      .bind(now, userId)
+      .run();
+    if ((result.meta?.changes ?? 0) === 0) {
+      return err(new AppError(`User '${userId}' not found`, "NOT_FOUND", 404, { userId }));
+    }
+    logger.info("User marked deleting", { userId });
+    return ok(now);
+  } catch (error) {
+    logger.error("Failed to mark user deleting", error instanceof Error ? error : undefined, {
+      userId,
+    });
+    return err(new AppError("Failed to mark user deleting", "STORAGE_ERROR", 500, { userId }));
   }
 }
 

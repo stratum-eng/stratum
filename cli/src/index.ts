@@ -108,6 +108,24 @@ program
     }),
   );
 
+const project = program.command("project").description("Manage projects");
+
+project
+  .command("delete <ns/slug>")
+  .description("Permanently delete a project (owner-only, irreversible)")
+  .requiredOption("--confirm <ns/slug>", "Confirmation token — must equal the project ref")
+  .action(async (projectRef: string, opts: { confirm: string }) =>
+    withClient(async (client) => {
+      const ref = parseProjectRef(projectRef);
+      // Server requires the confirm token to EXACTLY equal "@namespace/slug".
+      // Normalize the user's --confirm the same way so a bare "ns/slug" works.
+      const confirmRef = parseProjectRef(opts.confirm);
+      const confirm = `${confirmRef.namespace}/${confirmRef.slug}`;
+      const result = await client.deleteProject(ref, confirm);
+      print(`Deletion enqueued (job ${result.jobId}). The project is being removed.`);
+    }),
+  );
+
 // ── workspaces ────────────────────────────────────────────────────────────
 
 const workspace = program.command("workspace").description("Manage workspaces");
@@ -329,6 +347,21 @@ issue
       if (!Number.isInteger(number) || number <= 0) throw new Error("invalid issue number");
       await client.updateIssue(ref, number, { status: "closed" });
       print(`Closed issue #${number}`);
+    }),
+  );
+
+// ── account ───────────────────────────────────────────────────────────────
+
+const account = program.command("account").description("Manage your account");
+
+account
+  .command("delete")
+  .description("Permanently delete your account (irreversible)")
+  .requiredOption("--confirm <username>", "Confirmation token — must equal your username")
+  .action(async (opts: { confirm: string }) =>
+    withClient(async (client) => {
+      const result = await client.deleteAccount(opts.confirm);
+      print(`Account deletion enqueued (job ${result.jobId}). Your credentials no longer work.`);
     }),
   );
 

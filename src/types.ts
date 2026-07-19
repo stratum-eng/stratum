@@ -314,6 +314,12 @@ export interface User {
   githubUsername?: string;
   tokenHash: string;
   createdAt: string;
+  /**
+   * When set (ISO timestamp), the account is soft-`deleting`: its credentials
+   * stop working immediately (auth rejects) and its cascade is in flight.
+   * Absent/null on live accounts. See PRD "Grace window".
+   */
+  deletingAt?: string;
 }
 
 export interface Session {
