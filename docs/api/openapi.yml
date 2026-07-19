@@ -57,13 +57,26 @@ paths:
           application/json:
             schema:
               type: object
+              required: [confirm]
               properties:
                 confirm:
                   type: string
                   description: Must exactly equal "@namespace/slug".
       responses:
         '202':
-          description: Deletion enqueued (jobId returned)
+          description: Deletion enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, jobId]
+                properties:
+                  status:
+                    type: string
+                    example: deleting
+                  jobId:
+                    type: string
+                    example: del_abc123
         '400':
           description: Confirmation mismatch
         '404':
@@ -78,12 +91,25 @@ paths:
           application/json:
             schema:
               type: object
+              required: [confirm]
               properties:
                 confirm:
                   type: string
                   description: Must exactly equal the caller's username.
       responses:
         '202':
-          description: Erasure enqueued; credentials invalidated immediately
+          description: Erasure enqueued (jobId returned); credentials invalidated immediately
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, jobId]
+                properties:
+                  status:
+                    type: string
+                    example: deleting
+                  jobId:
+                    type: string
+                    example: del_abc123
         '400':
           description: Confirmation mismatch
