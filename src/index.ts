@@ -55,15 +55,13 @@ app.get("/dev-login", async (c) => {
   const logger = createLogger({ path: c.req.path, method: c.req.method });
 
   try {
-    // Gated on an explicit opt-in flag AND a localhost request host, so the
-    // route is inert in staging/production (where DEV_LOGIN_ENABLED is unset)
-    // even if a request somehow presents a localhost authority.
-    if (c.env.DEV_LOGIN_ENABLED !== "true") {
-      return c.json({ error: "Dev login is not enabled" }, 403);
-    }
-    const url = new URL(c.req.url);
-    if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
-      return c.json({ error: "Dev login only available in local development" }, 403);
+    // Gated on an explicit opt-in flag AND a localhost request host, in a single
+    // condition so neither gate can be bypassed independently. The route is inert
+    // in staging/production (where DEV_LOGIN_ENABLED is unset) even if a request
+    // somehow presents a localhost authority.
+    const host = new URL(c.req.url).hostname;
+    if (c.env.DEV_LOGIN_ENABLED !== "true" || (host !== "localhost" && host !== "127.0.0.1")) {
+      return c.json({ error: "Dev login is not available" }, 403);
     }
 
     const email = c.req.query("email") || "dev@example.com";
@@ -177,8 +175,8 @@ app.onError((err, c) => {
     path: c.req.path,
     method: c.req.method,
   });
-  // The security-headers middleware runs after next(), so a thrown error skips it;
-  // set nosniff + anti-framing on the error response too (defense in depth).
+  // Belt-and-suspenders: the middleware registers headers before next(), but the
+  // error boundary builds a fresh response, so re-assert the framing headers here.
   c.header("X-Content-Type-Options", "nosniff");
   c.header("X-Frame-Options", "DENY");
   return c.json({ error: "Internal server error" }, 500);
