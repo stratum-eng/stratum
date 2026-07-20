@@ -83,6 +83,16 @@ export function makeWebhooksD1(): {
             .filter((d) => d.webhook_id === bindings[0])
             .sort((a, b) => b.created_at.localeCompare(a.created_at))
             .slice(0, bindings[1] as number);
+        } else if (upper.includes("PROJECT_ID = ?")) {
+          // project_id-first with legacy name fallback: (project_id = ? OR (project_id IS NULL AND project = ?))
+          const projectId = bindings[0] as string;
+          const project = bindings[1] as string;
+          const activeReq = upper.includes("ACTIVE = 1");
+          results = webhooks.filter(
+            (w) =>
+              (w.project_id === projectId || (w.project_id === null && w.project === project)) &&
+              (!activeReq || w.active === 1),
+          );
         } else if (upper.includes("AND ACTIVE = 1")) {
           results = webhooks.filter((w) => w.project === bindings[0] && w.active === 1);
         } else {

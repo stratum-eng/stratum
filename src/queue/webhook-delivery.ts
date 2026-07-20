@@ -116,7 +116,12 @@ export async function deliverEventToWebhooks(
   event: EventRecord,
   logger: Logger,
 ): Promise<void> {
-  const webhooksResult = await listWebhooks(env.DB, logger, event.project, { activeOnly: true });
+  // Scope delivery by the canonical project_id when the event carries one, so a
+  // same-named project in another namespace never receives these events.
+  const webhooksResult = await listWebhooks(env.DB, logger, event.project, {
+    activeOnly: true,
+    ...(event.projectId !== undefined ? { projectId: event.projectId } : {}),
+  });
   if (!webhooksResult.success) return;
 
   const matching = webhooksResult.data.filter((webhook) =>
