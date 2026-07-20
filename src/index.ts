@@ -15,6 +15,7 @@ import { runTtlSweep } from "./queue/ttl-sweep";
 import { agentsRouter } from "./routes/agents";
 import { auditRouter } from "./routes/audit";
 import { authRouter } from "./routes/auth";
+import { backfillRouter } from "./routes/backfill";
 import { backupRouter } from "./routes/backup";
 import { bulkImportRouter } from "./routes/bulk-import";
 import { changesRouter } from "./routes/changes";
@@ -125,6 +126,7 @@ app.route("/api/admin/metrics", metricsRouter);
 // Admin audit trail endpoint
 app.route("/api/admin/audit", auditRouter);
 app.route("/api/admin/backup", backupRouter);
+app.route("/api/admin/backfill-project-id", backfillRouter);
 
 // Redirects from old /ui/* URLs to new paths (backward compatibility)
 app.get("/ui", (c) => c.redirect("/", 301));
