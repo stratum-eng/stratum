@@ -90,11 +90,14 @@ export async function createIssue(
   try {
     // The per-project number is assigned inside the INSERT so concurrent
     // creates cannot race: SQLite executes the scalar subquery and the
-    // insert as one serialized statement.
+    // insert as one serialized statement. Numbering is scoped by the canonical
+    // project_id (migration 035), with a legacy name fallback so a project that
+    // already has pre-migration (NULL project_id) issues keeps counting up from
+    // its highest existing number instead of restarting at 1.
     const row = await db
       .prepare(
         `INSERT INTO issues (id, project, project_id, number, title, body, status, author_type, author_id, linked_change_id, created_at, updated_at)
-         VALUES (?1, ?2, ?9, (SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE project = ?2), ?3, ?4, 'open', ?5, ?6, ?7, ?8, ?8)
+         VALUES (?1, ?2, ?9, (SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE (project_id = ?9 OR (project_id IS NULL AND project = ?2))), ?3, ?4, 'open', ?5, ?6, ?7, ?8, ?8)
          RETURNING *`,
       )
       .bind(

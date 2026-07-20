@@ -95,11 +95,20 @@ export function makeIssuesD1(): {
       },
       first: async <T>() => {
         if (upper.startsWith("INSERT INTO ISSUES")) {
-          // VALUES (?1, ?2, (SELECT COALESCE(MAX(number),0)+1 ...), ?3..?8) RETURNING *
+          // VALUES (?1, ?2, ?9, (SELECT MAX(number)+1 WHERE project_id=?9 OR
+          // (project_id IS NULL AND project=?2)), ...) RETURNING *
           const project = bindings[1] as string;
+          const projectId = (bindings[8] as string | null) ?? null;
+          // Mirror migration 035: number by project_id, with a legacy name fallback.
+          // `project_id = ?9` is never true when ?9 is NULL (SQL NULL comparison),
+          // so a projectId-less create numbers purely by the name fallback.
           const number =
             issues
-              .filter((r) => r.project === project)
+              .filter(
+                (r) =>
+                  (projectId !== null && r.project_id === projectId) ||
+                  (r.project_id === null && r.project === project),
+              )
               .reduce((max, r) => Math.max(max, r.number), 0) + 1;
           const row: IssueTableRow = {
             id: bindings[0] as string,

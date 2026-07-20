@@ -50,6 +50,32 @@ describe("issue storage", () => {
     expect(otherProject.number).toBe(1);
   });
 
+  it("numbers independently per project_id for same-named projects (no collision)", async () => {
+    const { db } = makeIssuesD1();
+    // Two projects share the name "acme" but have distinct canonical ids. Under
+    // the old per-name numbering + UNIQUE(project, number) this would collide;
+    // per project_id each gets its own sequence and (project_id, number) is unique.
+    const a1 = await seedIssue(db, { project: "acme", projectId: "proj_A" });
+    const b1 = await seedIssue(db, { project: "acme", projectId: "proj_B" });
+    const a2 = await seedIssue(db, { project: "acme", projectId: "proj_A" });
+
+    expect(a1.number).toBe(1);
+    expect(b1.number).toBe(1);
+    expect(a2.number).toBe(2);
+  });
+
+  it("continues from legacy NULL-project_id issues instead of restarting at 1", async () => {
+    const { db } = makeIssuesD1();
+    // A pre-migration issue: no project_id, numbered by name.
+    const legacy = await seedIssue(db, { project: "acme" });
+    expect(legacy.number).toBe(1);
+
+    // The first stamped issue for that project counts the legacy row via the name
+    // fallback, so it is #2 — not a colliding #1.
+    const stamped = await seedIssue(db, { project: "acme", projectId: "proj_A" });
+    expect(stamped.number).toBe(2);
+  });
+
   it("round-trips issues through getIssueByNumber", async () => {
     const { db } = makeIssuesD1();
     await seedIssue(db, { body: "Details here", linkedChangeId: "chg_1" });
