@@ -37,16 +37,16 @@ function makeCapturingD1(): { db: D1Database; captures: Capture[] } {
   const captures: Capture[] = [];
 
   function parseColumns(sql: string): string[] {
-    const match = sql.match(/INSERT INTO \w+\s*\(([^)]*)\)/i);
-    if (!match?.[1]) return [];
-    return match[1].split(",").map((c) => c.trim());
+    const match = sql.match(/INSERT( OR IGNORE)? INTO \w+\s*\(([^)]*)\)/i);
+    if (!match?.[2]) return [];
+    return match[2].split(",").map((c) => c.trim());
   }
 
   function makeStmt(sql: string, bindings: unknown[]) {
     return {
       bind: (...args: unknown[]) => makeStmt(sql, args),
       run: async () => {
-        if (/^\s*INSERT INTO/i.test(sql)) {
+        if (/^\s*INSERT( OR IGNORE)? INTO/i.test(sql)) {
           captures.push({ columns: parseColumns(sql), bindings });
         }
         return { success: true, meta: {} };
