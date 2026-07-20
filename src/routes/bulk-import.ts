@@ -192,6 +192,32 @@ export async function processRepoImport(
       return { success: false, error: setResult.error.message, repo: url };
     }
 
+    // Enqueue the clone FIRST, then mark "queued" only once it's accepted — so a
+    // queue outage surfaces as a "failed" repo, not a row stuck at "queued" forever.
+    // (Without this enqueue the repo would never actually be imported.)
+    try {
+      const { queueImportJob } = await import("../queue/import-queue");
+      await queueImportJob(env.IMPORT_QUEUE, {
+        importId,
+        projectId,
+        namespace,
+        slug,
+        githubUrl: url,
+        branch,
+        depth: 10,
+      });
+    } catch (queueError) {
+      const msg = queueError instanceof Error ? queueError.message : String(queueError);
+      logger.error(
+        "Failed to enqueue bulk import job",
+        queueError instanceof Error ? queueError : undefined,
+        { namespace, slug },
+      );
+      await updateImportStatus(env.DB, namespace, slug, "failed", logger, `Enqueue failed: ${msg}`);
+      job && job.failedRepos++;
+      return { success: false, error: `Failed to enqueue import: ${msg}`, repo: url };
+    }
+
     await updateImportStatus(
       env.DB,
       namespace,
@@ -200,19 +226,6 @@ export async function processRepoImport(
       logger,
       `Bulk import job ${index + 1}/${total} queued`,
     );
-
-    // Actually enqueue the clone — without this the job stays "queued" forever and
-    // the repo is never imported (the single-import path in projects.ts does this).
-    const { queueImportJob } = await import("../queue/import-queue");
-    await queueImportJob(env.IMPORT_QUEUE, {
-      importId,
-      projectId,
-      namespace,
-      slug,
-      githubUrl: url,
-      branch,
-      depth: 10,
-    });
 
     job && job.successfulRepos++;
     return { success: true, repo: url };

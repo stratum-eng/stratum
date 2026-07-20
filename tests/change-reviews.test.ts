@@ -79,7 +79,7 @@ function makeReviewsD1(): { db: D1Database; comments: CommentRow[]; reviews: Rev
       first: async <T>() => {
         if (upper.includes("COUNT(*)")) {
           // Honor the optional author-exclusion clause (bindings[1] = excludeUserId).
-          const excludeUserId = upper.includes("NOT (AUTHOR_TYPE")
+          const excludeUserId = upper.includes("REVIEWER_ID !=")
             ? (bindings[1] as string)
             : undefined;
           const approvals = reviews.filter(

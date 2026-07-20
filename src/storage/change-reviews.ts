@@ -193,8 +193,10 @@ export async function countApprovals(
   excludeUserId?: string,
 ): Promise<Result<number, AppError>> {
   try {
+    // change_reviews keys the approver on reviewer_id (author_type/author_id are on
+    // change_comments, a different table) — filter on the column that actually exists.
     const sql = excludeUserId
-      ? "SELECT COUNT(*) AS approvals FROM change_reviews WHERE change_id = ? AND verdict = 'approve' AND NOT (author_type = 'user' AND author_id = ?)"
+      ? "SELECT COUNT(*) AS approvals FROM change_reviews WHERE change_id = ? AND verdict = 'approve' AND reviewer_id != ?"
       : "SELECT COUNT(*) AS approvals FROM change_reviews WHERE change_id = ? AND verdict = 'approve'";
     const stmt = excludeUserId
       ? db.prepare(sql).bind(changeId, excludeUserId)
