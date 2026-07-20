@@ -100,6 +100,32 @@ export async function getProject(
   );
 }
 
+/**
+ * Resolve a project by its stable id. Scans all projects (KV is keyed by
+ * namespace:slug, not id) and matches on id. The write paths that need this
+ * (workspace commit/delete) already clone+push, so this extra list is
+ * negligible next to the git round-trips. Returns NOT_FOUND when absent.
+ */
+export async function getProjectById(
+  kv: KVNamespace,
+  projectId: string,
+  logger: Logger,
+): Promise<Result<ProjectEntry, AppError>> {
+  logger.debug("Resolving project by id", { projectId });
+  const allResult = await listProjects(kv, logger);
+  if (!allResult.success) return allResult;
+
+  const match = allResult.data.find((project) => project.id === projectId);
+  if (match) return ok(match);
+
+  return err(
+    new AppError(`Project '${projectId}' not found`, "NOT_FOUND", 404, {
+      resource: "project",
+      projectId,
+    }),
+  );
+}
+
 // Set project using new namespace-aware key
 export async function setProject(
   kv: KVNamespace,
@@ -184,9 +210,22 @@ export async function listProjects(
 ): Promise<Result<ProjectEntry[], AppError>> {
   logger.debug("Listing all projects");
   try {
-    const result = await kv.list({ prefix: PROJECT_PREFIX });
+    // KV `list` returns at most one page (~1000 keys); loop the cursor to
+    // exhaustion so callers (getProjectById → authz, account deletion) never
+    // miss a project.
+    const keyNames: string[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await kv.list(
+        cursor ? { prefix: PROJECT_PREFIX, cursor } : { prefix: PROJECT_PREFIX },
+      );
+      for (const key of page.keys) keyNames.push(key.name);
+      if (page.list_complete) break;
+      cursor = page.cursor;
+      if (!cursor) break;
+    }
     const entries = await Promise.all(
-      result.keys.map(async ({ name }) => {
+      keyNames.map(async (name) => {
         const raw = await kv.get(name);
         if (!raw) return null;
         const parsed = parseEntry<ProjectEntry>(raw, name, logger);
@@ -250,20 +289,6 @@ export async function projectExists(
  * hold a project id (workspace commit/delete), which already do far more
  * expensive work (a repo clone). See the identity-in-KV note in REMAINING_WORK.
  */
-export async function getProjectById(
-  kv: KVNamespace,
-  id: string,
-  logger: Logger,
-): Promise<Result<ProjectEntry, AppError>> {
-  const listed = await listProjects(kv, logger);
-  if (!listed.success) return err(listed.error);
-  const project = listed.data.find((p) => p.id === id);
-  if (!project) {
-    return err(new AppError(`Project '${id}' not found`, "NOT_FOUND", 404, { projectId: id }));
-  }
-  return ok(project);
-}
-
 // Workspace functions (namespaced by project ID)
 export async function getWorkspace(
   kv: KVNamespace,

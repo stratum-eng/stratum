@@ -36,13 +36,14 @@ function makeD1() {
               id: b[0],
               commit_sha: b[1],
               project: b[2],
-              workspace: b[3],
-              change_id: b[4],
-              agent_id: b[5] ?? null,
-              eval_score: b[6] ?? null,
-              model: b[7] ?? null,
-              prompt_hash: b[8] ?? null,
-              merged_at: b[9],
+              project_id: b[3],
+              workspace: b[4],
+              change_id: b[5],
+              agent_id: b[6] ?? null,
+              eval_score: b[7] ?? null,
+              model: b[8] ?? null,
+              prompt_hash: b[9] ?? null,
+              merged_at: b[10],
             });
           }
           return { success: true };

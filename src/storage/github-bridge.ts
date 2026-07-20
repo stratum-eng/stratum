@@ -202,12 +202,13 @@ export async function upsertChangeFromGitHubPR(
     await db
       .prepare(
         `INSERT INTO changes (
-          id, project, workspace, status,
+          id, project, project_id, workspace, status,
           github_owner, github_repo, github_branch, github_pr_number, github_pr_url, github_pr_state, github_head_sha
-        ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         id,
+        projectId,
         projectId,
         workspaceId,
         owner,

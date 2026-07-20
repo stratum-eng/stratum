@@ -31,7 +31,7 @@ interface SummaryRow {
 export async function recordCosts(
   db: D1Database,
   logger: Logger,
-  opts: { project: string; changeId?: string; workspace?: string },
+  opts: { project: string; projectId?: string; changeId?: string; workspace?: string },
   samples: CostSample[],
 ): Promise<Result<void, AppError>> {
   if (samples.length === 0) return ok(undefined);
@@ -39,13 +39,14 @@ export async function recordCosts(
 
   try {
     const stmt = db.prepare(
-      "INSERT INTO cost_records (id, project, change_id, workspace, kind, quantity, estimated, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO cost_records (id, project, project_id, change_id, workspace, kind, quantity, estimated, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
     await db.batch(
       samples.map((sample) =>
         stmt.bind(
           newId("cost"),
           opts.project,
+          opts.projectId ?? null,
           opts.changeId ?? null,
           opts.workspace ?? null,
           sample.kind,

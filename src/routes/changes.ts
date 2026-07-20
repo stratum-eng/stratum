@@ -270,6 +270,7 @@ app.post("/projects/:name/changes", async (c) => {
 
   const changeResult = await createChange(c.env.DB, logger, {
     project: projectName,
+    projectId: project.id,
     workspace: body.workspace,
     ...(agentId !== undefined ? { agentId } : {}),
     ...(baseSha !== null ? { baseSha } : {}),
@@ -297,6 +298,7 @@ app.post("/projects/:name/changes", async (c) => {
     },
     actor,
     logger,
+    project.id,
   );
 
   const [projectReadToken, workspaceReadToken] = await Promise.all([
@@ -319,7 +321,14 @@ app.post("/projects/:name/changes", async (c) => {
     logger.error("Failed to get diff between repos", diffResult.error);
     return badRequest(diffResult.error.message);
   }
-  const { diff, workspaceOid: evaluatedSha, workspaceTreeOid: evaluatedTreeOid } = diffResult.data;
+  // workspaceOid === workspaceSha (same evaluated tip): #133 pins evaluatedSha +
+  // tree oid for content-addressing, #115 pins workspaceHeadSha for the merge.
+  const {
+    diff,
+    workspaceOid: evaluatedSha,
+    workspaceTreeOid: evaluatedTreeOid,
+    workspaceSha: workspaceHeadSha,
+  } = diffResult.data;
 
   const evaluators: Array<{ type: string; evaluator: Evaluator }> = [
     { type: "secret_scan", evaluator: new SecretScanEvaluator() },
@@ -410,7 +419,7 @@ app.post("/projects/:name/changes", async (c) => {
   await recordCosts(
     c.env.DB,
     logger,
-    { project: projectName, changeId: change.id, workspace: body.workspace },
+    { project: projectName, projectId: project.id, changeId: change.id, workspace: body.workspace },
     createCostSamples,
   );
 
@@ -420,6 +429,7 @@ app.post("/projects/:name/changes", async (c) => {
     evalReason: evalResult.reason,
     evaluatedSha,
     evaluatedTreeOid,
+    ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
   });
   if (!updateResult.success) {
     logger.error("Failed to update change status", updateResult.error);
@@ -438,6 +448,7 @@ app.post("/projects/:name/changes", async (c) => {
     },
     { type: "system" },
     logger,
+    project.id,
   );
 
   const updatedChange: Change = {
@@ -448,6 +459,7 @@ app.post("/projects/:name/changes", async (c) => {
     evalReason: evalResult.reason,
     evaluatedSha,
     evaluatedTreeOid,
+    ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
   };
 
   logger.info("Change created and evaluated", {
@@ -741,6 +753,7 @@ app.post("/changes/:id/merge", async (c) => {
       { type: "change.merged", project: change.project, changeId: id, commit: result.commit ?? "" },
       { type: "user", id: userId },
       logger,
+      change.projectId ?? project.id,
     );
 
     logger.info("Change merged via queue", {
@@ -805,9 +818,10 @@ app.post("/changes/:id/merge", async (c) => {
     logger,
     {
       strategy,
-      // SEC-2: the cold path merges the freshly-fetched tip, so pin it to the
-      // evaluated sha (content-address check, applies even under force). Legacy
-      // changes with no evaluatedSha skip it.
+      // Merge the exact evaluated commit (#115) AND assert the tip hasn't moved
+      // since evaluation (SEC-2, applies even under force). Both pin to the same
+      // evaluated revision; legacy changes without these fields merge the live tip.
+      ...(change.workspaceHeadSha ? { workspaceSha: change.workspaceHeadSha } : {}),
       ...(change.evaluatedSha !== undefined ? { expectedWorkspaceSha: change.evaluatedSha } : {}),
     },
   );
@@ -865,13 +879,20 @@ app.post("/changes/:id/merge", async (c) => {
   await recordCosts(
     c.env.DB,
     logger,
-    { project: change.project, changeId: id, workspace: change.workspace },
+    {
+      project: change.project,
+      // Backfill project_id onto legacy (pre-migration) changes as they merge.
+      projectId: change.projectId ?? project.id,
+      changeId: id,
+      workspace: change.workspace,
+    },
     [{ kind: "git_ops", quantity: 2 }],
   );
 
   const provenanceResult = await recordProvenance(c.env.DB, logger, {
     commitSha: commit,
     project: change.project,
+    projectId: change.projectId ?? project.id,
     workspace: change.workspace,
     changeId: id,
     ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
@@ -890,6 +911,7 @@ app.post("/changes/:id/merge", async (c) => {
     { type: "change.merged", project: change.project, changeId: id, commit },
     { type: "user", id: userId },
     logger,
+    change.projectId ?? project.id,
   );
 
   logger.info("Change merged", {
@@ -1186,9 +1208,10 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   }
   const mergedAt = new Date().toISOString();
   // D1 caps bound parameters at 100/statement: chunk so UPDATE (1 + ids) and the
-  // multi-row INSERT stay under it. All chunks ride one batch().
+  // multi-row INSERT (11 binds/row — project_id + model + prompt_hash) stay under
+  // it. All chunks ride one batch().
   const UPDATE_CHUNK = 99;
-  const PROVENANCE_BINDS_PER_ROW = 10;
+  const PROVENANCE_BINDS_PER_ROW = 11;
   // Leave headroom below D1's 100-param cap rather than sitting exactly on it.
   const INSERT_CHUNK = Math.floor(90 / PROVENANCE_BINDS_PER_ROW);
   const statements: D1PreparedStatement[] = [];
@@ -1203,11 +1226,12 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   }
   for (let i = 0; i < landed.length; i += INSERT_CHUNK) {
     const chunk = landed.slice(i, i + INSERT_CHUNK);
-    const rows = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
+    const rows = chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
     const binds = chunk.flatMap((l) => [
       newId("prv"),
       l.commit,
       projectName,
+      project.id,
       l.change?.workspace ?? "",
       l.changeId,
       l.change?.agentId ?? null,
@@ -1218,7 +1242,7 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
     ]);
     statements.push(
       c.env.DB.prepare(
-        `INSERT INTO provenance (id, commit_sha, project, workspace, change_id, agent_id, eval_score, model, prompt_hash, merged_at) VALUES ${rows}`,
+        `INSERT INTO provenance (id, commit_sha, project, project_id, workspace, change_id, agent_id, eval_score, model, prompt_hash, merged_at) VALUES ${rows}`,
       ).bind(...binds),
     );
   }
@@ -1314,6 +1338,7 @@ app.post("/changes/:id/reject", async (c) => {
     { type: "change.rejected", project: change.project, changeId: id },
     { type: "user", id: userId },
     logger,
+    change.projectId ?? project.id,
   );
 
   logger.info("Change rejected", { changeId: id, project: change.project });
@@ -1390,7 +1415,14 @@ app.post("/changes/:id/evaluate", async (c) => {
     logger.error("Failed to get diff between repos", diffResult.error);
     return badRequest(diffResult.error.message);
   }
-  const { diff, workspaceOid: evaluatedSha, workspaceTreeOid: evaluatedTreeOid } = diffResult.data;
+  // workspaceOid === workspaceSha (same evaluated tip): #133 pins evaluatedSha +
+  // tree oid for content-addressing, #115 pins workspaceHeadSha for the merge.
+  const {
+    diff,
+    workspaceOid: evaluatedSha,
+    workspaceTreeOid: evaluatedTreeOid,
+    workspaceSha: workspaceHeadSha,
+  } = diffResult.data;
 
   const evaluators: Array<{ type: string; evaluator: Evaluator }> = [
     { type: "secret_scan", evaluator: new SecretScanEvaluator() },
@@ -1474,7 +1506,12 @@ app.post("/changes/:id/evaluate", async (c) => {
   await recordCosts(
     c.env.DB,
     logger,
-    { project: change.project, changeId: id, workspace: change.workspace },
+    {
+      project: change.project,
+      projectId: change.projectId ?? project.id,
+      changeId: id,
+      workspace: change.workspace,
+    },
     evaluateCostSamples,
   );
 
@@ -1489,6 +1526,8 @@ app.post("/changes/:id/evaluate", async (c) => {
       evalReason: evalResult.reason,
       evaluatedSha,
       evaluatedTreeOid,
+      // Re-pin to the commit this re-evaluation actually ran against (#115).
+      ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
     },
   );
   if (!updateResult.success) {

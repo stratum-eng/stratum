@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { getChange, updateChangeStatus } from "../storage/changes";
+import { isTargetDeleting } from "../storage/deletion";
 import { blobObject, commitObject, treeObject } from "../storage/git-objects";
 import {
   type NodeFS,
@@ -222,6 +223,12 @@ export class RepoDO extends DurableObject<Env> {
     if (!projectResult.success) return { success: false, error: projectResult.error.message };
     const project = projectResult.data;
 
+    // No-op if the owner is being erased (see MergeQueue.merge for rationale).
+    if (await isTargetDeleting(this.env, project, log)) {
+      log.info("Skipping R2 merge for deleting owner", { changeId, projectId: project.id });
+      return { success: false, error: "Project owner is being deleted" };
+    }
+
     const key = `repos/${project.id}/ws/${change.workspace}`;
     const staged = await loadStagedTree(bucket, key);
     if (!staged) return { fallback: true }; // not staged → cold path
@@ -267,6 +274,7 @@ export class RepoDO extends DurableObject<Env> {
     const provenanceResult = await recordProvenance(this.env.DB, log, {
       commitSha: result.commit,
       project: change.project,
+      projectId: change.projectId ?? project.id,
       workspace: change.workspace,
       changeId,
       ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
@@ -344,6 +352,29 @@ export class RepoDO extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Deletion-cascade RPC: DO storage is only reachable from inside the class,
+   * so the project cascade calls this to wipe the ref cache, bench state, and
+   * the staged-tree hot index. In-memory state is reset too — a warm instance
+   * surviving the purge must not serve stale refs if the name is ever reused.
+   */
+  async purge(): Promise<void> {
+    // Serialize the wipe with any in-flight mergeViaR2/advanceLocked: without the
+    // barrier a concurrent merge could re-populate storage or act on state we are
+    // mid-reset, leaving a "deleted" repo warm with stale refs.
+    await this.ctx.blockConcurrencyWhile(async () => {
+      await this.ctx.storage.deleteAll();
+      this.benchTree.clear();
+      this.benchHead = undefined;
+      this.benchBatches = 0;
+      this.benchLanded = 0;
+      this.benchConflicts = 0;
+      this.warm = undefined;
+      this.projectRemote = undefined;
+      this.stagedTableReady = false;
+    });
+  }
+
   private async getHead(): Promise<string | undefined> {
     return this.ctx.storage.get<string>(HEAD_KEY);
   }
@@ -381,6 +412,12 @@ export class RepoDO extends DurableObject<Env> {
         return { success: false, error: projectResult.error.message };
       }
       const project = projectResult.data;
+
+      // No-op if the owner is being erased (see MergeQueue.merge for rationale).
+      if (await isTargetDeleting(this.env, project, log)) {
+        log.info("Skipping advance for deleting owner", { changeId, projectId: project.id });
+        return { success: false, error: "Project owner is being deleted" };
+      }
 
       const workspaceResult = await getWorkspace(this.env.STATE, project.id, change.workspace, log);
       if (!workspaceResult.success) {
@@ -476,6 +513,7 @@ export class RepoDO extends DurableObject<Env> {
         recordProvenance(this.env.DB, log, {
           commitSha: mergedCommit,
           project: change.project,
+          projectId: change.projectId ?? project.id,
           workspace: change.workspace,
           changeId,
           ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
@@ -492,6 +530,7 @@ export class RepoDO extends DurableObject<Env> {
         this.env.DB,
         {
           project: change.project,
+          projectId: change.projectId ?? project.id,
           changeId,
           outcome,
           phases: commitPhasesFromSpans(timer.toObject()),

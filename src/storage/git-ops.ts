@@ -116,8 +116,18 @@ export interface MergeWorkspaceOptions {
   timer?: PhaseTimer;
   /** SEC-2: if set, the fetched workspace tip must equal this (the sha that was
    * evaluated). Aborts the merge with STALE_WORKSPACE otherwise, closing the
-   * window between the route's pre-merge check and this fetch. */
+   * window between the route's pre-merge check and this fetch. Defense-in-depth
+   * alongside `workspaceSha`. */
   expectedWorkspaceSha?: string;
+  /**
+   * The exact workspace commit to merge (the sha the change was evaluated
+   * against, #115). When set, the merge uses this commit instead of the
+   * workspace's live `main` tip — closing the TOCTOU where a re-push between
+   * evaluation and merge would otherwise land unevaluated content. Omit to merge
+   * the live tip (legacy behavior). The sha must be reachable in the fetched
+   * workspace history, else the merge fails closed.
+   */
+  workspaceSha?: string;
 }
 
 export class MergeConflictError extends AppError {
@@ -417,26 +427,47 @@ export async function mergeWorkspaceIntoProject(
   }
 
   let workspaceSha: string;
-  const resolveFetchResult = await fromPromise(git.resolveRef({ fs, dir, ref: "FETCH_HEAD" }));
-  if (resolveFetchResult.success) {
-    workspaceSha = resolveFetchResult.data;
-  } else {
-    const resolveRemoteResult = await fromPromise(
-      git.resolveRef({ fs, dir, ref: "refs/remotes/workspace/main" }),
-    );
-    if (!resolveRemoteResult.success) {
-      logger.error("Failed to resolve workspace ref", resolveRemoteResult.error, {
+  if (options.workspaceSha) {
+    // Pin to the evaluated commit. It must be reachable in the just-fetched
+    // history; if a re-push rewound past it, readCommit throws and we fail
+    // closed rather than merge a different (unevaluated) tip.
+    const pinnedResult = await fromPromise(git.readCommit({ fs, dir, oid: options.workspaceSha }));
+    if (!pinnedResult.success) {
+      logger.error("Pinned workspace sha not reachable in workspace", pinnedResult.error, {
         workspaceRemote,
+        workspaceSha: options.workspaceSha,
       });
       return err(
         new ExternalServiceError(
           "Git",
-          "Failed to resolve workspace ref",
-          resolveRemoteResult.error,
+          "Evaluated workspace commit is no longer present in the workspace",
+          pinnedResult.error,
         ),
       );
     }
-    workspaceSha = resolveRemoteResult.data;
+    workspaceSha = options.workspaceSha;
+  } else {
+    const resolveFetchResult = await fromPromise(git.resolveRef({ fs, dir, ref: "FETCH_HEAD" }));
+    if (resolveFetchResult.success) {
+      workspaceSha = resolveFetchResult.data;
+    } else {
+      const resolveRemoteResult = await fromPromise(
+        git.resolveRef({ fs, dir, ref: "refs/remotes/workspace/main" }),
+      );
+      if (!resolveRemoteResult.success) {
+        logger.error("Failed to resolve workspace ref", resolveRemoteResult.error, {
+          workspaceRemote,
+        });
+        return err(
+          new ExternalServiceError(
+            "Git",
+            "Failed to resolve workspace ref",
+            resolveRemoteResult.error,
+          ),
+        );
+      }
+      workspaceSha = resolveRemoteResult.data;
+    }
   }
 
   // SEC-2: content is content-addressed on the staged paths; the cold path merges
@@ -1820,7 +1851,12 @@ export async function getDiffBetweenRepos(
   workspaceRemote: string,
   workspaceToken: string,
   logger: Logger,
-): Promise<Result<{ diff: string; workspaceOid: string; workspaceTreeOid: string }, AppError>> {
+): Promise<
+  Result<
+    { diff: string; workspaceOid: string; workspaceTreeOid: string; workspaceSha: string },
+    AppError
+  >
+> {
   logger.debug("Getting diff between repos", { baseRemote, workspaceRemote });
 
   const [workspaceCloneResult, baseCloneResult] = await Promise.all([
@@ -1835,11 +1871,12 @@ export async function getDiffBetweenRepos(
   const { fs: baseFs } = baseCloneResult.data;
 
   // Resolve the workspace tip + its tree from the SAME clone the diff is computed
-  // against, so callers can pin evaluation to this exact revision (SEC-2).
-  // Resolving them separately would open a TOCTOU window between the diff and the
-  // pin. The tree oid is what lets a merge backend content-address the code it is
-  // about to land against what was evaluated, closing the residual race between
-  // the pre-merge tip check and the staged-tree read.
+  // against, so callers can pin evaluation to this exact revision (#115 selects
+  // this commit for the merge; SEC-2 asserts it hasn't moved). Resolving them
+  // separately would open a TOCTOU window between the diff and the pin. The tree
+  // oid is what lets a merge backend content-address the code it is about to land
+  // against what was evaluated, closing the residual race between the pre-merge
+  // tip check and the staged-tree read.
   const workspaceOidResult = await fromPromise(
     git.resolveRef({ fs: workspaceFs, dir: workspaceDir, ref: "main" }),
   );
@@ -1847,6 +1884,8 @@ export async function getDiffBetweenRepos(
     return err(new AppError("Failed to resolve workspace tip for diff", "GIT_ERROR", 500));
   }
   const workspaceOid = workspaceOidResult.data;
+  // Same revision, exposed under both names for the two gate mechanisms.
+  const workspaceSha = workspaceOid;
   const workspaceCommitResult = await fromPromise(
     git.readCommit({ fs: workspaceFs, dir: workspaceDir, oid: workspaceOid }),
   );
@@ -1886,7 +1925,7 @@ export async function getDiffBetweenRepos(
 
   const diff = buildUnifiedDiff(baseContent, workspaceContent);
   logger.info("Successfully generated diff between repos", { baseRemote, workspaceRemote });
-  return ok({ diff, workspaceOid, workspaceTreeOid });
+  return ok({ diff, workspaceOid, workspaceTreeOid, workspaceSha });
 }
 
 export function buildUnifiedDiff(

@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getOrgAccessLevel } from "../src/storage/orgs";
-import type { ProjectEntry } from "../src/types";
+import type { ProjectEntry, WorkspaceEntry } from "../src/types";
 import {
   canReadProject,
   canWriteProject,
+  canWriteWorkspace,
   filterMemberProjects,
   filterReadableProjects,
+  isProjectAdmin,
 } from "../src/utils/authz";
 import type { Logger } from "../src/utils/logger";
 
@@ -167,5 +169,83 @@ describe("filterMemberProjects (personal dashboard scope)", () => {
     const projects = [makeProject({ id: "foreign_org", ownerId: "org_x", ownerType: "org" })];
     const mine = await filterMemberProjects(db, projects, "user_me");
     expect(mine).toHaveLength(0);
+  });
+});
+
+function makeWorkspace(overrides: Partial<WorkspaceEntry> = {}): WorkspaceEntry {
+  return {
+    name: "myws",
+    remote: "https://acct.artifacts.cloudflare.net/git/@owner/myws.git",
+    parent: "proj_1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("isProjectAdmin", () => {
+  beforeEach(() => {
+    vi.mocked(getOrgAccessLevel).mockReset();
+  });
+
+  it("grants the direct owner without touching the database", async () => {
+    expect(await isProjectAdmin(db, makeProject({}), "user_owner")).toBe(true);
+    expect(getOrgAccessLevel).not.toHaveBeenCalled();
+  });
+
+  it("requires admin (not merely write) on org projects", async () => {
+    vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("write");
+    expect(await isProjectAdmin(db, orgProject, "user_writer")).toBe(false);
+
+    vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("admin");
+    expect(await isProjectAdmin(db, orgProject, "user_admin")).toBe(true);
+  });
+});
+
+describe("canWriteWorkspace (S1 per-workspace ownership)", () => {
+  beforeEach(() => {
+    vi.mocked(getOrgAccessLevel).mockReset();
+  });
+
+  it("allows the creator (effective user matches createdByUserId)", async () => {
+    const ws = makeWorkspace({ createdByUserId: "user_creator" });
+    // User-owned project; creator is not the owner. No DB call needed.
+    expect(await canWriteWorkspace(db, makeProject({}), ws, "user_creator")).toBe(true);
+    expect(getOrgAccessLevel).not.toHaveBeenCalled();
+  });
+
+  it("allows an agent whose owner created the workspace (shared principal)", async () => {
+    const ws = makeWorkspace({ createdByUserId: "user_creator" });
+    expect(await canWriteWorkspace(db, makeProject({}), ws, undefined, "user_creator")).toBe(true);
+  });
+
+  it("denies a non-creator project writer (org write, not admin)", async () => {
+    // Not the creator → falls through to the admin check, which write-level fails.
+    vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("write");
+    const ws = makeWorkspace({ createdByUserId: "user_creator" });
+    expect(await canWriteWorkspace(db, orgProject, ws, "user_writer")).toBe(false);
+  });
+
+  it("allows a project admin to override any workspace they did not create", async () => {
+    vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("admin");
+    const ws = makeWorkspace({ createdByUserId: "user_creator" });
+    expect(await canWriteWorkspace(db, orgProject, ws, "user_admin")).toBe(true);
+  });
+
+  it("legacy workspace (no creator) + non-admin → denied (fail closed)", async () => {
+    vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("write");
+    const ws = makeWorkspace(); // no createdByUserId
+    expect(await canWriteWorkspace(db, orgProject, ws, "user_writer")).toBe(false);
+  });
+
+  it("legacy workspace (no creator) + admin → allowed", async () => {
+    vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("admin");
+    const ws = makeWorkspace(); // no createdByUserId
+    expect(await canWriteWorkspace(db, orgProject, ws, "user_admin")).toBe(true);
+  });
+
+  it("the direct owner of a user-owned project may write a legacy workspace", async () => {
+    const ws = makeWorkspace();
+    expect(await canWriteWorkspace(db, makeProject({}), ws, "user_owner")).toBe(true);
+    expect(getOrgAccessLevel).not.toHaveBeenCalled();
   });
 });

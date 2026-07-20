@@ -7,6 +7,7 @@ import { type Result, err, ok } from "../utils/result";
 interface ChangeRow {
   id: string;
   project: string;
+  project_id: string | null;
   workspace: string;
   status: string;
   agent_id: string | null;
@@ -18,6 +19,7 @@ interface ChangeRow {
   evaluated_tree_oid: string | null;
   agent_model: string | null;
   agent_prompt_hash: string | null;
+  workspace_head_sha: string | null;
   created_at: string;
   merged_at: string | null;
   github_owner: string | null;
@@ -40,6 +42,7 @@ function rowToChange(row: ChangeRow): Change {
     status: row.status as Change["status"],
     createdAt: row.created_at,
   };
+  if (row.project_id !== null) change.projectId = row.project_id;
   if (row.agent_id !== null) change.agentId = row.agent_id;
   if (row.eval_score !== null) change.evalScore = row.eval_score;
   if (row.eval_passed !== null) change.evalPassed = row.eval_passed === 1;
@@ -49,6 +52,7 @@ function rowToChange(row: ChangeRow): Change {
   if (row.evaluated_tree_oid !== null) change.evaluatedTreeOid = row.evaluated_tree_oid;
   if (row.agent_model !== null) change.agentModel = row.agent_model;
   if (row.agent_prompt_hash !== null) change.agentPromptHash = row.agent_prompt_hash;
+  if (row.workspace_head_sha !== null) change.workspaceHeadSha = row.workspace_head_sha;
   if (row.merged_at !== null) change.mergedAt = row.merged_at;
   if (row.github_owner !== null) change.githubOwner = row.github_owner;
   if (row.github_repo !== null) change.githubRepo = row.github_repo;
@@ -68,6 +72,10 @@ export async function createChange(
   logger: Logger,
   opts: {
     project: string;
+    // Globally-unique project UUID (from the KV ProjectEntry). Optional for
+    // backward compatibility: callers that lack it write NULL, which the future
+    // cascade-delete treats as a name-based (pre-migration) row.
+    projectId?: string;
     workspace: string;
     agentId?: string;
     baseSha?: string;
@@ -81,11 +89,12 @@ export async function createChange(
   try {
     await db
       .prepare(
-        "INSERT INTO changes (id, project, workspace, status, agent_id, base_sha, agent_model, agent_prompt_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO changes (id, project, project_id, workspace, status, agent_id, base_sha, agent_model, agent_prompt_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         id,
         opts.project,
+        opts.projectId ?? null,
         opts.workspace,
         "open",
         opts.agentId ?? null,
@@ -103,6 +112,7 @@ export async function createChange(
       status: "open",
       createdAt,
     };
+    if (opts.projectId !== undefined) change.projectId = opts.projectId;
     if (opts.agentId !== undefined) change.agentId = opts.agentId;
     if (opts.baseSha !== undefined) change.baseSha = opts.baseSha;
     if (opts.agentModel !== undefined) change.agentModel = opts.agentModel;
@@ -264,6 +274,7 @@ export async function updateChangeStatus(
     evalReason?: string;
     evaluatedSha?: string;
     evaluatedTreeOid?: string;
+    workspaceHeadSha?: string;
     mergedAt?: string;
     githubOwner?: string;
     githubRepo?: string;
@@ -305,6 +316,7 @@ export async function updateChangeStatus(
     addOptional("eval_reason", opts?.evalReason);
     addOptional("evaluated_sha", opts?.evaluatedSha);
     addOptional("evaluated_tree_oid", opts?.evaluatedTreeOid);
+    addOptional("workspace_head_sha", opts?.workspaceHeadSha);
     addOptional("merged_at", opts?.mergedAt);
     addOptional("github_owner", opts?.githubOwner);
     addOptional("github_repo", opts?.githubRepo);

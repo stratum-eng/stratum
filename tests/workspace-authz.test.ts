@@ -31,6 +31,7 @@ vi.mock("../src/storage/state", () => ({
 }));
 vi.mock("../src/utils/authz", () => ({
   canWriteProject: vi.fn(),
+  canWriteWorkspace: vi.fn(),
   canReadProject: vi.fn(),
 }));
 vi.mock("../src/storage/git-ops", () => ({
@@ -44,7 +45,7 @@ vi.mock("../src/queue/events", () => ({ emitEvent: vi.fn(async () => undefined) 
 
 import { commitAndPush } from "../src/storage/git-ops";
 import { getProjectById, getWorkspace } from "../src/storage/state";
-import { canWriteProject } from "../src/utils/authz";
+import { canWriteProject, canWriteWorkspace } from "../src/utils/authz";
 
 const WRITER = { Authorization: "Bearer stratum_user_writer000000000000000000" };
 const READER = { Authorization: "Bearer stratum_user_reader000000000000000000" };
@@ -86,12 +87,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getProjectById).mockResolvedValue({ success: true, data: project });
   vi.mocked(getWorkspace).mockResolvedValue({ success: true, data: workspace });
+  // Default: caller has workspace-level write; individual tests override.
+  vi.mocked(canWriteWorkspace).mockResolvedValue(true);
 });
 
 describe("POST /api/workspaces/:name/commit — authorization", () => {
   const body = { projectId: "proj_1", message: "m", files: { "a.txt": "hi" } };
 
-  it("403s a caller without project write access; never pushes", async () => {
+  it("404s a caller without project write access (no existence leak); never pushes", async () => {
     vi.mocked(canWriteProject).mockResolvedValue(false);
     const res = await makeApp().fetch(
       new Request("http://localhost/api/workspaces/fix-bug/commit", {
@@ -101,7 +104,7 @@ describe("POST /api/workspaces/:name/commit — authorization", () => {
       }),
       makeEnv(),
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(commitAndPush).not.toHaveBeenCalled();
   });
 
@@ -137,7 +140,7 @@ describe("POST /api/workspaces/:name/commit — authorization", () => {
 });
 
 describe("DELETE /api/workspaces/:name — authorization", () => {
-  it("403s a caller without project write access; never deletes", async () => {
+  it("404s a caller without project write access (no existence leak); never deletes", async () => {
     vi.mocked(canWriteProject).mockResolvedValue(false);
     const env = makeEnv();
     const res = await makeApp().fetch(
@@ -147,7 +150,7 @@ describe("DELETE /api/workspaces/:name — authorization", () => {
       }),
       env,
     );
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(
       (env.ARTIFACTS as unknown as { delete: ReturnType<typeof vi.fn> }).delete,
     ).not.toHaveBeenCalled();

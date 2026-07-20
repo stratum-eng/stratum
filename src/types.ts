@@ -139,6 +139,11 @@ export interface Env {
   REPO_OBJECTS?: R2Bucket;
   /** Gates the RepoDO fast-forward path (ADR 004). Off -> classic cold merge. */
   REPO_DO_ENABLED?: string;
+  /** Deploy environment: "development" | "staging" | "production". Gates dev-only
+   * routes and toggles HSTS. Defaults to production-safe behavior when unset. */
+  ENVIRONMENT?: string;
+  /** Comma-separated extra CORS origin allowlist (beyond same-origin). Optional. */
+  ALLOWED_ORIGINS?: string;
   EVENTS_QUEUE?: Queue;
   IMPORT_QUEUE?: Queue<ImportJobMessage | SyncJobMessage>;
 }
@@ -238,6 +243,16 @@ export interface WorkspaceEntry {
   /** The Artifacts fork ref name. Equals `name` for workspaces created after this field was added.
    *  Absent on workspaces created before this field; callers should fall back to `name`. */
   branchName?: string;
+  /**
+   * The effective owning USER of this workspace: the creating user's id, or —
+   * when an agent created it — that agent's owner's id. This is the identity the
+   * write-authz check compares against, so an agent and its owner share one
+   * ownership principal. Absent on legacy workspaces created before ownership was
+   * recorded; those fail closed to project admins only. */
+  createdByUserId?: string;
+  /** Provenance only: the agent that created the workspace, when applicable. Not
+   *  used for authorization (the agent's owner in `createdByUserId` is). */
+  createdByAgentId?: string;
 }
 
 // Import progress tracking
@@ -313,6 +328,12 @@ export interface User {
   githubUsername?: string;
   tokenHash: string;
   createdAt: string;
+  /**
+   * When set (ISO timestamp), the account is soft-`deleting`: its credentials
+   * stop working immediately (auth rejects) and its cascade is in flight.
+   * Absent/null on live accounts. See PRD "Grace window".
+   */
+  deletingAt?: string;
 }
 
 export interface Session {
@@ -335,6 +356,9 @@ export interface Agent {
 export interface Change {
   id: string;
   project: string;
+  /** Globally-unique project UUID. Optional: NULL on rows written before the
+   *  project-identity unification (name -> id lives in KV, not backfillable in SQL). */
+  projectId?: string;
   workspace: string;
   status:
     | "open"
@@ -351,7 +375,8 @@ export interface Change {
   evalReason?: string;
   /** Project HEAD at change creation — the base the evaluation ran against. */
   baseSha?: string;
-  /** Workspace tip the evaluation ran against; a merge rejects if it moved. */
+  /** Workspace tip the evaluation ran against; a merge rejects if it moved
+   * (SEC-2 defense-in-depth assertion). Same revision as `workspaceHeadSha`. */
   evaluatedSha?: string;
   /** Tree oid of the evaluated workspace tip; a merge backend content-addresses
    * the code it lands against this to close the tip-check→merge TOCTOU. */
@@ -360,6 +385,13 @@ export interface Change {
   agentModel?: string;
   /** The authoring agent's prompt hash, snapshotted at change creation. */
   agentPromptHash?: string;
+  /**
+   * The workspace commit sha the evaluation ran against. The merge gate merges
+   * *this* sha (not the workspace's live tip, #115), so a re-push between eval and
+   * merge cannot land unevaluated content on the default branch. Held alongside
+   * `evaluatedSha` (same value): #115 selects this commit, SEC-2 asserts it.
+   */
+  workspaceHeadSha?: string;
   createdAt: string;
   mergedAt?: string;
   githubOwner?: string;

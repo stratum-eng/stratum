@@ -10,6 +10,8 @@ export interface EventRecord {
   id: string;
   type: string;
   project: string;
+  /** Globally-unique project UUID; NULL on rows written before dual-write. */
+  projectId?: string;
   actorType: EventActorType;
   actorId?: string;
   payload: Record<string, unknown>;
@@ -26,6 +28,7 @@ interface EventRow {
   id: string;
   type: string;
   project: string;
+  project_id: string | null;
   actor_type: string;
   actor_id: string | null;
   payload: string;
@@ -69,6 +72,7 @@ function rowToEvent(row: EventRow, logger: Logger): EventRecord {
     createdAt: row.created_at,
     completedHandlers,
   };
+  if (row.project_id !== null) event.projectId = row.project_id;
   if (row.actor_id !== null) event.actorId = row.actor_id;
   if (row.processed_at !== null) event.processedAt = row.processed_at;
   return event;
@@ -91,6 +95,7 @@ export async function insertEvent(
   opts: {
     type: string;
     project: string;
+    projectId?: string;
     actorType: EventActorType;
     actorId?: string;
     payload: Record<string, unknown>;
@@ -102,12 +107,13 @@ export async function insertEvent(
   try {
     await db
       .prepare(
-        "INSERT INTO events (id, type, project, actor_type, actor_id, payload, status, attempts, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?)",
+        "INSERT INTO events (id, type, project, project_id, actor_type, actor_id, payload, status, attempts, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)",
       )
       .bind(
         id,
         opts.type,
         opts.project,
+        opts.projectId ?? null,
         opts.actorType,
         opts.actorId ?? null,
         JSON.stringify(opts.payload),
@@ -125,6 +131,7 @@ export async function insertEvent(
       attempts: 0,
       createdAt,
     };
+    if (opts.projectId !== undefined) event.projectId = opts.projectId;
     if (opts.actorId !== undefined) event.actorId = opts.actorId;
 
     logger.debug("Event inserted", { eventId: id, eventType: opts.type, project: opts.project });

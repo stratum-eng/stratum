@@ -24,7 +24,9 @@ vi.mock("../src/storage/events", async (orig) => ({
 const mockCapture = vi.fn(async (..._a: unknown[]) => undefined);
 const mockDeliver = vi.fn(async (..._a: unknown[]) => undefined);
 const mockAutoClose = vi.fn(async (..._a: unknown[]) => undefined);
-const mockSetCompleted = vi.fn(async (..._a: unknown[]) => ({ success: true }));
+const mockSetCompleted = vi.fn(
+  async (..._a: unknown[]): Promise<{ success: boolean; error?: Error }> => ({ success: true }),
+);
 
 import { processEvent } from "../src/queue/event-consumer";
 

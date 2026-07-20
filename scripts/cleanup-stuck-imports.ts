@@ -28,7 +28,7 @@ async function cleanupStuckImports() {
     const { results } = await env.DB.prepare(
       `SELECT id, namespace, slug, status, started_at, updated_at 
        FROM import_jobs 
-       WHERE status = 'cancelling'`
+       WHERE status = 'cancelling'`,
     ).all<ImportJobRow>();
 
     let stuckCount = 0;
@@ -38,7 +38,7 @@ async function cleanupStuckImports() {
       console.log(`Found stuck import: ${row.namespace}/${row.slug}`);
       console.log(`  ID: ${row.id}`);
       console.log(`  Started: ${row.started_at}`);
-      console.log(`  Last updated: ${row.updated_at || 'unknown'}`);
+      console.log(`  Last updated: ${row.updated_at || "unknown"}`);
 
       // Update to cancelled status
       await env.DB.prepare(
@@ -46,7 +46,7 @@ async function cleanupStuckImports() {
          SET status = 'cancelled', 
              completed_at = CURRENT_TIMESTAMP,
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`
+         WHERE id = ?`,
       )
         .bind(row.id)
         .run();
