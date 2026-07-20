@@ -1,5 +1,6 @@
 import { getUser } from "../storage/users";
 import type { Env } from "../types";
+import { constantTimeEqual } from "./crypto";
 import type { Logger } from "./logger";
 
 /**
@@ -14,7 +15,11 @@ export async function isAdminRequest(
   opts: { adminApiKeyHeader?: string; userId?: string },
   logger: Logger,
 ): Promise<boolean> {
-  if (opts.adminApiKeyHeader && env.ADMIN_API_KEY && opts.adminApiKeyHeader === env.ADMIN_API_KEY) {
+  if (
+    opts.adminApiKeyHeader &&
+    env.ADMIN_API_KEY &&
+    constantTimeEqual(opts.adminApiKeyHeader, env.ADMIN_API_KEY)
+  ) {
     return true;
   }
 

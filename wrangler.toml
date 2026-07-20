@@ -102,6 +102,10 @@ name = "EMAIL"
 
 [vars]
 POSTHOG_HOST = "https://app.posthog.com"
+# Enables the /dev-login session backdoor for local `wrangler dev` only. Named
+# envs do NOT inherit top-level vars, so staging/production (which re-declare
+# their own [vars]) leave this unset and the route stays inert there.
+DEV_LOGIN_ENABLED = "true"
 # RepoDO fast-forward path (ADR 004, Phase 1). Default off: merges take the proven
 # cold path. Flip to "true" to enable the fast-forward ref authority (and to run
 # the benchmark "after" number). This is the kill switch / rollback.

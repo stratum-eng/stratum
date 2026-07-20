@@ -13,6 +13,10 @@ export interface ProvenanceRecord {
   changeId: string;
   agentId?: string;
   evalScore?: number;
+  /** The model that authored the change, snapshotted at change creation. */
+  model?: string;
+  /** The prompt hash that shaped the change, snapshotted at change creation. */
+  promptHash?: string;
   mergedAt: string;
 }
 
@@ -25,6 +29,8 @@ interface ProvenanceRow {
   change_id: string;
   agent_id: string | null;
   eval_score: number | null;
+  model: string | null;
+  prompt_hash: string | null;
   merged_at: string;
 }
 
@@ -40,6 +46,8 @@ function rowToRecord(row: ProvenanceRow): ProvenanceRecord {
   if (row.project_id !== null) record.projectId = row.project_id;
   if (row.agent_id !== null) record.agentId = row.agent_id;
   if (row.eval_score !== null) record.evalScore = row.eval_score;
+  if (row.model !== null) record.model = row.model;
+  if (row.prompt_hash !== null) record.promptHash = row.prompt_hash;
   return record;
 }
 
@@ -54,6 +62,8 @@ export async function recordProvenance(
     changeId: string;
     agentId?: string;
     evalScore?: number;
+    model?: string;
+    promptHash?: string;
   },
 ): Promise<Result<ProvenanceRecord, AppError>> {
   try {
@@ -62,7 +72,7 @@ export async function recordProvenance(
 
     await db
       .prepare(
-        "INSERT INTO provenance (id, commit_sha, project, project_id, workspace, change_id, agent_id, eval_score, merged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO provenance (id, commit_sha, project, project_id, workspace, change_id, agent_id, eval_score, model, prompt_hash, merged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         id,
@@ -73,6 +83,8 @@ export async function recordProvenance(
         opts.changeId,
         opts.agentId ?? null,
         opts.evalScore ?? null,
+        opts.model ?? null,
+        opts.promptHash ?? null,
         mergedAt,
       )
       .run();
@@ -88,6 +100,8 @@ export async function recordProvenance(
     if (opts.projectId !== undefined) record.projectId = opts.projectId;
     if (opts.agentId !== undefined) record.agentId = opts.agentId;
     if (opts.evalScore !== undefined) record.evalScore = opts.evalScore;
+    if (opts.model !== undefined) record.model = opts.model;
+    if (opts.promptHash !== undefined) record.promptHash = opts.promptHash;
 
     logger.debug("Provenance recorded", {
       provenanceId: id,

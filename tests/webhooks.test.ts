@@ -197,6 +197,19 @@ describe("deliverEventToWebhooks", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("SEC-6: sends redirect:manual and records a 3xx as a failed delivery", async () => {
+    const { env, deliveries } = await setup();
+    fetchMock.mockResolvedValue(new Response(null, { status: 302 }));
+
+    await deliverEventToWebhooks(env, makeEvent(), mockLogger);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.redirect).toBe("manual");
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.status).toBe("failed");
+    expect(deliveries[0]?.status_code).toBe(302);
+  });
+
   it("skips inactive webhooks", async () => {
     const { env, db, webhook } = await setup();
     await setWebhookActive(db, mockLogger, webhook.id, false);
@@ -272,5 +285,24 @@ describe("validateWebhookUrl", () => {
   it("does not reject public hosts that resemble IPv6 prefixes", () => {
     expect(validateWebhookUrl("https://fcc.gov/hook").success).toBe(true);
     expect(validateWebhookUrl("https://fe80.example.com/hook").success).toBe(true);
+  });
+
+  it("SSRF: rejects obfuscated IP encodings of loopback/private", () => {
+    // Integer, hex, octal, dotted-hex/octal, all resolve to 127.0.0.1 / private.
+    expect(validateWebhookUrl("http://2130706433/hook").success).toBe(false);
+    expect(validateWebhookUrl("http://0x7f000001/hook").success).toBe(false);
+    expect(validateWebhookUrl("http://0x7f.0.0.1/hook").success).toBe(false);
+    expect(validateWebhookUrl("http://0177.0.0.1/hook").success).toBe(false);
+    expect(validateWebhookUrl("http://127.1/hook").success).toBe(false);
+    // IPv6 unspecified and expanded loopback.
+    expect(validateWebhookUrl("http://[::]/hook").success).toBe(false);
+    expect(validateWebhookUrl("http://[0:0:0:0:0:0:0:1]/hook").success).toBe(false);
+    // IPv4-mapped loopback.
+    expect(validateWebhookUrl("http://[::ffff:127.0.0.1]/hook").success).toBe(false);
+  });
+
+  it("SSRF: still accepts legitimate public IPv4 and hex-word domains", () => {
+    expect(validateWebhookUrl("https://8.8.8.8/hook").success).toBe(true);
+    expect(validateWebhookUrl("https://beef.cafe/hook").success).toBe(true);
   });
 });

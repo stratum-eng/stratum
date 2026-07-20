@@ -32,6 +32,10 @@ import { isStringRecord, isValidSlug } from "../utils/validation";
 
 const app = new Hono<{ Bindings: Env }>();
 
+// Commit payload bounds — the commit clones into an in-isolate MemoryFS.
+const MAX_COMMIT_FILES = 2000;
+const MAX_COMMIT_BYTES = 25 * 1024 * 1024;
+
 // POST /projects/:namespace/:slug/workspaces - Create a workspace
 app.post("/:namespace/:slug/workspaces", async (c) => {
   const logger = createLogger({
@@ -188,6 +192,20 @@ app.post("/:name/commit", async (c) => {
   if (typeof body.message !== "string" || !body.message.trim())
     return badRequest("message is required");
   if (typeof body.projectId !== "string") return badRequest("projectId is required");
+
+  // Bound the payload: the commit clones the repo into a ~128MB isolate, so an
+  // unbounded file map is a memory/CPU DoS lever.
+  const fileCount = Object.keys(body.files).length;
+  if (fileCount > MAX_COMMIT_FILES) {
+    return badRequest(`too many files in one commit (max ${MAX_COMMIT_FILES})`);
+  }
+  let totalBytes = 0;
+  for (const contents of Object.values(body.files)) {
+    totalBytes += contents.length;
+    if (totalBytes > MAX_COMMIT_BYTES) {
+      return badRequest(`commit payload too large (max ${MAX_COMMIT_BYTES} bytes)`);
+    }
+  }
 
   const workspaceResult = await getWorkspace(c.env.STATE, body.projectId, workspaceName, logger);
   if (!workspaceResult.success) {

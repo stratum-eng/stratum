@@ -4,6 +4,7 @@ import {
   createOrg,
   getOrgBySlug,
   isOrgAdmin,
+  isOrgMember,
   listOrgsForUser,
   removeOrgMember,
 } from "../storage/orgs";
@@ -95,9 +96,24 @@ app.get("/:slug", async (c) => {
     logger.warn("Org not found", { slug });
     return notFound("Org", slug);
   }
+  const org = result.data;
 
-  logger.debug("Org retrieved", { slug, orgId: result.data.id });
-  return ok({ org: result.data });
+  // Org records are visible to members only — a non-member (or anonymous
+  // caller) gets the same 404 as a missing org, so org existence and the owner
+  // id aren't disclosed cross-tenant.
+  const callerId = c.get("userId") ?? c.get("agentOwnerId");
+  const memberResult = callerId
+    ? await isOrgMember(c.env.DB, logger, org.id, callerId)
+    : { success: true as const, data: false };
+  if (!memberResult.success || !memberResult.data) {
+    // Fail closed on either a genuine non-member or a membership-lookup error
+    // (the error itself is logged inside isOrgMember).
+    logger.debug("Org read denied (non-member or lookup failure)", { slug, orgId: org.id });
+    return notFound("Org", slug);
+  }
+
+  logger.debug("Org retrieved", { slug, orgId: org.id });
+  return ok({ org });
 });
 
 app.post("/:slug/members", async (c) => {
@@ -241,6 +257,17 @@ app.get("/:slug/teams", async (c) => {
     return notFound("Org", slug);
   }
   const org = orgResult.data;
+
+  // Team structure is member-only; non-members get a 404 (no existence leak).
+  const callerId = c.get("userId") ?? c.get("agentOwnerId");
+  const memberResult = callerId
+    ? await isOrgMember(c.env.DB, logger, org.id, callerId)
+    : { success: true as const, data: false };
+  if (!memberResult.success || !memberResult.data) {
+    // Fail closed on non-member or membership-lookup error (logged in isOrgMember).
+    logger.debug("Team listing denied (non-member or lookup failure)", { slug, orgId: org.id });
+    return notFound("Org", slug);
+  }
 
   const result = await listTeams(c.env.DB, logger, org.id);
   if (!result.success) {

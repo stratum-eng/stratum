@@ -3,6 +3,7 @@ import { ExternalServiceError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import type { Result } from "../utils/result";
 import { err, ok } from "../utils/result";
+import { validateWebhookUrl } from "../utils/validation";
 import type { EvalPolicy, EvalResult, Evaluator } from "./types";
 
 async function computeHmacSha256(secret: string, body: string): Promise<string> {
@@ -34,6 +35,19 @@ export class WebhookEvaluator implements Evaluator {
       return ok({ score: 0, passed: false, reason: "Webhook: no configuration found." });
     }
 
+    // The URL comes from the repo's own policy file, so it must pass the same
+    // private-host / SSRF filter as delivery webhooks. Fail the evaluation
+    // closed (score 0, not passed) rather than fetch an internal address.
+    const urlCheck = validateWebhookUrl(config.url, logger);
+    if (!urlCheck.success) {
+      logger.warn("Webhook evaluator URL rejected", { url: config.url });
+      return ok({
+        score: 0,
+        passed: false,
+        reason: `Webhook: URL not allowed (${urlCheck.error[0]?.message ?? "invalid URL"}).`,
+      });
+    }
+
     const timeoutMs = config.timeoutMs ?? 10000;
     const body = JSON.stringify({ diff, policy });
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -54,6 +68,9 @@ export class WebhookEvaluator implements Evaluator {
         headers,
         body,
         signal: controller.signal,
+        // Never follow a redirect to a (possibly internal) address; a 3xx here
+        // is treated as a failed evaluation below via !response.ok.
+        redirect: "manual",
       });
 
       if (!response.ok) {

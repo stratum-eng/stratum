@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Workspace commit/delete now require project write access (was unauthenticated in practice).
+- Bulk import enforces own-namespace ownership (no more namespace squatting).
+- Merge gate binds the merged code to the evaluated revision across every backend; force-merge
+  is now **deny-by-default** (opt in with `merge.allowForce: true`).
+- Magic-link tokens are single-use atomically (moved to D1); webhook SSRF filter blocks
+  obfuscated IP encodings; malformed policy files fail the merge gate closed.
+
+### Breaking
+- **Force merge is deny-by-default.** Existing projects **without** a policy file that relied on
+  `?force=true` will now have it rejected. Set `merge.allowForce: true` in `.stratum/policy.yaml`
+  to restore it.
+
 ### Added
 - Open-source onboarding: `LICENSE` (MIT), `CONTRIBUTING.md`, `SECURITY.md`, `AGENTS.md`,
   issue and pull-request templates.

@@ -120,6 +120,10 @@ export interface Env {
   EMAIL_FROM_ADDRESS?: string;
   ADMIN_EMAIL?: string;
   ADMIN_API_KEY?: string;
+  // Enables the /dev-login backdoor. Must be "true" AND the request host must be
+  // localhost. Set only in local dev config; unset in staging/production so the
+  // route is inert there.
+  DEV_LOGIN_ENABLED?: string;
   // Closed-beta gate (optional; OSS self-hosters leave these unset → no gating).
   // When BETA_GATE is enabled AND REFERRAL_SERVICE_URL is set, new-account creation
   // requires a valid referral/invite code validated against the cloud referral service.
@@ -371,10 +375,21 @@ export interface Change {
   evalReason?: string;
   /** Project HEAD at change creation — the base the evaluation ran against. */
   baseSha?: string;
+  /** Workspace tip the evaluation ran against; a merge rejects if it moved
+   * (SEC-2 defense-in-depth assertion). Same revision as `workspaceHeadSha`. */
+  evaluatedSha?: string;
+  /** Tree oid of the evaluated workspace tip; a merge backend content-addresses
+   * the code it lands against this to close the tip-check→merge TOCTOU. */
+  evaluatedTreeOid?: string;
+  /** The authoring agent's model, snapshotted at change creation (not read live). */
+  agentModel?: string;
+  /** The authoring agent's prompt hash, snapshotted at change creation. */
+  agentPromptHash?: string;
   /**
    * The workspace commit sha the evaluation ran against. The merge gate merges
-   * *this* sha (not the workspace's live tip), so a re-push between eval and
-   * merge cannot land unevaluated content on the default branch.
+   * *this* sha (not the workspace's live tip, #115), so a re-push between eval and
+   * merge cannot land unevaluated content on the default branch. Held alongside
+   * `evaluatedSha` (same value): #115 selects this commit, SEC-2 asserts it.
    */
   workspaceHeadSha?: string;
   createdAt: string;

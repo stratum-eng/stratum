@@ -130,6 +130,16 @@ app.get("/:id", async (c) => {
   }
 
   const agent = result.data;
+
+  // Only the owning user (or one of their agents) may read an agent's record —
+  // it exposes the model and prompt hash. Return 404 rather than 403 so a
+  // co-tenant can't confirm an agent id exists.
+  const callerId = c.get("userId") ?? c.get("agentOwnerId");
+  if (!callerId || agent.ownerId !== callerId) {
+    logger.debug("Agent read denied for non-owner", { agentId: id });
+    return c.json({ error: "Agent not found" }, 404);
+  }
+
   logger.debug("Agent retrieved", { agentId: id });
 
   return ok({

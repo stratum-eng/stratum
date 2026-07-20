@@ -283,6 +283,12 @@ export async function projectExists(
   }
 }
 
+/**
+ * Resolve a project by its canonical id. Projects are keyed in KV by
+ * namespace/slug, not id, so this scans — acceptable on the handlers that only
+ * hold a project id (workspace commit/delete), which already do far more
+ * expensive work (a repo clone). See the identity-in-KV note in REMAINING_WORK.
+ */
 // Workspace functions (namespaced by project ID)
 export async function getWorkspace(
   kv: KVNamespace,

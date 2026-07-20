@@ -6,6 +6,7 @@ import {
   listStalePendingEvents,
   markEventFailed,
   markEventProcessed,
+  setCompletedHandlers,
 } from "../storage/events";
 import type { Env, Message, MessageBatch } from "../types";
 import type { Logger } from "../utils/logger";
@@ -59,9 +60,24 @@ const issueAutoCloseHandler: EventHandler = {
  */
 const handlers: EventHandler[] = [analyticsHandler, issueAutoCloseHandler, webhookHandler];
 
-async function processEvent(env: Env, event: EventRecord, logger: Logger): Promise<void> {
+/** Exported for tests. Runs the ordered handlers, resuming past completed ones. */
+export async function processEvent(env: Env, event: EventRecord, logger: Logger): Promise<void> {
+  // Resume from where a prior attempt left off: skip handlers already recorded as
+  // completed, and persist progress after each success so a later failure doesn't
+  // re-run (and re-emit) the ones that already ran. On failure, stop — running a
+  // later handler on an inconsistent earlier state would defeat the ordering.
+  const completed = [...(event.completedHandlers ?? [])];
+  const completedSet = new Set(completed);
   for (const handler of handlers) {
+    if (completedSet.has(handler.name)) continue;
     await handler.handle(env, event, logger);
+    completed.push(handler.name);
+    completedSet.add(handler.name);
+    // If we can't persist progress, stop and let the message retry rather than
+    // running later handlers on unpersisted state — otherwise a subsequent failure
+    // would re-run (re-emit) this handler, the exact idempotency hole this guards.
+    const persisted = await setCompletedHandlers(env.DB, logger, event.id, completed);
+    if (!persisted.success) throw persisted.error;
   }
 }
 

@@ -114,12 +114,17 @@ export interface MergeWorkspaceOptions {
   strategy?: MergeStrategy;
   /** Optional Phase 0 instrumentation; populates per-phase spans when present. */
   timer?: PhaseTimer;
+  /** SEC-2: if set, the fetched workspace tip must equal this (the sha that was
+   * evaluated). Aborts the merge with STALE_WORKSPACE otherwise, closing the
+   * window between the route's pre-merge check and this fetch. Defense-in-depth
+   * alongside `workspaceSha`. */
+  expectedWorkspaceSha?: string;
   /**
    * The exact workspace commit to merge (the sha the change was evaluated
-   * against). When set, the merge uses this commit instead of the workspace's
-   * live `main` tip — closing the TOCTOU where a re-push between evaluation and
-   * merge would otherwise land unevaluated content. Omit to merge the live tip
-   * (legacy behavior, unchanged). The sha must be reachable in the fetched
+   * against, #115). When set, the merge uses this commit instead of the
+   * workspace's live `main` tip — closing the TOCTOU where a re-push between
+   * evaluation and merge would otherwise land unevaluated content. Omit to merge
+   * the live tip (legacy behavior). The sha must be reachable in the fetched
    * workspace history, else the merge fails closed.
    */
   workspaceSha?: string;
@@ -465,6 +470,25 @@ export async function mergeWorkspaceIntoProject(
     }
   }
 
+  // SEC-2: content is content-addressed on the staged paths; the cold path merges
+  // the freshly-fetched tip, so verify it is exactly the sha that was evaluated
+  // before merging. Closes the TOCTOU between the route's pre-merge tip check and
+  // this fetch.
+  if (options.expectedWorkspaceSha !== undefined && workspaceSha !== options.expectedWorkspaceSha) {
+    logger.warn("Workspace tip changed since evaluation; aborting cold merge", {
+      workspaceRemote,
+      expected: options.expectedWorkspaceSha,
+      actual: workspaceSha,
+    });
+    return err(
+      new AppError(
+        "Workspace changed since evaluation: tip does not match the evaluated revision",
+        "STALE_WORKSPACE",
+        409,
+      ),
+    );
+  }
+
   if (options.strategy === "squash") {
     return squashMerge(fs, dir, workspaceSha, projectRemote, projectToken, author, logger);
   }
@@ -546,6 +570,10 @@ export async function fastForwardMerge(
   expectedParent: string,
   logger: Logger,
   timer?: PhaseTimer,
+  /** SEC-2: if set, refuse to fast-forward unless the workspace tip equals this
+   * (the evaluated sha), so a re-committed workspace can't be FF-merged
+   * unevaluated. On mismatch the caller cold-merges, which rejects it. */
+  expectedWorkspaceSha?: string,
 ): Promise<Result<FastForwardResult, AppError>> {
   const measure = <T>(name: string, fn: () => Promise<T>): Promise<T> =>
     timer ? timer.measure(name, fn) : fn();
@@ -561,6 +589,17 @@ export async function fastForwardMerge(
     return err(new ExternalServiceError("Git", "Failed to resolve workspace tip", tipResult.error));
   }
   const workspaceTip = tipResult.data;
+
+  // SEC-2: don't fast-forward a workspace that moved since evaluation. Fall back
+  // to cold merge (pinned) which returns STALE_WORKSPACE.
+  if (expectedWorkspaceSha !== undefined && workspaceTip !== expectedWorkspaceSha) {
+    logger.warn("Workspace tip changed since evaluation; refusing fast-forward", {
+      workspaceRemote,
+      expected: expectedWorkspaceSha,
+      actual: workspaceTip,
+    });
+    return ok({ fastForwarded: false });
+  }
 
   // A fast-forward is only possible if the workspace tip descends from the
   // project's current head. If not (or history is too shallow to tell), cold-merge.
@@ -1812,7 +1851,12 @@ export async function getDiffBetweenRepos(
   workspaceRemote: string,
   workspaceToken: string,
   logger: Logger,
-): Promise<Result<{ diff: string; workspaceSha: string }, AppError>> {
+): Promise<
+  Result<
+    { diff: string; workspaceOid: string; workspaceTreeOid: string; workspaceSha: string },
+    AppError
+  >
+> {
   logger.debug("Getting diff between repos", { baseRemote, workspaceRemote });
 
   const [workspaceCloneResult, baseCloneResult] = await Promise.all([
@@ -1826,21 +1870,29 @@ export async function getDiffBetweenRepos(
   const { fs: workspaceFs, dir: workspaceDir } = workspaceCloneResult.data;
   const { fs: baseFs } = baseCloneResult.data;
 
-  // Resolve the workspace tip from this very clone, so the sha we pin for the
-  // merge is provably the same content we are about to evaluate (no second
-  // clone / re-push window — gate soundness, #115).
-  const workspaceShaResult = await fromPromise(
+  // Resolve the workspace tip + its tree from the SAME clone the diff is computed
+  // against, so callers can pin evaluation to this exact revision (#115 selects
+  // this commit for the merge; SEC-2 asserts it hasn't moved). Resolving them
+  // separately would open a TOCTOU window between the diff and the pin. The tree
+  // oid is what lets a merge backend content-address the code it is about to land
+  // against what was evaluated, closing the residual race between the pre-merge
+  // tip check and the staged-tree read.
+  const workspaceOidResult = await fromPromise(
     git.resolveRef({ fs: workspaceFs, dir: workspaceDir, ref: "main" }),
   );
-  if (!workspaceShaResult.success) {
-    logger.error("Failed to resolve workspace head for diff", workspaceShaResult.error, {
-      workspaceRemote,
-    });
-    return err(
-      new ExternalServiceError("Git", "Failed to resolve workspace head", workspaceShaResult.error),
-    );
+  if (!workspaceOidResult.success) {
+    return err(new AppError("Failed to resolve workspace tip for diff", "GIT_ERROR", 500));
   }
-  const workspaceSha = workspaceShaResult.data;
+  const workspaceOid = workspaceOidResult.data;
+  // Same revision, exposed under both names for the two gate mechanisms.
+  const workspaceSha = workspaceOid;
+  const workspaceCommitResult = await fromPromise(
+    git.readCommit({ fs: workspaceFs, dir: workspaceDir, oid: workspaceOid }),
+  );
+  if (!workspaceCommitResult.success) {
+    return err(new AppError("Failed to read workspace tip commit for diff", "GIT_ERROR", 500));
+  }
+  const workspaceTreeOid = workspaceCommitResult.data.commit.tree;
 
   const [workspaceFilesResult, baseFilesResult] = await Promise.all([
     listFilesAtCommit(workspaceFs, "main", logger),
@@ -1873,7 +1925,7 @@ export async function getDiffBetweenRepos(
 
   const diff = buildUnifiedDiff(baseContent, workspaceContent);
   logger.info("Successfully generated diff between repos", { baseRemote, workspaceRemote });
-  return ok({ diff, workspaceSha });
+  return ok({ diff, workspaceOid, workspaceTreeOid, workspaceSha });
 }
 
 export function buildUnifiedDiff(

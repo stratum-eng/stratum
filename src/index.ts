@@ -5,6 +5,7 @@ import { analyticsMiddleware } from "./middleware/analytics";
 import { authMiddleware } from "./middleware/auth";
 import { csrfMiddleware } from "./middleware/csrf";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
+import { securityHeadersMiddleware } from "./middleware/security-headers";
 import { sweepDeletionJobs } from "./queue/deletion-runner";
 import { handleEventQueue, sweepStaleEvents } from "./queue/event-consumer";
 import type { EventQueueMessage } from "./queue/events";
@@ -42,6 +43,7 @@ export { RepoDO } from "./queue/repo-do";
 
 const app = new Hono<{ Bindings: Env }>();
 
+app.use("*", securityHeadersMiddleware);
 app.use("*", analyticsMiddleware);
 app.use("*", authMiddleware);
 app.use("*", csrfMiddleware);
@@ -54,10 +56,13 @@ app.get("/dev-login", async (c) => {
   const logger = createLogger({ path: c.req.path, method: c.req.method });
 
   try {
-    // Only allow in local development
-    const url = new URL(c.req.url);
-    if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
-      return c.json({ error: "Dev login only available in local development" }, 403);
+    // Gated on an explicit opt-in flag AND a localhost request host, in a single
+    // condition so neither gate can be bypassed independently. The route is inert
+    // in staging/production (where DEV_LOGIN_ENABLED is unset) even if a request
+    // somehow presents a localhost authority.
+    const host = new URL(c.req.url).hostname;
+    if (c.env.DEV_LOGIN_ENABLED !== "true" || (host !== "localhost" && host !== "127.0.0.1")) {
+      return c.json({ error: "Dev login is not available" }, 403);
     }
 
     const email = c.req.query("email") || "dev@example.com";
@@ -171,6 +176,12 @@ app.onError((err, c) => {
     path: c.req.path,
     method: c.req.method,
   });
+  // Belt-and-suspenders: the middleware registers headers before next(), but the
+  // error boundary builds a fresh response, so re-assert the full set here.
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("X-Frame-Options", "DENY");
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  c.header("Content-Security-Policy", "frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
   return c.json({ error: "Internal server error" }, 500);
 });
 

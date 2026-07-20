@@ -19,6 +19,9 @@ export interface EventRecord {
   attempts: number;
   createdAt: string;
   processedAt?: string;
+  /** Names of handlers that have already run for this event, so a retry skips
+   * them instead of re-running (and re-emitting) already-succeeded work. */
+  completedHandlers?: string[];
 }
 
 interface EventRow {
@@ -33,6 +36,7 @@ interface EventRow {
   attempts: number;
   created_at: string;
   processed_at: string | null;
+  completed_handlers: string | null;
 }
 
 function rowToEvent(row: EventRow, logger: Logger): EventRecord {
@@ -46,6 +50,17 @@ function rowToEvent(row: EventRow, logger: Logger): EventRecord {
     logger.warn("Event payload is not valid JSON", { eventId: row.id });
   }
 
+  let completedHandlers: string[] = [];
+  if (row.completed_handlers) {
+    try {
+      const parsed: unknown = JSON.parse(row.completed_handlers);
+      if (Array.isArray(parsed))
+        completedHandlers = parsed.filter((v): v is string => typeof v === "string");
+    } catch {
+      logger.warn("Event completed_handlers is not valid JSON", { eventId: row.id });
+    }
+  }
+
   const event: EventRecord = {
     id: row.id,
     type: row.type,
@@ -55,6 +70,7 @@ function rowToEvent(row: EventRow, logger: Logger): EventRecord {
     status: row.status as EventStatus,
     attempts: row.attempts,
     createdAt: row.created_at,
+    completedHandlers,
   };
   if (row.project_id !== null) event.projectId = row.project_id;
   if (row.actor_id !== null) event.actorId = row.actor_id;
@@ -232,6 +248,29 @@ export async function incrementEventAttempts(
   } catch (error) {
     const appError = toAppError(error, "incrementEventAttempts", { eventId: id });
     logger.error("Failed to increment event attempts", appError, { eventId: id });
+    return err(appError);
+  }
+}
+
+/**
+ * Persist the full set of handler names that have completed for an event, so a
+ * retry can skip them. The caller passes the accumulated set (idempotent write).
+ */
+export async function setCompletedHandlers(
+  db: D1Database,
+  logger: Logger,
+  id: string,
+  handlerNames: string[],
+): Promise<Result<void, AppError>> {
+  try {
+    await db
+      .prepare("UPDATE events SET completed_handlers = ? WHERE id = ?")
+      .bind(JSON.stringify(handlerNames), id)
+      .run();
+    return ok(undefined);
+  } catch (error) {
+    const appError = toAppError(error, "setCompletedHandlers", { eventId: id });
+    logger.error("Failed to record completed handlers", appError, { eventId: id });
     return err(appError);
   }
 }

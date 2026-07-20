@@ -233,6 +233,19 @@ export class RepoDO extends DurableObject<Env> {
     const staged = await loadStagedTree(bucket, key);
     if (!staged) return { fallback: true }; // not staged → cold path
 
+    // SEC-2: content-address the tree we are about to land against what was
+    // evaluated. This closes the residual TOCTOU between the route's pre-merge
+    // tip check and this staged-tree read: if the workspace was re-committed in
+    // that window, the staged tree oid won't match the evaluated tree oid.
+    // Legacy changes (pre-migration 026) have no evaluatedTreeOid and skip it.
+    if (change.evaluatedTreeOid !== undefined && staged.treeOid !== change.evaluatedTreeOid) {
+      return {
+        success: false,
+        error:
+          "Workspace changed since evaluation: staged tree does not match the evaluated revision",
+      };
+    }
+
     this.projectRemote = project.remote;
     let result: StagedItemResult;
     try {
@@ -266,6 +279,8 @@ export class RepoDO extends DurableObject<Env> {
       changeId,
       ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
       ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+      ...(change.agentModel !== undefined ? { model: change.agentModel } : {}),
+      ...(change.agentPromptHash !== undefined ? { promptHash: change.agentPromptHash } : {}),
     });
     if (!provenanceResult.success) {
       log.error("Failed to record provenance after R2 merge", provenanceResult.error);
@@ -437,6 +452,7 @@ export class RepoDO extends DurableObject<Env> {
           expectedParent,
           log,
           timer,
+          change.evaluatedSha,
         );
         if (ff.success && ff.data.fastForwarded && ff.data.commit) {
           commit = ff.data.commit;
@@ -453,10 +469,18 @@ export class RepoDO extends DurableObject<Env> {
           workspace.remote,
           workspaceToken.data,
           log,
-          { strategy: "merge", timer },
+          {
+            strategy: "merge",
+            timer,
+            // SEC-2: pin the merged tip to the evaluated sha on the RepoDO cold
+            // fallback too. Legacy changes with no evaluatedSha skip it.
+            ...(change.evaluatedSha !== undefined
+              ? { expectedWorkspaceSha: change.evaluatedSha }
+              : {}),
+          },
         );
         if (!coldResult.success) {
-          return { success: false, error: coldResult.error.message };
+          return { success: false, error: coldResult.error.message, code: coldResult.error.code };
         }
         commit = coldResult.data;
         outcome = "cold_fallback";
@@ -494,6 +518,8 @@ export class RepoDO extends DurableObject<Env> {
           changeId,
           ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
           ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+          ...(change.agentModel !== undefined ? { model: change.agentModel } : {}),
+          ...(change.agentPromptHash !== undefined ? { promptHash: change.agentPromptHash } : {}),
         }),
       );
       if (!provenanceResult.success) {

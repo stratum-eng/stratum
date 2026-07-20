@@ -284,3 +284,43 @@ describe("DELETE /api/agents/:id", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("GET /api/agents/:id — SEC-4 owner scoping", () => {
+  let app: ReturnType<typeof makeApp>;
+  let env: Env;
+
+  beforeEach(() => {
+    app = makeApp();
+    env = makeEnv();
+    vi.clearAllMocks();
+    vi.mocked(getUserByToken).mockResolvedValue({ success: true, data: mockUser });
+    vi.mocked(getAgent).mockResolvedValue({ success: true, data: mockAgent });
+  });
+
+  it("returns the agent to its owner", async () => {
+    const res = await app.fetch(
+      request("GET", "/api/agents/agt_abc123", undefined, userAuthHeader),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ownerId: string; model?: string };
+    expect(body.ownerId).toBe("usr_owner");
+  });
+
+  it("returns 404 (no existence leak) when the agent belongs to another user", async () => {
+    vi.mocked(getAgent).mockResolvedValue({
+      success: true,
+      data: { ...mockAgent, ownerId: "usr_other" },
+    });
+    const res = await app.fetch(
+      request("GET", "/api/agents/agt_abc123", undefined, userAuthHeader),
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 to an anonymous caller", async () => {
+    const res = await app.fetch(request("GET", "/api/agents/agt_abc123"), env);
+    expect(res.status).toBe(404);
+  });
+});

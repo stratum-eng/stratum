@@ -16,6 +16,9 @@ export interface MergeOutcome {
   success: boolean;
   commit?: string;
   error?: string;
+  /** Structured error code (e.g. "STALE_WORKSPACE") so the route can map the
+   * failure to the right HTTP status instead of a generic 400. */
+  code?: string;
 }
 
 // Must extend DurableObject: callers invoke merge() over RPC, which the runtime
@@ -81,16 +84,26 @@ export class MergeQueue extends DurableObject<Env> {
         workspace.remote,
         workspaceToken.data,
         log,
-        // Merge the exact evaluated commit, not the workspace's live tip (#115).
         {
           strategy: "merge",
           timer,
+          // Merge the exact evaluated commit, not the workspace's live tip (#115),
+          // AND assert that tip hasn't moved since evaluation (SEC-2). Both pin to
+          // the same evaluated revision on the production merge path; legacy
+          // changes without these fields fall back to the live tip.
           ...(change.workspaceHeadSha ? { workspaceSha: change.workspaceHeadSha } : {}),
+          ...(change.evaluatedSha !== undefined
+            ? { expectedWorkspaceSha: change.evaluatedSha }
+            : {}),
         },
       );
 
       if (!commitResult.success) {
-        return { success: false, error: commitResult.error.message };
+        return {
+          success: false,
+          error: commitResult.error.message,
+          code: commitResult.error.code,
+        };
       }
       const commit = commitResult.data;
 
@@ -116,6 +129,8 @@ export class MergeQueue extends DurableObject<Env> {
           changeId,
           ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
           ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+          ...(change.agentModel !== undefined ? { model: change.agentModel } : {}),
+          ...(change.agentPromptHash !== undefined ? { promptHash: change.agentPromptHash } : {}),
         }),
       );
       if (!provenanceResult.success) {

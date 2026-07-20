@@ -48,6 +48,7 @@ import {
   createOrg,
   getOrgBySlug,
   isOrgAdmin,
+  isOrgMember,
   listOrgsForUser,
   removeOrgMember,
 } from "../src/storage/orgs";
@@ -229,14 +230,28 @@ describe("GET /api/orgs/:slug", () => {
       success: true,
       data: mockOrg,
     });
+    // Resolve the bearer token to the owner user by default.
+    vi.mocked(getUserByToken).mockResolvedValue({ success: true, data: mockUser });
   });
 
-  it("returns org by slug", async () => {
-    const res = await app.fetch(request("GET", "/api/orgs/my-org"), env);
+  it("returns org by slug for a member", async () => {
+    vi.mocked(isOrgMember).mockResolvedValue({ success: true, data: true });
+    const res = await app.fetch(request("GET", "/api/orgs/my-org", undefined, authHeader), env);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { org: typeof mockOrg };
     expect(body.org.slug).toBe("my-org");
     expect(getOrgBySlug).toHaveBeenCalledWith(env.DB, expect.any(Object), "my-org");
+  });
+
+  it("returns 404 to a non-member (no existence/owner leak)", async () => {
+    vi.mocked(isOrgMember).mockResolvedValue({ success: true, data: false });
+    const res = await app.fetch(request("GET", "/api/orgs/my-org", undefined, authHeader), env);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 to an anonymous caller", async () => {
+    const res = await app.fetch(request("GET", "/api/orgs/my-org"), env);
+    expect(res.status).toBe(404);
   });
 
   it("returns 404 for unknown slug", async () => {
@@ -244,8 +259,44 @@ describe("GET /api/orgs/:slug", () => {
       success: false,
       error: new NotFoundError("Org", "no-such-org"),
     });
-    const res = await app.fetch(request("GET", "/api/orgs/no-such-org"), env);
+    const res = await app.fetch(
+      request("GET", "/api/orgs/no-such-org", undefined, authHeader),
+      env,
+    );
     expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /api/orgs/:slug/teams — SEC-4 member scoping", () => {
+  let app: ReturnType<typeof makeApp>;
+  let env: Env;
+
+  beforeEach(() => {
+    app = makeApp();
+    env = makeEnv();
+    vi.clearAllMocks();
+    vi.mocked(getUserByToken).mockResolvedValue({ success: true, data: mockUser });
+    vi.mocked(getOrgBySlug).mockResolvedValue({ success: true, data: mockOrg });
+    vi.mocked(listTeams).mockResolvedValue({ success: true, data: [] });
+  });
+
+  it("lists teams for a member", async () => {
+    vi.mocked(isOrgMember).mockResolvedValue({ success: true, data: true });
+    const res = await app.fetch(
+      request("GET", "/api/orgs/my-org/teams", undefined, authHeader),
+      env,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 404 to a non-member", async () => {
+    vi.mocked(isOrgMember).mockResolvedValue({ success: true, data: false });
+    const res = await app.fetch(
+      request("GET", "/api/orgs/my-org/teams", undefined, authHeader),
+      env,
+    );
+    expect(res.status).toBe(404);
+    expect(listTeams).not.toHaveBeenCalled();
   });
 });
 
