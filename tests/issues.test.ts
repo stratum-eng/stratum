@@ -246,4 +246,17 @@ describe("issue tenant isolation (project_id-scoped reads)", () => {
     const found = await getIssueByNumber(db, mockLogger, "legacy", 1, { projectId: "proj_new" });
     expect(found.success).toBe(true);
   });
+
+  it("bounds the result with a limit when one is given", async () => {
+    const { db } = makeIssuesD1();
+    await seedIssue(db, { project: "acme", projectId: "proj_A" });
+    await seedIssue(db, { project: "acme", projectId: "proj_A" });
+    await seedIssue(db, { project: "acme", projectId: "proj_A" });
+
+    const capped = await listIssues(db, mockLogger, "acme", undefined, {
+      projectId: "proj_A",
+      limit: 2,
+    });
+    expect(capped.success && capped.data).toHaveLength(2);
+  });
 });

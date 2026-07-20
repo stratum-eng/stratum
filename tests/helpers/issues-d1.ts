@@ -164,6 +164,9 @@ export function makeIssuesD1(): {
             .filter((r) => r.project === bindings[0])
             .sort((a, b) => b.number - a.number);
         }
+        if (upper.includes("LIMIT ?")) {
+          results = results.slice(0, bindings[bindings.length - 1] as number);
+        }
         return { results: results as T[], success: true, meta: {} };
       },
     };

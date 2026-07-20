@@ -166,7 +166,7 @@ export async function listIssues(
   logger: Logger,
   project: string,
   status?: IssueStatus,
-  opts?: { projectId?: string },
+  opts?: { projectId?: string; limit?: number },
 ): Promise<Result<Issue[], AppError>> {
   try {
     // project_id-first with a legacy name fallback (see getIssueByNumber).
@@ -176,14 +176,20 @@ export async function listIssues(
           binds: [opts.projectId, project],
         }
       : { clause: "project = ?", binds: [project] };
+    // Bound the response when asked (the API route does); internal callers that
+    // omit `limit` still get every row.
+    const limitClause = opts?.limit !== undefined ? " LIMIT ?" : "";
+    const limitBind = opts?.limit !== undefined ? [opts.limit] : [];
     const result = status
       ? await db
-          .prepare(`SELECT * FROM issues WHERE ${scope.clause} AND status = ? ORDER BY number DESC`)
-          .bind(...scope.binds, status)
+          .prepare(
+            `SELECT * FROM issues WHERE ${scope.clause} AND status = ? ORDER BY number DESC${limitClause}`,
+          )
+          .bind(...scope.binds, status, ...limitBind)
           .all<IssueRow>()
       : await db
-          .prepare(`SELECT * FROM issues WHERE ${scope.clause} ORDER BY number DESC`)
-          .bind(...scope.binds)
+          .prepare(`SELECT * FROM issues WHERE ${scope.clause} ORDER BY number DESC${limitClause}`)
+          .bind(...scope.binds, ...limitBind)
           .all<IssueRow>();
     return ok(result.results.map(rowToIssue));
   } catch (error) {
