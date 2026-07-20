@@ -3,11 +3,12 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { authMiddleware } from "../middleware/auth";
 import {
   deleteAllUserSessions,
-  deleteSession,
+  deleteSessionByStoredId,
   getUserSessions,
   refreshSession,
 } from "../storage/sessions";
 import type { Env } from "../types";
+import { hashToken } from "../utils/crypto";
 import { createLogger } from "../utils/logger";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -146,6 +147,8 @@ app.get("/", async (c) => {
   }
 
   const currentSessionId = getCookie(c, "stratum_session");
+  // session.id is the stored hash; the cookie is raw, so compare against its hash.
+  const currentHashed = currentSessionId ? await hashToken(currentSessionId) : undefined;
 
   // Mark current session and filter out expired ones
   const now = new Date();
@@ -154,7 +157,7 @@ app.get("/", async (c) => {
     .map((session) => ({
       id: session.id,
       expiresAt: session.expiresAt,
-      isCurrent: session.id === currentSessionId,
+      isCurrent: session.id === currentHashed,
     }));
 
   return c.json({
@@ -184,9 +187,11 @@ app.delete("/:id", async (c) => {
     userId,
   });
 
-  logger.debug("Deleting specific session", { sessionId: sessionIdToDelete });
+  logger.debug("Deleting specific session");
 
-  const result = await deleteSession(c.env.DB, sessionIdToDelete, userId, logger);
+  // The :id comes from the list endpoint, which exposes the STORED (hashed) id —
+  // delete by it directly (do not re-hash).
+  const result = await deleteSessionByStoredId(c.env.DB, sessionIdToDelete, userId, logger);
 
   if (!result.success) {
     return c.json({ error: "Failed to delete session" }, 500);
@@ -197,8 +202,10 @@ app.delete("/:id", async (c) => {
     return c.json({ error: "Session not found" }, 404);
   }
 
-  // If deleting current session, clear the cookie
-  if (sessionIdToDelete === currentSessionId) {
+  // If deleting the current session, clear the cookie. The listed id is the hash,
+  // so compare against the hashed cookie.
+  const currentHashed = currentSessionId ? await hashToken(currentSessionId) : undefined;
+  if (sessionIdToDelete === currentHashed) {
     deleteCookie(c, "stratum_session", { path: "/" });
     logger.info("Current session deleted, user logged out");
   }
