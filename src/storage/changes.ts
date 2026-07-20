@@ -351,3 +351,66 @@ export async function updateChangeStatus(
     return err(appError);
   }
 }
+
+/**
+ * Transition a change to `merged` as a single atomic compare-and-swap:
+ * `UPDATE ... WHERE id = ? AND status != 'merged'`. Returns
+ * `{ transitioned: false }` when the row was already `merged` — i.e. a concurrent
+ * merger (another request, or an interleaved Durable Object invocation) already
+ * won the transition. Callers emit `change.merged` and record post-merge
+ * bookkeeping ONLY when `transitioned` is true, so exactly one merge of a change
+ * fires exactly one event no matter how many requests race.
+ */
+export async function markChangeMerged(
+  db: D1Database,
+  logger: Logger,
+  id: string,
+  opts?: { evalScore?: number; evalPassed?: boolean; evalReason?: string; mergedAt?: string },
+): Promise<Result<{ transitioned: boolean }, NotFoundError | AppError>> {
+  try {
+    const existingRow = await db
+      .prepare("SELECT id FROM changes WHERE id = ?")
+      .bind(id)
+      .first<{ id: string }>();
+    if (!existingRow) {
+      logger.debug("Change not found for merge transition", { changeId: id });
+      return err(new NotFoundError("Change", id));
+    }
+
+    const assignments = ["status = 'merged'"];
+    const bindings: unknown[] = [];
+    const addOptional = (column: string, value: unknown) => {
+      if (value === undefined) return;
+      assignments.push(`${column} = ?`);
+      bindings.push(value);
+    };
+    addOptional("eval_score", opts?.evalScore);
+    addOptional(
+      "eval_passed",
+      opts?.evalPassed !== undefined ? (opts.evalPassed ? 1 : 0) : undefined,
+    );
+    addOptional("eval_reason", opts?.evalReason);
+    addOptional("merged_at", opts?.mergedAt ?? new Date().toISOString());
+    bindings.push(id);
+
+    const result = await db
+      .prepare(`UPDATE changes SET ${assignments.join(", ")} WHERE id = ? AND status != 'merged'`)
+      .bind(...bindings)
+      .run();
+    const transitioned = (result.meta?.changes ?? 0) > 0;
+    logger.debug("Change merge transition", { changeId: id, transitioned });
+    return ok({ transitioned });
+  } catch (error) {
+    const appError =
+      error instanceof AppError
+        ? error
+        : new AppError(
+            error instanceof Error ? error.message : "Failed to mark change merged",
+            "DATABASE_ERROR",
+            500,
+            { operation: "markChangeMerged", changeId: id },
+          );
+    logger.error("Failed to mark change merged", appError, { changeId: id });
+    return err(appError);
+  }
+}

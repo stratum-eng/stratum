@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { getChange, updateChangeStatus } from "../storage/changes";
+import { getChange, markChangeMerged } from "../storage/changes";
 import { isTargetDeleting } from "../storage/deletion";
 import { freshRepoToken, mergeWorkspaceIntoProject } from "../storage/git-ops";
 import { commitPhasesFromSpans, recordCommitMetrics } from "../storage/metrics";
@@ -19,6 +19,11 @@ export interface MergeOutcome {
   /** Structured error code (e.g. "STALE_WORKSPACE") so the route can map the
    * failure to the right HTTP status instead of a generic 400. */
   code?: string;
+  /** Whether THIS invocation performed the approved→merged transition. `false`
+   * means a concurrent merger already merged the change (the git merge here was
+   * redundant), so the route must NOT emit a second `change.merged`. Absent on
+   * paths that predate the CAS — treated as "did transition" so the event fires. */
+  transitioned?: boolean;
 }
 
 // Must extend DurableObject: callers invoke merge() over RPC, which the runtime
@@ -108,7 +113,7 @@ export class MergeQueue extends DurableObject<Env> {
       const commit = commitResult.data;
 
       const updateResult = await timer.measure("d1UpdateMs", () =>
-        updateChangeStatus(this.env.DB, log, changeId, "merged", {
+        markChangeMerged(this.env.DB, log, changeId, {
           ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
           ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
           ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
@@ -119,6 +124,11 @@ export class MergeQueue extends DurableObject<Env> {
       if (!updateResult.success) {
         return { success: false, error: updateResult.error.message };
       }
+      const { transitioned } = updateResult.data;
+      // Concurrent invocation already merged this change; skip the redundant
+      // provenance/metrics writes (the winner recorded them) so one logical merge
+      // yields exactly one set of side effects.
+      if (!transitioned) return { success: true, commit, transitioned: false };
 
       const provenanceResult = await timer.measure("provenanceMs", () =>
         recordProvenance(this.env.DB, log, {
@@ -154,7 +164,7 @@ export class MergeQueue extends DurableObject<Env> {
         log.warn("Failed to record commit metrics", { changeId });
       }
 
-      return { success: true, commit };
+      return { success: true, commit, transitioned };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       return { success: false, error };

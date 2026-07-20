@@ -15,6 +15,7 @@ vi.mock("../src/storage/changes", () => ({
   getChangeByGitHubBranch: vi.fn(),
   createChange: vi.fn(),
   updateChangeStatus: vi.fn().mockResolvedValue({ success: true, data: undefined }),
+  markChangeMerged: vi.fn().mockResolvedValue({ success: true, data: { transitioned: true } }),
 }));
 
 vi.mock("../src/storage/state", () => ({

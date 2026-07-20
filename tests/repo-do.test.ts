@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../src/storage/changes", () => ({
   getChange: vi.fn(),
   updateChangeStatus: vi.fn(async () => ({ success: true, data: undefined })),
+  markChangeMerged: vi.fn(async () => ({ success: true, data: { transitioned: true } })),
 }));
 vi.mock("../src/storage/state", () => ({
   getProject: vi.fn(),
@@ -22,9 +23,10 @@ vi.mock("../src/storage/metrics", () => ({
 }));
 
 import { RepoDO } from "../src/queue/repo-do";
-import { getChange } from "../src/storage/changes";
+import { getChange, markChangeMerged } from "../src/storage/changes";
 import { fastForwardMerge, mergeWorkspaceIntoProject } from "../src/storage/git-ops";
 import { recordCommitMetrics } from "../src/storage/metrics";
+import { recordProvenance } from "../src/storage/provenance";
 import { getProject, getWorkspace } from "../src/storage/state";
 import type { Env } from "../src/types";
 
@@ -96,7 +98,7 @@ describe("RepoDO.advance fast-forward path", () => {
     const repo = new RepoDO(ctx, env);
     const result = await repo.advance("chg_1");
 
-    expect(result).toEqual({ success: true, commit: "ws-tip" });
+    expect(result).toEqual({ success: true, commit: "ws-tip", transitioned: true });
     expect(fastForwardMerge).toHaveBeenCalledTimes(1);
     expect(mergeWorkspaceIntoProject).not.toHaveBeenCalled();
     expect(store.get("head")).toBe("ws-tip");
@@ -110,7 +112,7 @@ describe("RepoDO.advance cold fallback", () => {
     const repo = new RepoDO(ctx, env);
     const result = await repo.advance("chg_1");
 
-    expect(result).toEqual({ success: true, commit: "merge-commit" });
+    expect(result).toEqual({ success: true, commit: "merge-commit", transitioned: true });
     expect(fastForwardMerge).not.toHaveBeenCalled();
     expect(mergeWorkspaceIntoProject).toHaveBeenCalledTimes(1);
     expect(store.get("head")).toBe("merge-commit");
@@ -125,6 +127,22 @@ describe("RepoDO.advance cold fallback", () => {
     expect(result.success).toBe(true);
     expect(fastForwardMerge).not.toHaveBeenCalled();
     expect(mergeWorkspaceIntoProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports transitioned:false and skips provenance/metrics when a concurrent merge already won", async () => {
+    vi.mocked(markChangeMerged).mockResolvedValueOnce({
+      success: true,
+      data: { transitioned: false },
+    });
+    const { ctx, store } = makeCtx();
+    store.set("head", "base1"); // fast-forward path produces a commit
+    const repo = new RepoDO(ctx, env);
+
+    const result = await repo.advance("chg_1");
+
+    expect(result).toMatchObject({ success: true, transitioned: false });
+    expect(recordProvenance).not.toHaveBeenCalled();
+    expect(recordCommitMetrics).not.toHaveBeenCalled();
   });
 
   it("cold-merges when the change has no baseSha", async () => {
@@ -146,7 +164,7 @@ describe("RepoDO.advance cold fallback", () => {
     store.set("head", "base1");
     const repo = new RepoDO(ctx, env);
     const result = await repo.advance("chg_1");
-    expect(result).toEqual({ success: true, commit: "merge-commit" });
+    expect(result).toEqual({ success: true, commit: "merge-commit", transitioned: true });
     expect(fastForwardMerge).toHaveBeenCalledTimes(1);
     expect(mergeWorkspaceIntoProject).toHaveBeenCalledTimes(1);
   });

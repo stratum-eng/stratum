@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../src/storage/changes", () => ({
   getChange: vi.fn(),
   updateChangeStatus: vi.fn(async () => ({ success: true, data: undefined })),
+  markChangeMerged: vi.fn(async () => ({ success: true, data: { transitioned: true } })),
 }));
 vi.mock("../src/storage/state", () => ({
   getProject: vi.fn(),

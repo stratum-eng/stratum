@@ -19,6 +19,7 @@ vi.mock("../src/storage/git-ops", () => ({
 
 vi.mock("../src/storage/changes", () => ({
   updateChangeStatus: vi.fn().mockResolvedValue({ success: true, data: undefined }),
+  markChangeMerged: vi.fn().mockResolvedValue({ success: true, data: { transitioned: true } }),
 }));
 
 vi.mock("../src/queue/events", () => ({
