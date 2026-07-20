@@ -24,6 +24,7 @@ import {
   updateChangeStatus,
 } from "../storage/changes";
 import { type CostSample, getChangeCostSummary, recordCosts } from "../storage/costs";
+import { isTargetDeleting } from "../storage/deletion";
 import { listEvalRuns, recordEvalRuns } from "../storage/eval-runs";
 import {
   MergeConflictError,
@@ -223,6 +224,13 @@ app.post("/projects/:name/changes", async (c) => {
 
   if (!(await canWriteProject(c.env.DB, project, userId, agentOwnerId)))
     return forbidden("Project access denied");
+
+  // Refuse writes while the project (or its owner) is being deleted — otherwise a
+  // new change resurrects rows the cascade is removing and wedges the job as
+  // `incomplete`. Best-effort (TOCTOU); the verifier re-run is the durable backstop.
+  if (await isTargetDeleting(c.env, project, logger)) {
+    return c.json({ error: "Project is being deleted", code: "TARGET_DELETING" }, 409);
+  }
 
   const body = await c.req.json<{ workspace?: unknown }>().catch(() => ({ workspace: undefined }));
   if (typeof body.workspace !== "string" || !body.workspace.trim()) {

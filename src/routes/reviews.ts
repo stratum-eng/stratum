@@ -8,6 +8,7 @@ import {
   submitReview,
 } from "../storage/change-reviews";
 import { getChange, updateChangeStatus } from "../storage/changes";
+import { isTargetDeleting } from "../storage/deletion";
 import { getProject } from "../storage/state";
 import type { Change, Env, ProjectEntry } from "../types";
 import { canReadProject, canWriteProject } from "../utils/authz";
@@ -167,6 +168,12 @@ app.post("/changes/:id/reviews", async (c) => {
 
   if (!(await canWriteProject(c.env.DB, project, userId)))
     return forbidden("Project access denied");
+
+  // Refuse a review verdict while the project is being deleted (it resurrects
+  // change_reviews rows and wedges the cascade). Best-effort; verifier re-run backs it.
+  if (await isTargetDeleting(c.env, project, logger)) {
+    return c.json({ error: "Project is being deleted", code: "TARGET_DELETING" }, 409);
+  }
 
   if (!REVIEWABLE_STATUSES.includes(change.status)) {
     return badRequest(`Cannot review a ${change.status} change`);

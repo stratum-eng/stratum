@@ -34,6 +34,10 @@ vi.mock("../src/storage/state", () => ({
   getWorkspace: vi.fn(),
 }));
 
+vi.mock("../src/storage/deletion", () => ({
+  isTargetDeleting: vi.fn().mockResolvedValue(false),
+}));
+
 vi.mock("../src/evaluation", () => ({
   loadPolicy: vi.fn(),
   DiffEvaluator: vi.fn().mockImplementation(() => ({
@@ -137,6 +141,7 @@ import {
   listChanges,
   updateChangeStatus,
 } from "../src/storage/changes";
+import { isTargetDeleting } from "../src/storage/deletion";
 import { listEvalRuns, recordEvalRuns } from "../src/storage/eval-runs";
 import {
   batchMergeStagedTrees,
@@ -348,6 +353,18 @@ describe("POST /api/projects/:name/changes", () => {
           aggregate: vi.fn().mockReturnValue(passingEvalResult),
         }) as unknown as CompositeEvaluator,
     );
+  });
+
+  it("409s when the project is being deleted (no change created)", async () => {
+    vi.mocked(isTargetDeleting).mockResolvedValueOnce(true);
+    const res = await app.fetch(
+      request("POST", "/api/projects/my-project/changes", { workspace: "fix-bug" }, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe("TARGET_DELETING");
+    expect(vi.mocked(createChange)).not.toHaveBeenCalled();
   });
 
   it("creates a change, runs evaluators, and returns accepted status when eval passes", async () => {
