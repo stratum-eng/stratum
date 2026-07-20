@@ -137,6 +137,11 @@ async function listAllKeys(bucket: R2Bucket, prefix: string): Promise<string[]> 
   return keys;
 }
 
+/** Every object key under a single run's prefix (follows R2's paginated cursor). */
+export async function listRunObjects(bucket: R2Bucket, runTs: string): Promise<string[]> {
+  return listAllKeys(bucket, `${runTs}/`);
+}
+
 export interface RunInfo {
   runTs: string;
   complete: boolean;
