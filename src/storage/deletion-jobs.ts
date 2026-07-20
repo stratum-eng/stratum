@@ -18,6 +18,8 @@ export interface DeletionJob {
   leaseOwner: string | null;
   leaseExpiresAt: string | null;
   residuals: string[];
+  /** Count of drives that ended `incomplete`; caps auto-retry in the sweep. */
+  attempts: number;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -33,6 +35,7 @@ interface DeletionJobRow {
   lease_owner: string | null;
   lease_expires_at: string | null;
   residuals: string | null;
+  attempts: number | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -66,6 +69,7 @@ function rowToJob(row: DeletionJobRow, logger: Logger): DeletionJob {
     leaseOwner: row.lease_owner,
     leaseExpiresAt: row.lease_expires_at,
     residuals,
+    attempts: row.attempts ?? 0,
     createdAt: row.created_at,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -109,6 +113,7 @@ export async function createDeletionJob(
     leaseOwner: null,
     leaseExpiresAt: null,
     residuals: [],
+    attempts: 0,
     createdAt: now,
     startedAt: null,
     finishedAt: null,
@@ -282,16 +287,70 @@ export async function finishJob(
   residuals: string[],
 ): Promise<Result<boolean, AppError>> {
   try {
+    // Only a failed drive counts against the retry budget; a `completed` drive
+    // is terminal-success and leaves the counter untouched.
+    const attemptIncrement = state === "incomplete" ? 1 : 0;
     const result = await db
       .prepare(
         "UPDATE deletion_jobs SET state = ?, residuals = ?, finished_at = ?, " +
-          "lease_owner = NULL, lease_expires_at = NULL WHERE id = ? AND lease_owner = ?",
+          "attempts = attempts + ?, lease_owner = NULL, lease_expires_at = NULL " +
+          "WHERE id = ? AND lease_owner = ?",
       )
-      .bind(state, JSON.stringify(residuals), new Date().toISOString(), id, owner)
+      .bind(state, JSON.stringify(residuals), new Date().toISOString(), attemptIncrement, id, owner)
       .run();
     return ok((result.meta?.changes ?? 0) > 0);
   } catch (error) {
     return err(toDbError(error, "finish", logger, id));
+  }
+}
+
+/**
+ * `incomplete` jobs still within the retry budget. The sweep filters these
+ * further by residual class (a terminal residual can never clear) before
+ * re-driving; this query only bounds the SQL scan by attempt count.
+ */
+export async function listRetryableIncompleteJobs(
+  db: D1Database,
+  logger: Logger,
+  maxAttempts: number,
+): Promise<Result<DeletionJob[], AppError>> {
+  try {
+    const result = await db
+      .prepare("SELECT * FROM deletion_jobs WHERE state = 'incomplete' AND attempts < ?")
+      .bind(maxAttempts)
+      .all<DeletionJobRow>();
+    return ok(result.results.map((row) => rowToJob(row, logger)));
+  } catch (error) {
+    return err(toDbError(error, "list retryable", logger));
+  }
+}
+
+/**
+ * Move an `incomplete` job back to `pending` so a driver re-drives it. Guarded
+ * on `state = 'incomplete'` so it can never disturb an active or completed job
+ * (returns `false` when nothing matched — e.g. a concurrent driver already
+ * reopened it). `checkpoint` is preserved: the `deletion.started` audit already
+ * landed and the cascade is idempotent, so a re-drive must not re-audit the
+ * start. `resetAttempts` clears the budget for an operator-initiated re-drive
+ * after the underlying fault has been fixed.
+ */
+export async function reopenIncompleteJob(
+  db: D1Database,
+  logger: Logger,
+  id: string,
+  opts?: { resetAttempts?: boolean },
+): Promise<Result<boolean, AppError>> {
+  try {
+    const attemptsReset = opts?.resetAttempts ? ", attempts = 0" : "";
+    const result = await db
+      .prepare(
+        `UPDATE deletion_jobs SET state = 'pending', finished_at = NULL, heartbeat_at = NULL, lease_owner = NULL, lease_expires_at = NULL${attemptsReset} WHERE id = ? AND state = 'incomplete'`,
+      )
+      .bind(id)
+      .run();
+    return ok((result.meta?.changes ?? 0) > 0);
+  } catch (error) {
+    return err(toDbError(error, "reopen", logger, id));
   }
 }
 

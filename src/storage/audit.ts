@@ -17,7 +17,8 @@ export type AuditAction =
   | "deletion.requested"
   | "deletion.started"
   | "deletion.completed"
-  | "deletion.incomplete";
+  | "deletion.incomplete"
+  | "deletion.redrive";
 
 export interface AuditEntry {
   id: string;

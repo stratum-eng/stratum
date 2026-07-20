@@ -18,6 +18,7 @@ import { authRouter } from "./routes/auth";
 import { backupRouter } from "./routes/backup";
 import { bulkImportRouter } from "./routes/bulk-import";
 import { changesRouter } from "./routes/changes";
+import { deletionJobsRouter } from "./routes/deletion-jobs";
 import { emailAuthRouter } from "./routes/email-auth";
 import { gitHttpRouter } from "./routes/git-http";
 import { healthRouter } from "./routes/health";
@@ -125,6 +126,7 @@ app.route("/api/admin/metrics", metricsRouter);
 // Admin audit trail endpoint
 app.route("/api/admin/audit", auditRouter);
 app.route("/api/admin/backup", backupRouter);
+app.route("/api/admin/deletion-jobs", deletionJobsRouter);
 
 // Redirects from old /ui/* URLs to new paths (backward compatibility)
 app.get("/ui", (c) => c.redirect("/", 301));
