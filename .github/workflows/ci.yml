@@ -101,7 +101,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           echo "Applying D1 migrations for staging..."
-          npx wrangler d1 migrations apply stratum-staging --env=staging
+          npx wrangler d1 migrations apply stratum-staging --remote --env=staging
           echo "✓ Migrations applied successfully"
 
       - name: Deploy to Cloudflare Staging
@@ -165,7 +165,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           echo "Applying D1 migrations for production..."
-          npx wrangler d1 migrations apply stratum --env=production
+          npx wrangler d1 migrations apply stratum --remote --env=production
           echo "✓ Migrations applied successfully"
 
       - name: Deploy to Cloudflare Production
