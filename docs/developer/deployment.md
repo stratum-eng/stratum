@@ -316,10 +316,12 @@ npx wrangler secret list --env=staging
 
 `GET /dev-login` mints a session without credentials and is gated on the
 `DEV_LOGIN_ENABLED` var being `"true"` **and** a localhost request host. It is set
-in the top-level `[vars]` for local `wrangler dev`; named environments do not
-inherit top-level vars, so staging and production leave it unset and the route is
-inert there. Do **not** set `DEV_LOGIN_ENABLED` in `[env.production]` /
-`[env.staging]`.
+`"true"` in the top-level `[vars]` for local `wrangler dev`; named environments do
+not inherit top-level vars, so `[env.production]` and `[env.staging]` declare it
+explicitly as `DEV_LOGIN_ENABLED = "false"`. Any value other than `"true"` keeps
+the route inert, but declaring it `"false"` makes the intent provable (and stops
+wrangler warning about the missing per-environment override). Never set it
+`"true"` outside local dev.
 
 ### Security headers
 
