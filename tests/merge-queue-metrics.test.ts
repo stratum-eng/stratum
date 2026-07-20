@@ -3,6 +3,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../src/storage/changes", () => ({
   getChange: vi.fn(),
   updateChangeStatus: vi.fn(async () => ({ success: true, data: undefined })),
+  markChangeMerged: vi.fn(async () => ({ success: true, data: { transitioned: true } })),
+  mergeTransitionOpts: (
+    change: { evalScore?: number; evalPassed?: boolean; evalReason?: string },
+    mergedAt: string,
+  ) => ({
+    ...(change?.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+    ...(change?.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
+    ...(change?.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
+    mergedAt,
+  }),
 }));
 vi.mock("../src/storage/state", () => ({
   getProject: vi.fn(),

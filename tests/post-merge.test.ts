@@ -19,6 +19,16 @@ vi.mock("../src/storage/git-ops", () => ({
 
 vi.mock("../src/storage/changes", () => ({
   updateChangeStatus: vi.fn().mockResolvedValue({ success: true, data: undefined }),
+  markChangeMerged: vi.fn().mockResolvedValue({ success: true, data: { transitioned: true } }),
+  mergeTransitionOpts: (
+    change: { evalScore?: number; evalPassed?: boolean; evalReason?: string },
+    mergedAt: string,
+  ) => ({
+    ...(change?.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+    ...(change?.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
+    ...(change?.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
+    mergedAt,
+  }),
 }));
 
 vi.mock("../src/queue/events", () => ({

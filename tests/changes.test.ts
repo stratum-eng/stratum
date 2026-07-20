@@ -10,6 +10,14 @@ vi.mock("../src/storage/changes", () => ({
   getChangesByIds: vi.fn(),
   listChanges: vi.fn(),
   updateChangeStatus: vi.fn(async () => ({ success: true, data: undefined })),
+  // Default: this request won the transition, so the merge path emits + records.
+  markChangeMerged: vi.fn(async () => ({ success: true, data: { transitioned: true } })),
+  mergeTransitionOpts: (change: { evalScore?: number; evalPassed?: boolean; evalReason?: string }, mergedAt: string) => ({
+    ...(change?.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+    ...(change?.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
+    ...(change?.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
+    mergedAt,
+  }),
 }));
 
 vi.mock("../src/storage/git-ops", async (importActual) => {
@@ -129,12 +137,14 @@ vi.mock("../src/storage/agents", () => ({
 }));
 
 import { CompositeEvaluator, SecretScanEvaluator, loadPolicy } from "../src/evaluation";
+import { emitEvent } from "../src/queue/events";
 import { getAgent, getAgentByToken } from "../src/storage/agents";
 import {
   createChange,
   getChange,
   getChangesByIds,
   listChanges,
+  markChangeMerged,
   updateChangeStatus,
 } from "../src/storage/changes";
 import { listEvalRuns, recordEvalRuns } from "../src/storage/eval-runs";
@@ -947,13 +957,64 @@ describe("POST /api/changes/:id/merge", () => {
       expect.any(Object),
       { strategy: "merge" },
     );
-    expect(updateChangeStatus).toHaveBeenCalledWith(
+    expect(markChangeMerged).toHaveBeenCalledWith(
       env.DB,
       expect.any(Object),
       "chg_abc123",
-      "merged",
       expect.objectContaining({ mergedAt: expect.any(String) }),
     );
+  });
+
+  it("emits change.merged when this request wins the transition (guards the unsafe direction)", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted" },
+    });
+    vi.mocked(markChangeMerged).mockResolvedValueOnce({
+      success: true,
+      data: { transitioned: true },
+    });
+
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/merge", undefined, USER_AUTH),
+      env,
+    );
+
+    expect(res.status).toBe(200);
+    expect(emitEvent).toHaveBeenCalledWith(
+      env.DB,
+      env.EVENTS_QUEUE,
+      expect.objectContaining({ type: "change.merged", changeId: "chg_abc123" }),
+      expect.any(Object),
+      expect.any(Object),
+      expect.anything(),
+    );
+  });
+
+  it("does NOT re-emit change.merged when a concurrent request already merged (dedup)", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted" },
+    });
+    // This request's CAS found the change already merged: transitioned = false.
+    vi.mocked(markChangeMerged).mockResolvedValueOnce({
+      success: true,
+      data: { transitioned: false },
+    });
+
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/merge", undefined, USER_AUTH),
+      env,
+    );
+
+    // Still reports success (idempotent), but fires no second change.merged event.
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { merged: boolean };
+    expect(body.merged).toBe(true);
+    const mergedEmits = vi
+      .mocked(emitEvent)
+      .mock.calls.filter((call) => (call[2] as { type?: string })?.type === "change.merged");
+    expect(mergedEmits).toHaveLength(0);
   });
 
   it("merges the pinned evaluated sha, not the workspace's live tip", async () => {
