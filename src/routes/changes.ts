@@ -512,7 +512,9 @@ app.get("/projects/:name/changes", async (c) => {
       ? (statusParam as Change["status"])
       : undefined;
 
-  const changesResult = await listChanges(c.env.DB, logger, projectName, status);
+  const changesResult = await listChanges(c.env.DB, logger, projectName, status, {
+    projectId: project.id,
+  });
   if (!changesResult.success) {
     logger.error("Failed to list changes", changesResult.error);
     return badRequest(changesResult.error.message);

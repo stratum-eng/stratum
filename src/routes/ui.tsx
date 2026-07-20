@@ -465,7 +465,9 @@ app.get("/p/:name/changes", async (c) => {
     );
   }
 
-  const changesResult = await listChanges(c.env.DB, logger, name);
+  const changesResult = await listChanges(c.env.DB, logger, name, undefined, {
+    projectId: project.id,
+  });
   if (!changesResult.success) {
     logger.error("Failed to list changes", changesResult.error);
     return c.html(
@@ -719,7 +721,9 @@ app.get("/:namespace/:slug/changes", async (c) => {
     );
   }
 
-  const changesResult = await listChanges(c.env.DB, logger, project.name);
+  const changesResult = await listChanges(c.env.DB, logger, project.name, undefined, {
+    projectId: project.id,
+  });
   if (!changesResult.success) {
     logger.error("Failed to list changes", changesResult.error);
     return c.html(
