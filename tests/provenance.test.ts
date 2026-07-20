@@ -49,6 +49,16 @@ function makeD1() {
           return { success: true };
         },
         async all() {
+          if (this._sql.toUpperCase().includes("PROJECT_ID = ? OR")) {
+            const [projectId, projectName] = this._binds;
+            return {
+              results: rows.filter(
+                (r) =>
+                  r.project_id === projectId ||
+                  (r.project_id === null && r.project === projectName),
+              ),
+            };
+          }
           const project = this._binds[0];
           return { results: rows.filter((r) => r.project === project) };
         },
@@ -102,5 +112,43 @@ describe("provenance model + prompt hash", () => {
       expect(read.data[0]?.model).toBeUndefined();
       expect(read.data[0]?.promptHash).toBeUndefined();
     }
+  });
+
+  it("scopes by project_id so same-named projects don't cross tenants", async () => {
+    const db = makeD1();
+    await recordProvenance(db, logger, {
+      commitSha: "aaa",
+      project: "acme",
+      projectId: "proj_A",
+      workspace: "ws",
+      changeId: "chg_a",
+    });
+    await recordProvenance(db, logger, {
+      commitSha: "bbb",
+      project: "acme",
+      projectId: "proj_B",
+      workspace: "ws",
+      changeId: "chg_b",
+    });
+
+    const a = await listProvenance(db, logger, "acme", 50, { projectId: "proj_A" });
+    expect(a.success && a.data.map((r) => r.changeId)).toEqual(["chg_a"]);
+    const b = await listProvenance(db, logger, "acme", 50, { projectId: "proj_B" });
+    expect(b.success && b.data.map((r) => r.changeId)).toEqual(["chg_b"]);
+  });
+
+  it("finds a stamped project's provenance when scoped by id (regression: the caller passes id)", async () => {
+    const db = makeD1();
+    await recordProvenance(db, logger, {
+      commitSha: "ccc",
+      project: "acme",
+      projectId: "proj_A",
+      workspace: "ws",
+      changeId: "chg_a",
+    });
+    // Before the fix, the route passed project.id into a `WHERE project = ?`
+    // (name) query, so this returned empty. Scoped by project_id it resolves.
+    const read = await listProvenance(db, logger, "acme", 50, { projectId: "proj_A" });
+    expect(read.success && read.data).toHaveLength(1);
   });
 });
