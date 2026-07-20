@@ -1,3 +1,4 @@
+import { recordAudit } from "../storage/audit";
 import { RUN_MANIFEST_KEY, pruneRuns, putBlob } from "../storage/backup-store";
 import { BACKUP_TABLES, exportTable } from "../storage/d1-backup";
 import { exportKvIdentity } from "../storage/kv-backup";
@@ -41,6 +42,10 @@ export interface BackupRunSummary {
   };
   bytes: number;
   prunedRuns: number;
+  /** True only when EVERY D1 table exported ok, KV identity is whole, and no repo
+   * failed. `_manifest.json` presence merely means "not crashed"; `healthy` means
+   * "actually restorable". A reader/alert should key on this, not on completeness. */
+  healthy: boolean;
 }
 
 /** Injectable so the orchestration is testable without a real Artifacts clone. */
@@ -104,6 +109,7 @@ export async function runBackup(
     repos: { total: 0, backedUp: 0, skipped: [], failed: [], deferred: 0 },
     bytes: 0,
     prunedRuns: 0,
+    healthy: true,
   };
 
   if (!bucket) {
@@ -255,11 +261,41 @@ async function runBackupLocked(
   const pruned = await pruneRuns(bucket, retention, logger);
   if (pruned.success) summary.prunedRuns = pruned.data.prunedRuns;
 
+  // A run is healthy only if everything landed — completeness (manifest present)
+  // is NOT the same as success; without this a run where every export failed still
+  // reads as complete and retention evicts the last good one.
+  summary.healthy =
+    summary.d1.every((t) => t.ok) && summary.kv.ok && summary.repos.failed.length === 0;
+  if (!summary.healthy) {
+    logger.error("Backup run UNHEALTHY — an export failed; this run is not restorable", undefined, {
+      runTs,
+      d1Failed: summary.d1.filter((t) => !t.ok).map((t) => t.table),
+      kvOk: summary.kv.ok,
+      reposFailed: summary.repos.failed.length,
+    });
+  }
+
   // --- Run manifest LAST: its presence marks the run complete ---
   await put(RUN_MANIFEST_KEY, new TextEncoder().encode(JSON.stringify(summary)));
 
+  // Durable signal for an operator/alert — the cron path previously left no
+  // audit trail at all (only the manual route did).
+  await recordAudit(env.DB, logger, {
+    action: "backup.run",
+    actorType: "system",
+    subject: runTs,
+    detail: {
+      trigger: "auto",
+      healthy: summary.healthy,
+      repos: summary.repos.backedUp,
+      failed: summary.repos.failed.length,
+      bytes: summary.bytes,
+    },
+  });
+
   logger.info("Backup run complete", {
     runTs,
+    healthy: summary.healthy,
     repos: summary.repos.backedUp,
     deferred: summary.repos.deferred,
     bytes: summary.bytes,
