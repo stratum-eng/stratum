@@ -146,6 +146,7 @@ export interface DeletionJobRowStub {
   lease_owner: string | null;
   lease_expires_at: string | null;
   residuals: string | null;
+  attempts: number;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -206,6 +207,7 @@ export function makeJobsD1(
         lease_owner: null,
         lease_expires_at: null,
         residuals: null,
+        attempts: 0,
         created_at: createdAt,
         started_at: null,
         finished_at: null,
@@ -278,10 +280,11 @@ export function makeJobsD1(
     }
 
     if (norm.startsWith("UPDATE deletion_jobs SET state = ?, residuals = ?")) {
-      const [state, residuals, finishedAt, id, owner] = bindings as [
+      const [state, residuals, finishedAt, attemptIncrement, id, owner] = bindings as [
         string,
         string,
         string,
+        number,
         string,
         string,
       ];
@@ -290,9 +293,33 @@ export function makeJobsD1(
       job.state = state;
       job.residuals = residuals;
       job.finished_at = finishedAt;
+      job.attempts += attemptIncrement;
       job.lease_owner = null;
       job.lease_expires_at = null;
       return { rows: [], changes: 1 };
+    }
+
+    // reopenIncompleteJob: incomplete -> pending, optionally clearing attempts.
+    if (norm.startsWith("UPDATE deletion_jobs SET state = 'pending'")) {
+      const id = bindings[0] as string;
+      const job = jobs.get(id);
+      if (!job || job.state !== "incomplete") return { rows: [], changes: 0 };
+      job.state = "pending";
+      job.finished_at = null;
+      job.heartbeat_at = null;
+      job.lease_owner = null;
+      job.lease_expires_at = null;
+      if (norm.includes("attempts = 0")) job.attempts = 0;
+      return { rows: [], changes: 1 };
+    }
+
+    // listRetryableIncompleteJobs: incomplete jobs still within the attempt cap.
+    if (norm.startsWith("SELECT * FROM deletion_jobs WHERE state = 'incomplete'")) {
+      const maxAttempts = bindings[0] as number;
+      const rows = [...jobs.values()]
+        .filter((job) => job.state === "incomplete" && job.attempts < maxAttempts)
+        .map((job) => ({ ...job }));
+      return { rows, changes: 0 };
     }
 
     if (norm.startsWith("SELECT * FROM deletion_jobs WHERE state IN")) {

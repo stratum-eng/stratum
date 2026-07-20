@@ -10,7 +10,9 @@ import {
   finishJob,
   getDeletionJob,
   heartbeat,
+  listRetryableIncompleteJobs,
   listUnfinishedJobs,
+  reopenIncompleteJob,
   setJobState,
 } from "../storage/deletion-jobs";
 import type { Env } from "../types";
@@ -26,6 +28,29 @@ const LEASE_TTL_MS = 15 * 60 * 1000;
 
 /** A job with no heartbeat progress for this long counts as stuck. */
 const STALE_HEARTBEAT_MS = 10 * 60 * 1000;
+
+/**
+ * How many times the sweep will auto-re-drive an `incomplete` job before
+ * leaving it for an operator. Bounds the retry so a permanently-failing target
+ * can't loop forever, while transient faults (a momentary Artifacts/D1 hiccup)
+ * still self-heal.
+ */
+const MAX_DELETION_ATTEMPTS = 3;
+
+/**
+ * Residual markers that can never clear on a retry — re-driving a job carrying
+ * one is pointless, so the sweep leaves it `incomplete` for an operator even
+ * while attempts remain. A malformed target is the canonical case: no amount of
+ * re-driving repairs unparseable job JSON.
+ */
+const TERMINAL_RESIDUAL_PREFIXES = ["target:unparseable"] as const;
+
+/** Whether an `incomplete` job's residuals could plausibly clear on a re-drive. */
+function residualsAreRetryable(residuals: string[]): boolean {
+  return !residuals.some((residual) =>
+    TERMINAL_RESIDUAL_PREFIXES.some((prefix) => residual.startsWith(prefix)),
+  );
+}
 
 function parseProjectTarget(raw: string): DeletionTarget | null {
   let parsed: unknown;
@@ -202,11 +227,12 @@ export async function runDeletionJob(
  * job with a stale (or missing) heartbeat. The initial enqueue after a delete
  * request is only an optimization — this sweep is what guarantees completion.
  *
- * `incomplete` is intentionally TERMINAL here: `listUnfinishedJobs` excludes it,
- * so the sweep never auto-retries. A permanently-failing Artifacts repo would
- * otherwise loop forever; instead the residuals are recorded + audited for an
- * operator, who recovers by enqueueing a FRESH job for the same target once the
- * underlying fault clears (the cascade is idempotent, so it converges).
+ * `incomplete` jobs are re-driven too, but only up to `MAX_DELETION_ATTEMPTS`
+ * and only when their residuals could plausibly clear (a terminal residual such
+ * as an unparseable target is never retried). A job that exhausts its budget or
+ * carries a terminal residual stays `incomplete` for an operator, who re-drives
+ * it explicitly via the admin route once the underlying fault is fixed. The
+ * cascade is idempotent, so every re-drive converges rather than double-deleting.
  */
 export async function sweepDeletionJobs(env: Env, logger: Logger): Promise<void> {
   const log = logger.child({ component: "deletion-sweep" });
@@ -218,10 +244,63 @@ export async function sweepDeletionJobs(env: Env, logger: Logger): Promise<void>
   }
   // Sequential on purpose: one Worker invocation driving many cascades in
   // parallel would compound subrequest limits and D1 write contention.
+  const drivenThisSweep = new Set<string>();
   for (const job of jobsResult.data) {
+    drivenThisSweep.add(job.id);
     const result = await runDeletionJob(env, job.id, log);
     if (!result.success) {
       log.error("Failed to drive deletion job", result.error, { jobId: job.id });
     }
   }
+
+  const retryableResult = await listRetryableIncompleteJobs(env.DB, log, MAX_DELETION_ATTEMPTS);
+  if (!retryableResult.success) {
+    log.error("Failed to list retryable incomplete deletion jobs", retryableResult.error);
+    return;
+  }
+  for (const job of retryableResult.data) {
+    // A job the stale-heartbeat pass already drove to `incomplete` this sweep
+    // must wait for the NEXT sweep — otherwise a single fault would burn two
+    // attempts per cycle instead of the one `MAX_DELETION_ATTEMPTS` implies.
+    if (drivenThisSweep.has(job.id)) continue;
+    if (!residualsAreRetryable(job.residuals)) continue;
+    const reopened = await reopenIncompleteJob(env.DB, log, job.id);
+    if (!reopened.success) {
+      log.error("Failed to reopen incomplete deletion job", reopened.error, { jobId: job.id });
+      continue;
+    }
+    // A concurrent driver already reopened or finished it; leave it be.
+    if (!reopened.data) continue;
+    log.info("Re-driving incomplete deletion job", { jobId: job.id, attempts: job.attempts });
+    const result = await runDeletionJob(env, job.id, log);
+    if (!result.success) {
+      log.error("Failed to re-drive incomplete deletion job", result.error, { jobId: job.id });
+    }
+  }
+}
+
+/**
+ * Operator-initiated re-drive of an `incomplete` job (admin route): clears the
+ * attempt budget and drives once. Returns `reopened: false` — for the route to
+ * map to 404/409 — when the job is missing or not `incomplete` (already
+ * completed, still running, or reopened by a racing driver). The cascade is
+ * idempotent, so re-driving an already-cleaned target simply verifies clean.
+ */
+export async function redriveDeletionJob(
+  env: Env,
+  jobId: string,
+  logger: Logger,
+): Promise<Result<{ reopened: boolean }, AppError>> {
+  const log = logger.child({ component: "deletion-redrive", jobId });
+  const jobResult = await getDeletionJob(env.DB, log, jobId);
+  if (!jobResult.success) return err(jobResult.error);
+  if (!jobResult.data || jobResult.data.state !== "incomplete") {
+    return ok({ reopened: false });
+  }
+  const reopened = await reopenIncompleteJob(env.DB, log, jobId, { resetAttempts: true });
+  if (!reopened.success) return err(reopened.error);
+  if (!reopened.data) return ok({ reopened: false });
+  const driven = await runDeletionJob(env, jobId, log);
+  if (!driven.success) return err(driven.error);
+  return ok({ reopened: true });
 }

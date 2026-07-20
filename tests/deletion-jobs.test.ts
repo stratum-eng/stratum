@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { runDeletionJob, sweepDeletionJobs } from "../src/queue/deletion-runner";
+import {
+  redriveDeletionJob,
+  runDeletionJob,
+  sweepDeletionJobs,
+} from "../src/queue/deletion-runner";
 import type { DeletionTarget } from "../src/storage/deletion";
 import {
   acquireLease,
@@ -7,7 +11,9 @@ import {
   finishJob,
   getDeletionJob,
   heartbeat,
+  listRetryableIncompleteJobs,
   listUnfinishedJobs,
+  reopenIncompleteJob,
 } from "../src/storage/deletion-jobs";
 import type { Env } from "../src/types";
 import type { Logger } from "../src/utils/logger";
@@ -302,6 +308,114 @@ describe("runDeletionJob", () => {
   });
 });
 
+describe("attempt budget", () => {
+  it("finishJob increments attempts only when the drive ends incomplete", async () => {
+    const stub = makeJobsD1();
+    const badId = await createProjectJob(stub, "proj_bad");
+    const goodId = await createProjectJob(stub, "proj_good");
+    await acquireLease(stub.db, mockLogger, badId, "d", 600_000);
+    await acquireLease(stub.db, mockLogger, goodId, "d", 600_000);
+
+    await finishJob(stub.db, mockLogger, badId, "d", "incomplete", ["artifacts:x"]);
+    await finishJob(stub.db, mockLogger, goodId, "d", "completed", []);
+
+    expect(stub.jobs.get(badId)?.attempts).toBe(1);
+    expect(stub.jobs.get(goodId)?.attempts).toBe(0);
+  });
+
+  it("listRetryableIncompleteJobs returns incomplete jobs under the cap only", async () => {
+    const stub = makeJobsD1();
+    const underId = await createProjectJob(stub, "proj_under");
+    const atCapId = await createProjectJob(stub, "proj_cap");
+    const pendingId = await createProjectJob(stub, "proj_pending");
+    const under = stub.jobs.get(underId);
+    const atCap = stub.jobs.get(atCapId);
+    if (under) {
+      under.state = "incomplete";
+      under.attempts = 1;
+    }
+    if (atCap) {
+      atCap.state = "incomplete";
+      atCap.attempts = 3;
+    }
+
+    const listed = await listRetryableIncompleteJobs(stub.db, mockLogger, 3);
+    expect(listed.success).toBe(true);
+    if (!listed.success) return;
+    // atCap (attempts == cap) and the still-pending job are both excluded.
+    expect(listed.data.map((job) => job.id)).toEqual([underId]);
+    expect(pendingId).toBeDefined();
+  });
+
+  it("reopenIncompleteJob only reopens incomplete jobs and can clear attempts", async () => {
+    const stub = makeJobsD1();
+    const jobId = await createProjectJob(stub);
+
+    // Pending, not incomplete: nothing to reopen.
+    const noop = await reopenIncompleteJob(stub.db, mockLogger, jobId);
+    expect(noop.success && noop.data).toBe(false);
+    expect(stub.jobs.get(jobId)?.state).toBe("pending");
+
+    const row = stub.jobs.get(jobId);
+    if (row) {
+      row.state = "incomplete";
+      row.attempts = 2;
+      row.finished_at = PAST;
+      row.lease_owner = "stale";
+    }
+    const reopened = await reopenIncompleteJob(stub.db, mockLogger, jobId, { resetAttempts: true });
+    expect(reopened.success && reopened.data).toBe(true);
+    const after = stub.jobs.get(jobId);
+    expect(after?.state).toBe("pending");
+    expect(after?.attempts).toBe(0);
+    expect(after?.finished_at).toBeNull();
+    expect(after?.lease_owner).toBeNull();
+  });
+});
+
+describe("redriveDeletionJob (operator)", () => {
+  it("reopens an incomplete job, resets the budget, and drives it to completed", async () => {
+    const stub = makeJobsD1();
+    const jobId = await createProjectJob(stub);
+    const row = stub.jobs.get(jobId);
+    if (row) {
+      // Budget exhausted by the auto-sweep; operator forces one more drive.
+      row.state = "incomplete";
+      row.residuals = JSON.stringify(["artifacts:x"]);
+      row.attempts = 3;
+      row.checkpoint = "cascade";
+      row.finished_at = PAST;
+    }
+
+    const result = await redriveDeletionJob(makeEnv(stub), jobId, mockLogger);
+
+    expect(result.success && result.data.reopened).toBe(true);
+    const after = stub.jobs.get(jobId);
+    expect(after?.state).toBe("completed");
+    expect(after?.attempts).toBe(0);
+    // checkpoint was already set, so the re-drive must not re-audit the start.
+    expect(stub.audits.map((a) => a.action)).toEqual(["deletion.completed"]);
+  });
+
+  it("returns reopened:false for a job that is not incomplete", async () => {
+    const stub = makeJobsD1();
+    const jobId = await createProjectJob(stub); // pending
+
+    const result = await redriveDeletionJob(makeEnv(stub), jobId, mockLogger);
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.reopened).toBe(false);
+    expect(stub.jobs.get(jobId)?.state).toBe("pending");
+  });
+
+  it("returns reopened:false for a missing job", async () => {
+    const stub = makeJobsD1();
+    const result = await redriveDeletionJob(makeEnv(stub), "del_missing", mockLogger);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.reopened).toBe(false);
+  });
+});
+
 describe("sweepDeletionJobs", () => {
   it("re-drives stale jobs and leaves fresh ones alone", async () => {
     const stub = makeJobsD1();
@@ -325,5 +439,83 @@ describe("sweepDeletionJobs", () => {
 
     expect(stub.jobs.get(staleId)?.state).toBe("completed");
     expect(stub.jobs.get(freshId)?.state).toBe("running");
+  });
+
+  it("auto-re-drives a transiently-incomplete job to completed within the cap", async () => {
+    const stub = makeJobsD1();
+    const jobId = await createProjectJob(stub);
+    const failing = makeArtifactsStub(() => {
+      throw new Error("upstream 500");
+    });
+    // First drive fails on Artifacts, landing the job incomplete with attempts=1.
+    await runDeletionJob(makeEnv(stub, failing.artifacts), jobId, mockLogger);
+    expect(stub.jobs.get(jobId)?.state).toBe("incomplete");
+    expect(stub.jobs.get(jobId)?.attempts).toBe(1);
+
+    // Sweep with healthy Artifacts: incomplete jobs are swept by state (not
+    // heartbeat staleness), so it reopens and re-drives to completion.
+    await sweepDeletionJobs(makeEnv(stub), mockLogger);
+
+    expect(stub.jobs.get(jobId)?.state).toBe("completed");
+  });
+
+  it("does not auto-retry a job whose residual can never clear", async () => {
+    const stub = makeJobsD1();
+    const jobId = await createProjectJob(stub);
+    const row = stub.jobs.get(jobId);
+    if (row) {
+      row.state = "incomplete";
+      row.residuals = JSON.stringify(["target:unparseable"]);
+      row.attempts = 1;
+      row.finished_at = PAST;
+    }
+
+    await sweepDeletionJobs(makeEnv(stub), mockLogger);
+
+    // A terminal residual is skipped even with budget remaining.
+    expect(stub.jobs.get(jobId)?.state).toBe("incomplete");
+    expect(stub.jobs.get(jobId)?.attempts).toBe(1);
+  });
+
+  it("does not re-drive a job in the same sweep that just drove it incomplete", async () => {
+    const stub = makeJobsD1();
+    const jobId = await createProjectJob(stub);
+    // Stale, crashed running job: the stale-heartbeat pass drives it first.
+    const row = stub.jobs.get(jobId);
+    if (row) {
+      row.state = "running";
+      row.heartbeat_at = PAST;
+      row.lease_owner = "dead-driver";
+      row.lease_expires_at = PAST;
+      row.checkpoint = "started";
+    }
+    const failing = makeArtifactsStub(() => {
+      throw new Error("upstream 500");
+    });
+
+    await sweepDeletionJobs(makeEnv(stub, failing.artifacts), mockLogger);
+
+    const after = stub.jobs.get(jobId);
+    expect(after?.state).toBe("incomplete");
+    // Phase 1 drove it (attempts=1); the retry pass must skip it this sweep so a
+    // single fault costs one attempt per cycle, not two.
+    expect(after?.attempts).toBe(1);
+  });
+
+  it("stops auto-retrying once the attempt cap is reached", async () => {
+    const stub = makeJobsD1();
+    const jobId = await createProjectJob(stub);
+    const row = stub.jobs.get(jobId);
+    if (row) {
+      row.state = "incomplete";
+      row.residuals = JSON.stringify(["artifacts:x"]);
+      row.attempts = 3;
+      row.finished_at = PAST;
+    }
+
+    await sweepDeletionJobs(makeEnv(stub), mockLogger);
+
+    expect(stub.jobs.get(jobId)?.state).toBe("incomplete");
+    expect(stub.jobs.get(jobId)?.attempts).toBe(3);
   });
 });
