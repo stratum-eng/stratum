@@ -70,9 +70,13 @@ export async function recordProvenance(
     const id = newId("prv");
     const mergedAt = new Date().toISOString();
 
-    await db
+    // OR IGNORE tolerates the (change_id, commit_sha) unique index (migration 033):
+    // a concurrent duplicate merge that both reach recordProvenance can't write two
+    // rows for one merge commit. A legitimate re-merge after a revert produces a
+    // different commit_sha, so it is NOT deduped.
+    const result = await db
       .prepare(
-        "INSERT INTO provenance (id, commit_sha, project, project_id, workspace, change_id, agent_id, eval_score, model, prompt_hash, merged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO provenance (id, commit_sha, project, project_id, workspace, change_id, agent_id, eval_score, model, prompt_hash, merged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         id,
@@ -88,6 +92,13 @@ export async function recordProvenance(
         mergedAt,
       )
       .run();
+
+    if ((result.meta?.changes ?? 0) === 0) {
+      logger.info("Provenance already recorded for this merge; skipped duplicate", {
+        changeId: opts.changeId,
+        commitSha: opts.commitSha,
+      });
+    }
 
     const record: ProvenanceRecord = {
       id,

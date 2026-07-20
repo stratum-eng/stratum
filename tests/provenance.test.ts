@@ -30,8 +30,12 @@ function makeD1() {
           return this;
         },
         async run() {
-          if (this._sql.startsWith("INSERT INTO provenance")) {
+          if (/^INSERT( OR IGNORE)? INTO provenance/i.test(this._sql)) {
             const b = this._binds;
+            // Model the (change_id, commit_sha) unique index: OR IGNORE is a no-op
+            // when a row already exists for the same merge commit.
+            const dupe = rows.some((r) => r.change_id === b[5] && r.commit_sha === b[1]);
+            if (dupe) return { success: true, meta: { changes: 0 } };
             rows.push({
               id: b[0],
               commit_sha: b[1],
@@ -45,8 +49,9 @@ function makeD1() {
               prompt_hash: b[9] ?? null,
               merged_at: b[10],
             });
+            return { success: true, meta: { changes: 1 } };
           }
-          return { success: true };
+          return { success: true, meta: { changes: 0 } };
         },
         async all() {
           const project = this._binds[0];
@@ -86,6 +91,29 @@ describe("provenance model + prompt hash", () => {
       expect(read.data[0]?.model).toBe("claude-fable-5");
       expect(read.data[0]?.promptHash).toBe("sha256:digest");
     }
+  });
+
+  it("dedups a duplicate merge: two records for one (change, commit) → one row", async () => {
+    const db = makeD1();
+    const opts = {
+      commitSha: "same_commit",
+      project: "proj-3",
+      workspace: "ws",
+      changeId: "chg_dupe",
+    };
+    // Two concurrent mergers both reach recordProvenance for the same merge commit.
+    const first = await recordProvenance(db, logger, opts);
+    const second = await recordProvenance(db, logger, opts);
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true); // the loser is tolerated, not an error
+
+    const read = await listProvenance(db, logger, "proj-3");
+    expect(read.success && read.data).toHaveLength(1); // exactly one provenance row
+
+    // A re-merge after a revert has a DIFFERENT commit sha → still recorded.
+    await recordProvenance(db, logger, { ...opts, commitSha: "remerge_commit" });
+    const after = await listProvenance(db, logger, "proj-3");
+    expect(after.success && after.data).toHaveLength(2);
   });
 
   it("leaves model and prompt hash undefined for a user-authored merge", async () => {
