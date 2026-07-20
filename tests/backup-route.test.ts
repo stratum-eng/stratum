@@ -38,6 +38,7 @@ const summary = {
   repos: { total: 0, backedUp: 2, skipped: [], failed: [], deferred: 0 },
   bytes: 100,
   prunedRuns: 0,
+  healthy: true,
 };
 
 beforeEach(() => {

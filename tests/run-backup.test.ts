@@ -81,6 +81,7 @@ describe("runBackup orchestrator", () => {
     expect(keys[keys.length - 1]).toBe(`2026-07-19T06:00:00Z/${RUN_MANIFEST_KEY}`);
 
     expect(summary.repos.backedUp).toBe(1);
+    expect(summary.healthy).toBe(true);
     expect(summary.kv.projects).toBe(1);
     expect(summary.d1.find((t) => t.table === "users")?.rowCount).toBe(1);
   });
@@ -128,7 +129,9 @@ describe("runBackup orchestrator", () => {
 
     expect(summary.repos.backedUp).toBe(1);
     expect(summary.repos.failed.map((f) => f.projectId)).toEqual(["bad"]);
-    // Run still completed: manifest was written.
+    // Run still completed (manifest written) BUT is flagged unhealthy — a reader
+    // must not treat this as restorable just because it's "complete".
+    expect(summary.healthy).toBe(false);
     const bucket = env.BACKUPS as unknown as { store: Map<string, Uint8Array> };
     expect([...bucket.store.keys()]).toContain(`2026-07-19T06:00:00Z/${RUN_MANIFEST_KEY}`);
   });
