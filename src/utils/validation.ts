@@ -187,9 +187,11 @@ export function isStringRecord(value: unknown): value is Record<string, string> 
 }
 
 // Multi-provider URL patterns
-const GITHUB_REPO_RE = /^https?:\/\/github\.com\/[^/]+\/[^/\s]+/i;
-const GITLAB_REPO_RE = /^https?:\/\/gitlab\.com\/.+\/[^/\s]+/i;
-const BITBUCKET_REPO_RE = /^https?:\/\/bitbucket\.org\/[^/]+\/[^/\s]+/i;
+// https only: an http:// clone exposes the fetch to MITM (the host is still
+// pinned to the three providers below, so this is downgrade protection).
+const GITHUB_REPO_RE = /^https:\/\/github\.com\/[^/]+\/[^/\s]+/i;
+const GITLAB_REPO_RE = /^https:\/\/gitlab\.com\/.+\/[^/\s]+/i;
+const BITBUCKET_REPO_RE = /^https:\/\/bitbucket\.org\/[^/]+\/[^/\s]+/i;
 
 /**
  * Validates a repository URL from any supported provider (GitHub, GitLab, Bitbucket).

@@ -508,6 +508,13 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
   }
   const project = projectResult.data;
 
+  // Resolving a conflict mints a write token and pushes a merge into the project
+  // repo, so it requires project write access — not merely knowing the (unguessable
+  // but leakable) conflict id. Collapse to 404 to avoid leaking existence.
+  if (!(await canWriteProject(c.env.DB, project, userId))) {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
   const workspaceResult = await getWorkspace(
     c.env.STATE,
     project.id,

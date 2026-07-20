@@ -279,9 +279,10 @@ describe("POST /api/projects/conflicts/:id/resolve (route)", () => {
   it("resolves successfully and deletes the conflict KV key", async () => {
     const kv = makeKv();
 
+    // The caller (user_test) owns the project → passes the new write-access check.
     vi.mocked(getProjectByPath).mockResolvedValue({
       success: true,
-      data: PROJECT,
+      data: { ...PROJECT, ownerId: "user_test" },
     } as Awaited<ReturnType<typeof getProjectByPath>>);
     vi.mocked(getWorkspace).mockResolvedValue({
       success: true,
@@ -306,6 +307,28 @@ describe("POST /api/projects/conflicts/:id/resolve (route)", () => {
     expect(body.status).toBe("resolved");
     expect(body.commitSha).toBe("resolved-sha");
     expect(vi.mocked(kv.delete)).toHaveBeenCalledWith("conflict:conflict-abc");
+  });
+
+  it("404s a caller without project write access (never mints a token or pushes)", async () => {
+    const kv = makeKv();
+    vi.mocked(resolveConflict).mockClear();
+    // Project owned by someone else, caller has no org write → write check fails.
+    vi.mocked(getProjectByPath).mockResolvedValue({
+      success: true,
+      data: { ...PROJECT, ownerId: "someone_else" },
+    } as Awaited<ReturnType<typeof getProjectByPath>>);
+
+    const res = await app.fetch(
+      new Request("http://localhost/api/projects/conflicts/conflict-abc/resolve", {
+        method: "POST",
+        headers: { ...AUTH_HEADER, "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy: "accept-project" }),
+      }),
+      { STATE: kv, DB: makeDb() },
+    );
+
+    expect(res.status).toBe(404);
+    expect(vi.mocked(resolveConflict)).not.toHaveBeenCalled();
   });
 
   it("conflict context stored by changes route contains no token fields", () => {

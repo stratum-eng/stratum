@@ -192,7 +192,6 @@ export async function processRepoImport(
       return { success: false, error: setResult.error.message, repo: url };
     }
 
-    // Mark as successful (actual import happens in background)
     await updateImportStatus(
       env.DB,
       namespace,
@@ -201,6 +200,19 @@ export async function processRepoImport(
       logger,
       `Bulk import job ${index + 1}/${total} queued`,
     );
+
+    // Actually enqueue the clone — without this the job stays "queued" forever and
+    // the repo is never imported (the single-import path in projects.ts does this).
+    const { queueImportJob } = await import("../queue/import-queue");
+    await queueImportJob(env.IMPORT_QUEUE, {
+      importId,
+      projectId,
+      namespace,
+      slug,
+      githubUrl: url,
+      branch,
+      depth: 10,
+    });
 
     job && job.successfulRepos++;
     return { success: true, repo: url };

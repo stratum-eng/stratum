@@ -188,14 +188,18 @@ export async function countApprovals(
   db: D1Database,
   logger: Logger,
   changeId: string,
+  /** The change author (createdByUserId): their own approval must not count
+   * toward requiredApprovals — otherwise a lone writer self-approves and merges. */
+  excludeUserId?: string,
 ): Promise<Result<number, AppError>> {
   try {
-    const row = await db
-      .prepare(
-        "SELECT COUNT(*) AS approvals FROM change_reviews WHERE change_id = ? AND verdict = 'approve'",
-      )
-      .bind(changeId)
-      .first<{ approvals: number }>();
+    const sql = excludeUserId
+      ? "SELECT COUNT(*) AS approvals FROM change_reviews WHERE change_id = ? AND verdict = 'approve' AND NOT (author_type = 'user' AND author_id = ?)"
+      : "SELECT COUNT(*) AS approvals FROM change_reviews WHERE change_id = ? AND verdict = 'approve'";
+    const stmt = excludeUserId
+      ? db.prepare(sql).bind(changeId, excludeUserId)
+      : db.prepare(sql).bind(changeId);
+    const row = await stmt.first<{ approvals: number }>();
     return ok(row?.approvals ?? 0);
   } catch (error) {
     const appError = toAppError(error, "countApprovals", { changeId });
