@@ -53,7 +53,7 @@ jobs:
           fi
 
           echo "Applying migrations for environment=$ENV database=$DB_NAME"
-          npx wrangler d1 migrations apply "$DB_NAME" --env="$ENV"
+          npx wrangler d1 migrations apply "$DB_NAME" --remote --env="$ENV"
 
       - name: Notify on failure
         if: failure()
