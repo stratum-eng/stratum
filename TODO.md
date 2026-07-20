@@ -12,7 +12,8 @@ docs/REMAINING_WORK.md for context on each remaining item below.
 - [ ] Batch merging in the merge queue Durable Object
 - [ ] SSO/SAML
 - [ ] Multi-tenancy and billing for Stratum Cloud
-- [ ] Backup strategy for D1 and Artifacts data
+- [x] Backup strategy for D1 and Artifacts data — daily + on-demand backups to R2
+      with tested restore; see `docs/runbooks/backup-restore.md`
 - [ ] Monitoring dashboard UI (metrics API exists at /api/admin/metrics)
 
 ## Engineering debt

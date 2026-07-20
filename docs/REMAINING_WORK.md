@@ -42,11 +42,6 @@ Tenant isolation, usage metering, and billing integration for Stratum Cloud.
 Per-change cost tracking (LLM tokens, sandbox time, git ops) already exists
 and provides the metering foundation.
 
-### Backup strategy
-
-Scheduled backups and tested restore paths for D1 and Artifacts data. Today a
-loss of either store is unrecoverable.
-
 ### Monitoring dashboard UI
 
 A metrics API already exists at `/api/admin/metrics`; this item is a UI over

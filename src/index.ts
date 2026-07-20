@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { setCookie } from "hono/cookie";
+import { runBackup } from "./backup/run-backup";
 import { githubWebhookRouter } from "./github/webhooks";
 import { analyticsMiddleware } from "./middleware/analytics";
 import { authMiddleware } from "./middleware/auth";
@@ -14,6 +15,7 @@ import { runTtlSweep } from "./queue/ttl-sweep";
 import { agentsRouter } from "./routes/agents";
 import { auditRouter } from "./routes/audit";
 import { authRouter } from "./routes/auth";
+import { backupRouter } from "./routes/backup";
 import { bulkImportRouter } from "./routes/bulk-import";
 import { changesRouter } from "./routes/changes";
 import { emailAuthRouter } from "./routes/email-auth";
@@ -122,6 +124,7 @@ app.route("/api/admin/metrics", metricsRouter);
 
 // Admin audit trail endpoint
 app.route("/api/admin/audit", auditRouter);
+app.route("/api/admin/backup", backupRouter);
 
 // Redirects from old /ui/* URLs to new paths (backward compatibility)
 app.get("/ui", (c) => c.redirect("/", 301));
@@ -196,7 +199,13 @@ export default {
       ctx.waitUntil(sweepDeletionJobs(env, logger));
       return;
     }
-    ctx.waitUntil(Promise.all([runTtlSweep(env, logger), syncAllProjects(env)]));
+    ctx.waitUntil(
+      Promise.all([
+        runTtlSweep(env, logger),
+        syncAllProjects(env),
+        runBackup(env, logger, new Date().toISOString()),
+      ]),
+    );
   },
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     const logger = createLogger({ component: "queue" });
