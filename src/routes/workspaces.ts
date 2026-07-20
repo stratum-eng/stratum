@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { type EventActor, emitEvent } from "../queue/events";
+import { isTargetDeleting } from "../storage/deletion";
 import {
   artifactsRepoNameFromRemote,
   cloneRepo,
@@ -64,6 +65,12 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
 
   if (!(await canWriteProject(c.env.DB, project, userId, agentOwnerId)))
     return forbidden("Project access denied");
+
+  // Refuse creating a workspace/fork while the project is being deleted — a new
+  // fork the cascade never captured leaks as an orphan and wedges the job.
+  if (await isTargetDeleting(c.env, project, logger)) {
+    return c.json({ error: "Project is being deleted", code: "TARGET_DELETING" }, 409);
+  }
 
   const body = await c.req.json<{ name?: unknown }>().catch(() => ({ name: undefined }));
   const workspaceName = isValidSlug(body.name) ? body.name : `ws-${Date.now()}`;

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { type EventActor, emitEvent } from "../queue/events";
 import { getChange } from "../storage/changes";
+import { isTargetDeleting } from "../storage/deletion";
 import {
   type IssueStatus,
   createIssue,
@@ -78,6 +79,12 @@ app.post("/:namespace/:slug/issues", async (c) => {
   // Anyone who can read the project can open issues against it.
   if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
     return notFound("Project", `${project.namespace}/${project.slug}`);
+  }
+
+  // Refuse opening an issue while the project is being deleted — it resurrects a
+  // row the cascade removed and wedges the job. Best-effort; verifier re-run backs it.
+  if (await isTargetDeleting(c.env, project, logger)) {
+    return c.json({ error: "Project is being deleted", code: "TARGET_DELETING" }, 409);
   }
 
   let body: { title?: unknown; body?: unknown; linkedChangeId?: unknown };
