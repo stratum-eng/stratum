@@ -52,6 +52,10 @@ const ERROR_MESSAGES: Record<string, string> = {
 
 const SUCCESS_MESSAGES: Record<string, string> = {
   email_sent: "Check your email. We sent a magic link that expires in 15 minutes.",
+  // Enumeration-safe: identical whether or not the email has an account, so the
+  // login endpoint can't be probed to discover which emails are registered.
+  login_link_sent:
+    "If an account exists for that email, we've sent a magic link (it expires in 15 minutes).",
 };
 
 function emailAuthRedirect(
@@ -430,12 +434,12 @@ app.post("/send-login", async (c) => {
     return emailAuthRedirect(c, "error", "auth_config_incomplete", "/auth/login");
   }
 
-  // Check if email exists in database
+  // Do NOT reveal whether the email has an account (enumeration): the endpoint
+  // returns the same `login_link_sent` response either way. A magic link is only
+  // minted + sent when the account actually exists; a missing account skips the
+  // send silently. Rate limiting is applied first, to every request, so the
+  // send-only-for-real-accounts branch isn't a cheap oracle.
   const existingUser = await getUserByEmail(c.env.DB, email, logger);
-  if (!existingUser.success) {
-    logger.warn("Email not found for login", { emailHash });
-    return emailAuthRedirect(c, "error", "email_not_found", "/auth/login");
-  }
 
   // Check rate limit (fail open if KV fails)
   const rateLimitKey = getRateLimitKey(email);
@@ -457,38 +461,44 @@ app.post("/send-login", async (c) => {
       expirationTtl: MAGIC_LINK_RATE_WINDOW,
     });
 
-    // Generate secure magic link token
-    const token = generateSecureToken();
-    // Store token in D1 (atomic single-use at verify time) with login intent.
-    const stored = await createMagicLink(
-      c.env.DB,
-      token,
-      { email, intent: "login", createdAt: Date.now(), rememberMe },
-      15 * 60,
-      logger,
-    );
-    if (!stored.success) {
-      return emailAuthRedirect(c, "error", "send_failed", "/auth/login");
+    if (existingUser.success) {
+      // Generate secure magic link token
+      const token = generateSecureToken();
+      // Store token in D1 (atomic single-use at verify time) with login intent.
+      const stored = await createMagicLink(
+        c.env.DB,
+        token,
+        { email, intent: "login", createdAt: Date.now(), rememberMe },
+        15 * 60,
+        logger,
+      );
+      if (!stored.success) {
+        // A real send failure for a real account is worth surfacing; it is not a
+        // reliable enumeration oracle (it only fires on genuine infra errors).
+        return emailAuthRedirect(c, "error", "send_failed", "/auth/login");
+      }
+
+      // Build magic link URL
+      const url = new URL(c.req.url);
+      const baseUrl = `${url.protocol}//${url.host}`;
+      const magicLink = `${baseUrl}/auth/email/verify?token=${token}`;
+
+      // Send email using template
+      const emailContent = getMagicLinkEmail({ magicLink, email });
+      await c.env.EMAIL.send({
+        to: email,
+        from: { email: fromAddress, name: "Stratum" },
+        subject: emailContent.subject,
+        text: emailContent.text,
+        html: emailContent.html,
+      });
+
+      logger.info("Login magic link sent", { emailHash });
+    } else {
+      logger.info("Login requested for unknown email; returning uniform response", { emailHash });
     }
 
-    // Build magic link URL
-    const url = new URL(c.req.url);
-    const baseUrl = `${url.protocol}//${url.host}`;
-    const magicLink = `${baseUrl}/auth/email/verify?token=${token}`;
-
-    // Send email using template
-    const emailContent = getMagicLinkEmail({ magicLink, email });
-    await c.env.EMAIL.send({
-      to: email,
-      from: { email: fromAddress, name: "Stratum" },
-      subject: emailContent.subject,
-      text: emailContent.text,
-      html: emailContent.html,
-    });
-
-    logger.info("Login magic link sent", { emailHash });
-
-    return emailAuthRedirect(c, "success", "email_sent", "/auth/login");
+    return emailAuthRedirect(c, "success", "login_link_sent", "/auth/login");
   } catch (err) {
     logger.error("Failed to send login magic link", err instanceof Error ? err : undefined, {
       emailHash,
