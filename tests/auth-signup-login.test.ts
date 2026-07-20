@@ -743,7 +743,7 @@ describe("Auth Signup/Login Integration Tests", () => {
         );
 
         expect(res.status).toBe(302);
-        expect(res.headers.get("location")).toContain("success=email_sent");
+        expect(res.headers.get("location")).toContain("success=login_link_sent");
 
         expect(env.EMAIL?.send).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -764,7 +764,7 @@ describe("Auth Signup/Login Integration Tests", () => {
         });
       });
 
-      it("login fails if email not found", async () => {
+      it("does NOT reveal whether the email exists (enumeration-safe uniform response)", async () => {
         const formData = createFormData({
           email: "nonexistent@example.com",
         });
@@ -777,9 +777,13 @@ describe("Auth Signup/Login Integration Tests", () => {
           env,
         );
 
+        // Same success response an existing account gets — no email_not_found —
+        // but no link is minted or sent for the missing account.
         expect(res.status).toBe(302);
-        expect(res.headers.get("location")).toContain("error=email_not_found");
+        expect(res.headers.get("location")).toContain("success=login_link_sent");
+        expect(res.headers.get("location")).not.toContain("email_not_found");
         expect(env.EMAIL?.send).not.toHaveBeenCalled();
+        expect(await extractMagicLinkToken(env)).toBeNull();
       });
 
       it("rate limiting works on login endpoint", async () => {
@@ -800,7 +804,7 @@ describe("Auth Signup/Login Integration Tests", () => {
           );
 
           expect(res.status).toBe(302);
-          expect(res.headers.get("location")).toContain("success=email_sent");
+          expect(res.headers.get("location")).toContain("success=login_link_sent");
         }
 
         const formData = createFormData({ email });
