@@ -207,7 +207,7 @@ export async function listChanges(
   logger: Logger,
   project: string,
   status?: Change["status"],
-  opts?: { projectId?: string },
+  opts?: { projectId?: string; limit?: number },
 ): Promise<Result<Change[], AppError>> {
   try {
     // Scope by the canonical project_id when known, falling back to the free-form
@@ -219,16 +219,22 @@ export async function listChanges(
           binds: [opts.projectId, project],
         }
       : { clause: "project = ?", binds: [project] };
+    // Bound the result when a caller asks (the API routes do). Internal callers
+    // that omit `limit` still get every row, so no in-process consumer breaks.
+    const limitClause = opts?.limit !== undefined ? " LIMIT ?" : "";
+    const limitBind = opts?.limit !== undefined ? [opts.limit] : [];
     const result = status
       ? await db
           .prepare(
-            `SELECT * FROM changes WHERE ${scope.clause} AND status = ? ORDER BY created_at DESC`,
+            `SELECT * FROM changes WHERE ${scope.clause} AND status = ? ORDER BY created_at DESC${limitClause}`,
           )
-          .bind(...scope.binds, status)
+          .bind(...scope.binds, status, ...limitBind)
           .all<ChangeRow>()
       : await db
-          .prepare(`SELECT * FROM changes WHERE ${scope.clause} ORDER BY created_at DESC`)
-          .bind(...scope.binds)
+          .prepare(
+            `SELECT * FROM changes WHERE ${scope.clause} ORDER BY created_at DESC${limitClause}`,
+          )
+          .bind(...scope.binds, ...limitBind)
           .all<ChangeRow>();
 
     const changes = result.results.map(rowToChange);

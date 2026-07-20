@@ -692,6 +692,7 @@ describe("GET /api/projects/:name/changes", () => {
     expect(body.changes[0]?.id).toBe("chg_abc123");
     expect(listChanges).toHaveBeenCalledWith(env.DB, expect.any(Object), "my-project", undefined, {
       projectId: mockProject.id,
+      limit: 100,
     });
   });
 
@@ -707,6 +708,7 @@ describe("GET /api/projects/:name/changes", () => {
     expect(res.status).toBe(200);
     expect(listChanges).toHaveBeenCalledWith(env.DB, expect.any(Object), "my-project", "open", {
       projectId: mockProject.id,
+      limit: 100,
     });
   });
 
@@ -723,6 +725,7 @@ describe("GET /api/projects/:name/changes", () => {
     expect(res.status).toBe(200);
     expect(listChanges).toHaveBeenCalledWith(env.DB, expect.any(Object), "my-project", "promoted", {
       projectId: mockProject.id,
+      limit: 100,
     });
   });
 

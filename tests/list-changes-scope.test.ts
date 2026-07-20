@@ -73,6 +73,9 @@ function makeChangesD1(rows: ReturnType<typeof row>[]) {
           if (upper.includes("AND STATUS = ?"))
             results = results.filter((r) => r.status === binds[1]);
         }
+        if (upper.includes("LIMIT ?")) {
+          results = results.slice(0, binds[binds.length - 1] as number);
+        }
         return { results, success: true, meta: {} };
       },
     };
@@ -97,6 +100,20 @@ describe("listChanges tenant isolation (project_id-scoped)", () => {
     const scoped = await listChanges(db, logger, "acme", undefined, { projectId: "proj_new" });
 
     expect(scoped.success && scoped.data.map((c) => c.id)).toEqual(["chg_legacy"]);
+  });
+
+  it("applies the limit when one is given (bounds the response)", async () => {
+    const db = makeChangesD1([
+      row("c1", "acme", "proj_A"),
+      row("c2", "acme", "proj_A"),
+      row("c3", "acme", "proj_A"),
+    ]);
+
+    const capped = await listChanges(db, logger, "acme", undefined, {
+      projectId: "proj_A",
+      limit: 2,
+    });
+    expect(capped.success && capped.data).toHaveLength(2);
   });
 
   it("without a projectId, falls back to the legacy name-only match", async () => {
