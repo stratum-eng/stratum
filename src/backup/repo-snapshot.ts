@@ -140,6 +140,15 @@ export async function snapshotRepo(
 
   // Full history: a shallow clone would drop ancestors past depth 50, yielding a
   // pack that can't restore the repo to its true tip.
+  //
+  // Known trade-off: `maxBytes` is enforced by walkRepoObjects AFTER the clone,
+  // so an over-cap repo is loaded into MemoryFS before it is skipped. This is
+  // inherent to full-history backup — restorability requires the whole history,
+  // and the smart-HTTP fetch (isomorphic-git) gives no way to know a repo's size
+  // before fetching it, so there is no correctness-preserving pre-clone guard. A
+  // bounded/streaming fetch that aborts mid-clone would be the real fix (tracked
+  // as a follow-up); for now MAX_BACKUP_BYTES should be set well under the
+  // Worker's memory budget so a normal repo never approaches it.
   const clone = await cloneRepo(project.remote, token.data, logger, undefined, {
     fullHistory: true,
   });
