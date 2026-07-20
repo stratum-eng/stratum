@@ -128,7 +128,12 @@ export class MergeQueue extends DurableObject<Env> {
       // Concurrent invocation already merged this change; skip the redundant
       // provenance/metrics writes (the winner recorded them) so one logical merge
       // yields exactly one set of side effects.
-      if (!transitioned) return { success: true, commit, transitioned: false };
+      if (!transitioned) {
+        log.info("Change already merged by a concurrent invocation; skipping provenance/metrics", {
+          changeId,
+        });
+        return { success: true, commit, transitioned: false };
+      }
 
       const provenanceResult = await timer.measure("provenanceMs", () =>
         recordProvenance(this.env.DB, log, {
