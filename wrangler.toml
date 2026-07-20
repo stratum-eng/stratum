@@ -223,6 +223,10 @@ name = "EMAIL"
 
 [env.production.vars]
 POSTHOG_HOST = "https://app.posthog.com"
+# The /dev-login session backdoor is local-only. Declare it "false" explicitly
+# here (named envs don't inherit the top-level "true") so the route is provably
+# inert in production — and so wrangler stops warning about the missing override.
+DEV_LOGIN_ENABLED = "false"
 # RepoDO fast-forward path (ADR 004); default off until staging numbers justify it.
 REPO_DO_ENABLED = "false"
 # Production OAuth callbacks. The matching callback URLs must also be registered
@@ -328,6 +332,8 @@ name = "EMAIL"
 
 [env.staging.vars]
 POSTHOG_HOST = "https://app.posthog.com"
+# Local-only session backdoor; explicitly off on staging (see env.production.vars).
+DEV_LOGIN_ENABLED = "false"
 # RepoDO + R2 merge path (ADR 004). "true" on staging: workspace commits stage to
 # R2 and merges route through the fetch-free R2 path (cold path as fallback).
 REPO_DO_ENABLED = "true"
