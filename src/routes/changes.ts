@@ -126,6 +126,10 @@ function parseGitHubRepo(url: string): { owner: string; repo: string } | null {
 
 const MERGEABLE_STATUSES: Change["status"][] = ["approved", "accepted", "promoted"];
 
+/** Default + hard cap for the paginated changes listing (bounds the response). */
+const DEFAULT_CHANGES_PAGE = 100;
+const MAX_CHANGES_PAGE = 500;
+
 /**
  * Success response for endpoints that the change-detail UI posts to with plain HTML forms.
  * Browsers send a form content type; API/CLI/agent callers send JSON or no body at all,
@@ -512,7 +516,18 @@ app.get("/projects/:name/changes", async (c) => {
       ? (statusParam as Change["status"])
       : undefined;
 
-  const changesResult = await listChanges(c.env.DB, logger, projectName, status);
+  // Bound the response so a project with thousands of changes can't return them
+  // all in one payload. Client may request fewer via ?limit=, capped at the max.
+  const requested = Number(c.req.query("limit"));
+  const limit =
+    Number.isInteger(requested) && requested > 0
+      ? Math.min(requested, MAX_CHANGES_PAGE)
+      : DEFAULT_CHANGES_PAGE;
+
+  const changesResult = await listChanges(c.env.DB, logger, projectName, status, {
+    projectId: project.id,
+    limit,
+  });
   if (!changesResult.success) {
     logger.error("Failed to list changes", changesResult.error);
     return badRequest(changesResult.error.message);

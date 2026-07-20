@@ -690,7 +690,10 @@ describe("GET /api/projects/:name/changes", () => {
     expect(body.project).toBe("my-project");
     expect(body.changes).toHaveLength(1);
     expect(body.changes[0]?.id).toBe("chg_abc123");
-    expect(listChanges).toHaveBeenCalledWith(env.DB, expect.any(Object), "my-project", undefined);
+    expect(listChanges).toHaveBeenCalledWith(env.DB, expect.any(Object), "my-project", undefined, {
+      projectId: mockProject.id,
+      limit: 100,
+    });
   });
 
   it("filters by status when ?status= is provided", async () => {
@@ -703,7 +706,10 @@ describe("GET /api/projects/:name/changes", () => {
       env,
     );
     expect(res.status).toBe(200);
-    expect(listChanges).toHaveBeenCalledWith(env.DB, expect.any(Object), "my-project", "open");
+    expect(listChanges).toHaveBeenCalledWith(env.DB, expect.any(Object), "my-project", "open", {
+      projectId: mockProject.id,
+      limit: 100,
+    });
   });
 
   it("filters by promoted status when ?status= is provided", async () => {
@@ -717,7 +723,10 @@ describe("GET /api/projects/:name/changes", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(listChanges).toHaveBeenCalledWith(env.DB, expect.any(Object), "my-project", "promoted");
+    expect(listChanges).toHaveBeenCalledWith(env.DB, expect.any(Object), "my-project", "promoted", {
+      projectId: mockProject.id,
+      limit: 100,
+    });
   });
 
   it("returns 404 when project not found", async () => {
