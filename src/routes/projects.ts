@@ -977,8 +977,10 @@ app.get("/:namespace/:slug/provenance", async (c) => {
   const limitParam = c.req.query("limit");
   const limit = limitParam !== undefined ? Number(limitParam) : undefined;
 
-  // Use project ID for provenance lookup
-  const recordsResult = await listProvenance(c.env.DB, logger, project.id, limit);
+  // Scope provenance by the canonical project_id (name is the legacy fallback).
+  const recordsResult = await listProvenance(c.env.DB, logger, project.name, limit, {
+    projectId: project.id,
+  });
   if (!recordsResult.success) {
     logger.error("Failed to list provenance", recordsResult.error);
     return internalError(recordsResult.error.message);

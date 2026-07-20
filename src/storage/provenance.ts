@@ -166,11 +166,21 @@ export async function listProvenance(
   logger: Logger,
   project: string,
   limit = 50,
+  opts?: { projectId?: string },
 ): Promise<Result<ProvenanceRecord[], AppError>> {
   try {
+    // Scope by the canonical project_id when known, falling back to the free-form
+    // name only for legacy rows whose project_id wasn't backfilled. Matching purely
+    // on `project` would list a same-named project's provenance in ANOTHER namespace.
+    const scope = opts?.projectId
+      ? {
+          clause: "(project_id = ? OR (project_id IS NULL AND project = ?))",
+          binds: [opts.projectId, project],
+        }
+      : { clause: "project = ?", binds: [project] };
     const result = await db
-      .prepare("SELECT * FROM provenance WHERE project = ? ORDER BY merged_at DESC LIMIT ?")
-      .bind(project, limit)
+      .prepare(`SELECT * FROM provenance WHERE ${scope.clause} ORDER BY merged_at DESC LIMIT ?`)
+      .bind(...scope.binds, limit)
       .all<ProvenanceRow>();
 
     const records = result.results.map(rowToRecord);
