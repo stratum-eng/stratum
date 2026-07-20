@@ -28,6 +28,25 @@ async function mapBounded<T, R>(
   return out;
 }
 
+/**
+ * Every KV key name under a prefix, following the `list` cursor to exhaustion.
+ * KV `list` returns at most one page (~1000 keys); without the loop a namespace
+ * or project with more entries would silently drop everything past the first
+ * page. Callers then map over the full key set with a bounded fan-out.
+ */
+async function listAllKeyNames(kv: KVNamespace, prefix: string): Promise<string[]> {
+  const names: string[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await kv.list(cursor ? { prefix, cursor } : { prefix });
+    for (const key of page.keys) names.push(key.name);
+    if (page.list_complete) break;
+    cursor = page.cursor;
+    if (!cursor) break;
+  }
+  return names;
+}
+
 function parseEntry<T>(raw: string, key: string, logger: Logger): Result<T, AppError> {
   try {
     const parsed = JSON.parse(raw) as T;
@@ -232,20 +251,9 @@ export async function listProjects(
 ): Promise<Result<ProjectEntry[], AppError>> {
   logger.debug("Listing all projects");
   try {
-    // KV `list` returns at most one page (~1000 keys); loop the cursor to
-    // exhaustion so callers (getProjectById → authz, account deletion) never
-    // miss a project.
-    const keyNames: string[] = [];
-    let cursor: string | undefined;
-    for (;;) {
-      const page = await kv.list(
-        cursor ? { prefix: PROJECT_PREFIX, cursor } : { prefix: PROJECT_PREFIX },
-      );
-      for (const key of page.keys) keyNames.push(key.name);
-      if (page.list_complete) break;
-      cursor = page.cursor;
-      if (!cursor) break;
-    }
+    // Loop the list cursor to exhaustion so callers (getProjectById → authz,
+    // account deletion) never miss a project past the first ~1000-key page.
+    const keyNames = await listAllKeyNames(kv, PROJECT_PREFIX);
     const entries = await mapBounded(keyNames, KV_FANOUT_LIMIT, async (name) => {
       const raw = await kv.get(name);
       if (!raw) return null;
@@ -267,8 +275,9 @@ export async function listProjectsByNamespace(
 ): Promise<Result<ProjectEntry[], AppError>> {
   logger.debug("Listing projects by namespace", { namespace });
   try {
-    const result = await kv.list({ prefix: `${PROJECT_PREFIX}${namespace}:` });
-    const entries = await mapBounded(result.keys, KV_FANOUT_LIMIT, async ({ name }) => {
+    // Loop the cursor so a namespace with >1 page of projects isn't truncated.
+    const keyNames = await listAllKeyNames(kv, `${PROJECT_PREFIX}${namespace}:`);
+    const entries = await mapBounded(keyNames, KV_FANOUT_LIMIT, async (name) => {
       const raw = await kv.get(name);
       if (!raw) return null;
       const parsed = parseEntry<ProjectEntry>(raw, name, logger);
@@ -383,8 +392,9 @@ export async function listWorkspaces(
 ): Promise<Result<WorkspaceEntry[], AppError>> {
   logger.debug("Listing workspaces", { projectId });
   try {
-    const result = await kv.list({ prefix: `${WORKSPACE_PREFIX}${projectId}:` });
-    const entries = await mapBounded(result.keys, KV_FANOUT_LIMIT, async ({ name }) => {
+    // Loop the cursor so a project with >1 page of workspaces isn't truncated.
+    const keyNames = await listAllKeyNames(kv, `${WORKSPACE_PREFIX}${projectId}:`);
+    const entries = await mapBounded(keyNames, KV_FANOUT_LIMIT, async (name) => {
       const raw = await kv.get(name);
       if (!raw) return null;
       const parsed = parseEntry<WorkspaceEntry>(raw, name, logger);
