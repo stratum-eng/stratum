@@ -212,3 +212,38 @@ describe("autoCloseLinkedIssues", () => {
     expect(emittedEvents).toHaveLength(0);
   });
 });
+
+describe("issue tenant isolation (project_id-scoped reads)", () => {
+  it("does not return a same-named project's issue in another namespace", async () => {
+    const { db } = makeIssuesD1();
+    // Two projects share the name "acme" but have distinct canonical ids. Numbers
+    // are still name-sequenced (shared), so isolation must come from project_id.
+    await seedIssue(db, { project: "acme", projectId: "proj_A", title: "A's issue" });
+    await seedIssue(db, { project: "acme", projectId: "proj_B", title: "B's issue" });
+
+    const aOnly = await listIssues(db, mockLogger, "acme", undefined, { projectId: "proj_A" });
+    const bOnly = await listIssues(db, mockLogger, "acme", undefined, { projectId: "proj_B" });
+    expect(aOnly.success && aOnly.data.map((i) => i.title)).toEqual(["A's issue"]);
+    expect(bOnly.success && bOnly.data.map((i) => i.title)).toEqual(["B's issue"]);
+  });
+
+  it("getIssueByNumber scoped by project_id won't cross to a same-named tenant", async () => {
+    const { db } = makeIssuesD1();
+    await seedIssue(db, { project: "acme", projectId: "proj_A" }); // number 1
+    await seedIssue(db, { project: "acme", projectId: "proj_B" }); // number 2
+
+    const found = await getIssueByNumber(db, mockLogger, "acme", 1, { projectId: "proj_A" });
+    expect(found.success).toBe(true);
+    // Number 1 belongs to proj_A; proj_B must not see it.
+    const crossed = await getIssueByNumber(db, mockLogger, "acme", 1, { projectId: "proj_B" });
+    expect(crossed.success).toBe(false);
+  });
+
+  it("legacy rows with NULL project_id remain reachable via the name fallback", async () => {
+    const { db } = makeIssuesD1();
+    await seedIssue(db, { project: "legacy" }); // no projectId → project_id NULL
+
+    const found = await getIssueByNumber(db, mockLogger, "legacy", 1, { projectId: "proj_new" });
+    expect(found.success).toBe(true);
+  });
+});

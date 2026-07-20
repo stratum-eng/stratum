@@ -35,11 +35,22 @@ export function makeIssuesD1(): {
   const issues: IssueTableRow[] = [];
   const emittedEvents: OutboxRow[] = [];
 
+  // Mirror the storage predicate: match the canonical project_id, or fall back to
+  // the name only for legacy rows whose project_id is NULL.
+  const matchScope = (r: IssueTableRow, projectId: unknown, project: unknown) =>
+    r.project_id === projectId || (r.project_id === null && r.project === project);
+
   function applyUpdate(sql: string, bindings: unknown[]) {
-    // UPDATE issues SET <assignments> WHERE project = ? AND number = ?
-    const project = bindings[bindings.length - 2] as string;
+    // UPDATE issues SET <assignments> WHERE (project_id = ? OR (project_id IS NULL
+    // AND project = ?)) AND number = ?  — or the legacy name-only WHERE.
     const number = bindings[bindings.length - 1] as number;
-    const row = issues.find((r) => r.project === project && r.number === number);
+    const scoped = /PROJECT_ID = \? OR/i.test(sql);
+    const project = bindings[bindings.length - 2] as string;
+    const row = scoped
+      ? issues.find(
+          (r) => matchScope(r, bindings[bindings.length - 3], project) && r.number === number,
+        )
+      : issues.find((r) => r.project === project && r.number === number);
     if (!row) return;
 
     const assignmentsPart = sql.slice(sql.indexOf("SET") + 3, sql.indexOf("WHERE"));
@@ -122,6 +133,11 @@ export function makeIssuesD1(): {
           issues.push(row);
           return row as T;
         }
+        if (upper.includes("PROJECT_ID = ? OR") && upper.includes("AND NUMBER = ?")) {
+          return (issues.find(
+            (r) => matchScope(r, bindings[0], bindings[1]) && r.number === bindings[2],
+          ) ?? null) as T | null;
+        }
         if (upper.includes("FROM ISSUES WHERE PROJECT = ? AND NUMBER = ?")) {
           return (issues.find((r) => r.project === bindings[0] && r.number === bindings[1]) ??
             null) as T | null;
@@ -132,6 +148,13 @@ export function makeIssuesD1(): {
         let results: IssueTableRow[] = [];
         if (upper.includes("WHERE LINKED_CHANGE_ID = ? AND STATUS = 'OPEN'")) {
           results = issues.filter((r) => r.linked_change_id === bindings[0] && r.status === "open");
+        } else if (upper.includes("PROJECT_ID = ? OR")) {
+          const scoped = issues.filter((r) => matchScope(r, bindings[0], bindings[1]));
+          results = (
+            upper.includes("AND STATUS = ?")
+              ? scoped.filter((r) => r.status === bindings[2])
+              : scoped
+          ).sort((a, b) => b.number - a.number);
         } else if (upper.includes("WHERE PROJECT = ? AND STATUS = ?")) {
           results = issues
             .filter((r) => r.project === bindings[0] && r.status === bindings[1])

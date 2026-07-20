@@ -132,12 +132,23 @@ export async function getIssueByNumber(
   logger: Logger,
   project: string,
   number: number,
+  opts?: { projectId?: string },
 ): Promise<Result<Issue, NotFoundError | AppError>> {
   try {
-    const row = await db
-      .prepare("SELECT * FROM issues WHERE project = ? AND number = ?")
-      .bind(project, number)
-      .first<IssueRow>();
+    // Scope by the canonical project_id when known, falling back to the free-form
+    // name only for legacy rows whose project_id wasn't backfilled. Matching purely
+    // on `project` would return a same-named project's issue in ANOTHER namespace.
+    const row = opts?.projectId
+      ? await db
+          .prepare(
+            "SELECT * FROM issues WHERE (project_id = ? OR (project_id IS NULL AND project = ?)) AND number = ?",
+          )
+          .bind(opts.projectId, project, number)
+          .first<IssueRow>()
+      : await db
+          .prepare("SELECT * FROM issues WHERE project = ? AND number = ?")
+          .bind(project, number)
+          .first<IssueRow>();
     if (!row) {
       logger.debug("Issue not found", { project, number });
       return err(new NotFoundError("Issue", `${project}#${number}`));
@@ -155,16 +166,24 @@ export async function listIssues(
   logger: Logger,
   project: string,
   status?: IssueStatus,
+  opts?: { projectId?: string },
 ): Promise<Result<Issue[], AppError>> {
   try {
+    // project_id-first with a legacy name fallback (see getIssueByNumber).
+    const scope = opts?.projectId
+      ? {
+          clause: "(project_id = ? OR (project_id IS NULL AND project = ?))",
+          binds: [opts.projectId, project],
+        }
+      : { clause: "project = ?", binds: [project] };
     const result = status
       ? await db
-          .prepare("SELECT * FROM issues WHERE project = ? AND status = ? ORDER BY number DESC")
-          .bind(project, status)
+          .prepare(`SELECT * FROM issues WHERE ${scope.clause} AND status = ? ORDER BY number DESC`)
+          .bind(...scope.binds, status)
           .all<IssueRow>()
       : await db
-          .prepare("SELECT * FROM issues WHERE project = ? ORDER BY number DESC")
-          .bind(project)
+          .prepare(`SELECT * FROM issues WHERE ${scope.clause} ORDER BY number DESC`)
+          .bind(...scope.binds)
           .all<IssueRow>();
     return ok(result.results.map(rowToIssue));
   } catch (error) {
@@ -185,10 +204,12 @@ export async function updateIssue(
     status?: IssueStatus;
     linkedChangeId?: string | null;
     actorId: string;
+    projectId?: string;
   },
 ): Promise<Result<Issue, NotFoundError | AppError>> {
   try {
-    const existing = await getIssueByNumber(db, logger, project, number);
+    const scope = opts.projectId !== undefined ? { projectId: opts.projectId } : undefined;
+    const existing = await getIssueByNumber(db, logger, project, number, scope);
     if (!existing.success) return existing;
 
     const now = new Date().toISOString();
@@ -218,13 +239,25 @@ export async function updateIssue(
       }
     }
 
-    bindings.push(project, number);
-    await db
-      .prepare(`UPDATE issues SET ${assignments.join(", ")} WHERE project = ? AND number = ?`)
-      .bind(...bindings)
-      .run();
+    // Scope the write by project_id too, so a same-named project in another
+    // namespace can never be updated through this path.
+    if (scope) {
+      bindings.push(scope.projectId, project, number);
+      await db
+        .prepare(
+          `UPDATE issues SET ${assignments.join(", ")} WHERE (project_id = ? OR (project_id IS NULL AND project = ?)) AND number = ?`,
+        )
+        .bind(...bindings)
+        .run();
+    } else {
+      bindings.push(project, number);
+      await db
+        .prepare(`UPDATE issues SET ${assignments.join(", ")} WHERE project = ? AND number = ?`)
+        .bind(...bindings)
+        .run();
+    }
 
-    const updated = await getIssueByNumber(db, logger, project, number);
+    const updated = await getIssueByNumber(db, logger, project, number, scope);
     if (!updated.success) return updated;
     logger.info("Issue updated", { project, number });
     return updated;
