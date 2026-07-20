@@ -82,6 +82,32 @@ bucket for the expected `d1/`, `kv/`, and `repos/` blobs under that prefix.
 Restore is not automated end to end — it is a deliberate operation. Restore into a
 **fresh or staging instance first** and verify before pointing production at it.
 
+### Verify a backup is restorable (dry run)
+
+Before relying on a backup — and as a periodic rot check — confirm a run is
+actually restorable **without writing anything**:
+
+```
+GET /api/admin/restore/<runTs>/plan            # admin only
+```
+
+It reads and **decrypts** every blob under `<runTs>/` and checks each leg against
+the run manifest, returning a `plan`:
+
+- `complete` — the `_manifest.json` is present (the run did not crash partway).
+- `d1[]` — per table, `expectedRows` (from the manifest) vs `parsedRows` (from the
+  dump); `ok` is false on a missing/undecodable dump or a **row-count mismatch**
+  (silent truncation).
+- `kv` — project/workspace counts, cross-checked against the manifest.
+- `repos[]` — per repo, that the manifest parses (has a `tipSha`) and the `.pack`
+  is present and decodes.
+- `restorable` — true only when the run is complete and every leg is `ok`.
+
+A `restorable: false` (or a top-level decode error — usually a wrong
+`BACKUP_ENCRYPTION_SECRET`) means do **not** rely on that run; use an earlier
+complete run. This endpoint never mutates anything; the write/apply steps below
+are the deliberate, separately-run operation.
+
 ### D1
 
 For each `<runTs>/d1/<table>.ndjson`, use `restoreTable` (in `src/storage/d1-backup.ts`).

@@ -108,6 +108,44 @@ export async function exportTable(
   }
 }
 
+/**
+ * Parse + validate a table dump WITHOUT writing anything — the dry-run half of
+ * `restoreTable`. Confirms the blob decodes to text, the header names the
+ * expected table, and every row line is valid JSON, returning the row count so a
+ * caller can cross-check it against the manifest (catches silent truncation).
+ * A decrypt/decode failure surfaces upstream in `getBlob`; this sees plaintext.
+ */
+export function verifyTableDump(
+  table: string,
+  ndjson: Uint8Array,
+): Result<{ table: string; rowCount: number; columns: string[] }, AppError> {
+  try {
+    const text = new TextDecoder().decode(ndjson).trim();
+    if (text === "") return ok({ table, rowCount: 0, columns: [] });
+    const [headerLine, ...rowLines] = text.split("\n");
+    const header = JSON.parse(headerLine ?? "{}") as { __table?: string; __columns?: string[] };
+    if (header.__table !== table) {
+      return err(
+        new AppError(
+          `Dump table mismatch: expected ${table}, got ${header.__table}`,
+          "BACKUP_ERROR",
+          500,
+        ),
+      );
+    }
+    let rowCount = 0;
+    for (const line of rowLines) {
+      if (line.length === 0) continue;
+      JSON.parse(line); // throws on a corrupt/truncated row line
+      rowCount++;
+    }
+    return ok({ table, rowCount, columns: header.__columns ?? [] });
+  } catch (error) {
+    if (error instanceof AppError) return err(error);
+    return err(new AppError(`Failed to verify dump for ${table}`, "BACKUP_ERROR", 500));
+  }
+}
+
 const MAX_D1_BINDS = 100;
 
 /**
