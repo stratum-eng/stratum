@@ -78,8 +78,15 @@ function makeReviewsD1(): { db: D1Database; comments: CommentRow[]; reviews: Rev
       },
       first: async <T>() => {
         if (upper.includes("COUNT(*)")) {
+          // Honor the optional author-exclusion clause (bindings[1] = excludeUserId).
+          const excludeUserId = upper.includes("REVIEWER_ID !=")
+            ? (bindings[1] as string)
+            : undefined;
           const approvals = reviews.filter(
-            (r) => r.change_id === bindings[0] && r.verdict === "approve",
+            (r) =>
+              r.change_id === bindings[0] &&
+              r.verdict === "approve" &&
+              r.reviewer_id !== excludeUserId,
           ).length;
           return { approvals } as T;
         }
@@ -196,5 +203,28 @@ describe("change reviews", () => {
     expect(count.success).toBe(true);
     if (!count.success) return;
     expect(count.data).toBe(2);
+  });
+
+  it("excludes the change author's own approval from the count", async () => {
+    const { db } = makeReviewsD1();
+    // The author (user_1) approves their own change, plus one independent approval.
+    await submitReview(db, mockLogger, {
+      changeId: "chg_2",
+      reviewerId: "user_1",
+      verdict: "approve",
+    });
+    await submitReview(db, mockLogger, {
+      changeId: "chg_2",
+      reviewerId: "user_2",
+      verdict: "approve",
+    });
+
+    const withAuthor = await countApprovals(db, mockLogger, "chg_2");
+    expect(withAuthor.success && withAuthor.data).toBe(2);
+
+    // Excluding the author leaves only the independent approval — a lone writer
+    // can no longer self-approve past requiredApprovals: 1.
+    const excluded = await countApprovals(db, mockLogger, "chg_2", "user_1");
+    expect(excluded.success && excluded.data).toBe(1);
   });
 });
