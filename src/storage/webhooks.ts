@@ -177,16 +177,23 @@ export async function listWebhooks(
   db: D1Database,
   logger: Logger,
   project: string,
-  opts?: { activeOnly?: boolean },
+  opts?: { activeOnly?: boolean; projectId?: string },
 ): Promise<Result<Webhook[], AppError>> {
   try {
-    const result = opts?.activeOnly
+    const activeClause = opts?.activeOnly ? " AND active = 1" : "";
+    // When a canonical project_id is known (delivery path), match on it and fall
+    // back to the name only for legacy webhooks whose project_id wasn't backfilled.
+    // Matching purely on the free-form `project` name would deliver one tenant's
+    // events to a same-named project in ANOTHER namespace (cross-tenant leak).
+    const result = opts?.projectId
       ? await db
-          .prepare("SELECT * FROM webhooks WHERE project = ? AND active = 1")
-          .bind(project)
+          .prepare(
+            `SELECT * FROM webhooks WHERE (project_id = ? OR (project_id IS NULL AND project = ?))${activeClause}`,
+          )
+          .bind(opts.projectId, project)
           .all<WebhookRow>()
       : await db
-          .prepare("SELECT * FROM webhooks WHERE project = ?")
+          .prepare(`SELECT * FROM webhooks WHERE project = ?${activeClause}`)
           .bind(project)
           .all<WebhookRow>();
     return ok(result.results.map(rowToWebhook));

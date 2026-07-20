@@ -55,6 +55,33 @@ describe("webhook storage", () => {
     expect(result.data.active).toBe(true);
   });
 
+  it("scopes delivery lookup by project_id — no cross-tenant leak on a name collision", async () => {
+    const { db } = makeWebhooksD1();
+    // Two projects both named "api" in different namespaces, with distinct ids.
+    await createWebhook(db, mockLogger, {
+      project: "api",
+      projectId: "proj_alice",
+      url: "https://alice.example.com/hook",
+      createdBy: "alice",
+    });
+    await createWebhook(db, mockLogger, {
+      project: "api",
+      projectId: "proj_bob",
+      url: "https://bob.example.com/hook",
+      createdBy: "bob",
+    });
+
+    // Delivery for alice's project must only find alice's webhook.
+    const forAlice = await listWebhooks(db, mockLogger, "api", {
+      activeOnly: true,
+      projectId: "proj_alice",
+    });
+    expect(forAlice.success).toBe(true);
+    if (!forAlice.success) return;
+    expect(forAlice.data).toHaveLength(1);
+    expect(forAlice.data[0]?.url).toBe("https://alice.example.com/hook");
+  });
+
   it("lists, toggles, and deletes webhooks", async () => {
     const { db, deliveries } = makeWebhooksD1();
     const created = await createWebhook(db, mockLogger, {
