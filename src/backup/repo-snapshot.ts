@@ -138,7 +138,11 @@ export async function snapshotRepo(
   const token = await freshRepoToken(env.ARTIFACTS, project.remote, "read", logger);
   if (!token.success) return err(token.error);
 
-  const clone = await cloneRepo(project.remote, token.data, logger);
+  // Full history: a shallow clone would drop ancestors past depth 50, yielding a
+  // pack that can't restore the repo to its true tip.
+  const clone = await cloneRepo(project.remote, token.data, logger, undefined, {
+    fullHistory: true,
+  });
   if (!clone.success) return err(clone.error);
 
   const walk = await walkRepoObjects(clone.data.fs, clone.data.dir, maxBytes, logger);

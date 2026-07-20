@@ -318,8 +318,9 @@ export async function cloneRepo(
   token: string,
   logger: Logger,
   httpClient: HttpClient = http,
+  opts: { fullHistory?: boolean } = {},
 ): Promise<Result<{ fs: NodeFS; dir: string }, AppError>> {
-  logger.debug("Cloning repository", { remote });
+  logger.debug("Cloning repository", { remote, fullHistory: opts.fullHistory ?? false });
 
   const fs = new MemoryFS().toNodeFS();
   const cloneResult = await fromPromise(
@@ -330,7 +331,11 @@ export async function cloneRepo(
       url: remote,
       ref: "main",
       singleBranch: true,
-      depth: 50,
+      // Merges only need recent history (fast shallow clone). Backup needs the FULL
+      // reachable history so the resulting pack is reachability-closed and restores
+      // to the true tip — a 50-commit shallow clone silently drops older ancestors,
+      // producing a snapshot that can't be restored past commit 50.
+      ...(opts.fullHistory ? {} : { depth: 50 }),
       onAuth: makeAuth(token),
     }),
   );
