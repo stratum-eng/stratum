@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { getChange, markChangeMerged } from "../storage/changes";
+import { getChange, markChangeMerged, mergeTransitionOpts } from "../storage/changes";
 import { isTargetDeleting } from "../storage/deletion";
 import { blobObject, commitObject, treeObject } from "../storage/git-objects";
 import {
@@ -261,18 +261,23 @@ export class RepoDO extends DurableObject<Env> {
     // predicts the fast-forward correctly instead of racing on a stale head.
     await this.setHead(result.commit);
 
-    const updateResult = await markChangeMerged(this.env.DB, log, changeId, {
-      ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
-      ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
-      ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
-      mergedAt: new Date().toISOString(),
-    });
+    const updateResult = await markChangeMerged(
+      this.env.DB,
+      log,
+      changeId,
+      mergeTransitionOpts(change, new Date().toISOString()),
+    );
     if (!updateResult.success) return { success: false, error: updateResult.error.message };
     const { transitioned } = updateResult.data;
     // A concurrent invocation already merged this change (interleaved before our
     // CAS). The winner recorded provenance and GC'd the staged tree; skip both so
     // a single logical merge yields exactly one set of side effects.
-    if (!transitioned) return { success: true, commit: result.commit, transitioned: false };
+    if (!transitioned) {
+      log.info("Change already merged by a concurrent invocation; skipping provenance", {
+        changeId,
+      });
+      return { success: true, commit: result.commit, transitioned: false };
+    }
 
     // The commit is already durable; provenance is bookkeeping — log a failure for
     // observability but don't fail the (successful) merge.
@@ -503,12 +508,12 @@ export class RepoDO extends DurableObject<Env> {
       await timer.measure("refAdvanceMs", () => this.setHead(mergedCommit));
 
       const updateResult = await timer.measure("d1UpdateMs", () =>
-        markChangeMerged(this.env.DB, log, changeId, {
-          ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
-          ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
-          ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
-          mergedAt: new Date().toISOString(),
-        }),
+        markChangeMerged(
+          this.env.DB,
+          log,
+          changeId,
+          mergeTransitionOpts(change, new Date().toISOString()),
+        ),
       );
       if (!updateResult.success) {
         return { success: false, error: updateResult.error.message };
@@ -517,6 +522,9 @@ export class RepoDO extends DurableObject<Env> {
       // Concurrent invocation already merged this change; skip the redundant
       // provenance/metrics writes (the winner recorded them) — see mergeViaR2.
       if (!transitioned) {
+        log.info("Change already merged by a concurrent invocation; skipping provenance/metrics", {
+          changeId,
+        });
         return { success: true, commit: mergedCommit, transitioned: false };
       }
 

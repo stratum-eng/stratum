@@ -353,6 +353,24 @@ export async function updateChangeStatus(
 }
 
 /**
+ * Build the `markChangeMerged` options that carry a change's eval result through
+ * to the merged row. Shared by all four merge call sites (cold route, merge
+ * queue, and both RepoDO paths) so a new eval field is added in exactly one
+ * place, not four.
+ */
+export function mergeTransitionOpts(
+  change: Pick<Change, "evalScore" | "evalPassed" | "evalReason">,
+  mergedAt: string,
+): { evalScore?: number; evalPassed?: boolean; evalReason?: string; mergedAt: string } {
+  return {
+    ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+    ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
+    ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
+    mergedAt,
+  };
+}
+
+/**
  * Transition a change to `merged` as a single atomic compare-and-swap:
  * `UPDATE ... WHERE id = ? AND status != 'merged'`. Returns
  * `{ transitioned: false }` when the row was already `merged` — i.e. a concurrent

@@ -22,6 +22,7 @@ import {
   getChangesByIds,
   listChanges,
   markChangeMerged,
+  mergeTransitionOpts,
   updateChangeStatus,
 } from "../storage/changes";
 import { type CostSample, getChangeCostSummary, recordCosts } from "../storage/costs";
@@ -748,26 +749,40 @@ app.post("/changes/:id/merge", async (c) => {
       return badRequest(result.error ?? "Merge failed");
     }
 
-    // Emit only when this request's merge actually performed the transition. A
-    // concurrent request (or interleaved DO invocation) that found the change
-    // already merged returns `transitioned: false`, so we don't double-fire
-    // change.merged (which would double-deliver webhooks and re-run issue
-    // auto-close). Paths predating the CAS leave `transitioned` undefined → emit.
-    if (result.transitioned !== false) {
-      await emitEvent(
-        c.env.DB,
-        c.env.EVENTS_QUEUE,
+    // A concurrent request (or interleaved DO invocation) that found the change
+    // already merged returns `transitioned: false`. Skip ALL post-merge side
+    // effects for it — the change.merged event, the forced-merge audit, and the
+    // post-merge policy check (which can auto-revert) — so a single logical merge
+    // fires exactly one set of side effects. The winning request runs them below.
+    if (result.transitioned === false) {
+      logger.info(
+        "Change already merged by a concurrent request; skipping post-merge side effects",
         {
-          type: "change.merged",
-          project: change.project,
           changeId: id,
-          commit: result.commit ?? "",
         },
-        { type: "user", id: userId },
-        logger,
-        change.projectId ?? project.id,
       );
+      return okOrFormRedirect(c, id, {
+        merged: true,
+        changeId: id,
+        project: change.project,
+        workspace: change.workspace,
+        commit: result.commit,
+      });
     }
+
+    await emitEvent(
+      c.env.DB,
+      c.env.EVENTS_QUEUE,
+      {
+        type: "change.merged",
+        project: change.project,
+        changeId: id,
+        commit: result.commit ?? "",
+      },
+      { type: "user", id: userId },
+      logger,
+      change.projectId ?? project.id,
+    );
 
     logger.info("Change merged via queue", {
       changeId: id,
@@ -878,12 +893,12 @@ app.post("/changes/:id/merge", async (c) => {
   const commit = mergeResult.data;
 
   const mergedAt = new Date().toISOString();
-  const updateResult = await markChangeMerged(c.env.DB, logger, id, {
-    ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
-    ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
-    ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
-    mergedAt,
-  });
+  const updateResult = await markChangeMerged(
+    c.env.DB,
+    logger,
+    id,
+    mergeTransitionOpts(change, mergedAt),
+  );
   if (!updateResult.success) {
     logger.error("Failed to update change status to merged", updateResult.error);
     return badRequest(updateResult.error.message);

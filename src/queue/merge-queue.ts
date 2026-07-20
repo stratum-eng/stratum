@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { getChange, markChangeMerged } from "../storage/changes";
+import { getChange, markChangeMerged, mergeTransitionOpts } from "../storage/changes";
 import { isTargetDeleting } from "../storage/deletion";
 import { freshRepoToken, mergeWorkspaceIntoProject } from "../storage/git-ops";
 import { commitPhasesFromSpans, recordCommitMetrics } from "../storage/metrics";
@@ -113,12 +113,12 @@ export class MergeQueue extends DurableObject<Env> {
       const commit = commitResult.data;
 
       const updateResult = await timer.measure("d1UpdateMs", () =>
-        markChangeMerged(this.env.DB, log, changeId, {
-          ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
-          ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
-          ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
-          mergedAt: new Date().toISOString(),
-        }),
+        markChangeMerged(
+          this.env.DB,
+          log,
+          changeId,
+          mergeTransitionOpts(change, new Date().toISOString()),
+        ),
       );
 
       if (!updateResult.success) {

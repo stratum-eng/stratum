@@ -12,6 +12,12 @@ vi.mock("../src/storage/changes", () => ({
   updateChangeStatus: vi.fn(async () => ({ success: true, data: undefined })),
   // Default: this request won the transition, so the merge path emits + records.
   markChangeMerged: vi.fn(async () => ({ success: true, data: { transitioned: true } })),
+  mergeTransitionOpts: (change: { evalScore?: number; evalPassed?: boolean; evalReason?: string }, mergedAt: string) => ({
+    ...(change?.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+    ...(change?.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
+    ...(change?.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
+    mergedAt,
+  }),
 }));
 
 vi.mock("../src/storage/git-ops", async (importActual) => {
