@@ -69,9 +69,13 @@ describe("session hashing at rest", () => {
     expect(got.success && got.data.userId).toBe("user_1");
     expect(got.success && got.data.id).toBe(rawId);
 
-    // A stale plaintext id (as if read from an old backup) does NOT resolve as-is.
-    const asIfPlaintextLeak = await getSession(db, await hashToken(rawId), log);
-    expect(asIfPlaintextLeak.success).toBe(false);
+    // Migration behavior: a LEGACY row keyed by the raw plaintext id (as written
+    // before hashing-at-rest) must no longer resolve — getSession hashes the
+    // incoming id, so the plaintext-keyed row is unreachable.
+    const legacyRawId = "sess_legacy_plaintext_0000000000";
+    rows.set(legacyRawId, { user_id: "user_legacy", expires_at: "2099-01-01T00:00:00.000Z" });
+    const legacyLookup = await getSession(db, legacyRawId, log);
+    expect(legacyLookup.success).toBe(false);
   });
 });
 

@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { admitUser, betaGateEnabled, validateInviteCode } from "../beta/gate";
 import { getInviteCodesEmail, getMagicLinkEmail } from "../email/templates";
+import { enforceSameOrigin } from "../middleware/csrf";
 import { recordAudit } from "../storage/audit";
 import { consumeMagicLink, createMagicLink } from "../storage/magic-links";
 import { createSession } from "../storage/sessions";
@@ -650,6 +651,15 @@ app.post("/verify", async (c) => {
     path: c.req.path,
     method: c.req.method,
   });
+
+  // This endpoint is unauthenticated (it MINTS the session), so csrfMiddleware —
+  // which only guards session-cookie auth — skips it. Enforce same-origin here,
+  // BEFORE consuming the token, so a cross-site auto-submitting form can't POST an
+  // attacker's magic-link token and log a victim into the attacker's account
+  // (login CSRF). Rejecting before consume leaves the token usable for the real
+  // same-origin flow.
+  const csrf = enforceSameOrigin(c, logger);
+  if (csrf) return csrf;
 
   const form = await c.req.parseBody();
   const token = typeof form.token === "string" ? form.token : undefined;

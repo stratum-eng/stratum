@@ -66,20 +66,29 @@ export async function getSession(
   db: D1Database,
   id: string,
   logger: Logger,
-): Promise<Result<Session, NotFoundError>> {
+): Promise<Result<Session, NotFoundError | AppError>> {
   logger.debug("Fetching session");
-  const row = await db
-    .prepare("SELECT id, user_id, expires_at FROM sessions WHERE id = ?")
-    .bind(await hashToken(id))
-    .first<SessionRow>();
+  try {
+    const row = await db
+      .prepare("SELECT id, user_id, expires_at FROM sessions WHERE id = ?")
+      .bind(await hashToken(id))
+      .first<SessionRow>();
 
-  if (!row) {
-    return err(new NotFoundError("Session", id));
+    // A missing row is expected (invalid/expired cookie); return NotFound without
+    // the raw id so an unauthenticated bearer value never lands in a log.
+    if (!row) {
+      return err(new NotFoundError("Session", "(hashed)"));
+    }
+
+    // Return the caller's raw id (the row's id is the hash) so downstream refresh/
+    // isCurrent comparisons against the cookie keep working.
+    return ok({ id, userId: row.user_id, expiresAt: row.expires_at });
+  } catch (error) {
+    // hashToken or the D1 read can reject; surface it as a Result so callers never
+    // get a thrown error instead of Result<Session, …>.
+    logger.error("Failed to fetch session", error instanceof Error ? error : undefined);
+    return err(new AppError("Failed to fetch session", "STORAGE_ERROR", 500));
   }
-
-  // Return the caller's raw id (the row's id is the hash) so downstream refresh/
-  // isCurrent comparisons against the cookie keep working.
-  return ok({ id, userId: row.user_id, expiresAt: row.expires_at });
 }
 
 export async function deleteSession(
@@ -97,21 +106,19 @@ export async function deleteSession(
 
     const deleted = (result.meta?.changes ?? 0) > 0;
 
+    // Never log the raw id — it is the bearer cookie; userId is enough to trace.
     if (deleted) {
-      logger.info("Session deleted", { sessionId: id, userId });
+      logger.info("Session deleted", { userId });
     } else {
-      logger.warn("Session not found or not owned by user", { sessionId: id, userId });
+      logger.warn("Session not found or not owned by user", { userId });
     }
 
     return ok(deleted);
   } catch (error) {
     logger.error("Failed to delete session", error instanceof Error ? error : undefined, {
-      id,
       userId,
     });
-    return err(
-      new AppError(`Failed to delete session '${id}'`, "STORAGE_ERROR", 500, { sessionId: id }),
-    );
+    return err(new AppError("Failed to delete session", "STORAGE_ERROR", 500, { userId }));
   }
 }
 
@@ -154,7 +161,8 @@ export async function refreshSession(
   rememberMe: boolean,
   logger: Logger,
 ): Promise<Result<Session, AppError | NotFoundError>> {
-  logger.debug("Refreshing session", { id, rememberMe });
+  // Never log the raw id (the bearer cookie).
+  logger.debug("Refreshing session", { rememberMe });
 
   // First check if session exists and is valid
   const sessionResult = await getSession(db, id, logger);
@@ -168,8 +176,10 @@ export async function refreshSession(
 
   // Don't refresh expired sessions
   if (expiresAt < now) {
-    logger.warn("Attempted to refresh expired session", { sessionId: id });
-    return err(new AppError("Session has expired", "SESSION_EXPIRED", 401, { sessionId: id }));
+    logger.warn("Attempted to refresh expired session", { userId: session.userId });
+    return err(
+      new AppError("Session has expired", "SESSION_EXPIRED", 401, { userId: session.userId }),
+    );
   }
 
   try {
@@ -185,9 +195,11 @@ export async function refreshSession(
     logger.info("Session refreshed", { newExpiresAt, rememberMe });
     return ok({ ...session, expiresAt: newExpiresAt });
   } catch (error) {
-    logger.error("Failed to refresh session", error instanceof Error ? error : undefined, { id });
+    logger.error("Failed to refresh session", error instanceof Error ? error : undefined, {
+      userId: session.userId,
+    });
     return err(
-      new AppError(`Failed to refresh session '${id}'`, "STORAGE_ERROR", 500, { sessionId: id }),
+      new AppError("Failed to refresh session", "STORAGE_ERROR", 500, { userId: session.userId }),
     );
   }
 }

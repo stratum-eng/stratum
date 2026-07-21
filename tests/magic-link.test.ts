@@ -240,7 +240,10 @@ describe("Magic Link Authentication", () => {
       // only renders a same-origin confirm page — login-CSRF protection).
       const body = new FormData();
       body.append("token", "invalid-token");
-      const res = await emailAuthRouter.fetch(request("/verify", { method: "POST", body }), env);
+      const res = await emailAuthRouter.fetch(
+        request("/verify", { method: "POST", body, headers: { Origin: "http://localhost" } }),
+        env,
+      );
 
       expect(res.status).toBe(302);
       expect(res.headers.get("location")).toContain("error=link_expired");
@@ -256,7 +259,10 @@ describe("Magic Link Authentication", () => {
 
       const body = new FormData();
       body.append("token", "valid-token-123");
-      const res = await emailAuthRouter.fetch(request("/verify", { method: "POST", body }), env);
+      const res = await emailAuthRouter.fetch(
+        request("/verify", { method: "POST", body, headers: { Origin: "http://localhost" } }),
+        env,
+      );
 
       // The test will fail because user doesn't exist in mocked DB
       // But it validates the token was found and processed
