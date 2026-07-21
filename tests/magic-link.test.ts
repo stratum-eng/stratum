@@ -236,8 +236,14 @@ describe("Magic Link Authentication", () => {
     });
 
     it("should reject invalid token", async () => {
-      // No token stored in KV, so it will return null
-      const res = await emailAuthRouter.fetch(request("/verify?token=invalid-token"), env);
+      // No token stored, so consume returns null. Verify is now a POST (the GET
+      // only renders a same-origin confirm page — login-CSRF protection).
+      const body = new FormData();
+      body.append("token", "invalid-token");
+      const res = await emailAuthRouter.fetch(
+        request("/verify", { method: "POST", body, headers: { Origin: "http://localhost" } }),
+        env,
+      );
 
       expect(res.status).toBe(302);
       expect(res.headers.get("location")).toContain("error=link_expired");
@@ -251,7 +257,12 @@ describe("Magic Link Authentication", () => {
         createdAt: Date.now(),
       });
 
-      const res = await emailAuthRouter.fetch(request("/verify?token=valid-token-123"), env);
+      const body = new FormData();
+      body.append("token", "valid-token-123");
+      const res = await emailAuthRouter.fetch(
+        request("/verify", { method: "POST", body, headers: { Origin: "http://localhost" } }),
+        env,
+      );
 
       // The test will fail because user doesn't exist in mocked DB
       // But it validates the token was found and processed

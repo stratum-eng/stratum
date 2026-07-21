@@ -1,7 +1,13 @@
+import { hashToken } from "../utils/crypto";
 import { AppError, NotFoundError } from "../utils/errors";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+
+// Sessions are stored HASHED at rest: the `id` column holds hashToken(rawId), and
+// the raw id is only ever held by the client cookie. A read-only leak of the
+// sessions table (SQLi read, a backup, logs) therefore yields no replayable
+// credential — matching how user/agent/magic-link tokens are stored.
 
 export interface Session {
   id: string;
@@ -38,10 +44,11 @@ export async function createSession(
 
     await db
       .prepare("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)")
-      .bind(id, userId, expiresAt)
+      .bind(await hashToken(id), userId, expiresAt)
       .run();
 
-    logger.info("Session created", { sessionId: id, userId, rememberMe });
+    logger.info("Session created", { userId, rememberMe });
+    // Return the RAW id — it becomes the cookie; only its hash is persisted.
     return ok({ id, userId, expiresAt });
   } catch (error) {
     logger.error("Failed to create session", error instanceof Error ? error : undefined, {
@@ -59,18 +66,29 @@ export async function getSession(
   db: D1Database,
   id: string,
   logger: Logger,
-): Promise<Result<Session, NotFoundError>> {
-  logger.debug("Fetching session", { id });
-  const row = await db
-    .prepare("SELECT id, user_id, expires_at FROM sessions WHERE id = ?")
-    .bind(id)
-    .first<SessionRow>();
+): Promise<Result<Session, NotFoundError | AppError>> {
+  logger.debug("Fetching session");
+  try {
+    const row = await db
+      .prepare("SELECT id, user_id, expires_at FROM sessions WHERE id = ?")
+      .bind(await hashToken(id))
+      .first<SessionRow>();
 
-  if (!row) {
-    return err(new NotFoundError("Session", id));
+    // A missing row is expected (invalid/expired cookie); return NotFound without
+    // the raw id so an unauthenticated bearer value never lands in a log.
+    if (!row) {
+      return err(new NotFoundError("Session", "(hashed)"));
+    }
+
+    // Return the caller's raw id (the row's id is the hash) so downstream refresh/
+    // isCurrent comparisons against the cookie keep working.
+    return ok({ id, userId: row.user_id, expiresAt: row.expires_at });
+  } catch (error) {
+    // hashToken or the D1 read can reject; surface it as a Result so callers never
+    // get a thrown error instead of Result<Session, …>.
+    logger.error("Failed to fetch session", error instanceof Error ? error : undefined);
+    return err(new AppError("Failed to fetch session", "STORAGE_ERROR", 500));
   }
-
-  return ok(rowToSession(row));
 }
 
 export async function deleteSession(
@@ -79,30 +97,57 @@ export async function deleteSession(
   userId: string,
   logger: Logger,
 ): Promise<Result<boolean, AppError>> {
-  logger.debug("Deleting session", { id, userId });
+  logger.debug("Deleting session", { userId });
   try {
     const result = await db
       .prepare("DELETE FROM sessions WHERE id = ? AND user_id = ?")
-      .bind(id, userId)
+      .bind(await hashToken(id), userId)
       .run();
 
     const deleted = (result.meta?.changes ?? 0) > 0;
 
+    // Never log the raw id — it is the bearer cookie; userId is enough to trace.
     if (deleted) {
-      logger.info("Session deleted", { sessionId: id, userId });
+      logger.info("Session deleted", { userId });
     } else {
-      logger.warn("Session not found or not owned by user", { sessionId: id, userId });
+      logger.warn("Session not found or not owned by user", { userId });
     }
 
     return ok(deleted);
   } catch (error) {
     logger.error("Failed to delete session", error instanceof Error ? error : undefined, {
-      id,
       userId,
     });
-    return err(
-      new AppError(`Failed to delete session '${id}'`, "STORAGE_ERROR", 500, { sessionId: id }),
+    return err(new AppError("Failed to delete session", "STORAGE_ERROR", 500, { userId }));
+  }
+}
+
+/**
+ * Revoke a session by its STORED id (the hash surfaced by getUserSessions), NOT a
+ * raw cookie value — so it must not be re-hashed. Used by the "log out of this
+ * device" list UI, where the client only ever sees the opaque hashed handle.
+ */
+export async function deleteSessionByStoredId(
+  db: D1Database,
+  storedId: string,
+  userId: string,
+  logger: Logger,
+): Promise<Result<boolean, AppError>> {
+  try {
+    const result = await db
+      .prepare("DELETE FROM sessions WHERE id = ? AND user_id = ?")
+      .bind(storedId, userId)
+      .run();
+    return ok((result.meta?.changes ?? 0) > 0);
+  } catch (error) {
+    logger.error(
+      "Failed to delete session by stored id",
+      error instanceof Error ? error : undefined,
+      {
+        userId,
+      },
     );
+    return err(new AppError("Failed to delete session", "STORAGE_ERROR", 500, { userId }));
   }
 }
 
@@ -116,7 +161,8 @@ export async function refreshSession(
   rememberMe: boolean,
   logger: Logger,
 ): Promise<Result<Session, AppError | NotFoundError>> {
-  logger.debug("Refreshing session", { id, rememberMe });
+  // Never log the raw id (the bearer cookie).
+  logger.debug("Refreshing session", { rememberMe });
 
   // First check if session exists and is valid
   const sessionResult = await getSession(db, id, logger);
@@ -130,8 +176,10 @@ export async function refreshSession(
 
   // Don't refresh expired sessions
   if (expiresAt < now) {
-    logger.warn("Attempted to refresh expired session", { sessionId: id });
-    return err(new AppError("Session has expired", "SESSION_EXPIRED", 401, { sessionId: id }));
+    logger.warn("Attempted to refresh expired session", { userId: session.userId });
+    return err(
+      new AppError("Session has expired", "SESSION_EXPIRED", 401, { userId: session.userId }),
+    );
   }
 
   try {
@@ -141,15 +189,17 @@ export async function refreshSession(
 
     await db
       .prepare("UPDATE sessions SET expires_at = ? WHERE id = ?")
-      .bind(newExpiresAt, id)
+      .bind(newExpiresAt, await hashToken(id))
       .run();
 
-    logger.info("Session refreshed", { sessionId: id, newExpiresAt, rememberMe });
+    logger.info("Session refreshed", { newExpiresAt, rememberMe });
     return ok({ ...session, expiresAt: newExpiresAt });
   } catch (error) {
-    logger.error("Failed to refresh session", error instanceof Error ? error : undefined, { id });
+    logger.error("Failed to refresh session", error instanceof Error ? error : undefined, {
+      userId: session.userId,
+    });
     return err(
-      new AppError(`Failed to refresh session '${id}'`, "STORAGE_ERROR", 500, { sessionId: id }),
+      new AppError("Failed to refresh session", "STORAGE_ERROR", 500, { userId: session.userId }),
     );
   }
 }

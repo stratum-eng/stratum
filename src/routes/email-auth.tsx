@@ -3,11 +3,13 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { admitUser, betaGateEnabled, validateInviteCode } from "../beta/gate";
 import { getInviteCodesEmail, getMagicLinkEmail } from "../email/templates";
+import { enforceSameOrigin } from "../middleware/csrf";
 import { recordAudit } from "../storage/audit";
 import { consumeMagicLink, createMagicLink } from "../storage/magic-links";
 import { createSession } from "../storage/sessions";
 import { createUser, getUserByEmail, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
+import { escapeHtml } from "../utils/html";
 import { type Logger, createLogger } from "../utils/logger";
 import { validateUsername } from "../utils/username-validation";
 import { validateEmail } from "../utils/validation";
@@ -617,15 +619,50 @@ app.post("/send", async (c) => {
   }
 });
 
-// GET /auth/email/verify - Verify magic link and handle signup/login
-app.get("/verify", async (c) => {
+// GET /auth/email/verify — render a same-origin confirm page rather than logging
+// in on the GET itself. A raw GET verify is login-CSRF: an attacker embeds their
+// own magic link in an <img>/<a> and the victim's browser silently gets a session
+// for the ATTACKER's account. Requiring an explicit same-origin POST (below) means
+// the sign-in is a deliberate action, not a drive-by, and cross-site auto-submits
+// are blocked by the CSRF middleware's Origin check.
+app.get("/verify", (c) => {
+  const token = c.req.query("token");
+  if (!token) {
+    return emailAuthRedirect(c, "error", "invalid_link");
+  }
+  const safeToken = escapeHtml(token);
+  return c.html(
+    `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Complete sign-in</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;text-align:center">
+<h1 style="font-size:1.25rem">Complete your sign-in</h1>
+<p style="color:#555">Click below to finish signing in to Stratum.</p>
+<form method="POST" action="/auth/email/verify">
+<input type="hidden" name="token" value="${safeToken}">
+<button type="submit" style="padding:0.6rem 1.4rem;font-size:1rem;border:0;border-radius:0.5rem;background:#111;color:#fff;cursor:pointer">Continue</button>
+</form>
+</body></html>`,
+  );
+});
+
+// POST /auth/email/verify - consume the magic link and handle signup/login
+app.post("/verify", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
     path: c.req.path,
     method: c.req.method,
   });
 
-  const token = c.req.query("token");
+  // This endpoint is unauthenticated (it MINTS the session), so csrfMiddleware —
+  // which only guards session-cookie auth — skips it. Enforce same-origin here,
+  // BEFORE consuming the token, so a cross-site auto-submitting form can't POST an
+  // attacker's magic-link token and log a victim into the attacker's account
+  // (login CSRF). Rejecting before consume leaves the token usable for the real
+  // same-origin flow.
+  const csrf = enforceSameOrigin(c, logger);
+  if (csrf) return csrf;
+
+  const form = await c.req.parseBody();
+  const token = typeof form.token === "string" ? form.token : undefined;
 
   if (!token) {
     logger.warn("Missing token in verify request");
