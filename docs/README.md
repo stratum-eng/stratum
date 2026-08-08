@@ -7,7 +7,8 @@ Welcome to the Stratum documentation. This directory contains comprehensive guid
 ```
 docs/
 ├── README.md                           # This file
-├── PIVOT_SUMMARY.md                    # Strategic pivot explanation
+├── CURRENT_CAPABILITIES.md             # Authoritative shipped-feature state
+├── REMAINING_WORK.md                   # Known gaps / open work
 ├── api/                                # API Documentation
 │   ├── openapi.yml                     # OpenAPI 3.1.0 specification
 │   ├── authentication.md               # Authentication methods
@@ -37,7 +38,9 @@ docs/
 ├── adr/                                # Architecture Decision Records
 │   ├── 001-namespace-support.md
 │   ├── 002-queue-based-imports.md
-│   └── 003-d1-for-import-state.md
+│   ├── 003-d1-for-import-state.md
+│   ├── 004-high-frequency-agent-commits.md
+│   └── 005-git-smart-http-proxy.md
 └── archive/                            # Historical documents
     └── README.md                       # Archive index
 ```
@@ -48,7 +51,8 @@ docs/
 
 **Current Priorities & Roadmap:**
 - [TODO.md](/TODO.md) - Current priorities and what's being worked on
-- [PIVOT_SUMMARY.md](/docs/PIVOT_SUMMARY.md) - Strategic direction and adoption model
+- [CURRENT_CAPABILITIES.md](/docs/CURRENT_CAPABILITIES.md) - Authoritative shipped-feature state
+- [REMAINING_WORK.md](/docs/REMAINING_WORK.md) - Known gaps and open work
 
 ### For Users
 
@@ -93,33 +97,25 @@ docs/
 - [ADR 001: Namespace Support](adr/001-namespace-support.md)
 - [ADR 002: Queue-Based Imports](adr/002-queue-based-imports.md)
 - [ADR 003: D1 for Import State](adr/003-d1-for-import-state.md)
+- [ADR 004: High-Frequency Agent Commits](adr/004-high-frequency-agent-commits.md)
+- [ADR 005: Git Smart-HTTP Proxy](adr/005-git-smart-http-proxy.md)
 
 **Historical Reference:**
 - [Archived Documents](archive/README.md) - Code reviews, audits, etc.
 
 ## Documentation Status
 
-| Document | Status | Priority | Last Updated |
-|----------|--------|----------|--------------|
-| TODO.md (Priorities) | ✅ Complete | Critical | 2026-05-05 |
-| PIVOT_SUMMARY.md | ✅ Complete | Critical | 2026-05-05 |
-| API OpenAPI Spec | ✅ Complete | High | 2024-01-15 |
-| API Authentication | ✅ Complete | High | 2024-01-15 |
-| API Endpoints | ✅ Complete | High | 2024-01-15 |
-| API Errors | ✅ Complete | Medium | 2024-01-15 |
-| User Guide - Getting Started | ✅ Complete | High | 2024-01-15 |
-| User Guide - Importing | ✅ Complete | High | 2024-01-15 |
-| User Guide - Troubleshooting | ✅ Complete | Medium | 2024-01-15 |
-| User Guide - FAQ | ✅ Complete | Medium | 2024-01-15 |
-| Developer - Architecture | ✅ Complete | High | 2026-05-05 |
-| Developer - Local Setup | ✅ Complete | High | 2024-01-15 |
-| Developer - Database | ✅ Complete | High | 2024-01-15 |
-| Developer - Queues | ✅ Complete | Medium | 2024-01-15 |
-| Developer - Testing | ✅ Complete | Medium | 2024-01-15 |
-| Developer - Deployment | ✅ Complete | Medium | 2024-01-15 |
-| ADRs | ✅ Complete | Low | 2024-01-15 |
+For the authoritative, current picture of what's shipped, see
+[CURRENT_CAPABILITIES.md](CURRENT_CAPABILITIES.md) and open gaps in
+[REMAINING_WORK.md](REMAINING_WORK.md). Notable doc caveats to be aware of:
 
-**Legend:** ✅ Complete | 🚧 In Progress | 📋 Planned
+- **API reference is partial.** `api/openapi.yml` currently specifies only a
+  handful of endpoints; several shipped features (issues, reviews, webhooks,
+  git-over-HTTP) are not yet documented there. Treat the CLI (`cli/`) and source
+  as the complete surface until the spec is expanded.
+
+(A per-file "last updated" table was removed — it had drifted and overstated
+completeness; git history is the source of truth for recency.)
 
 ## Contributing to Documentation
 

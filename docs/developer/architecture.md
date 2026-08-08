@@ -1,6 +1,6 @@
 # Stratum Architecture
 
-**Last Updated:** 2026-05-05  
+**Last Updated:** 2026-08-07  
 **Strategic Position:** Progressive buy-in platform supporting both GitHub layer mode and full alternative mode
 
 ## Overview
@@ -508,63 +508,33 @@ Redirect to dashboard
 
 ## File Structure
 
+A directory-level map (representative, not an exhaustive file list):
+
 ```text
 src/
-├── index.ts                 # Hono app entry
-├── types.ts                 # Shared types
-├── routes/
-│   ├── auth.ts              # Main auth routes
-│   ├── email-auth.ts        # Magic link authentication
-│   ├── sessions.ts          # Session management
-│   ├── projects.ts          # Project CRUD
-│   ├── workspaces.ts        # Workspace management
-│   ├── changes.ts           # Change lifecycle
-│   ├── sync.ts              # Sync operations
-│   ├── sync-management.ts   # Git sync management
-│   ├── bulk-import.ts       # Bulk import functionality
-│   ├── agents.ts            # Agent management
-│   ├── users.ts             # User management
-│   ├── orgs.ts              # Organization management
-│   ├── health.ts            # Health check endpoints
-│   ├── metrics.ts           # Admin metrics
-│   ├── ui.ts                # UI routes
-│   └── webhooks.ts          # Webhook handlers
-├── storage/
-│   ├── state.ts             # KV state management
-│   ├── db.ts                # D1 query helpers
-│   ├── users.ts             # User storage operations
-│   ├── sessions.ts          # Session storage operations
-│   ├── sync.ts              # Sync status tracking
-│   └── github-bridge.ts     # GitHub integration storage
-├── github/
-│   ├── client.ts            # GitHub API client
-│   ├── webhooks.ts          # Webhook handlers
-│   └── sync.ts              # Bidirectional sync logic
-├── queue/
-│   ├── events.ts            # Event definitions
-│   ├── import-queue.ts      # Import job processor
-│   ├── merge-queue.ts       # Merge queue durable object
-│   └── ttl-sweep.ts         # TTL cleanup
-├── middleware/
-│   ├── auth.ts              # Auth middleware
-│   ├── rate-limit.ts        # Rate limiting
-│   └── analytics.ts         # Analytics tracking
-├── ui/
-│   ├── layout.tsx           # Base layout component
-│   ├── styles.ts            # CSS styles
-│   ├── components/          # UI components
-│   │   ├── conflict-resolution.tsx
-│   │   └── ...
-│   └── pages/               # Page components
-│       ├── sync.tsx
-│       └── ...
-└── utils/
-    ├── errors.ts            # Error classes
-    ├── logger.ts            # Logger setup
-    ├── result.ts            # Result type
-    ├── response.ts          # Response helpers
-    ├── crypto.ts            # Encryption utilities
-    └── validation.ts        # Input validation
+├── index.ts        # Hono app entry: middleware chain, route mounts, fetch/scheduled/queue handlers
+├── types.ts        # Shared types (Env bindings, queue message shapes)
+├── scheduled.ts    # Cron → job dispatch (backup, event/deletion sweeps, project sync)
+├── routes/         # HTTP handlers: projects, workspaces, changes, reviews, issues, agents,
+│                   #   orgs, users; auth (login, signup, email-auth, oauth, sessions);
+│                   #   sync + sync-management, webhooks, git-http (smart-HTTP proxy), health,
+│                   #   metrics, audit, backup, restore, deletion-jobs, backfill, ui
+├── storage/        # D1/KV data access (Result-typed): users, sessions, projects, changes,
+│                   #   issues, orgs, teams, provenance, deletion, d1-backup, …
+├── github/         # GitHub bridge: API client, inbound webhooks, bidirectional sync
+├── evaluation/     # Evaluator engine + built-ins (diff, secret-scan, webhook, LLM, sandbox) + policy loader
+├── merge/          # Merge gate: branch-protection enforcement + post-merge hooks
+├── queue/          # Consumers & durable objects: import-queue, event-consumer, merge-queue (DO),
+│                   #   repo-do (DO), deletion-runner, ttl-sweep
+├── backup/         # Backup orchestration + restore: run-backup, repo-snapshot, plan-restore, repo-restore
+├── middleware/     # security-headers, config-guard, auth, csrf, rate-limit, analytics
+├── analytics/      # PostHog event helpers
+├── monitoring/     # Analytics-Engine metrics emission
+├── email/          # Transactional email templates (magic links)
+├── templates/      # Shared server-rendered HTML templates
+├── beta/           # Closed-beta gate (referral-service integration)
+├── ui/             # Server-rendered Hono JSX: layout, styles, components/, pages/
+└── utils/          # errors, logger, result, response, crypto, validation
 ```
 
 ## Scaling Considerations
@@ -627,7 +597,7 @@ src/
 ## Related Documents
 
 - [TODO.md](/TODO.md) - Current priorities and roadmap
-- [PIVOT_SUMMARY.md](/docs/PIVOT_SUMMARY.md) - Strategic pivot explanation
+- [Current Capabilities](/docs/CURRENT_CAPABILITIES.md) - Authoritative shipped-feature state
 - [Database Schema](/docs/developer/database.md) - Detailed D1 schema
 - [Queue Processing](/docs/developer/queues.md) - Queue architecture
 - [Testing Guide](/docs/developer/testing.md) - Testing patterns
