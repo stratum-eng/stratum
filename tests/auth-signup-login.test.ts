@@ -668,6 +668,45 @@ describe("Auth Signup/Login Integration Tests", () => {
         expect(res.headers.get("location")).toContain("error=rate_limited");
       });
 
+      it("rate limits per source IP across many different emails (anti mail-bomb)", async () => {
+        const ip = "203.0.113.7";
+        // 20 distinct emails from one IP each pass the per-email limit but exhaust
+        // the per-IP budget (MAGIC_LINK_IP_RATE_LIMIT = 20).
+        for (let i = 0; i < 20; i++) {
+          const res = await app.fetch(
+            request("/auth/email/send-signup", {
+              method: "POST",
+              headers: { "CF-Connecting-IP": ip },
+              body: createFormData({ email: `victim${i}@example.com`, username: `victim${i}` }),
+            }),
+            env,
+          );
+          expect(res.headers.get("location")).toContain("success=email_sent");
+        }
+
+        // The 21st send from the same IP — a brand-new email — is blocked.
+        const blocked = await app.fetch(
+          request("/auth/email/send-signup", {
+            method: "POST",
+            headers: { "CF-Connecting-IP": ip },
+            body: createFormData({ email: "victim20@example.com", username: "victim20" }),
+          }),
+          env,
+        );
+        expect(blocked.headers.get("location")).toContain("error=rate_limited");
+
+        // A different IP is unaffected.
+        const otherIp = await app.fetch(
+          request("/auth/email/send-signup", {
+            method: "POST",
+            headers: { "CF-Connecting-IP": "198.51.100.9" },
+            body: createFormData({ email: "victim21@example.com", username: "victim21" }),
+          }),
+          env,
+        );
+        expect(otherIp.headers.get("location")).toContain("success=email_sent");
+      });
+
       it("fails when email service not configured", async () => {
         const envWithoutEmail = makeEnv({ EMAIL: undefined });
 
