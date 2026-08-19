@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { SecretScanEvaluator } from "../evaluation/secret-scanner";
+import type { EvalPolicy } from "../evaluation/types";
 import { authMiddleware } from "../middleware/auth";
 import { freshRepoToken, resolveConflict } from "../storage/git-ops";
 import { getProject, getProjectByPath, getWorkspace, setProject } from "../storage/state";
@@ -525,6 +527,43 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
     return c.json({ error: "Workspace not found" }, 404);
   }
   const workspace = workspaceResult.data;
+
+  // The `manual` strategy commits caller-supplied file contents straight to the
+  // project's default branch, which otherwise bypasses the always-on secret
+  // scan that every change is subject to. Run that mandatory, blocking scan here
+  // so a resolution cannot smuggle a credential onto main. (accept-project /
+  // accept-workspace reuse already-committed trees and need no re-scan.)
+  if (strategy === "manual") {
+    const resolutions = body.resolutions as Array<{ file: string; content: string }>;
+    const syntheticDiff = resolutions
+      .map((r) => {
+        const added = r.content
+          .split("\n")
+          .map((line) => `+${line}`)
+          .join("\n");
+        return `+++ b/${r.file}\n${added}`;
+      })
+      .join("\n");
+    const scan = await new SecretScanEvaluator().evaluate(
+      syntheticDiff,
+      { evaluators: [] } as EvalPolicy,
+      logger,
+    );
+    if (!scan.success) {
+      return c.json({ error: "Secret scan failed to run", code: "SCAN_ERROR" }, 500);
+    }
+    if (!scan.data.passed) {
+      logger.warn("Conflict resolution blocked by secret scan", { conflictId });
+      return c.json(
+        {
+          error: `Resolution rejected: ${scan.data.reason}`,
+          code: "SECRET_DETECTED",
+          issues: scan.data.issues ?? [],
+        },
+        422,
+      );
+    }
+  }
 
   logger.info("Resolving conflict", {
     conflictId,
