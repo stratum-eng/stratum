@@ -30,6 +30,10 @@ export const BACKUP_TABLES: readonly string[] = [
   "events",
   "sync_history",
   "issues",
+  // Issue discussion + labels (migration 036) reference issues.id, so they
+  // restore after their parent table.
+  "issue_comments",
+  "issue_labels",
   "audit_log",
   "deletion_jobs",
   "commit_metrics",

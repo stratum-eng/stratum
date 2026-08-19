@@ -16,6 +16,8 @@ export interface Issue {
   status: IssueStatus;
   authorType: "user" | "agent";
   authorId: string;
+  /** Single assignee (a user id) — one assignee per issue by design (#198). */
+  assignee?: string;
   linkedChangeId?: string;
   closedAt?: string;
   closedBy?: string;
@@ -33,6 +35,8 @@ interface IssueRow {
   status: string;
   author_type: string;
   author_id: string;
+  /** Absent (undefined) when a pre-036 stub row omits the column. */
+  assignee?: string | null;
   linked_change_id: string | null;
   closed_at: string | null;
   closed_by: string | null;
@@ -54,6 +58,7 @@ function rowToIssue(row: IssueRow): Issue {
   };
   if (row.project_id !== null) issue.projectId = row.project_id;
   if (row.body !== null) issue.body = row.body;
+  if (row.assignee != null) issue.assignee = row.assignee;
   if (row.linked_change_id !== null) issue.linkedChangeId = row.linked_change_id;
   if (row.closed_at !== null) issue.closedAt = row.closed_at;
   if (row.closed_by !== null) issue.closedBy = row.closed_by;
@@ -164,12 +169,31 @@ export async function getIssueByNumber(
   }
 }
 
+/**
+ * Escape `%`, `_`, and `\` in user text so it matches literally inside a
+ * `LIKE ? ESCAPE '\'` pattern.
+ */
+export function escapeLike(text: string): string {
+  return text.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 export async function listIssues(
   db: D1Database,
   logger: Logger,
   project: string,
   status?: IssueStatus,
-  opts?: { projectId?: string; limit?: number },
+  opts?: {
+    projectId?: string;
+    limit?: number;
+    /** Rows to skip (LIMIT/OFFSET pagination); only meaningful with results ordered by number DESC. */
+    offset?: number;
+    /** Only issues carrying this exact label. */
+    label?: string;
+    /** Only issues assigned to this user id. */
+    assignee?: string;
+    /** Case-insensitive substring match over title + body (SQL LIKE; % and _ are escaped). */
+    search?: string;
+  },
 ): Promise<Result<Issue[], AppError>> {
   try {
     // project_id-first with a legacy name fallback (see getIssueByNumber).
@@ -179,21 +203,51 @@ export async function listIssues(
           binds: [opts.projectId, project],
         }
       : { clause: "project = ?", binds: [project] };
+
+    const conditions = [scope.clause];
+    const binds: unknown[] = [...scope.binds];
+    if (status) {
+      conditions.push("status = ?");
+      binds.push(status);
+    }
+    if (opts?.label !== undefined) {
+      conditions.push("id IN (SELECT issue_id FROM issue_labels WHERE label = ?)");
+      binds.push(opts.label);
+    }
+    if (opts?.assignee !== undefined) {
+      conditions.push("assignee = ?");
+      binds.push(opts.assignee);
+    }
+    if (opts?.search !== undefined) {
+      // LIKE over title+body is fine at D1 scale; escape the pattern metachars
+      // so user text always matches literally. body is nullable — COALESCE keeps
+      // the OR two-valued instead of NULL when only the title matches.
+      conditions.push("(title LIKE ? ESCAPE '\\' OR COALESCE(body, '') LIKE ? ESCAPE '\\')");
+      const pattern = `%${escapeLike(opts.search)}%`;
+      binds.push(pattern, pattern);
+    }
+
     // Bound the response when asked (the API route does); internal callers that
-    // omit `limit` still get every row.
-    const limitClause = opts?.limit !== undefined ? " LIMIT ?" : "";
-    const limitBind = opts?.limit !== undefined ? [opts.limit] : [];
-    const result = status
-      ? await db
-          .prepare(
-            `SELECT * FROM issues WHERE ${scope.clause} AND status = ? ORDER BY number DESC${limitClause}`,
-          )
-          .bind(...scope.binds, status, ...limitBind)
-          .all<IssueRow>()
-      : await db
-          .prepare(`SELECT * FROM issues WHERE ${scope.clause} ORDER BY number DESC${limitClause}`)
-          .bind(...scope.binds, ...limitBind)
-          .all<IssueRow>();
+    // omit `limit` still get every row. OFFSET needs a LIMIT clause in SQLite,
+    // so an offset without a limit rides on LIMIT -1 (unlimited).
+    let pageClause = "";
+    if (opts?.limit !== undefined) {
+      pageClause = " LIMIT ?";
+      binds.push(opts.limit);
+    } else if (opts?.offset !== undefined) {
+      pageClause = " LIMIT -1";
+    }
+    if (opts?.offset !== undefined) {
+      pageClause += " OFFSET ?";
+      binds.push(opts.offset);
+    }
+
+    const result = await db
+      .prepare(
+        `SELECT * FROM issues WHERE ${conditions.join(" AND ")} ORDER BY number DESC${pageClause}`,
+      )
+      .bind(...binds)
+      .all<IssueRow>();
     return ok(result.results.map(rowToIssue));
   } catch (error) {
     const appError = toAppError(error, "listIssues", { project });
@@ -212,6 +266,8 @@ export async function updateIssue(
     body?: string;
     status?: IssueStatus;
     linkedChangeId?: string | null;
+    /** Set (string) or clear (null) the single assignee. */
+    assignee?: string | null;
     actorId: string;
     projectId?: string;
   },
@@ -236,6 +292,10 @@ export async function updateIssue(
     if (opts.linkedChangeId !== undefined) {
       assignments.push("linked_change_id = ?");
       bindings.push(opts.linkedChangeId);
+    }
+    if (opts.assignee !== undefined) {
+      assignments.push("assignee = ?");
+      bindings.push(opts.assignee);
     }
     if (opts.status !== undefined && opts.status !== existing.data.status) {
       assignments.push("status = ?");

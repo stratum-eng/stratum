@@ -1,4 +1,5 @@
 import type { FC } from "hono/jsx";
+import type { IssueComment } from "../../storage/issue-comments";
 import type { Issue } from "../../storage/issues";
 import { Layout } from "../layout";
 
@@ -11,9 +12,15 @@ interface ProjectRef {
 interface IssuesPageProps {
   project: ProjectRef;
   issues: Issue[];
+  /** Labels keyed by issue id (issues without labels may be absent). */
+  labels: Record<string, string[]>;
   /** Author display names keyed by author id. */
   authors: Record<string, string>;
   filter: "open" | "closed" | "all";
+  /** Active ?label= filter, if any. */
+  activeLabel?: string;
+  /** Active ?q= search text, if any. */
+  query?: string;
   canWrite: boolean;
   user?: { id: string; email: string; username: string } | null;
 }
@@ -21,15 +28,42 @@ interface IssuesPageProps {
 const statusBadge = (status: Issue["status"]) =>
   status === "open" ? "badge badge-open" : "badge badge-merged";
 
+const LabelChips: FC<{ labels: string[]; base: string }> = ({ labels, base }) => (
+  <>
+    {labels.map((label) => (
+      <a
+        key={label}
+        class="badge issue-label"
+        href={`${base}?label=${encodeURIComponent(label)}`}
+        title={`Filter by label "${label}"`}
+      >
+        {label}
+      </a>
+    ))}
+  </>
+);
+
 export const IssuesPage: FC<IssuesPageProps> = ({
   project,
   issues,
+  labels,
   authors,
   filter,
+  activeLabel,
+  query,
   canWrite,
   user,
 }) => {
   const base = `/${project.namespace}/${project.slug}/issues`;
+  // Preserve the label/search filters when switching status tabs.
+  const keep = [
+    ...(activeLabel ? [`label=${encodeURIComponent(activeLabel)}`] : []),
+    ...(query ? [`q=${encodeURIComponent(query)}`] : []),
+  ].join("&");
+  const tab = (status?: "closed" | "all") => {
+    const params = [...(status ? [`status=${status}`] : []), ...(keep ? [keep] : [])].join("&");
+    return params ? `${base}?${params}` : base;
+  };
   return (
     <Layout title={`Issues — ${project.name}`} user={user}>
       <div class="page-header">
@@ -47,20 +81,33 @@ export const IssuesPage: FC<IssuesPageProps> = ({
       </div>
 
       <div class="issues-filter">
-        <a href={base} class={filter === "open" ? "issues-filter-active" : ""}>
+        <a href={tab()} class={filter === "open" ? "issues-filter-active" : ""}>
           Open
         </a>
-        <a href={`${base}?status=closed`} class={filter === "closed" ? "issues-filter-active" : ""}>
+        <a href={tab("closed")} class={filter === "closed" ? "issues-filter-active" : ""}>
           Closed
         </a>
-        <a href={`${base}?status=all`} class={filter === "all" ? "issues-filter-active" : ""}>
+        <a href={tab("all")} class={filter === "all" ? "issues-filter-active" : ""}>
           All
         </a>
+        <form method="get" action={base} class="issues-search">
+          {filter !== "open" && <input type="hidden" name="status" value={filter} />}
+          {activeLabel && <input type="hidden" name="label" value={activeLabel} />}
+          <input type="search" name="q" placeholder="Search issues…" value={query ?? ""} />
+        </form>
+        {activeLabel && (
+          <span class="issues-meta">
+            label: <strong>{activeLabel}</strong> <a href={tab()}>clear</a>
+          </span>
+        )}
       </div>
 
       {issues.length === 0 ? (
         <div class="empty-state">
-          <p>No {filter === "all" ? "" : `${filter} `}issues.</p>
+          <p>
+            No {filter === "all" ? "" : `${filter} `}issues
+            {activeLabel || query ? " match the current filter" : ""}.
+          </p>
           <p class="empty-state-hint">
             Open an issue to track work, bugs, or ideas for this project.
           </p>
@@ -73,6 +120,7 @@ export const IssuesPage: FC<IssuesPageProps> = ({
               <a href={`${base}/${issue.number}`} class="issues-title">
                 #{issue.number} {issue.title}
               </a>
+              <LabelChips labels={labels[issue.id] ?? []} base={base} />
               {issue.linkedChangeId && (
                 <a href={`/changes/${issue.linkedChangeId}`} class="issues-linked-change">
                   {issue.linkedChangeId}
@@ -81,6 +129,9 @@ export const IssuesPage: FC<IssuesPageProps> = ({
               <span class="issues-meta">
                 opened {new Date(issue.createdAt).toLocaleDateString()} by{" "}
                 {authors[issue.authorId] ?? issue.authorType}
+                {issue.assignee
+                  ? ` · assigned to ${authors[issue.assignee] ?? issue.assignee}`
+                  : ""}
               </span>
             </li>
           ))}
@@ -93,7 +144,9 @@ export const IssuesPage: FC<IssuesPageProps> = ({
 interface IssueDetailPageProps {
   project: ProjectRef;
   issue: Issue;
-  /** Author display names keyed by author id. */
+  labels: string[];
+  comments: IssueComment[];
+  /** Author display names keyed by author id (issue + comment authors + assignee). */
   authors: Record<string, string>;
   canWrite: boolean;
   user?: { id: string; email: string; username: string } | null;
@@ -102,6 +155,8 @@ interface IssueDetailPageProps {
 export const IssueDetailPage: FC<IssueDetailPageProps> = ({
   project,
   issue,
+  labels,
+  comments,
   authors,
   canWrite,
   user,
@@ -121,9 +176,11 @@ export const IssueDetailPage: FC<IssueDetailPageProps> = ({
 
       <div class="issue-status-row">
         <span class={statusBadge(issue.status)}>{issue.status}</span>
+        <LabelChips labels={labels} base={base} />
         <span class="issues-meta">
           opened {new Date(issue.createdAt).toLocaleString()} by{" "}
           {authors[issue.authorId] ?? issue.authorType}
+          {issue.assignee ? ` · assigned to ${authors[issue.assignee] ?? issue.assignee}` : ""}
           {issue.closedAt ? ` · closed ${new Date(issue.closedAt).toLocaleString()}` : ""}
           {issue.closedBy === "system" ? " (auto-closed by merged change)" : ""}
         </span>
@@ -147,6 +204,38 @@ export const IssueDetailPage: FC<IssueDetailPageProps> = ({
 
       <div class="card issue-body">
         {issue.body ? <pre class="issue-body-text">{issue.body}</pre> : <p>No description.</p>}
+      </div>
+
+      <div class="issue-comments">
+        <h2>
+          {comments.length === 0
+            ? "Comments"
+            : `${comments.length} comment${comments.length === 1 ? "" : "s"}`}
+        </h2>
+        {comments.map((comment) => (
+          <div key={comment.id} class="card issue-comment">
+            <div class="issues-meta">
+              {authors[comment.authorId] ?? comment.authorType} ·{" "}
+              {new Date(comment.createdAt).toLocaleString()}
+            </div>
+            <pre class="issue-body-text">{comment.body}</pre>
+          </div>
+        ))}
+        {user ? (
+          <div class="card">
+            <form method="post" action={`${apiBase}/${issue.number}/comments`} class="issue-form">
+              <label>
+                Add a comment
+                <textarea name="body" rows={4} required />
+              </label>
+              <button type="submit" class="btn btn-primary">
+                Comment
+              </button>
+            </form>
+          </div>
+        ) : (
+          <p class="issues-meta">Sign in to comment.</p>
+        )}
       </div>
     </Layout>
   );

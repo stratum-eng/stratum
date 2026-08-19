@@ -891,7 +891,8 @@ paths:
                     change.created, change.evaluated, change.merged,
                     change.rejected, change.reverted, change.commented,
                     change.reviewed, project.created, project.imported,
-                    workspace.created, sync.completed, issue.opened, issue.closed
+                    workspace.created, sync.completed, issue.opened,
+                    issue.commented, issue.closed
       responses:
         "201":
           description: Webhook created (includes the secret, shown once)
@@ -1085,14 +1086,34 @@ paths:
       operationId: listIssues
       tags: [issues]
       summary: List issues
+      description: |
+        Filterable by status, label, assignee, and free-text search (`q`, a
+        case-insensitive substring match over title + body). Paginate with
+        `limit` + `offset`; results are ordered newest-first by issue number.
       security: [{ bearerAuth: [] }, {}]
       parameters:
         - name: status
           in: query
           schema: { type: string, enum: [open, closed] }
+        - name: label
+          in: query
+          description: Only issues carrying this exact label
+          schema: { type: string }
+        - name: assignee
+          in: query
+          description: Only issues assigned to this user id
+          schema: { type: string }
+        - name: q
+          in: query
+          description: Substring search over title and body (max 200 chars; % and _ match literally)
+          schema: { type: string, maxLength: 200 }
         - name: limit
           in: query
           schema: { type: integer, default: 100, maximum: 500 }
+        - name: offset
+          in: query
+          description: Rows to skip (LIMIT/OFFSET pagination)
+          schema: { type: integer, default: 0, minimum: 0 }
       responses:
         "200":
           description: Issues
@@ -1140,7 +1161,7 @@ paths:
     patch:
       operationId: updateIssue
       tags: [issues]
-      summary: Edit, close, or reopen an issue
+      summary: Edit, close, reopen, label, or assign an issue
       description: Requires project write access. Users only (agent tokens cannot edit issues).
       requestBody:
         required: true
@@ -1155,6 +1176,16 @@ paths:
                 linkedChangeId:
                   type: [string, "null"]
                   description: Set to null or "" to unlink
+                assignee:
+                  type: [string, "null"]
+                  description: Single assignee (user id); set to null or "" to unassign
+                labels:
+                  type: array
+                  maxItems: 20
+                  items: { type: string, maxLength: 50 }
+                  description: |
+                    Replaces the issue's full label set (add/remove by sending the
+                    desired set); [] clears all labels. Omit to leave labels unchanged.
       responses:
         "200":
           description: Updated issue
@@ -1170,6 +1201,76 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/projects/{namespace}/{slug}/issues/{number}/comments:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+      - name: number
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    post:
+      operationId: addIssueComment
+      tags: [issues]
+      summary: Comment on an issue
+      description: Anyone who can read the project can comment. Also accepts form bodies (which redirect to the issue page).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string, maxLength: 20000 }
+      responses:
+        "201":
+          description: Comment created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  comment: { $ref: "#/components/schemas/IssueComment" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      operationId: listIssueComments
+      tags: [issues]
+      summary: List an issue's comments
+      description: Chronological (oldest first), paginated with limit + offset.
+      security: [{ bearerAuth: [] }, {}]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Comments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  comments:
+                    type: array
+                    items: { $ref: "#/components/schemas/IssueComment" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -3134,11 +3235,31 @@ components:
           type: string
           enum: [user, agent]
         authorId: { type: string }
+        assignee:
+          type: string
+          description: Single assignee (user id); absent when unassigned
+        labels:
+          type: array
+          items: { type: string }
+          description: Returned by the issue list, detail, and update endpoints
         linkedChangeId: { type: string }
         closedAt: { type: string, format: date-time }
         closedBy: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+
+    IssueComment:
+      type: object
+      required: [id, issueId, authorType, authorId, body, createdAt]
+      properties:
+        id: { type: string }
+        issueId: { type: string }
+        authorType:
+          type: string
+          enum: [user, agent]
+        authorId: { type: string }
+        body: { type: string }
+        createdAt: { type: string, format: date-time }
 
     Review:
       type: object

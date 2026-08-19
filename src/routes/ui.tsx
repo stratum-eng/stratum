@@ -14,6 +14,8 @@ import {
   readFileFromRepo,
 } from "../storage/git-ops";
 import { getImportProgress } from "../storage/imports";
+import { listIssueComments } from "../storage/issue-comments";
+import { getLabelsForIssues, listIssueLabels } from "../storage/issue-labels";
 import { getIssueByNumber, listIssues } from "../storage/issues";
 import { getProvenance } from "../storage/provenance";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
@@ -869,30 +871,53 @@ app.get("/:namespace/:slug/issues", async (c) => {
   const statusParam = c.req.query("status");
   const filter: "open" | "closed" | "all" =
     statusParam === "closed" ? "closed" : statusParam === "all" ? "all" : "open";
+  const activeLabel = c.req.query("label")?.trim() || undefined;
+  const query = c.req.query("q")?.trim() || undefined;
 
   const issuesResult = await listIssues(
     c.env.DB,
     logger,
     project.name,
     filter === "all" ? undefined : filter,
-    { projectId: project.id },
+    {
+      projectId: project.id,
+      ...(activeLabel !== undefined ? { label: activeLabel } : {}),
+      ...(query !== undefined ? { search: query } : {}),
+    },
   );
   if (!issuesResult.success) {
     logger.error("Failed to list issues", issuesResult.error);
     return c.html(issuePageError(500), 500);
   }
+  const issues = issuesResult.data;
 
+  const labelsResult = await getLabelsForIssues(
+    c.env.DB,
+    logger,
+    issues.map((issue) => issue.id),
+  );
+
+  // The assignee is a user id like the author ids — resolve display names for both.
+  const authorRefs = [
+    ...issues,
+    ...issues
+      .filter((issue) => issue.assignee !== undefined)
+      .map((issue) => ({ authorType: "user" as const, authorId: issue.assignee as string })),
+  ];
   const [authors, canWrite] = await Promise.all([
-    resolveIssueAuthors(c.env.DB, issuesResult.data, logger),
+    resolveIssueAuthors(c.env.DB, authorRefs, logger),
     canWriteProject(c.env.DB, project, userId),
   ]);
 
   return c.html(
     <IssuesPage
       project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
-      issues={issuesResult.data}
+      issues={issues}
+      labels={labelsResult.success ? labelsResult.data : {}}
       authors={authors}
       filter={filter}
+      activeLabel={activeLabel}
+      query={query}
       canWrite={canWrite}
       user={user}
     />,
@@ -939,16 +964,34 @@ app.get("/:namespace/:slug/issues/:number", async (c) => {
       404,
     );
   }
+  const issue = issueResult.data;
 
+  const [labelsResult, commentsResult] = await Promise.all([
+    listIssueLabels(c.env.DB, logger, issue.id),
+    listIssueComments(c.env.DB, logger, issue.id),
+  ]);
+  const comments = commentsResult.success ? commentsResult.data : [];
+
+  // Resolve display names for the issue author, every comment author, and the
+  // assignee (a user id) in one pass.
+  const authorRefs = [
+    issue,
+    ...comments,
+    ...(issue.assignee !== undefined
+      ? [{ authorType: "user" as const, authorId: issue.assignee }]
+      : []),
+  ];
   const [authors, canWrite] = await Promise.all([
-    resolveIssueAuthors(c.env.DB, [issueResult.data], logger),
+    resolveIssueAuthors(c.env.DB, authorRefs, logger),
     canWriteProject(c.env.DB, project, userId),
   ]);
 
   return c.html(
     <IssueDetailPage
       project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
-      issue={issueResult.data}
+      issue={issue}
+      labels={labelsResult.success ? labelsResult.data : []}
+      comments={comments}
       authors={authors}
       canWrite={canWrite}
       user={user}
