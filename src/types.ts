@@ -400,6 +400,11 @@ export interface Change {
   agentModel?: string;
   /** The authoring agent's prompt hash, snapshotted at change creation. */
   agentPromptHash?: string;
+  /** The human author of the change (the acting user, or an agent's owning
+   * user). Their own review does not count toward `merge.requiredApprovals`.
+   * NULL on legacy rows and on changes with no Stratum author (e.g. inbound
+   * GitHub PRs). */
+  createdByUserId?: string;
   /**
    * The workspace commit sha the evaluation ran against. The merge gate merges
    * *this* sha (not the workspace's live tip, #115), so a re-push between eval and

@@ -40,13 +40,26 @@ interface EvalRunRow {
 }
 
 /** Stub D1 answering the eval_runs and change_reviews queries protection issues. */
-function makeProtectionD1(opts: { runs?: EvalRunRow[]; approvals?: number }): D1Database {
+function makeProtectionD1(opts: {
+  runs?: EvalRunRow[];
+  approvals?: number;
+  /** Reviewer ids that approved. When set, the COUNT honors the excludeUserId
+   * bind (the `reviewer_id != ?` filter) so self-approval exclusion is exercised. */
+  approvers?: string[];
+}): D1Database {
   function makeStmt(sql: string, bindings: unknown[]) {
     const upper = sql.trim().toUpperCase();
     return {
       bind: (...args: unknown[]) => makeStmt(sql, args),
       first: async <T>() => {
-        if (upper.includes("COUNT(*)")) return { approvals: opts.approvals ?? 0 } as T;
+        if (upper.includes("COUNT(*)")) {
+          if (opts.approvers) {
+            const excluded = upper.includes("REVIEWER_ID !=") ? bindings[1] : undefined;
+            const approvals = opts.approvers.filter((id) => id !== excluded).length;
+            return { approvals } as T;
+          }
+          return { approvals: opts.approvals ?? 0 } as T;
+        }
         return null;
       },
       all: async <T>() => {
@@ -151,6 +164,30 @@ describe("checkMergeProtection", () => {
     const policy: EvalPolicy = { evaluators: [], merge: { requiredApprovals: 2 } };
 
     const result = await checkMergeProtection(db, mockLogger, change, policy);
+    expect(result.success && result.data.allowed).toBe(true);
+  });
+
+  it("does not count the author's own approval toward requiredApprovals", async () => {
+    // The author (alice) is the only approver — a self-approval must not satisfy
+    // requiredApprovals: 1.
+    const db = makeProtectionD1({ approvers: ["alice"] });
+    const authored: Change = { ...change, createdByUserId: "alice" };
+    const policy: EvalPolicy = { evaluators: [], merge: { requiredApprovals: 1 } };
+
+    const result = await checkMergeProtection(db, mockLogger, authored, policy);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.allowed).toBe(false);
+    expect(result.data.reasons[0]).toBe("Requires 1 approval, has 0");
+  });
+
+  it("counts a non-author approval toward requiredApprovals", async () => {
+    // bob (not the author) approves — that satisfies requiredApprovals: 1.
+    const db = makeProtectionD1({ approvers: ["alice", "bob"] });
+    const authored: Change = { ...change, createdByUserId: "alice" };
+    const policy: EvalPolicy = { evaluators: [], merge: { requiredApprovals: 1 } };
+
+    const result = await checkMergeProtection(db, mockLogger, authored, policy);
     expect(result.success && result.data.allowed).toBe(true);
   });
 

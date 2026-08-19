@@ -65,10 +65,11 @@ export async function checkMergeProtection(
 
   const requiredApprovals = merge.requiredApprovals ?? 0;
   if (requiredApprovals > 0) {
-    // NOTE: self-approval exclusion (countApprovals' excludeUserId arg) is wired in a
-    // follow-up — the `changes` table records no creating-user id yet (only agentId),
-    // so excluding the author requires a schema addition. Tracked in TASKS.md.
-    const approvalsResult = await countApprovals(db, logger, change.id);
+    // The change author's own approval must not count toward requiredApprovals —
+    // otherwise a lone writer opens a change, approves it, and self-merges.
+    // createdByUserId is the acting user (or an agent's owner); NULL on legacy
+    // rows, where no author is excluded.
+    const approvalsResult = await countApprovals(db, logger, change.id, change.createdByUserId);
     if (!approvalsResult.success) return err(approvalsResult.error);
     if (approvalsResult.data < requiredApprovals) {
       reasons.push(

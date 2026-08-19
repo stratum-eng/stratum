@@ -221,6 +221,7 @@ app.post("/projects/:name/changes", async (c) => {
     actor: {
       ...(userId !== undefined ? { userId } : {}),
       ...(agentId !== undefined ? { agentId } : {}),
+      ...(agentOwnerId !== undefined ? { agentOwnerId } : {}),
     },
   });
   if (!outcome.success) {

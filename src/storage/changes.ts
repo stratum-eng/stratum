@@ -20,6 +20,7 @@ interface ChangeRow {
   agent_model: string | null;
   agent_prompt_hash: string | null;
   workspace_head_sha: string | null;
+  created_by_user_id: string | null;
   created_at: string;
   merged_at: string | null;
   github_owner: string | null;
@@ -53,6 +54,7 @@ function rowToChange(row: ChangeRow): Change {
   if (row.agent_model !== null) change.agentModel = row.agent_model;
   if (row.agent_prompt_hash !== null) change.agentPromptHash = row.agent_prompt_hash;
   if (row.workspace_head_sha !== null) change.workspaceHeadSha = row.workspace_head_sha;
+  if (row.created_by_user_id !== null) change.createdByUserId = row.created_by_user_id;
   if (row.merged_at !== null) change.mergedAt = row.merged_at;
   if (row.github_owner !== null) change.githubOwner = row.github_owner;
   if (row.github_repo !== null) change.githubRepo = row.github_repo;
@@ -81,6 +83,9 @@ export async function createChange(
     baseSha?: string;
     agentModel?: string;
     agentPromptHash?: string;
+    /** Human author (acting user, or an agent's owner). Excluded from the
+     * required-approval count so a change cannot be self-approved. */
+    createdByUserId?: string;
   },
 ): Promise<Result<Change, AppError>> {
   const id = newId("chg");
@@ -89,7 +94,7 @@ export async function createChange(
   try {
     await db
       .prepare(
-        "INSERT INTO changes (id, project, project_id, workspace, status, agent_id, base_sha, agent_model, agent_prompt_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO changes (id, project, project_id, workspace, status, agent_id, base_sha, agent_model, agent_prompt_hash, created_by_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         id,
@@ -101,6 +106,7 @@ export async function createChange(
         opts.baseSha ?? null,
         opts.agentModel ?? null,
         opts.agentPromptHash ?? null,
+        opts.createdByUserId ?? null,
         createdAt,
       )
       .run();
@@ -117,6 +123,7 @@ export async function createChange(
     if (opts.baseSha !== undefined) change.baseSha = opts.baseSha;
     if (opts.agentModel !== undefined) change.agentModel = opts.agentModel;
     if (opts.agentPromptHash !== undefined) change.agentPromptHash = opts.agentPromptHash;
+    if (opts.createdByUserId !== undefined) change.createdByUserId = opts.createdByUserId;
 
     logger.debug("Change created", {
       changeId: id,
