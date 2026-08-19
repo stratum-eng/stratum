@@ -1,0 +1,32 @@
+# Stratum documentation — https://docs.usestratum.dev
+#
+# This documentation is public and MIT-licensed, and Stratum is built for AI
+# agents as first-class users, so all content signals are permitted. Change the
+# Content-Signal values here if that policy changes.
+#
+# Machine-readable entry points for agents:
+#   /llms.txt                          index of documentation sets
+#   /llms-small.txt                    abridged corpus
+#   /llms-full.txt                     complete corpus
+#   /openapi.yml                       REST API contract (OpenAPI 3.1)
+#   /.well-known/api-catalog           API catalogue (RFC 9727 linkset)
+#   /.well-known/mcp/server-card.json  MCP server discovery card
+
+User-agent: *
+Content-Signal: search=yes, ai-input=yes, ai-train=yes
+Allow: /
+
+# Named AI crawlers, stated explicitly so the policy is unambiguous.
+User-agent: GPTBot
+User-agent: OAI-SearchBot
+User-agent: ChatGPT-User
+User-agent: ClaudeBot
+User-agent: Claude-User
+User-agent: Claude-SearchBot
+User-agent: Google-Extended
+User-agent: PerplexityBot
+User-agent: CCBot
+User-agent: Applebot-Extended
+Allow: /
+
+Sitemap: https://docs.usestratum.dev/sitemap-index.xml

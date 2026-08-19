@@ -1,5 +1,11 @@
-# Assets-only Worker serving the built docs site (dist/).
+# Worker serving the built docs site (dist/).
+#
+# The site is static; the Worker exists only to add agent-discovery Link headers
+# and Markdown content negotiation (see worker/index.js). run_worker_first is
+# required for that — without it the assets binding answers matching requests
+# directly and the Worker never sees them.
 name = "stratum-docs"
+main = "worker/index.js"
 compatibility_date = "2026-08-01"
 
 routes = [
@@ -8,4 +14,6 @@ routes = [
 
 [assets]
 directory = "./dist"
+binding = "ASSETS"
 not_found_handling = "404-page"
+run_worker_first = true

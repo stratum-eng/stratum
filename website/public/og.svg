@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630">
+  <rect width="1200" height="630" fill="#0a0a0a"/>
+  <rect x="0" y="0" width="1200" height="4" fill="#7ca9f7"/>
+  <g transform="translate(100,120)">
+    <rect width="112" height="112" rx="21" fill="#0d0d0d"/>
+    <text x="56" y="81" font-family="JetBrains Mono, DejaVu Sans Mono, monospace" font-size="70" font-weight="700"
+          fill="#7ca9f7" text-anchor="middle">S</text>
+  </g>
+  <text x="100" y="221" font-family="JetBrains Mono, DejaVu Sans Mono, monospace" font-size="76" font-weight="700"
+        fill="#f0f0f0" letter-spacing="4" dy="120">stratum</text>
+  <text x="100" y="420" font-family="JetBrains Mono, DejaVu Sans Mono, monospace" font-size="31" fill="#8a8a8a">The governance layer for AI-written code</text>
+  <text x="100" y="470" font-family="JetBrains Mono, DejaVu Sans Mono, monospace" font-size="31" fill="#8a8a8a">Evaluation-gated merges. Provenance. Agent identities.</text>
+  <text x="100" y="552" font-family="JetBrains Mono, DejaVu Sans Mono, monospace" font-size="27" fill="#7ca9f7">docs.usestratum.dev</text>
+</svg>
