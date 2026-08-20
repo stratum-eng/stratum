@@ -90,14 +90,71 @@ CAS; throughput should jump on the concurrent-N runs.
 - Containerized native-git backend for gc/repack/large packs.
 - Changing the fork-per-workspace model; this runs alongside it.
 
-## Results (fill in as we go)
+## Results
 
-| Metric (single repo)        | Before (Phase 0) | After (Phase 2) | Target |
-|-----------------------------|------------------|-----------------|--------|
-| Commits/sec (N=25)          | TBD              | TBD             | ~20+   |
-| p50 end-to-end latency      | TBD              | TBD             | —      |
-| p95 end-to-end latency      | TBD              | TBD             | —      |
-| Clone phase share of total  | TBD              | ~0 (removed)    | —      |
+**Status: pending staging benchmark.** The harness
+(`scripts/bench-commit-throughput.ts`) is implemented, but the runs against a
+real staging deployment (real Artifacts, real D1) have not been recorded here
+yet, so every "pending" cell below awaits that run. This table must not be
+filled from local-dev numbers — `wrangler dev` latencies are not
+representative of Artifacts round-trips.
+
+| Metric (single repo)        | Before (Phase 0)             | After (Phase 2)              | Target |
+|-----------------------------|------------------------------|------------------------------|--------|
+| Commits/sec (N=25)          | pending staging benchmark    | pending staging benchmark    | ~20+   |
+| p50 end-to-end latency      | pending staging benchmark    | pending staging benchmark    | —      |
+| p95 end-to-end latency      | pending staging benchmark    | pending staging benchmark    | —      |
+| Clone phase share of total  | pending staging benchmark    | ~0 (removed)                 | —      |
+
+### How to produce the numbers
+
+The harness fires N concurrent commit → merge cycles at one project repo and
+reports commits/sec plus a per-phase breakdown, in both conflict modes. Run it
+against **staging** (it refuses known production hosts unless
+`--i-understand-this-writes-real-commits` is passed, because every merge
+pushes a real commit):
+
+```bash
+# Auth: either a session cookie or a bearer token
+STRATUM_URL=https://<staging-host> \
+STRATUM_SESSION=<stratum_session cookie>   # or STRATUM_TOKEN=<bearer token>
+npx tsx scripts/bench-commit-throughput.ts --n=1,5,25,100 --conflict=none --repeat=3
+```
+
+Flags (defaults in parentheses): `--url` (or `STRATUM_URL`,
+`http://localhost:8787`), `--n` — comma-separated concurrency levels
+(`1,5,25,100`; `1,5,25,50,64` in batch mode, whose server cap is 80),
+`--conflict` `none|same` (`none`), `--repeat` (1), `--warmup` (1),
+`--project` name prefix (`bench-throughput`; each run creates a disposable
+uniquely-suffixed project), `--bytes` commit payload size (256),
+`--duration` ms for the R2 probe (3000), `--r2-bench` — drive the Phase 2
+R2 object-plane + group-commit endpoint (authenticates with an admin key)
+instead of full merges, `--batch` — drive the server-side batch-merge
+endpoint.
+
+Output is a plain-text table:
+`N | mode | landed | failed | wall(ms) | commits/sec | p50/p95/p99(ms)` —
+per-op latency percentiles are reported only at N ≤ 5 (at N ≥ 25 the single
+DO serializes advances, so latency is queue wait, not work). The server-side
+per-phase breakdown (token mint / clone / merge / push) is read separately
+from `GET /api/admin/metrics` (commits block). Note the timing caveat printed
+by the harness: Workers freeze the clock between I/O, so CPU spans are lower
+bounds.
+
+Run each mode twice: once with the flag off ("before") and once with
+`REPO_DO_ENABLED` ("after"), per the harness header comment.
+
+### Acceptance thresholds
+
+- ADR 004's target is **~20+ commits/sec** sustained into a single repo
+  (versus its estimated **~1–2 merges/sec** cap on the current serialized
+  path).
+- Issue #124 records the thresholds used for the R2/group-commit fast path:
+  the group-commit benchmark **must stay ≥ 22.6 c/s**, with **431 c/s** as
+  the then-current group-commit figure. (These two numbers come from the
+  issue text; they are not recorded in ADR 004 or elsewhere in this repo, so
+  treat the staging run — not this citation — as the source of truth when
+  filling the table.)
 
 ## References
 
