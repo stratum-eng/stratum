@@ -7,7 +7,7 @@
  * inflated content, so any valid zlib stream works (compression level is free).
  */
 
-interface FsLike {
+export interface FsLike {
   promises: {
     writeFile(path: string, data: Uint8Array): Promise<void>;
     mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;

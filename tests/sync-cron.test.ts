@@ -18,9 +18,16 @@ vi.mock("../src/storage/state", () => ({
   listProjects: vi.fn(),
 }));
 
-vi.mock("../src/storage/git-ops", () => ({
-  importFromGitHub: vi.fn(),
-}));
+// Keep the real artifactsRepoNameFromRemote so the sync-vs-import routing
+// decision is exercised for real; only the network-touching functions are mocked.
+vi.mock("../src/storage/git-ops", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/storage/git-ops")>();
+  return {
+    ...actual,
+    importFromGitHub: vi.fn(),
+    syncFromGitHub: vi.fn(),
+  };
+});
 
 vi.mock("../src/storage/repo-snapshot", () => ({
   writeSnapshotFromRepo: vi.fn(async () => undefined),

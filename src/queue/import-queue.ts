@@ -4,7 +4,7 @@
  */
 
 import { isTargetDeleting } from "../storage/deletion";
-import { importFromGitHub } from "../storage/git-ops";
+import { artifactsRepoNameFromRemote, importFromGitHub, syncFromGitHub } from "../storage/git-ops";
 import { getProviderFromUrl } from "../storage/git-providers";
 import { deleteImportJob, isImportCancelled, updateImportStatus } from "../storage/imports";
 import {
@@ -134,6 +134,11 @@ function validateSyncMessage(body: unknown): SyncJobMessage | null {
     branch: msg.branch,
     depth: typeof msg.depth === "number" ? msg.depth : DEFAULT_CLONE_DEPTH,
     timestamp: msg.timestamp,
+    // Preserve the trigger so sync history records webhook/auto syncs correctly.
+    trigger:
+      msg.trigger === "webhook" || msg.trigger === "auto" || msg.trigger === "manual"
+        ? msg.trigger
+        : undefined,
   };
 }
 
@@ -439,17 +444,43 @@ async function processSyncJob(
     // Update status to syncing
     await updateImportStatus(env.DB, namespace, slug, "syncing", logger, "Syncing repository");
 
-    // Perform the sync
-    const importResult = await importFromGitHub(
-      env.ARTIFACTS,
-      artifactsRepoName,
-      githubUrl,
-      logger,
-      branch,
-      depth,
-    );
+    // #190: sync is an INCREMENTAL fetch into the existing Artifacts repo, never
+    // a delete-and-re-import — re-importing destroyed Stratum-native commits and
+    // orphaned workspace forks. Only projects with no recorded Artifacts remote
+    // (initial import never completed, so no forks can exist) still take the
+    // import path.
+    let syncedRemote = project.remote;
+    let syncError: Error | undefined;
+    if (artifactsRepoNameFromRemote(project.remote) !== null) {
+      const syncResult = await syncFromGitHub(
+        env.ARTIFACTS,
+        project.remote,
+        githubUrl,
+        logger,
+        branch,
+      );
+      if (!syncResult.success) syncError = syncResult.error;
+    } else {
+      logger.warn("Project has no Artifacts remote — falling back to full import", {
+        namespace,
+        slug,
+      });
+      const importResult = await importFromGitHub(
+        env.ARTIFACTS,
+        artifactsRepoName,
+        githubUrl,
+        logger,
+        branch,
+        depth,
+      );
+      if (importResult.success) {
+        syncedRemote = importResult.data.remote;
+      } else {
+        syncError = importResult.error;
+      }
+    }
 
-    if (!importResult.success) {
+    if (syncError) {
       // Check if it was cancelled during the operation
       if (await checkAndHandleCancellation(env, namespace, slug)) {
         await recordImportCancelled(env.DB, namespace, slug, logger);
@@ -464,7 +495,7 @@ async function processSyncJob(
         slug,
         githubUrl,
         branch,
-        error: importResult.error,
+        error: syncError,
         startedAt,
         isSync: true,
       });
@@ -475,7 +506,7 @@ async function processSyncJob(
           slug,
           trigger: message.trigger ?? "manual",
           status: "failed",
-          errorMessage: importResult.error.message,
+          errorMessage: syncError.message,
           durationMs: Date.now() - startedAt,
           startedAt: new Date(startedAt).toISOString(),
           completedAt: new Date().toISOString(),
@@ -488,7 +519,7 @@ async function processSyncJob(
         ...project,
         lastSyncedAt: new Date().toISOString(),
         lastSyncStatus: "failed",
-        lastSyncError: importResult.error.message,
+        lastSyncError: syncError.message,
       };
       await setProject(env.STATE, updatedProject, logger);
 
@@ -498,7 +529,7 @@ async function processSyncJob(
         slug,
         "failed",
         logger,
-        `Sync failed: ${importResult.error.message}`,
+        `Sync failed: ${syncError.message}`,
       );
       msg.ack();
       return;
@@ -524,10 +555,12 @@ async function processSyncJob(
       }
     }
 
-    // Update project with sync info
+    // Update project with sync info. The remote only changes on the legacy
+    // full-import fallback — incremental sync keeps the existing repo (and thus
+    // the remote) stable so workspace forks stay attached.
     const updatedProject: ProjectEntry = {
       ...project,
-      remote: importResult.data.remote,
+      remote: syncedRemote,
       lastSyncedAt: new Date().toISOString(),
       lastSyncedCommit: latestCommitSha,
       lastSyncStatus: "success",
@@ -741,6 +774,7 @@ export async function queueSyncJob(
     branch: params.branch,
     depth: params.depth ?? DEFAULT_CLONE_DEPTH,
     timestamp: new Date().toISOString(),
+    trigger: params.trigger,
   };
 
   await (queue as Queue<SyncJobMessage | ImportJobMessage>).send(message);

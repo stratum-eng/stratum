@@ -188,9 +188,14 @@ vi.mock("../../src/storage/state", () => ({
   }),
 }));
 
-vi.mock("../../src/storage/git-ops", () => ({
-  importFromGitHub: vi.fn(),
-}));
+vi.mock("../../src/storage/git-ops", async (importActual) => {
+  const actual = await importActual<typeof import("../../src/storage/git-ops")>();
+  return {
+    ...actual,
+    importFromGitHub: vi.fn(),
+    syncFromGitHub: vi.fn(),
+  };
+});
 
 // ============================================================================
 // Test Helpers

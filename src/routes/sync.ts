@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { importFromGitHub } from "../storage/git-ops";
+import { artifactsRepoNameFromRemote, importFromGitHub, syncFromGitHub } from "../storage/git-ops";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { listProjects } from "../storage/state";
 import { checkForSyncUpdates, getProjectSourceUrl, updateProjectAfterSync } from "../storage/sync";
@@ -54,30 +54,62 @@ export async function syncAllProjects(
 
       projectLogger.info("Syncing project", { commitsBehind: checkResult.data.commitsBehind });
       const branch = project.sourceDefaultBranch || project.githubDefaultBranch || "main";
-      const result = await importFromGitHub(
-        env.ARTIFACTS,
-        artifactsRepoName(project),
-        sourceUrl,
-        projectLogger,
-        branch,
-      );
-      if (result.success) {
+
+      // #190: existing projects sync INCREMENTALLY into their Artifacts repo —
+      // never delete-and-re-import, which destroyed Stratum-native commits and
+      // orphaned workspace forks. Only projects without a recorded Artifacts
+      // remote (no repo to preserve) still take the legacy import path.
+      let succeeded: boolean;
+      let syncedRemote = project.remote;
+      let syncError: Error | undefined;
+      if (artifactsRepoNameFromRemote(project.remote) !== null) {
+        const result = await syncFromGitHub(
+          env.ARTIFACTS,
+          project.remote,
+          sourceUrl,
+          projectLogger,
+          branch,
+        );
+        succeeded = result.success;
+        if (!result.success) syncError = result.error;
+      } else {
+        const result = await importFromGitHub(
+          env.ARTIFACTS,
+          artifactsRepoName(project),
+          sourceUrl,
+          projectLogger,
+          branch,
+        );
+        succeeded = result.success;
+        if (result.success) {
+          syncedRemote = result.data.remote;
+        } else {
+          syncError = result.error;
+        }
+      }
+
+      if (succeeded) {
         projectLogger.info("Project synced successfully");
         // NOTE: writeSnapshotFromRepo must be called after any new sync trigger added here
         await writeSnapshotFromRepo(
           env.STATE,
           env.ARTIFACTS,
           {
-            remote: result.data.remote,
+            remote: syncedRemote,
             namespace: project.namespace,
             slug: project.slug,
           },
           projectLogger,
         );
         if (checkResult.data.latestCommit) {
+          // The remote only changes on the legacy full-import fallback —
+          // incremental sync keeps the existing repo (and thus the remote)
+          // stable. Persisting it here is required: otherwise the next cron
+          // run still sees the legacy remote and re-runs the destructive
+          // full import.
           const updateResult = await updateProjectAfterSync(
             env.STATE,
-            project,
+            { ...project, remote: syncedRemote },
             checkResult.data.latestCommit,
             projectLogger,
           );
@@ -93,7 +125,7 @@ export async function syncAllProjects(
         synced++;
       } else {
         failed++;
-        projectLogger.error("Project sync failed", result.error);
+        projectLogger.error("Project sync failed", syncError);
       }
     } catch (error) {
       failed++;
