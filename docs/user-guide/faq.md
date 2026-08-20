@@ -38,7 +38,8 @@ No. Stratum supports two modes with the same codebase. In **layer mode**,
 Stratum sits between your agents and GitHub: import the repo, enable
 bidirectional sync (inbound webhooks, outbound PR promotion), and agent work
 goes through Stratum's gates while your team keeps reviewing GitHub PRs —
-evaluation results are posted to the PR as comments and commit statuses. In
+each evaluation of a change with a linked PR posts the verdict to the PR as a
+comment and a `stratum/evaluation` commit status. In
 **alternative mode**, Stratum is the source of truth and GitHub isn't involved
 at all. You choose the level of buy-in, and you can start with layer mode.
 

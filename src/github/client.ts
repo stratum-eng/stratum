@@ -382,6 +382,24 @@ export class GitHubClient {
     return { success: true, id: result.data.id };
   }
 
+  async updateComment(opts: {
+    owner: string;
+    repo: string;
+    comment_id: number;
+    body: string;
+  }): Promise<{ success: true; id: number } | { success: false; error: string }> {
+    const result = await this.request<{ id: number }>(
+      `/repos/${opts.owner}/${opts.repo}/issues/comments/${opts.comment_id}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: opts.body }),
+      },
+    );
+    if (!result.success) return { success: false, error: result.error };
+    return { success: true, id: result.data.id };
+  }
+
   async setStatus(
     opts: SetStatusOpts,
   ): Promise<{ success: true } | { success: false; error: string }> {

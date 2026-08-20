@@ -74,9 +74,10 @@ supports two modes:
 - **Layer mode (minimal buy-in).** Stratum sits between your agents and GitHub.
   Import a GitHub repo and enable **bidirectional GitHub sync**: inbound webhooks
   keep the Stratum project current with pushes and PRs, and outbound sync
-  promotes a Stratum change to a GitHub PR with evaluation results posted as a PR
-  comment and commit status. Agents work through Stratum's gates; your team keeps
-  reviewing in GitHub PRs.
+  promotes a Stratum change to a GitHub PR. Whenever a change with a linked PR
+  is evaluated, the verdict is posted to the PR as a comment (edited in place on
+  re-evaluation) and a `stratum/evaluation` commit status. Agents work through
+  Stratum's gates; your team keeps reviewing in GitHub PRs.
 - **Alternative mode (full buy-in).** Stratum is the source of truth for repos,
   workspaces, and changes. No GitHub required — email magic links mean no
   external accounts at all.

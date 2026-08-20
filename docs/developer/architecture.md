@@ -379,31 +379,38 @@ app.post('/api/webhooks/github', async (c) => {
 
 ### Outbound Sync (Stratum → GitHub)
 
-**Push Change to PR:**
+**Promote Change to PR** (`POST /changes/:id/github-pr`): pushes the change's
+branch and creates the GitHub PR using the instance-wide `GITHUB_TOKEN`.
+
+**Evaluation verdict reporting** (`src/github/sync.ts`): after every evaluation
+of a change whose project has a GitHub source and which has a linked PR, the
+verdict is reported to GitHub — best-effort, so a GitHub failure never fails
+the evaluation:
+
 ```typescript
-async function pushToGitHub(change: Change): Promise<void> {
-  // Get or create GitHub PR
-  // Push workspace branch to GitHub
-  // Post evaluation results as PR comment
-  // Set commit status (pass/fail)
+async function reportEvaluationToGitHub(env, change, project, evaluation): Promise<void> {
+  // Gate: project must have a GitHub source AND the change a linked PR
+  // Post evaluation results as PR comment (upserted via changes.github_comment_id —
+  //   a re-evaluation edits the prior comment instead of posting a new one)
+  // Set commit status (context "stratum/evaluation", pass/fail) on the PR head
+  //   sha (falls back to the evaluated sha for changes mirrored verbatim)
 }
 ```
 
 **PR Comment Format:**
+
 ```markdown
-## Stratum Evaluation Results
+## ✅ Stratum Evaluation Results
 
-**Composite Score:** 0.92 ✅
+**Composite Score:** 92.0%
+**Status:** PASSED
 
-| Evaluator | Score | Status |
-|-----------|-------|--------|
-| Diff Check | 1.0 | ✅ Pass |
-| Unit Tests | 0.95 | ✅ Pass |
-| LLM Review | 0.82 | ✅ Pass |
+| Evaluator | Score | Status | Details |
+|-----------|-------|--------|---------|
+| secret_scan | 100.0% | ✅ | No secrets detected |
+| diff | 95.0% | ✅ | Diff passed all checks. |
 
-**Objective:** Fix the N+1 query in user loading
-
-[View detailed results in Stratum](https://stratum.dev/...)
+_Evaluation performed by [Stratum](https://stratum.dev)_
 ```
 
 ## Merge Queue
