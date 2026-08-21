@@ -338,6 +338,12 @@ export async function initAndPush(
   return ok(commitResult.data);
 }
 
+/**
+ * Clones the repository's `main` branch into an in-memory filesystem.
+ *
+ * @param opts - Controls whether the clone includes the full reachable history.
+ * @returns The in-memory filesystem and directory containing the cloned repository, or an error if cloning fails.
+ */
 export async function cloneRepo(
   remote: string,
   token: string,
@@ -1657,7 +1663,12 @@ export async function readRepoFiles(
   return ok(contents);
 }
 
-/** Every file (path → text contents) in the tree of one commit. Exported for tests. */
+/**
+ * Reads every file in a commit tree and decodes its contents as text.
+ *
+ * @param commitSha - The commit whose tree to read
+ * @returns A map of file paths to text contents, or an application error if the tree or any file cannot be read
+ */
 export async function readTreeAtCommit(
   fs: NodeFS,
   dir: string,

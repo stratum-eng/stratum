@@ -222,14 +222,14 @@ export interface ChangeCreationOutcome {
 }
 
 /**
- * Create a change from a workspace and synchronously run the full evaluation
- * suite, recording eval runs, costs, status, and events. Callers must have
- * already authorized the actor for project write and verified the workspace
- * belongs to the project and the project is not being deleted.
+ * Creates a change from a workspace and runs the complete evaluation flow synchronously.
  *
- * Errors preserve the underlying failure's statusCode (5xx for infrastructure
- * — D1 writes, token minting — 4xx otherwise) so HTTP front doors can map them
- * faithfully; once the change row exists, its id rides in the error context.
+ * Callers must authorize the actor for project writes and verify that the workspace belongs to
+ * the project and that the project is not being deleted. The change records provenance metadata,
+ * evaluation runs, costs, status, commit metadata, and lifecycle events.
+ *
+ * Failures preserve the underlying status code where applicable. After the change is created,
+ * returned errors include its identifier in the error context.
  */
 export async function createChangeWithEvaluation(
   env: Env,

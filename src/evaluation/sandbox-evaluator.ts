@@ -34,6 +34,13 @@ export type RepoFilesReader = (
   ref?: string,
 ) => Promise<Result<Map<string, string>, AppError>>;
 
+/**
+ * Calculates the proportion of passed tests from command output.
+ *
+ * @param stdout - Standard output from the test command
+ * @param stderr - Standard error from the test command
+ * @returns The passed-test ratio, or `null` when no usable test counts are found
+ */
 function parseTestOutput(stdout: string, stderr: string): number | null {
   const combined = `${stdout}\n${stderr}`;
 
@@ -56,12 +63,10 @@ function parseTestOutput(stdout: string, stderr: string): number | null {
 const NPM_LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json"] as const;
 
 /**
- * A lockfile means the dependency tree is already pinned, so `npm ci` installs
- * it verbatim — an evaluation score only means something if every run resolves
- * the same versions. Without one, `npm install` is the best available
- * (unpinned) approximation; without a package.json there is nothing to install,
- * because the repo is not an npm project. `--no-audit --no-fund` skip registry
- * round trips the evaluation has no use for.
+ * Selects the npm dependency installation command for a repository.
+ *
+ * @param files - Repository files used to detect `package.json` and npm lockfiles
+ * @returns The appropriate npm installation command, or `null` when no `package.json` exists
  */
 export function installCommandFor(files: ReadonlyMap<string, string>): string | null {
   if (!files.has("package.json")) return null;
