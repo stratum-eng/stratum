@@ -203,13 +203,11 @@ export function artifactsRepoNameFromRemote(remote: string): string | null {
 }
 
 /**
- * Mint a fresh, short-lived Artifacts token for a repo just before a git operation.
+ * Mints a short-lived token for an Artifacts repository.
  *
- * Artifacts tokens carry an embedded `?expires=` timestamp, so a token is only good for
- * about an hour after it's minted. Rather than persist one and watch it go stale (which
- * yields `403 Invalid or expired token`), every git operation mints its own token scoped
- * to what it needs (`read` for clone/fetch, `write` for push). The repo identity is
- * derived from the remote URL.
+ * @param remote - The Artifacts repository URL used to identify the repository
+ * @param scope - The token permission scope
+ * @returns The plaintext repository token, or an application error if the repository cannot be identified or the token cannot be minted
  */
 export async function freshRepoToken(
   artifacts: ArtifactsNamespace,
@@ -281,16 +279,9 @@ export async function pushMain(
 }
 
 /**
- * Pushes the local `main` branch to a branch on an external remote — e.g.
- * GitHub's `stratum/<changeId>` ref before a PR is opened (#189).
+ * Publishes the local `main` branch to a specified branch on an external remote.
  *
- * Auth is HTTP basic with the token as the password; GitHub accepts any
- * username alongside a token. `force` defaults to false because `remoteRef` is
- * caller-supplied and could name a branch this app does not own — a defaulted
- * force-push there would destroy someone else's work. Pass `force: true`
- * explicitly, and only when overwriting a ref Stratum owns (re-promotion).
- *
- * @param opts - Remote URL, target branch, authentication token, and optional force-push setting.
+ * @param opts - Remote URL, target branch name, authentication token, and optional force-push setting. Force-pushing is disabled by default.
  * @returns A successful result when the push completes, or an application error when it fails.
  */
 export async function pushBranchToRemote(
@@ -323,14 +314,11 @@ export async function pushBranchToRemote(
 }
 
 /**
- * Initializes a repository with the supplied files, commits them, and pushes the commit to `main`.
- *
- * Only valid against a remote with no history: this builds the root commit, so
- * running it on a populated repository would orphan whatever is already there.
+ * Creates a root commit from the supplied files and pushes it to the remote `main` branch.
  *
  * @param remote - The remote repository URL
  * @param token - The authentication token for the remote repository
- * @param files - Files to add to the initial commit, keyed by path
+ * @param files - Files to include in the root commit, keyed by path
  * @param message - The commit message
  * @param author - The commit author
  * @returns The SHA of the pushed commit
@@ -401,15 +389,14 @@ export async function initAndPush(
 /**
  * Clones the `main` branch of a repository into an in-memory filesystem.
  *
- * The whole tree lands in worker memory, which is what makes the depth choice
- * a real tradeoff rather than a preference — see the `fullHistory` branch at
- * the `depth` option for why backup needs full history and merges do not.
+ * By default, only the 50 most recent commits are cloned. Set `fullHistory`
+ * to `true` to clone the complete reachable history.
  *
  * @param remote - The repository URL to clone
- * @param token - The authentication token for the repository
+ * @param token - The repository authentication token
  * @param opts - Clone options
- * @param opts.fullHistory - Whether to clone the complete reachable history; otherwise, clone the most recent 50 commits
- * @returns The cloned filesystem and its working directory, or an application error
+ * @param opts.fullHistory - Whether to clone the complete reachable history
+ * @returns The cloned filesystem and working directory, or an application error
  */
 export async function cloneRepo(
   remote: string,

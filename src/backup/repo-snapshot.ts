@@ -34,12 +34,10 @@ interface WalkResult {
 }
 
 /**
- * Collect the FULL set of objects reachable from HEAD (every commit + its tree +
- * blobs, deduped) so the resulting pack is reachability-closed and restores to a
- * faithful repo (original tip sha, parents present). Aborts with a "too large"
- * skip once the running byte total exceeds `maxBytes`, before packing — the guard
- * bounds the pack we build, though a pathological repo can still OOM the clone.
- * Operates on an already-cloned fs so it is testable without Artifacts.
+ * Collects all Git objects reachable from the repository tip.
+ *
+ * @param maxBytes - Maximum cumulative object size before the repository is skipped as too large
+ * @returns The repository tip and deduplicated objects, an empty result for repositories without commits, a too-large result when the size limit is exceeded, or a Git error
  */
 export async function walkRepoObjects(
   fs: NodeFS,
@@ -102,14 +100,10 @@ export async function walkRepoObjects(
 /**
  * Builds a repository snapshot from walked objects and capture metadata.
  *
- * The manifest carries `tipSha` and the whole project record, not just an id,
- * because restore has to work without consulting live state — a snapshot must
- * stay restorable after the project entry has changed or been deleted.
- *
  * @param project - The project associated with the snapshot
- * @param walk - The walked objects and repository tip commit
+ * @param walk - The walked Git objects and repository tip commit
  * @param capturedAt - The snapshot capture timestamp
- * @returns The packed repository objects and their manifest
+ * @returns The packed repository objects and manifest containing project metadata, object counts, byte count, tip SHA, and capture timestamp
  */
 export function buildSnapshot(
   project: ProjectEntry,
