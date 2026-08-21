@@ -70,12 +70,11 @@ const policyInflight = new Map<string, Promise<EvalPolicy>>();
 const policyKvKey = (projectId: string) => `policy:${projectId}`;
 
 /**
- * Load a project's merge policy through a two-level cache so the hot merge paths
- * don't clone the repo just to read `.stratum/policy.yaml`:
- *   in-isolate Map  ->  KV (shared across isolates)  ->  clone (loadPolicy).
- * Request-coalesced per project. Gated on REPO_DO_ENABLED so tests always load
- * fresh (no KV access). The cache TTL bounds how long a branch-protection change
- * takes to apply on these paths. Throws if the read token can't be minted.
+ * Loads a project's merge policy using cached values when available.
+ *
+ * @param project - The project whose merge policy to load
+ * @returns The project's merge policy
+ * @throws If a repository read token cannot be created
  */
 async function loadMergePolicyCached(
   env: Env,
@@ -124,23 +123,10 @@ async function loadMergePolicyCached(
 const MAX_BASE_REF_LENGTH = 200;
 
 /**
- * Loose git branch-name validation for the PR `base` taken from the request
- * body: printable, no whitespace/control chars, none of git's forbidden
- * sequences. Rejecting here keeps garbage out of the GitHub API call.
+ * Validates a Git branch reference for use as a GitHub pull request base.
  *
- * git applies its per-component rules to every slash-separated component, not
- * just to the ref as a whole, so `release/.hidden` and `release/v1.lock` are
- * invalid even though the full string neither starts with `.` nor ends with
- * `.lock`.
- *
- * A bare `@` is rejected deliberately. git itself will happily create
- * `refs/heads/@` (verified against git 2.43), but `@` is its shorthand for
- * HEAD, so `git checkout @` resolves to HEAD rather than to the branch — the
- * name is ambiguous wherever it is used, and GitHub blocks ambiguous branch
- * names of its own accord. `@` inside a longer name (`feature/@/thing`) is
- * unambiguous and stays legal; only the `@{` reflog syntax is a hard error.
- * This is an allowlist for untrusted input, not a reimplementation of git's
- * parser, so erring toward rejection here is deliberate.
+ * @param ref - The branch reference to validate
+ * @returns `true` if the reference satisfies the supported Git branch-name rules, `false` otherwise.
  */
 function isValidBaseRef(ref: string): boolean {
   if (ref.length === 0 || ref.length > MAX_BASE_REF_LENGTH) return false;
@@ -1388,12 +1374,10 @@ interface GithubPr {
 }
 
 /**
- * A PR record is only usable if it can be persisted: `githubPrNumber` and
- * `githubPrUrl` are what a later re-promotion checks to decide the PR already
- * exists and skip creation entirely. Persisting a malformed record therefore
- * strands the change permanently — every retry short-circuits to a PR that
- * isn't there — so both the create response and the duplicate-head lookup are
- * validated through here before anything is stored.
+ * Validates whether a value contains an open, persistable GitHub pull request record.
+ *
+ * @param value - The value to validate.
+ * @returns `true` if the value has a positive safe-integer pull request number, an HTTPS URL, and an open state, `false` otherwise.
  */
 function isUsableGithubPr(value: unknown): value is GithubPr {
   if (typeof value !== "object" || value === null) return false;
@@ -1409,10 +1393,13 @@ function isUsableGithubPr(value: unknown): value is GithubPr {
 }
 
 /**
- * GitHub 422s PR creation with a "pull request already exists" error when the
- * head ref already has an open PR — a race between a concurrent promotion (or
- * a retry after `updateChangeStatus` failed post-creation) and the create
- * call above. Look up and reuse that PR instead of failing the request.
+ * Finds an existing open GitHub pull request for a branch.
+ *
+ * @param repo - The GitHub repository containing the pull request
+ * @param branch - The head branch to search for
+ * @param headers - Headers used for the GitHub API request
+ * @param logger - Logger used when the lookup fails
+ * @returns The first usable matching pull request, or `undefined` if none is available
  */
 async function findOpenPrForHead(
   repo: { owner: string; repo: string },

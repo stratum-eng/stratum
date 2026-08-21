@@ -244,9 +244,10 @@ export async function freshRepoToken(
 }
 
 /**
- * Push the local `main` ref (its objects + the ref) to an Artifacts remote.
- * Used by backup restore to publish a reconstructed repo. `force` overwrites a
- * non-empty remote (restore-over-existing behind an explicit opt-in).
+ * Publishes the local `main` branch to an Artifacts remote.
+ *
+ * @param opts - Controls whether an existing remote branch may be overwritten.
+ * @returns A successful result when the push completes, or an error result when the push fails.
  */
 export async function pushMain(
   remote: string,
@@ -276,12 +277,10 @@ export async function pushMain(
 }
 
 /**
- * Push the cloned repo's local `main` to an arbitrary branch on an external
- * remote (e.g. GitHub's `stratum/<changeId>` ref before a PR is opened, #189).
- * Auth is HTTP basic with the token as the password — GitHub accepts any
- * username alongside a token. `force` defaults to false since `remoteRef` is
- * caller-supplied and could name a non-Stratum-owned branch; pass `force: true`
- * explicitly when overwriting a ref this app owns (e.g. re-promotion).
+ * Pushes the local `main` branch to a specified branch on a remote repository.
+ *
+ * @param opts - Remote URL, destination branch, authentication token, and optional force-push setting.
+ * @returns An empty result on success or an application error on failure.
  */
 export async function pushBranchToRemote(
   fs: NodeFS,
@@ -312,6 +311,15 @@ export async function pushBranchToRemote(
   return ok(undefined);
 }
 
+/**
+ * Initializes a repository with the supplied files, commits them, and pushes the commit to `main`.
+ *
+ * @param remote - The repository URL to push to
+ * @param files - Files to include in the initial commit, keyed by path
+ * @param message - The commit message
+ * @param author - The commit author
+ * @returns The SHA of the pushed commit, or an application error
+ */
 export async function initAndPush(
   remote: string,
   token: string,
@@ -375,6 +383,15 @@ export async function initAndPush(
   return ok(commitResult.data);
 }
 
+/**
+ * Clones the `main` branch of a repository into an in-memory filesystem.
+ *
+ * @param remote - The repository URL to clone
+ * @param token - The authentication token for the repository
+ * @param opts - Controls whether the full reachable history is cloned; otherwise, the clone is limited to the most recent 50 commits
+ * @param httpClient - Optional HTTP client used for the clone
+ * @returns The in-memory filesystem and working directory, or an application error if cloning fails
+ */
 export async function cloneRepo(
   remote: string,
   token: string,

@@ -120,9 +120,11 @@ export function buildSnapshot(
 }
 
 /**
- * Snapshot one project's repo: clone (the sole Artifacts-coupled call), walk the
- * full reachable object set, and pack it with a manifest carrying the tip sha and
- * full identity. Returns a skip (not an error) for empty or over-cap repos.
+ * Creates a full-history backup snapshot for a project repository.
+ *
+ * @param project - The project whose repository is being captured
+ * @param capturedAt - The timestamp recorded in the snapshot manifest
+ * @returns A packed snapshot, or a skipped result for empty or oversized repositories
  */
 export async function snapshotRepo(
   env: Env,
