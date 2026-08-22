@@ -65,7 +65,7 @@ docs/
 ### For Everyone
 
 **Current Priorities & Roadmap:**
-- [TODO.md](/TODO.md) - Current priorities and what's being worked on
+- [TODO.md](../TODO.md) - Current priorities and what's being worked on
 - [CURRENT_CAPABILITIES.md](CURRENT_CAPABILITIES.md) - What the platform can do today
 - [REMAINING_WORK.md](REMAINING_WORK.md) - Known remaining work
 

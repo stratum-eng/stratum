@@ -713,13 +713,13 @@ src/
 
 ## Related Documents
 
-- [TODO.md](/TODO.md) - Current priorities and roadmap
-- [Database Schema](/docs/developer/database.md) - Detailed D1 schema
-- [Queue Processing](/docs/developer/queues.md) - Queue architecture
-- [Testing Guide](/docs/developer/testing.md) - Testing patterns
+- [TODO.md](../../TODO.md) - Current priorities and roadmap
+- [Database Schema](database.md) - Detailed D1 schema
+- [Queue Processing](queues.md) - Queue architecture
+- [Testing Guide](testing.md) - Testing patterns
 
 ## Archived Documents
 
 Historical documents preserved for reference:
-- [Code Review (2026-04-29)](/docs/archive/CODE_REVIEW.md)
-- [Architecture Audit (2026-05-02)](/docs/archive/AUDIT.md)
+- [Code Review (2026-04-29)](../archive/CODE_REVIEW.md)
+- [Architecture Audit (2026-05-02)](../archive/AUDIT.md)
