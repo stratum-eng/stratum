@@ -56,5 +56,5 @@ export type EvaluatorConfig =
       requiredPatterns?: string[];
     }
   | { type: "webhook"; url: string; secret?: string; timeoutMs?: number }
-  | { type: "sandbox"; command?: string; timeoutMs?: number }
+  | { type: "sandbox"; command?: string; timeoutMs?: number; installTimeoutMs?: number }
   | { type: "llm"; model?: string; threshold?: number; maxDiffChars?: number };

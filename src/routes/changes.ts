@@ -1251,7 +1251,11 @@ app.post("/changes/:id/evaluate", async (c) => {
     workspaceSha: workspaceHeadSha,
   } = diffResult.data;
 
-  const evaluators = buildEvaluators(c.env, policy, change.project, logger);
+  const evaluators = buildEvaluators(c.env, policy, change.project, logger, {
+    remote: workspace.remote,
+    token: workspaceReadToken.data,
+    ref: evaluatedSha,
+  });
   const { evalRuns, evalResult } = await runEvaluation(evaluators, diff, policy, logger);
 
   const recordResult = await recordEvalRuns(c.env.DB, logger, id, evalRuns);

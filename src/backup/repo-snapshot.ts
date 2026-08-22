@@ -149,9 +149,7 @@ export async function snapshotRepo(
   // bounded/streaming fetch that aborts mid-clone would be the real fix (tracked
   // as a follow-up); for now MAX_BACKUP_BYTES should be set well under the
   // Worker's memory budget so a normal repo never approaches it.
-  const clone = await cloneRepo(project.remote, token.data, logger, undefined, {
-    fullHistory: true,
-  });
+  const clone = await cloneRepo(project.remote, token.data, logger, { fullHistory: true });
   if (!clone.success) return err(clone.error);
 
   const walk = await walkRepoObjects(clone.data.fs, clone.data.dir, maxBytes, logger);

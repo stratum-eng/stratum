@@ -5,6 +5,7 @@ import type { EvalPolicy } from "../src/evaluation/types";
 import { getChangeCostSummary, recordCosts } from "../src/storage/costs";
 import type { AiBinding, SandboxBinding } from "../src/types";
 import type { Logger } from "../src/utils/logger";
+import { ok } from "../src/utils/result";
 
 const mockLogger: Logger = {
   trace: vi.fn(),
@@ -162,7 +163,15 @@ describe("evaluator cost reporting", () => {
     };
     const policy: EvalPolicy = { evaluators: [{ type: "sandbox", command: "npm test" }] };
 
-    const result = await new SandboxEvaluator(sandbox).evaluate("diff", policy, mockLogger);
+    const repo = { remote: "https://artifacts.example/ws.git", token: "t", ref: "a".repeat(40) };
+    const readFiles = vi
+      .fn()
+      .mockResolvedValue(ok(new Map([["src/index.ts", "export const x = 1;"]])));
+    const result = await new SandboxEvaluator(sandbox, repo, readFiles).evaluate(
+      "diff",
+      policy,
+      mockLogger,
+    );
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.costs?.[0]?.kind).toBe("sandbox_ms");
