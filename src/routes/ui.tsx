@@ -11,6 +11,7 @@ import {
   getCommitLog,
   getDiffBetweenRepos,
   listFilesInRepo,
+  listRepoTags,
   readFileFromRepo,
 } from "../storage/git-ops";
 import { getImportProgress } from "../storage/imports";
@@ -40,6 +41,7 @@ import { NewProjectPage } from "../ui/pages/new-project";
 import { RepoPage } from "../ui/pages/repo";
 import { SettingsPage } from "../ui/pages/settings";
 import { SyncPage } from "../ui/pages/sync";
+import { TagsPage } from "../ui/pages/tags";
 import { WebhooksPage } from "../ui/pages/webhooks";
 import { WorkspacesPage } from "../ui/pages/workspaces";
 import { canReadProject, canWriteProject, filterMemberProjects } from "../utils/authz";
@@ -821,7 +823,75 @@ app.get("/:namespace/:slug/activity", async (c) => {
   );
 });
 
-// Shared loader for issue pages: validates path, loads user + project, checks read access.
+// GET /:namespace/:slug/tags — Tags listing (annotated + lightweight, #182)
+app.get("/:namespace/:slug/tags", async (c) => {
+  const { namespace, slug } = c.req.param();
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const logger = createLogger({ path: c.req.path, userId });
+
+  if (!isValidNamespace(namespace) || !isValidSlug(slug)) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">Invalid project path.</div>,
+      400,
+    );
+  }
+
+  const [userResult, projectResult] = await Promise.all([
+    getCurrentUser(c, logger),
+    getProjectByPath(c.env.STATE, namespace, slug, logger),
+  ]);
+
+  if (!projectResult.success) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Project '{namespace}/{slug}' not found.
+      </div>,
+      404,
+    );
+  }
+  const project = projectResult.data;
+
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+    return c.html(
+      <div style="padding:2rem;font-family:monospace;color:#f87171;">
+        Project '{namespace}/{slug}' not found.
+      </div>,
+      404,
+    );
+  }
+
+  const tagsError = (
+    <div style="padding:2rem;font-family:monospace;color:#f87171;">
+      Error loading tags. Please try again.
+    </div>
+  );
+  const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
+  if (!readToken.success) {
+    logger.error("Failed to mint read token for tags page", readToken.error);
+    return c.html(tagsError, 500);
+  }
+  const tagsResult = await listRepoTags(project.remote, readToken.data, logger);
+  if (!tagsResult.success) {
+    logger.error("Failed to list tags", tagsResult.error);
+    return c.html(tagsError, 500);
+  }
+
+  return c.html(
+    <TagsPage
+      project={{ name: project.name, namespace: project.namespace, slug: project.slug }}
+      tags={tagsResult.data}
+      user={userResult}
+    />,
+  );
+});
+
+/**
+ * Loads the authenticated user and project context for an issue page after validating the project path and read access.
+ *
+ * @param c - The request context containing route parameters, authentication identifiers, environment services, and request metadata.
+ * @returns The project page context, or an error status when the path is invalid or the project is unavailable or inaccessible.
+ */
 async function loadIssuePageContext(c: {
   env: Env;
   get(key: "userId" | "agentOwnerId"): string | undefined;

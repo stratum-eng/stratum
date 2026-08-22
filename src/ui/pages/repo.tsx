@@ -201,6 +201,9 @@ export const RepoPage: FC<RepoProps> = ({
           <a class="btn" href={`/${project.namespace}/${project.slug}/activity`}>
             Activity
           </a>
+          <a class="btn" href={`/${project.namespace}/${project.slug}/tags`}>
+            Tags
+          </a>
           {isOwner && (
             <a class="btn" href={`/${project.namespace}/${project.slug}/webhooks`}>
               Webhooks

@@ -250,7 +250,9 @@ export async function freshRepoToken(
  *
  * `force` is opt-in because it overwrites the remote's `main` outright — the
  * project's canonical branch — so defaulting it on would discard any commits
- * pushed by someone else since this clone was taken.
+ * pushed by someone else since this clone was taken. Backup restore is the
+ * caller that does pass it, to publish a reconstructed repo over an existing
+ * one; `pushTags` mirrors the same opt-in for the same reason.
  *
  * @param opts - Controls whether an existing remote `main` branch may be overwritten.
  * @returns No value on success, or an application error if the push fails.
@@ -278,6 +280,66 @@ export async function pushMain(
   if (!res.success) {
     logger.error("Failed to push main during restore", res.error, { remote });
     return err(new ExternalServiceError("Git", "Failed to push during restore", res.error));
+  }
+  return ok(undefined);
+}
+
+/**
+ * Pushes local `refs/tags/*` to an Artifacts remote.
+ *
+ * Runs after `pushMain` during backup restore so a restored repo carries its
+ * tags; `force` mirrors the same restore-over-existing opt-in `pushMain` uses,
+ * for the same reason.
+ *
+ * @param tagNames - The tag names to push.
+ * @param opts - Controls whether existing remote tags may be replaced.
+ * @returns An empty result on success, or an error describing the first failed tag push.
+ */
+export async function pushTags(
+  remote: string,
+  token: string,
+  fs: NodeFS,
+  dir: string,
+  tagNames: string[],
+  logger: Logger,
+  opts?: { force?: boolean },
+): Promise<Result<void, AppError>> {
+  // Tags are pushed one ref at a time, so a mid-list failure leaves earlier tags
+  // on the remote. Report exactly which ones landed: a forced restore over an
+  // existing repo is not rolled back, and an operator (or a retry, which is
+  // idempotent for already-pushed tags) needs to know how far it got.
+  const pushedTags: string[] = [];
+  for (const [index, name] of tagNames.entries()) {
+    const ref = `refs/tags/${name}`;
+    const res = await fromPromise(
+      git.push({
+        fs,
+        dir,
+        http,
+        url: remote,
+        ref,
+        remoteRef: ref,
+        onAuth: makeAuth(token),
+        force: opts?.force ?? false,
+      }),
+    );
+    if (!res.success) {
+      logger.error("Failed to push tag during restore", res.error, {
+        remote,
+        ref,
+        failedTag: name,
+        pushedTags,
+        unpushedTags: tagNames.slice(index + 1),
+      });
+      return err(
+        new ExternalServiceError(
+          "Git",
+          `Failed to push tag ${name} during restore (${pushedTags.length}/${tagNames.length} tags pushed before the failure)`,
+          res.error,
+        ),
+      );
+    }
+    pushedTags.push(name);
   }
   return ok(undefined);
 }
@@ -411,13 +473,14 @@ export async function initAndPush(
  * @param token - The authentication token for the repository
  * @param opts - Clone options
  * @param opts.fullHistory - Whether to clone the complete reachable history; otherwise, clone the most recent 50 commits
+ * @param opts.includeTags - Whether to follow the clone with a fetch of `refs/tags/*`; a `singleBranch` clone never brings tags
  * @returns The cloned filesystem and its working directory, or an application error
  */
 export async function cloneRepo(
   remote: string,
   token: string,
   logger: Logger,
-  opts: { fullHistory?: boolean } = {},
+  opts: { fullHistory?: boolean; includeTags?: boolean } = {},
   httpClient: HttpClient = http,
 ): Promise<Result<{ fs: NodeFS; dir: string }, AppError>> {
   logger.debug("Cloning repository", { remote, fullHistory: opts.fullHistory ?? false });
@@ -443,6 +506,30 @@ export async function cloneRepo(
   if (!cloneResult.success) {
     logger.error("Failed to clone repository", cloneResult.error, { remote });
     return err(new ExternalServiceError("Git", "Failed to clone repository", cloneResult.error));
+  }
+
+  // isomorphic-git's singleBranch clone requests ONLY the branch tip — tag refs
+  // are neither advertised locally nor are their objects fetched. Callers that
+  // need tags (tags listing, backup) opt in to a follow-up fetch of every remote
+  // ref with `tags: true`, which writes refs/tags/* and pulls the tag objects
+  // plus their targets (depth-limited unless fullHistory).
+  if (opts.includeTags) {
+    const tagFetch = await fromPromise(
+      git.fetch({
+        fs,
+        http: httpClient,
+        dir: DIR,
+        url: remote,
+        singleBranch: false,
+        tags: true,
+        ...(opts.fullHistory ? {} : { depth: 50 }),
+        onAuth: makeAuth(token),
+      }),
+    );
+    if (!tagFetch.success) {
+      logger.error("Failed to fetch tags after clone", tagFetch.error, { remote });
+      return err(new ExternalServiceError("Git", "Failed to fetch tags", tagFetch.error));
+    }
   }
 
   logger.info("Successfully cloned repository", { remote });
@@ -2275,4 +2362,152 @@ export function buildUnifiedDiff(
   }
 
   return diffParts.join("\n");
+}
+
+/** A tag as listed from a cloned repo (see `collectRepoTags`). */
+export interface RepoTagEntry {
+  /** Tag name without the refs/tags/ prefix. */
+  name: string;
+  /** What refs/tags/<name> points at: the tag object for annotated tags, the
+   * target itself for lightweight ones. */
+  oid: string;
+  /** The peeled target (normally a commit sha), or null when it could not be
+   * determined (the tag object itself is missing locally). */
+  targetSha: string | null;
+  annotated: boolean;
+  /** Annotated-tag message (first tag object in a peel chain). */
+  message?: string;
+  /** Annotated-tag tagger as "Name <email>". */
+  tagger?: string;
+  /** Annotated-tag tagger timestamp (epoch seconds). */
+  timestamp?: number;
+  /** True when the tag's target object is not present locally — e.g. it points
+   * outside the shallow fetch window. The tag is still listed (degraded), never
+   * an error. */
+  unresolvable: boolean;
+}
+
+/**
+ * List every refs/tags/* in an already-cloned repo, dereferencing annotated tags
+ * to their target commit. Per-tag object reads are individually guarded: a tag
+ * whose object (or target) is missing locally — a shallow clone can drop a
+ * target outside the depth window — is returned with `unresolvable: true`
+ * rather than failing the whole listing.
+ */
+export async function collectRepoTags(
+  fs: NodeFS,
+  dir: string,
+  logger?: Logger,
+): Promise<RepoTagEntry[]> {
+  const names = await git.listTags({ fs, dir });
+  const entries: RepoTagEntry[] = [];
+  for (const name of [...names].sort()) {
+    let oid: string;
+    try {
+      oid = await git.resolveRef({ fs, dir, ref: `refs/tags/${name}` });
+    } catch (error) {
+      // Ref file unreadable — nothing meaningful to show for this tag. Logged so
+      // a corrupt ref store is distinguishable from a repo that simply has none.
+      logger?.warn("Skipping tag with unresolvable ref", {
+        tag: name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
+    const entry: RepoTagEntry = {
+      name,
+      oid,
+      targetSha: null,
+      annotated: false,
+      unresolvable: false,
+    };
+    // Peel annotated tags (a chain, in the degenerate tag-of-tag case) down to
+    // the target object. `current` lives outside the try so a missing TARGET
+    // still yields the intended sha from the tag object we did read.
+    let current = oid;
+    try {
+      // Peel until a non-tag target or a repeated oid (cycle) is hit — a
+      // visited-oid set rather than a fixed hop cap so a valid, unusually long
+      // tag-of-tag chain still resolves instead of being marked unresolvable.
+      const visited = new Set<string>();
+      let hop = 0;
+      while (entry.targetSha === null) {
+        if (visited.has(current)) break;
+        visited.add(current);
+        const obj = await git.readObject({ fs, dir, oid: current });
+        if (obj.type === "tag") {
+          const tag = obj.object as {
+            object: string;
+            message?: string;
+            tagger?: { name: string; email: string; timestamp: number };
+          };
+          entry.annotated = true;
+          if (hop === 0) {
+            if (typeof tag.message === "string") entry.message = tag.message.trim();
+            if (tag.tagger) {
+              entry.tagger = `${tag.tagger.name} <${tag.tagger.email}>`;
+              entry.timestamp = tag.tagger.timestamp;
+            }
+          }
+          current = tag.object;
+          hop++;
+        } else {
+          entry.targetSha = current;
+        }
+      }
+      // A peel chain that never terminated (cycle) is unresolvable too.
+      if (entry.targetSha === null) entry.unresolvable = true;
+    } catch (error) {
+      // The object at `current` is missing locally. If we peeled at least one
+      // tag object, `current` names the intended target — record it, degraded.
+      // Expected for a target outside the shallow window; logged at debug so a
+      // corrupt object store is still traceable.
+      logger?.debug("Tag target not present locally; listing it as unresolvable", {
+        tag: name,
+        oid: current,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      entry.targetSha = current === oid ? null : current;
+      entry.unresolvable = true;
+    }
+    entries.push(entry);
+  }
+  return entries;
+}
+
+/**
+ * Lists the tags in a repository, including entries whose targets cannot be
+ * resolved from the cloned history.
+ *
+ * The clone is shallow but fetches tag refs, so a tag whose target lies outside
+ * the shallow window is reported with `unresolvable: true` rather than raising:
+ * a tag pointing into unfetched history is expected here, not a failure, and
+ * erroring would make the whole listing unavailable because of one old tag.
+ * See `collectRepoTags`.
+ *
+ * @param remote - The repository's remote URL
+ * @param token - The authentication token for the remote
+ * @returns The repository's tag entries
+ */
+export async function listRepoTags(
+  remote: string,
+  token: string,
+  logger: Logger,
+  httpClient: HttpClient = http,
+): Promise<Result<RepoTagEntry[], AppError>> {
+  logger.debug("Listing repo tags", { remote });
+
+  const cloneResult = await cloneRepo(remote, token, logger, { includeTags: true }, httpClient);
+  if (!cloneResult.success) return err(cloneResult.error);
+
+  const collected = await fromPromise(
+    collectRepoTags(cloneResult.data.fs, cloneResult.data.dir, logger),
+  );
+  if (!collected.success) {
+    logger.error("Failed to collect repo tags", collected.error, { remote });
+    return err(new ExternalServiceError("Git", "Failed to list tags", collected.error));
+  }
+
+  logger.info("Successfully listed repo tags", { remote, tagCount: collected.data.length });
+  return ok(collected.data);
 }

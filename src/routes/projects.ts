@@ -12,6 +12,7 @@ import {
   importFromGitHub,
   initAndPush,
   listFilesInRepo,
+  listRepoTags,
 } from "../storage/git-ops";
 import { buildAuthConfig } from "../storage/git-providers";
 import {
@@ -945,6 +946,52 @@ app.get("/:namespace/:slug/log", async (c) => {
     slug,
     path: `/${namespace}/${slug}`,
     log: logResult.data,
+  });
+});
+
+// GET /projects/:namespace/:slug/tags - List git tags (annotated + lightweight).
+// Annotated tags are dereferenced to their target commit; a tag whose target
+// lies outside the shallow clone window comes back with `unresolvable: true`
+// rather than failing the listing (#182).
+app.get("/:namespace/:slug/tags", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const { namespace, slug } = c.req.param();
+
+  const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") {
+      return notFound("Project", `${namespace}/${slug}`);
+    }
+    logger.error("Failed to get project", projectResult.error);
+    return internalError(projectResult.error.message);
+  }
+  const project = projectResult.data;
+
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+    return notFound("Project", `${project.namespace}/${project.slug}`);
+
+  const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
+  if (!readToken.success) return internalError(readToken.error.message);
+  const tagsResult = await listRepoTags(project.remote, readToken.data, logger);
+  if (!tagsResult.success) {
+    logger.error("Failed to list tags", tagsResult.error);
+    return internalError(tagsResult.error.message);
+  }
+
+  logger.info("Tags retrieved", { namespace, slug, tagCount: tagsResult.data.length });
+  return ok({
+    namespace,
+    slug,
+    path: `/${namespace}/${slug}`,
+    tags: tagsResult.data,
   });
 });
 
