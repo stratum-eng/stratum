@@ -5,7 +5,33 @@ interface FileTreeProps {
   nodes: FileTreeNode[];
   namespace: string;
   slug: string;
+  /** Per-request CSP nonce — required so the toggle script passes `script-src`. */
+  nonce: string;
 }
+
+/**
+ * Expand/collapse-all wiring for `.file-tree-toggle-btn`, CSP-safe (no inline
+ * handler). Delegated from `document` behind a global flag so rendering more
+ * than one FileTree on a page never double-binds the buttons.
+ */
+const FILE_TREE_SCRIPT = `
+(function () {
+  if (window.__stratumFileTreeWired) return;
+  window.__stratumFileTreeWired = true;
+  document.addEventListener('click', function (e) {
+    var target = e.target;
+    if (!target || !target.closest) return;
+    var btn = target.closest('.file-tree-toggle-btn');
+    if (!btn) return;
+    var t = btn.closest('.file-tree');
+    if (!t) return;
+    var ds = t.querySelectorAll('details');
+    var open = Array.from(ds).some(function (d) { return d.open; });
+    ds.forEach(function (d) { d.open = !open; });
+    btn.textContent = open ? 'Expand all' : 'Collapse all';
+  });
+})();
+`;
 
 interface NodeProps {
   node: FileTreeNode;
@@ -42,7 +68,7 @@ const FileTreeNodeItem: FC<NodeProps> = ({ node, namespace, slug, depth }) => {
   );
 };
 
-export const FileTree: FC<FileTreeProps> = ({ nodes, namespace, slug }) => {
+export const FileTree: FC<FileTreeProps> = ({ nodes, namespace, slug, nonce }) => {
   if (nodes.length === 0) {
     return (
       <div class="empty-state">
@@ -54,17 +80,14 @@ export const FileTree: FC<FileTreeProps> = ({ nodes, namespace, slug }) => {
   return (
     <div class="file-tree">
       <div class="file-tree-controls">
-        <button
-          type="button"
-          class="file-tree-toggle-btn"
-          onclick="(function(btn){var t=btn.closest('.file-tree');var ds=t.querySelectorAll('details');var open=Array.from(ds).some(function(d){return d.open});ds.forEach(function(d){d.open=!open});btn.textContent=open?'Expand all':'Collapse all'})(this)"
-        >
+        <button type="button" class="file-tree-toggle-btn">
           Expand all
         </button>
       </div>
       {nodes.map((node) => (
         <FileTreeNodeItem key={node.path} node={node} namespace={namespace} slug={slug} depth={0} />
       ))}
+      <script nonce={nonce} dangerouslySetInnerHTML={{ __html: FILE_TREE_SCRIPT }} />
     </div>
   );
 };

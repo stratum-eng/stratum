@@ -18,6 +18,7 @@ const baseProps = {
   importProgress: null,
   syncStatus: null,
   canSync: false,
+  nonce: "test-nonce",
 };
 
 describe("RepoPage — sync card provider label", () => {

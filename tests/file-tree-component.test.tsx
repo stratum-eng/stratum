@@ -3,29 +3,39 @@ import { describe, expect, it } from "vitest";
 import { FileTree } from "../src/ui/components/file-tree";
 import { buildFileTree } from "../src/ui/file-tree";
 
+const NONCE = "test-nonce";
+
 describe("FileTree component", () => {
   it("renders empty state when nodes is empty", () => {
-    const html = renderToString(<FileTree nodes={[]} namespace="@user" slug="repo" />);
+    const html = renderToString(
+      <FileTree nodes={[]} namespace="@user" slug="repo" nonce={NONCE} />,
+    );
     expect(html).toContain("No files");
   });
 
   it("renders a file as a link with correct href", () => {
     const nodes = buildFileTree(["README.md"]);
-    const html = renderToString(<FileTree nodes={nodes} namespace="@user" slug="repo" />);
+    const html = renderToString(
+      <FileTree nodes={nodes} namespace="@user" slug="repo" nonce={NONCE} />,
+    );
     expect(html).toContain('href="/@user/repo/blob/README.md"');
     expect(html).toContain("README.md");
   });
 
   it("percent-encodes spaces in file paths", () => {
     const nodes = buildFileTree(["my file.ts"]);
-    const html = renderToString(<FileTree nodes={nodes} namespace="@user" slug="repo" />);
+    const html = renderToString(
+      <FileTree nodes={nodes} namespace="@user" slug="repo" nonce={NONCE} />,
+    );
     expect(html).toContain("my%20file.ts");
     expect(html).not.toContain('href="/@user/repo/blob/my file.ts"');
   });
 
   it("renders a directory as a details element with summary", () => {
     const nodes = buildFileTree(["src/index.ts"]);
-    const html = renderToString(<FileTree nodes={nodes} namespace="@user" slug="repo" />);
+    const html = renderToString(
+      <FileTree nodes={nodes} namespace="@user" slug="repo" nonce={NONCE} />,
+    );
     expect(html).toContain("<details");
     expect(html).toContain("<summary");
     expect(html).toContain("src");
@@ -33,27 +43,35 @@ describe("FileTree component", () => {
 
   it("all dirs are collapsed by default (no open attribute)", () => {
     const nodes = buildFileTree(["src/index.ts"]);
-    const html = renderToString(<FileTree nodes={nodes} namespace="@user" slug="repo" />);
+    const html = renderToString(
+      <FileTree nodes={nodes} namespace="@user" slug="repo" nonce={NONCE} />,
+    );
     expect(html).not.toMatch(/<details[^>]*open[^>]*>/);
   });
 
   it("renders collapse/expand all button", () => {
     const nodes = buildFileTree(["src/index.ts"]);
-    const html = renderToString(<FileTree nodes={nodes} namespace="@user" slug="repo" />);
+    const html = renderToString(
+      <FileTree nodes={nodes} namespace="@user" slug="repo" nonce={NONCE} />,
+    );
     expect(html).toContain("file-tree-toggle-btn");
     expect(html).toContain("Expand all");
   });
 
   it("escapes special characters in file names", () => {
     const nodes = buildFileTree(["<script>.ts"]);
-    const html = renderToString(<FileTree nodes={nodes} namespace="@user" slug="repo" />);
+    const html = renderToString(
+      <FileTree nodes={nodes} namespace="@user" slug="repo" nonce={NONCE} />,
+    );
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
   });
 
   it("renders multiple files under a shared directory", () => {
     const nodes = buildFileTree(["src/a.ts", "src/b.ts"]);
-    const html = renderToString(<FileTree nodes={nodes} namespace="@user" slug="repo" />);
+    const html = renderToString(
+      <FileTree nodes={nodes} namespace="@user" slug="repo" nonce={NONCE} />,
+    );
     expect(html).toContain("src/a.ts");
     expect(html).toContain("src/b.ts");
   });

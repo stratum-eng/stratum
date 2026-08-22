@@ -53,9 +53,11 @@ interface SyncPageProps {
     error?: string;
   }>;
   user?: { id: string; email: string; username: string } | null;
+  /** Per-request CSP nonce — required so the page script passes `script-src`. */
+  nonce: string;
 }
 
-export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory, user }) => {
+export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory, user, nonce }) => {
   const isSyncing = syncStatus.lastSyncStatus === "in_progress";
   const hasError = syncStatus.lastSyncStatus === "failed";
   const hasUpdates =
@@ -110,9 +112,9 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory, 
               <div class="status-actions">
                 {!isSyncing && (
                   <form
+                    id="sync-form"
                     method="post"
                     action={`/api/projects/${project.namespace}/${project.slug}/sync`}
-                    onsubmit="event.preventDefault(); handleSyncSubmit(this);"
                   >
                     <button
                       type="submit"
@@ -178,18 +180,18 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory, 
           <div class="card auto-sync-card">
             <h3>Auto-Sync Settings</h3>
             <form
+              id="sync-settings-form"
               method="post"
               action={`/api/projects/${project.namespace}/${project.slug}/sync/settings`}
               class="auto-sync-form"
-              onsubmit="event.preventDefault(); handleSettingsSubmit(this);"
             >
               <div class="form-group">
                 <label class="checkbox-label">
                   <input
                     type="checkbox"
+                    id="autoSyncEnabled"
                     name="autoSyncEnabled"
                     checked={syncStatus.autoSyncEnabled}
-                    onchange="toggleSyncFrequency(this)"
                   />
                   Enable automatic sync
                 </label>
@@ -287,8 +289,9 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory, 
           )}
         </div>
 
-        {/* Client-side JavaScript for form handling */}
+        {/* Client-side JavaScript for form handling (nonce'd — CSP script-src) */}
         <script
+          nonce={nonce}
           dangerouslySetInnerHTML={{
             __html: `
               async function handleSyncSubmit(form) {
@@ -446,6 +449,31 @@ export const SyncPage: FC<SyncPageProps> = ({ project, syncStatus, syncHistory, 
                   select.disabled = !checkbox.checked;
                 }
               }
+
+              // Event wiring (replaces the former inline onsubmit/onchange
+              // attributes, which a nonce-based script-src would block).
+              (function () {
+                var syncForm = document.getElementById('sync-form');
+                if (syncForm) {
+                  syncForm.addEventListener('submit', function (event) {
+                    event.preventDefault();
+                    handleSyncSubmit(syncForm);
+                  });
+                }
+                var settingsForm = document.getElementById('sync-settings-form');
+                if (settingsForm) {
+                  settingsForm.addEventListener('submit', function (event) {
+                    event.preventDefault();
+                    handleSettingsSubmit(settingsForm);
+                  });
+                }
+                var autoSyncCheckbox = document.getElementById('autoSyncEnabled');
+                if (autoSyncCheckbox) {
+                  autoSyncCheckbox.addEventListener('change', function () {
+                    toggleSyncFrequency(autoSyncCheckbox);
+                  });
+                }
+              })();
             `,
           }}
         />

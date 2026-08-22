@@ -495,6 +495,7 @@ app.get("/", (c) => {
 
         {!success && (
           <script
+            nonce={c.get("cspNonce") ?? ""}
             dangerouslySetInnerHTML={{
               __html: SIGNUP_SCRIPT,
             }}

@@ -156,7 +156,7 @@ app.get("/new", async (c) => {
   }
 
   logger.debug("Rendering new project page");
-  return c.html(<NewProjectPage user={user} />);
+  return c.html(<NewProjectPage user={user} nonce={c.get("cspNonce") ?? ""} />);
 });
 
 async function loadAgentSummaries(
@@ -425,6 +425,7 @@ app.get("/p/:name", async (c) => {
       syncStatus={syncStatus}
       canSync={canSync}
       isOwner={isOwner}
+      nonce={c.get("cspNonce") ?? ""}
     />,
   );
 });
@@ -1166,6 +1167,7 @@ app.get("/:namespace/:slug/sync", async (c) => {
       syncStatus={syncStatus}
       syncHistory={[]}
       user={userResult}
+      nonce={c.get("cspNonce") ?? ""}
     />,
   );
 });
@@ -1426,6 +1428,7 @@ app.get("/:namespace/:slug", async (c) => {
       syncStatus={syncStatus}
       canSync={canSync}
       isOwner={isOwner}
+      nonce={c.get("cspNonce") ?? ""}
     />,
   );
 });

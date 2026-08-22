@@ -29,3 +29,13 @@ export function escapeHtml(text: string): string {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
+
+/**
+ * JSON-encode a value for interpolation into an inline `<script>` body.
+ * `JSON.stringify` alone does not escape `<`, so a value containing
+ * `</script>` would terminate the script tag early and let the rest be
+ * parsed as HTML — escape it to `<` so the string stays inert.
+ */
+export function serializeForScript(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}

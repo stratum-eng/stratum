@@ -97,6 +97,8 @@ interface RepoProps {
   } | null;
   canSync?: boolean;
   isOwner?: boolean;
+  /** Per-request CSP nonce, threaded to every script-rendering child. */
+  nonce: string;
 }
 
 function getProviderIcon(provider?: GitProvider): string {
@@ -156,6 +158,7 @@ export const RepoPage: FC<RepoProps> = ({
   syncStatus,
   canSync,
   isOwner,
+  nonce,
 }) => {
   const hasSource = !!project.sourceUrl;
   const isSyncing = project.lastSyncStatus === "in_progress";
@@ -319,6 +322,7 @@ export const RepoPage: FC<RepoProps> = ({
           errors={importProgress.errors}
           sourceUrl={importProgress.sourceUrl}
           branch={importProgress.branch}
+          nonce={nonce}
         />
       )}
 
@@ -330,6 +334,7 @@ export const RepoPage: FC<RepoProps> = ({
               nodes={buildFileTree(files)}
               namespace={project.namespace}
               slug={project.slug}
+              nonce={nonce}
             />
           </div>
         </div>

@@ -1,10 +1,12 @@
 /**
  * SEC-7: response security headers. The UI/API carry a conservative header set
- * and a non-`script-src` CSP (inline handlers in the server-rendered UI must
- * keep working). Git smart-HTTP responses are left untouched.
+ * and a nonce-based `script-src` CSP (issue #161) — every inline script the UI
+ * renders carries the per-request nonce. Git smart-HTTP responses are left
+ * untouched.
  */
 import { describe, expect, it, vi } from "vitest";
 import app from "../src/index";
+import { contentSecurityPolicy, generateCspNonce } from "../src/middleware/security-headers";
 import type { Env } from "../src/types";
 
 vi.mock("../src/storage/users", () => ({
@@ -38,16 +40,54 @@ describe("SEC-7: security headers", () => {
     expect(csp).toContain("base-uri 'self'");
   });
 
-  it("restricts form targets and framing without touching scripts", async () => {
+  it("restricts form targets and framing", async () => {
     const res = await app.fetch(new Request("http://localhost/health"), makeEnv());
     const csp = res.headers.get("Content-Security-Policy");
     expect(csp).toContain("form-action 'self'");
     expect(csp).toContain("frame-src 'none'");
   });
 
-  it("ships no script-src directive (inline UI handlers must keep working; issue #161)", async () => {
+  it("ships a nonce-based script-src directive (issue #161)", async () => {
     const res = await app.fetch(new Request("http://localhost/health"), makeEnv());
-    expect(res.headers.get("Content-Security-Policy")).not.toContain("script-src");
+    const csp = res.headers.get("Content-Security-Policy") ?? "";
+    // Base64 nonce of 16 random bytes (24 chars with padding).
+    expect(csp).toMatch(/script-src 'nonce-[A-Za-z0-9+/]{22}=='/);
+  });
+
+  it("uses a fresh nonce per request", async () => {
+    const extract = (csp: string | null) => /'nonce-([^']+)'/.exec(csp ?? "")?.[1];
+    const first = await app.fetch(new Request("http://localhost/health"), makeEnv());
+    const second = await app.fetch(new Request("http://localhost/health"), makeEnv());
+    const a = extract(first.headers.get("Content-Security-Policy"));
+    const b = extract(second.headers.get("Content-Security-Policy"));
+    expect(a).toBeTruthy();
+    expect(b).toBeTruthy();
+    expect(a).not.toBe(b);
+  });
+
+  it("never falls back to 'unsafe-inline' (or 'strict-dynamic'/'unsafe-eval')", async () => {
+    const res = await app.fetch(new Request("http://localhost/health"), makeEnv());
+    const csp = res.headers.get("Content-Security-Policy") ?? "";
+    expect(csp).not.toContain("unsafe-inline");
+    expect(csp).not.toContain("unsafe-eval");
+    expect(csp).not.toContain("strict-dynamic");
+  });
+
+  it("generateCspNonce returns unique, base64, 128-bit values", () => {
+    const a = generateCspNonce();
+    const b = generateCspNonce();
+    expect(a).toMatch(/^[A-Za-z0-9+/]{22}==$/);
+    expect(a).not.toBe(b);
+  });
+
+  it("contentSecurityPolicy embeds the given nonce and keeps the existing directives", () => {
+    const csp = contentSecurityPolicy("abc123==");
+    expect(csp).toContain("script-src 'nonce-abc123=='");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("object-src 'none'");
+    expect(csp).toContain("base-uri 'self'");
+    expect(csp).toContain("form-action 'self'");
+    expect(csp).toContain("frame-src 'none'");
   });
 
   it("applies the same CSP to 500 error responses (error boundary parity)", async () => {
@@ -59,6 +99,9 @@ describe("SEC-7: security headers", () => {
     expect(csp).toContain("form-action 'self'");
     expect(csp).toContain("frame-src 'none'");
     expect(csp).toContain("frame-ancestors 'none'");
+    // The error boundary re-asserts headers on the same context, so the 500's
+    // script-src still carries the request's (single) nonce.
+    expect(csp).toMatch(/script-src 'nonce-[A-Za-z0-9+/]{22}=='/);
   });
 
   it("sets HSTS only over HTTPS", async () => {

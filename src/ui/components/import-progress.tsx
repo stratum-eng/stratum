@@ -21,6 +21,8 @@ interface ImportProgressProps {
   }>;
   sourceUrl: string;
   branch: string;
+  /** Per-request CSP nonce — required so the card's scripts pass `script-src`. */
+  nonce: string;
 }
 
 // Error classification and troubleshooting tips
@@ -29,9 +31,13 @@ interface ErrorInfo {
   title: string;
   description: string;
   tips: string[];
+  /**
+   * Optional action button. Clicking it opens the import's source URL in a new
+   * tab (wired via a nonce'd addEventListener script — CSP forbids inline
+   * `onclick=` handlers and eval'ing action strings).
+   */
   actionButton?: {
     label: string;
-    action: string;
   };
 }
 
@@ -58,7 +64,6 @@ function classifyError(errorMessage: string): ErrorInfo {
       ],
       actionButton: {
         label: "Check Repository Access",
-        action: "window.open('{sourceUrl}', '_blank')",
       },
     };
   }
@@ -103,7 +108,6 @@ function classifyError(errorMessage: string): ErrorInfo {
       ],
       actionButton: {
         label: "View Repository",
-        action: "window.open('{sourceUrl}', '_blank')",
       },
     };
   }
@@ -198,6 +202,7 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
   errors,
   sourceUrl,
   branch,
+  nonce,
 }) => {
   const isActive = ["queued", "cloning", "processing"].includes(status);
   const isComplete = status === "completed";
@@ -212,9 +217,11 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
         ? 50
         : 0;
 
-  // Safely escape for JavaScript string interpolation
-  const safeNamespace = JSON.stringify(namespace).slice(1, -1);
-  const safeSlug = JSON.stringify(slug).slice(1, -1);
+  // Safely escape for interpolation into a quoted string inside an inline
+  // <script> body — JSON.stringify alone doesn't escape "<", so a namespace
+  // or slug containing "</script>" could terminate the script tag early.
+  const safeNamespace = JSON.stringify(namespace).slice(1, -1).replace(/</g, "\\u003c");
+  const safeSlug = JSON.stringify(slug).slice(1, -1).replace(/</g, "\\u003c");
 
   // Get the main error for classification (use the last error or logs)
   const lastError = errors.length > 0 ? errors[errors.length - 1] : undefined;
@@ -289,8 +296,9 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
             <div class="error-action">
               <button
                 type="button"
+                id="import-error-action"
                 class="btn btn-secondary"
-                onclick={errorInfo.actionButton.action.replace("{sourceUrl}", sourceUrl)}
+                data-url={sourceUrl}
               >
                 {errorInfo.actionButton.label}
               </button>
@@ -335,9 +343,9 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
       {isActive && (
         <div class="actions-section">
           <form
+            id="import-cancel-form"
             method="post"
             action={`/api/projects/${namespace}/${slug}/import/cancel`}
-            onsubmit="return confirm('Are you sure you want to cancel this import?');"
           >
             <button type="submit" class="btn btn-danger">
               Cancel Import
@@ -360,10 +368,45 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
         </div>
       )}
 
-      {isActive && (
+      {isFailed && errorInfo?.actionButton && (
         <script
+          nonce={nonce}
           dangerouslySetInnerHTML={{
             __html: `
+            // Wire the error action button (replaces the former inline onclick).
+            (function () {
+              var btn = document.getElementById('import-error-action');
+              if (!btn) return;
+              btn.addEventListener('click', function () {
+                // 'noopener' is required here: unlike <a target="_blank">, which
+                // modern browsers treat as implicitly noopener, window.open()
+                // still hands the opened page a live window.opener reference.
+                // The URL is repository-supplied, so without this it could
+                // navigate this authenticated tab (reverse tabnabbing).
+                window.open(btn.dataset.url, '_blank', 'noopener,noreferrer');
+              });
+            })();
+          `,
+          }}
+        />
+      )}
+
+      {isActive && (
+        <script
+          nonce={nonce}
+          dangerouslySetInnerHTML={{
+            __html: `
+            // Confirm before cancelling the import (replaces the former inline onsubmit).
+            (function () {
+              var cancelForm = document.getElementById('import-cancel-form');
+              if (!cancelForm) return;
+              cancelForm.addEventListener('submit', function (event) {
+                if (!confirm('Are you sure you want to cancel this import?')) {
+                  event.preventDefault();
+                }
+              });
+            })();
+
             // Connect to SSE for real-time updates
             const evtSource = new EventSource('/api/projects/${safeNamespace}/${safeSlug}/import/stream');
             

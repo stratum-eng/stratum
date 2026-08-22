@@ -4,9 +4,35 @@ import { Layout } from "../layout";
 interface NewProjectProps {
   user?: { id: string; email: string; username: string } | null;
   error?: string;
+  /** Per-request CSP nonce — required so the import-form script passes `script-src`. */
+  nonce: string;
 }
 
-export const NewProjectPage: FC<NewProjectProps> = ({ user, error }) => {
+/**
+ * Rewrites the GitHub import form's action to the namespaced import endpoint on
+ * submit (or blocks it with a login prompt). CSP-safe replacement for the old
+ * inline `onsubmit=` handler — identical behavior: returning false became
+ * `event.preventDefault()`, the mutated `action` still submits normally.
+ */
+const IMPORT_FORM_SCRIPT = `
+(function () {
+  var form = document.getElementById('import-form');
+  if (!form) return;
+  form.addEventListener('submit', function (event) {
+    var name = form.querySelector('[name=name]').value;
+    var userData = document.getElementById('user-data');
+    var username = userData ? userData.dataset.username : '';
+    if (!username) {
+      alert('Please log in first');
+      event.preventDefault();
+      return;
+    }
+    form.action = '/api/projects/@' + encodeURIComponent(username) + '/' + encodeURIComponent(name) + '/import';
+  });
+})();
+`;
+
+export const NewProjectPage: FC<NewProjectProps> = ({ user, error, nonce }) => {
   // Always set username data, fallback to empty string if not available
   const username = user?.username || "";
 
@@ -109,10 +135,10 @@ export const NewProjectPage: FC<NewProjectProps> = ({ user, error }) => {
       <div class="card" style={{ marginTop: "1.5rem" }}>
         <h3 style={{ marginTop: 0 }}>Or import from GitHub</h3>
         <form
+          id="import-form"
           method="post"
           action="/api/projects/import"
           style={{ marginTop: "1rem" }}
-          onsubmit="const name = this.querySelector('[name=name]').value; const userData = document.getElementById('user-data'); const username = userData ? userData.dataset.username : ''; if (!username) { alert('Please log in first'); return false; } this.action = '/api/projects/@' + encodeURIComponent(username) + '/' + encodeURIComponent(name) + '/import'; return true;"
         >
           <div style="margin-bottom: 1rem;">
             <label style={{ display: "block", marginBottom: "0.5rem", color: "#888" }}>
@@ -188,6 +214,8 @@ export const NewProjectPage: FC<NewProjectProps> = ({ user, error }) => {
           </button>
         </form>
       </div>
+
+      <script nonce={nonce} dangerouslySetInnerHTML={{ __html: IMPORT_FORM_SCRIPT }} />
     </Layout>
   );
 };
