@@ -49,6 +49,8 @@ import { canWriteProject, canWriteWorkspace } from "../src/utils/authz";
 
 const WRITER = { Authorization: "Bearer stratum_user_writer000000000000000000" };
 const READER = { Authorization: "Bearer stratum_user_reader000000000000000000" };
+// A UUID-shaped project id — the commit/delete routes validate the shape (S7).
+const PROJECT_ID = "0f1e2d3c-4b5a-4978-8765-43210fedcba9";
 
 function makeApp() {
   const app = new Hono<{ Bindings: Env }>();
@@ -66,7 +68,7 @@ function makeEnv(): Env {
 }
 
 const project = {
-  id: "proj_1",
+  id: PROJECT_ID,
   name: "repo",
   slug: "repo",
   namespace: "@owner",
@@ -78,7 +80,7 @@ const project = {
 const workspace = {
   name: "fix-bug",
   remote: "https://artifacts.example.com/repos/fork-repo",
-  parent: "proj_1",
+  parent: PROJECT_ID,
   branchName: "fix-bug",
   createdAt: "2026-01-01T00:00:00.000Z",
 };
@@ -92,7 +94,7 @@ beforeEach(() => {
 });
 
 describe("POST /api/workspaces/:name/commit — authorization", () => {
-  const body = { projectId: "proj_1", message: "m", files: { "a.txt": "hi" } };
+  const body = { projectId: PROJECT_ID, message: "m", files: { "a.txt": "hi" } };
 
   it("404s a caller without project write access (no existence leak); never pushes", async () => {
     vi.mocked(canWriteProject).mockResolvedValue(false);
@@ -130,7 +132,7 @@ describe("POST /api/workspaces/:name/commit — authorization", () => {
       new Request("http://localhost/api/workspaces/fix-bug/commit", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...WRITER },
-        body: JSON.stringify({ projectId: "proj_1", message: "m", files }),
+        body: JSON.stringify({ projectId: PROJECT_ID, message: "m", files }),
       }),
       makeEnv(),
     );
@@ -144,7 +146,7 @@ describe("DELETE /api/workspaces/:name — authorization", () => {
     vi.mocked(canWriteProject).mockResolvedValue(false);
     const env = makeEnv();
     const res = await makeApp().fetch(
-      new Request("http://localhost/api/workspaces/fix-bug?projectId=proj_1", {
+      new Request(`http://localhost/api/workspaces/fix-bug?projectId=${PROJECT_ID}`, {
         method: "DELETE",
         headers: { ...READER },
       }),
@@ -160,7 +162,7 @@ describe("DELETE /api/workspaces/:name — authorization", () => {
     vi.mocked(canWriteProject).mockResolvedValue(true);
     const env = makeEnv();
     const res = await makeApp().fetch(
-      new Request("http://localhost/api/workspaces/fix-bug?projectId=proj_1", {
+      new Request(`http://localhost/api/workspaces/fix-bug?projectId=${PROJECT_ID}`, {
         method: "DELETE",
         headers: { ...WRITER },
       }),

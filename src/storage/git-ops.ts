@@ -391,6 +391,26 @@ export async function commitAndPush(
     changeCount: Object.keys(changes).length,
   });
 
+  // S7 (#130): the change map can come straight from a request body, and each
+  // key is joined onto the clone dir below. Mirror resolveConflict's guards at
+  // this choke point so EVERY caller gets them: no `../`/absolute traversal
+  // out of the repo tree, and a per-file size cap (the MemoryFS lives in a
+  // ~128MB isolate).
+  for (const [path, content] of Object.entries(changes)) {
+    if (path.includes("../") || path.startsWith("/")) {
+      return err(
+        new AppError(
+          `Invalid file path: ${path} — path traversal is not allowed`,
+          "INVALID_INPUT",
+          422,
+        ),
+      );
+    }
+    if (new TextEncoder().encode(content).length > MAX_FILE_BYTES) {
+      return err(new AppError(`File ${path} exceeds maximum size of 10 MB`, "INVALID_INPUT", 422));
+    }
+  }
+
   const base = dir.endsWith("/") ? dir : `${dir}/`;
   for (const [path, content] of Object.entries(changes)) {
     try {

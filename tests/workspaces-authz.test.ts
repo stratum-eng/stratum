@@ -58,6 +58,8 @@ import { commitAndPush } from "../src/storage/git-ops";
 
 const ARTIFACTS_REMOTE = "https://acct.artifacts.cloudflare.net/git/@owner/repo.git";
 const WS_REMOTE = "https://acct.artifacts.cloudflare.net/git/@owner/myws.git";
+// A UUID-shaped project id — the commit/delete routes validate the shape (S7).
+const PROJECT_ID = "0f1e2d3c-4b5a-4978-8765-43210fedcba9";
 
 function makeKV(): { kv: KVNamespace; store: Map<string, string> } {
   const store = new Map<string, string>();
@@ -99,7 +101,7 @@ async function seed(
   } = {},
 ): Promise<void> {
   const project: ProjectEntry = {
-    id: "proj_1",
+    id: PROJECT_ID,
     name: "repo",
     slug: "repo",
     namespace: "@owner",
@@ -112,11 +114,11 @@ async function seed(
   };
   await env.STATE.put(`project:${project.namespace}:${project.slug}`, JSON.stringify(project));
   await env.STATE.put(
-    "workspace:proj_1:myws",
+    `workspace:${PROJECT_ID}:myws`,
     JSON.stringify({
       name: "myws",
       remote: opts.workspace?.remote ?? WS_REMOTE,
-      parent: "proj_1",
+      parent: PROJECT_ID,
       createdAt: new Date().toISOString(),
       ...(opts.workspace?.createdByUserId !== undefined
         ? { createdByUserId: opts.workspace.createdByUserId }
@@ -129,12 +131,12 @@ function commitReq(token: string): Request {
   return new Request("http://localhost/api/workspaces/myws/commit", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ projectId: "proj_1", message: "m", files: { "a.txt": "hi" } }),
+    body: JSON.stringify({ projectId: PROJECT_ID, message: "m", files: { "a.txt": "hi" } }),
   });
 }
 
 function deleteReq(token: string): Request {
-  return new Request("http://localhost/api/workspaces/myws?projectId=proj_1", {
+  return new Request(`http://localhost/api/workspaces/myws?projectId=${PROJECT_ID}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${token}` },
   });

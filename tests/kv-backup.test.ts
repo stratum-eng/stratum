@@ -28,7 +28,8 @@ const project = (id: string, slug: string): ProjectEntry => ({
 
 const workspace = (name: string, parent: string): WorkspaceEntry => ({
   name,
-  remote: `https://artifacts.example.com/repos/${name}`,
+  // A real Artifacts-shaped remote: setWorkspace validates it at write time (S6).
+  remote: `https://acct.artifacts.cloudflare.net/git/@owner/${name}.git`,
   parent,
   branchName: name,
   createdAt: "2026-01-01T00:00:00.000Z",

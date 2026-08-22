@@ -2,6 +2,7 @@ import type { ProjectEntry, WorkspaceEntry } from "../types";
 import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+import { artifactsRepoNameFromRemote } from "./git-ops";
 
 const PROJECT_PREFIX = "project:";
 const WORKSPACE_PREFIX = "workspace:";
@@ -56,9 +57,11 @@ function parseEntry<T>(raw: string, key: string, logger: Logger): Result<T, AppE
       `Failed to parse KV entry for key "${key}"`,
       error instanceof Error ? error : undefined,
     );
-    return err(
-      new AppError(`Failed to parse KV entry for key "${key}"`, "PARSE_ERROR", 500, { key }),
-    );
+    // S5 (#130): the key embeds tenant identifiers (project id, workspace
+    // name). Keep it in the log/context above, NOT in the message — route
+    // handlers have echoed storage-error messages to callers, and a corrupt
+    // entry must not confirm another tenant's resource exists.
+    return err(new AppError("Failed to parse stored entry", "PARSE_ERROR", 500, { key }));
   }
 }
 
@@ -326,8 +329,11 @@ export async function getWorkspace(
   logger.debug("Fetching workspace", { projectId, name });
   const raw = await kv.get(workspaceKey(projectId, name));
   if (!raw) {
+    // S5 (#130): the project id stays in context (for logs), not the message —
+    // handlers surface error messages, and unauthorized-vs-missing must stay
+    // indistinguishable across tenants.
     return err(
-      new AppError(`Workspace '${name}' not found in project '${projectId}'`, "NOT_FOUND", 404, {
+      new AppError(`Workspace '${name}' not found`, "NOT_FOUND", 404, {
         resource: "workspace",
         projectId,
         name,
@@ -344,6 +350,25 @@ export async function setWorkspace(
   logger: Logger,
 ): Promise<Result<void, AppError>> {
   logger.debug("Setting workspace", { projectId, name: entry.name });
+  // S6 (#130): validate the remote at WRITE time, not just where it is read.
+  // Everything downstream (freshRepoToken, the git proxy, workspace delete)
+  // trusts a stored remote enough to mint an Artifacts credential against it,
+  // so a corrupted/injected entry must never be persisted in the first place.
+  if (!artifactsRepoNameFromRemote(entry.remote)) {
+    logger.error("Refusing to store workspace with a non-Artifacts remote", undefined, {
+      projectId,
+      name: entry.name,
+      remote: entry.remote,
+    });
+    return err(
+      new AppError(
+        `Workspace '${entry.name}' remote is not a valid Artifacts remote`,
+        "INVALID_REMOTE",
+        500,
+        { projectId, name: entry.name },
+      ),
+    );
+  }
   try {
     await kv.put(workspaceKey(projectId, entry.name), JSON.stringify(entry));
     return ok(undefined);

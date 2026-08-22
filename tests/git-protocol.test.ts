@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   FLUSH_PKT,
+  ZERO_OID,
   buildReportStatus,
+  checkWorkspacePushPolicy,
   encodePktLine,
   encodeSideband,
   parseReceivePackRequest,
@@ -103,6 +105,81 @@ describe("parseReceivePackRequest", () => {
   it("rejects garbage framing", () => {
     const result = parseReceivePackRequest(encoder.encode("zzzz not a pkt line"));
     expect(result.success).toBe(false);
+  });
+
+  it("parses a DELETE command (zero new-oid) — policy, not the parser, refuses it", () => {
+    const body = concat(pktLine(`${OID_A} ${ZERO_OID} refs/heads/main\0report-status`), FLUSH_PKT);
+    const result = parseReceivePackRequest(body);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.commands[0]?.newOid).toBe(ZERO_OID);
+  });
+
+  it("rejects a truncated pkt-line (declared length beyond the body)", () => {
+    // Header says 0x0064 bytes but only the header is present.
+    const result = parseReceivePackRequest(encoder.encode("0064"));
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.message).toContain("out of range");
+  });
+
+  it("rejects a command line with a missing refname", () => {
+    const body = concat(pktLine(`${OID_A} ${OID_B} `), FLUSH_PKT);
+    const result = parseReceivePackRequest(body);
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("checkWorkspacePushPolicy (S3)", () => {
+  const update = (ref: string) => ({ oldOid: OID_A, newOid: OID_B, ref });
+  const del = (ref: string) => ({ oldOid: OID_A, newOid: ZERO_OID, ref });
+
+  it("allows an update to refs/heads/main", () => {
+    expect(checkWorkspacePushPolicy([update("refs/heads/main")], "myws").allowed).toBe(true);
+  });
+
+  it("allows an update to the workspace branch", () => {
+    expect(checkWorkspacePushPolicy([update("refs/heads/myws")], "myws").allowed).toBe(true);
+  });
+
+  it("allows a multi-command push entirely on allowed refs", () => {
+    const verdict = checkWorkspacePushPolicy(
+      [update("refs/heads/main"), update("refs/heads/myws")],
+      "myws",
+    );
+    expect(verdict.allowed).toBe(true);
+  });
+
+  it("refuses a ref delete, even of an allowed ref, naming the ref", () => {
+    const verdict = checkWorkspacePushPolicy([del("refs/heads/main")], "myws");
+    expect(verdict.allowed).toBe(false);
+    if (!verdict.allowed) {
+      expect(verdict.ref).toBe("refs/heads/main");
+      expect(verdict.reason).toContain("deletion");
+    }
+  });
+
+  it("refuses off-branch heads, tags, and arbitrary refs", () => {
+    for (const ref of ["refs/heads/other", "refs/tags/v1", "refs/evil/x", "HEAD"]) {
+      const verdict = checkWorkspacePushPolicy([update(ref)], "myws");
+      expect(verdict.allowed).toBe(false);
+      if (!verdict.allowed) expect(verdict.ref).toBe(ref);
+    }
+  });
+
+  it("refuses when any one command in a batch is off-policy", () => {
+    const verdict = checkWorkspacePushPolicy(
+      [update("refs/heads/main"), del("refs/heads/myws")],
+      "myws",
+    );
+    expect(verdict.allowed).toBe(false);
+  });
+
+  it("a branch name of 'main' collapses the allowed set without error", () => {
+    expect(checkWorkspacePushPolicy([update("refs/heads/main")], "main").allowed).toBe(true);
+    expect(checkWorkspacePushPolicy([update("refs/heads/x")], "main").allowed).toBe(false);
+  });
+
+  it("an empty command list is trivially allowed (nothing to police)", () => {
+    expect(checkWorkspacePushPolicy([], "myws").allowed).toBe(true);
   });
 });
 

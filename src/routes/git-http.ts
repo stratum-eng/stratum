@@ -9,10 +9,12 @@ import {
 } from "../storage/git-ops";
 import { deleteWorkspace, getProjectByPath, getWorkspace } from "../storage/state";
 import { getUser, getUserByToken } from "../storage/users";
-import type { Env, ProjectEntry } from "../types";
+import type { Env, ProjectEntry, WorkspaceEntry } from "../types";
 import { canReadProject, canWriteProject, canWriteWorkspace } from "../utils/authz";
 import {
+  ZERO_OID,
   buildReportStatus,
+  checkWorkspacePushPolicy,
   parseReceivePackRequest,
   parseReportStatus,
   wantsSideband,
@@ -31,10 +33,12 @@ import { createLogger } from "../utils/logger";
  *    With the flag off — and for multi-ref/delete/non-default pushes — the
  *    push is refused in-protocol with sideband guidance.
  *  - Workspace URL `/@ns/slug/workspaces/<ws>.git` — clone/fetch (read) AND
- *    `git push` (write), proxied verbatim to the workspace's Artifacts fork.
- *    The client clones the workspace, so ref/old-oid semantics line up and
- *    Artifacts' own report-status is the truthful outcome — no parsing or
- *    synthesis needed here.
+ *    `git push` (write), proxied to the workspace's Artifacts fork. The push's
+ *    command list is parsed first and held to a ref policy (S3, #130): only
+ *    the fork's working branch may be updated and ref deletion is refused;
+ *    a passing pack is then forwarded unmodified. The client clones the
+ *    workspace, so ref/old-oid semantics line up and Artifacts' own
+ *    report-status is the truthful outcome for forwarded pushes.
  *
  * The router authenticates with the existing API-key system over HTTP Basic,
  * authorizes the caller, mints a short-lived Cloudflare Artifacts token (read or
@@ -330,7 +334,7 @@ async function authorizeWorkspace(
   c: { req: { header(name: string): string | undefined; param(name: string): string }; env: Env },
   scope: "read" | "write",
   logger: ReturnType<typeof createLogger>,
-): Promise<{ remote: string } | Response> {
+): Promise<{ remote: string; workspace: WorkspaceEntry } | Response> {
   const namespace = c.req.param("namespace");
   const slug = normalizeSlug(c.req.param("slug"));
   const workspaceName = normalizeSlug(c.req.param("workspace"));
@@ -392,7 +396,7 @@ async function authorizeWorkspace(
     return gitUnavailable("workspace");
   }
 
-  return { remote: workspace.remote };
+  return { remote: workspace.remote, workspace };
 }
 
 /**
@@ -434,6 +438,65 @@ async function readCappedBody(
   return buffer.buffer;
 }
 
+// The command section of a receive-pack request is one small pkt-line per ref.
+// When the body arrives compressed, only this bounded prefix is inflated to
+// read the commands (the pack that follows is never inflated), so a
+// decompression bomb cannot balloon memory here.
+const MAX_COMMAND_SECTION_BYTES = 1024 * 1024;
+
+/**
+ * The bytes the receive-pack command list is parsed from: the body itself when
+ * it is plain, or a bounded inflated prefix when the client sent
+ * `Content-Encoding: gzip|deflate` (git can compress request bodies; the proxy
+ * forwards them upstream still compressed). Returns `null` when the body
+ * cannot be inspected (unknown encoding, corrupt stream) — the caller MUST
+ * fail closed, because forwarding an uninspected body would let a compressed
+ * command list bypass the ref policy.
+ */
+async function commandSectionBytes(
+  body: ArrayBuffer,
+  contentEncoding: string | undefined,
+): Promise<Uint8Array | null> {
+  const encoding = contentEncoding?.trim().toLowerCase();
+  if (!encoding || encoding === "identity") return new Uint8Array(body);
+  if (encoding !== "gzip" && encoding !== "x-gzip" && encoding !== "deflate") return null;
+
+  try {
+    const stream = new Blob([body])
+      .stream()
+      .pipeThrough(new DecompressionStream(encoding === "deflate" ? "deflate" : "gzip"));
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (total < MAX_COMMAND_SECTION_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      total += value.byteLength;
+    }
+    // Stop inflating once the (generous) command-section budget is read; the
+    // parser only consumes up to the flush-pkt anyway.
+    await reader.cancel().catch(() => {});
+    const out = new Uint8Array(Math.min(total, MAX_COMMAND_SECTION_BYTES));
+    let offset = 0;
+    for (const chunk of chunks) {
+      if (offset >= out.byteLength) break;
+      out.set(chunk.subarray(0, out.byteLength - offset), offset);
+      offset += chunk.byteLength;
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function malformedPush(message: string): Response {
+  return new Response(`${message}\n`, {
+    status: 400,
+    headers: { "Content-Type": "text/plain" },
+  });
+}
+
 export const gitHttpRouter = new Hono<{ Bindings: Env }>();
 
 // GET /@:namespace/:slug.git/info/refs?service=git-(upload|receive)-pack
@@ -469,8 +532,6 @@ gitHttpRouter.post("/:namespace/:slug/git-upload-pack", async (c) => {
   const upstreamUrl = `${result.project.remote}/${UPLOAD_PACK}`;
   return proxyUpstream(c, result.project.remote, "read", upstreamUrl, "POST", body, logger);
 });
-
-const ZERO_OID = "0".repeat(40);
 
 /** The report-status Content-Type git expects on the receive-pack reply. */
 function receivePackResult(body: Uint8Array): Response {
@@ -592,13 +653,15 @@ gitHttpRouter.post("/:namespace/:slug/git-receive-pack", async (c) => {
   const body = await readCappedBody(c, logger);
   if (body instanceof Response) return body;
 
-  const parsed = parseReceivePackRequest(new Uint8Array(body));
+  const section = await commandSectionBytes(body, c.req.header("Content-Encoding"));
+  if (section === null) {
+    logger.warn("Unreadable receive-pack request body (encoding)");
+    return malformedPush("unreadable git-receive-pack request body");
+  }
+  const parsed = parseReceivePackRequest(section);
   if (!parsed.success) {
     logger.warn("Malformed receive-pack request", { error: parsed.error.message });
-    return new Response(`${parsed.error.message}\n`, {
-      status: 400,
-      headers: { "Content-Type": "text/plain" },
-    });
+    return malformedPush(parsed.error.message);
   }
 
   const { commands, capabilities } = parsed.data;
@@ -784,6 +847,51 @@ gitHttpRouter.post("/:namespace/:slug/workspaces/:workspace/git-receive-pack", a
 
   const body = await readCappedBody(c, logger);
   if (body instanceof Response) return body;
+
+  // S3 (#130): inspect the client's ref-update commands BEFORE anything is
+  // forwarded — the proxy previously relayed the body verbatim, letting the
+  // fork's owner delete refs or push arbitrary refs/*. An empty body carries
+  // no commands (nothing to police) and is proxied as before; anything else
+  // must parse, pass the ref policy, or be refused without touching upstream.
+  if (body.byteLength > 0) {
+    const section = await commandSectionBytes(body, c.req.header("Content-Encoding"));
+    if (section === null) {
+      logger.warn("Unreadable workspace receive-pack body (encoding)");
+      return malformedPush("unreadable git-receive-pack request body");
+    }
+    const parsed = parseReceivePackRequest(section);
+    if (!parsed.success) {
+      logger.warn("Malformed workspace receive-pack request", { error: parsed.error.message });
+      return malformedPush(parsed.error.message);
+    }
+
+    const branch = result.workspace.branchName || result.workspace.name;
+    const verdict = checkWorkspacePushPolicy(parsed.data.commands, branch);
+    if (!verdict.allowed) {
+      logger.warn("Workspace push refused by ref policy", {
+        ref: verdict.ref,
+        reason: verdict.reason,
+      });
+      // In-protocol refusal (same shape as the gated project path): per-ref ng
+      // so `git push` fails legibly, and the pack is never forwarded.
+      return receivePackResult(
+        buildReportStatus({
+          unpack: "ok",
+          results: parsed.data.commands.map((cmd) => ({
+            ref: cmd.ref,
+            ok: false,
+            reason: verdict.reason,
+          })),
+          messages: [
+            `Refused: ${verdict.reason} (ref ${verdict.ref}).`,
+            "A workspace remote accepts updates to its working branch only.",
+          ],
+          sideband: wantsSideband(parsed.data.capabilities),
+        }),
+      );
+    }
+  }
+
   const upstreamUrl = `${result.remote}/${RECEIVE_PACK}`;
   return proxyUpstream(c, result.remote, "write", upstreamUrl, "POST", body, logger);
 });

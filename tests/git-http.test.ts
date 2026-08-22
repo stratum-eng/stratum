@@ -611,6 +611,38 @@ const WS_RECV_ADV = "/@owner/repo/workspaces/myws.git/info/refs?service=git-rece
 const WS_RECV = "/@owner/repo/workspaces/myws.git/git-receive-pack";
 const WS_UPLOAD = "/@owner/repo/workspaces/myws.git/git-upload-pack";
 
+// A correctly framed receive-pack body: command pkt-lines, flush, then (fake)
+// pack bytes. The workspace proxy now parses the command section (S3), so
+// tests that expect a FORWARDED push must send a body that passes the policy.
+const OID_X = "a".repeat(40);
+const OID_Y = "b".repeat(40);
+const ZERO_OID = "0".repeat(40);
+
+function wsPktLine(payload: string): Uint8Array {
+  const data = new TextEncoder().encode(payload);
+  const header = new TextEncoder().encode((data.byteLength + 4).toString(16).padStart(4, "0"));
+  const out = new Uint8Array(data.byteLength + 4);
+  out.set(header, 0);
+  out.set(data, 4);
+  return out;
+}
+
+function wsPushBody(lines: string[], pack = "PACKDATA"): Uint8Array {
+  const parts = lines.map((l) => wsPktLine(l));
+  parts.push(new TextEncoder().encode("0000"));
+  parts.push(new TextEncoder().encode(pack));
+  const total = parts.reduce((n, p) => n + p.byteLength, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.byteLength;
+  }
+  return out;
+}
+
+const WS_MAIN_PUSH = wsPushBody([`${OID_X} ${OID_Y} refs/heads/main\0report-status`]);
+
 describe("git smart-HTTP proxy — workspace clone+push (Phase A)", () => {
   it("anonymous clone of a workspace in a public project → proxied (200)", async () => {
     const env = makeEnv();
@@ -654,7 +686,7 @@ describe("git smart-HTTP proxy — workspace clone+push (Phase A)", () => {
     const res = await app.fetch(
       req(WS_RECV, {
         method: "POST",
-        body: "PACKDATA",
+        body: WS_MAIN_PUSH,
         headers: {
           ...basic(OWNER_TOKEN),
           "Content-Type": "application/x-git-receive-pack-request",
@@ -668,7 +700,8 @@ describe("git smart-HTTP proxy — workspace clone+push (Phase A)", () => {
     expect((init.headers as Record<string, string>).Authorization).toBe(
       `Basic ${btoa("x:secret")}`,
     );
-    expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe("PACKDATA");
+    // The ORIGINAL body is forwarded byte-for-byte (parse-only inspection).
+    expect(new Uint8Array(init.body as ArrayBuffer)).toEqual(WS_MAIN_PUSH);
     expect(vi.mocked(freshRepoToken)).toHaveBeenCalledWith(
       expect.anything(),
       WS_REMOTE,
@@ -683,7 +716,7 @@ describe("git smart-HTTP proxy — workspace clone+push (Phase A)", () => {
     await seedWorkspace(env);
     stubFetch(() => okUpstream());
     const res = await app.fetch(
-      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(AGENT_TOKEN) }),
+      req(WS_RECV, { method: "POST", body: WS_MAIN_PUSH, headers: basic(AGENT_TOKEN) }),
       env,
     );
     expect(res.status).toBe(200);
@@ -789,7 +822,7 @@ describe("git smart-HTTP proxy — workspace read/write asymmetry & passthrough"
         }),
     );
     const res = await app.fetch(
-      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(OWNER_TOKEN) }),
+      req(WS_RECV, { method: "POST", body: WS_MAIN_PUSH, headers: basic(OWNER_TOKEN) }),
       env,
     );
     expect(res.status).toBe(200);
@@ -806,6 +839,232 @@ describe("git smart-HTTP proxy — workspace read/write asymmetry & passthrough"
     expect(res.status).toBe(200);
     const [, init] = fetchMock.mock.calls[0] ?? [];
     expect((init.body as ArrayBuffer).byteLength).toBe(0);
+  });
+});
+
+// S3 (#130): the workspace proxy no longer forwards a push blind — the pkt-line
+// command list is parsed and held to a ref policy first.
+describe("git smart-HTTP proxy — workspace push ref policy (S3)", () => {
+  async function policyEnv(extra: { branchName?: string } = {}): Promise<Env> {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private" });
+    await env.STATE.put(
+      "workspace:proj_1:myws",
+      JSON.stringify({
+        name: "myws",
+        remote: WS_REMOTE,
+        parent: "proj_1",
+        createdAt: new Date().toISOString(),
+        ...extra,
+      }),
+    );
+    return env;
+  }
+
+  async function push(
+    env: Env,
+    body: BodyInit,
+    headers: Record<string, string> = {},
+  ): Promise<Response> {
+    return app.fetch(
+      req(WS_RECV, { method: "POST", body, headers: { ...basic(OWNER_TOKEN), ...headers } }),
+      env,
+    );
+  }
+
+  it("refuses a ref DELETE in-protocol; the pack never reaches upstream", async () => {
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await push(
+      env,
+      wsPushBody([`${OID_Y} ${ZERO_OID} refs/heads/main\0report-status`]),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("application/x-git-receive-pack-result");
+    const text = await res.text();
+    expect(text).toContain("unpack ok\n");
+    expect(text).toContain("ng refs/heads/main");
+    expect(text).toContain("deletion");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a push to a ref outside the workspace branch (refs/heads/other)", async () => {
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await push(env, wsPushBody([`${OID_X} ${OID_Y} refs/heads/other\0report-status`]));
+    const text = await res.text();
+    expect(text).toContain("ng refs/heads/other");
+    expect(text).toContain("only the workspace branch");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses tag pushes (refs/tags/*)", async () => {
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await push(env, wsPushBody([`${OID_X} ${OID_Y} refs/tags/v1\0report-status`]));
+    expect(await res.text()).toContain("ng refs/tags/v1");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a multi-command push when ANY command is off-policy (all ng)", async () => {
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await push(
+      env,
+      wsPushBody([
+        `${OID_X} ${OID_Y} refs/heads/main\0report-status`,
+        `${OID_X} ${OID_Y} refs/heads/evil`,
+      ]),
+    );
+    const text = await res.text();
+    expect(text).toContain("ng refs/heads/main");
+    expect(text).toContain("ng refs/heads/evil");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("allows the workspace's own branch name (refs/heads/myws) as well as main", async () => {
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await push(env, wsPushBody([`${OID_X} ${OID_Y} refs/heads/myws\0report-status`]));
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("a forced update (rewritten old-oid) on the working branch is still allowed", async () => {
+    // Ownership is already enforced; force-push on the owner's own fork stays legal.
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await push(env, wsPushBody([`${OID_Y} ${OID_X} refs/heads/main\0report-status`]));
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("uses branchName (not name) when the entry records one", async () => {
+    const env = await policyEnv({ branchName: "custom-branch" });
+    const fetchMock = stubFetch(() => okUpstream());
+    const ok = await push(
+      env,
+      wsPushBody([`${OID_X} ${OID_Y} refs/heads/custom-branch\0report-status`]),
+    );
+    expect(ok.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const bad = await push(env, wsPushBody([`${OID_X} ${OID_Y} refs/heads/myws\0report-status`]));
+    expect(await bad.text()).toContain("ng refs/heads/myws");
+    expect(fetchMock).toHaveBeenCalledOnce(); // still just the first call
+  });
+
+  it("a sideband-negotiating push gets a sideband-framed refusal", async () => {
+    const env = await policyEnv();
+    stubFetch(() => okUpstream());
+    const res = await push(
+      env,
+      wsPushBody([`${OID_Y} ${ZERO_OID} refs/heads/main\0report-status side-band-64k`]),
+    );
+    const text = await res.text();
+    expect(text).toContain("working branch");
+    expect(text).toContain("ng refs/heads/main");
+  });
+
+  it("garbage (non-pkt) body → 400, never forwarded (was proxied verbatim before)", async () => {
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await push(env, "PACKDATA-not-pkt-framed");
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("truncated command section → 400", async () => {
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    // A single command pkt-line with NO flush terminator.
+    const res = await push(env, wsPktLine(`${OID_X} ${OID_Y} refs/heads/main`));
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("gzip body: commands are inspected and the COMPRESSED bytes are forwarded", async () => {
+    const { gzipSync } = await import("node:zlib");
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    const compressed = gzipSync(WS_MAIN_PUSH);
+    const res = await push(env, new Uint8Array(compressed), { "Content-Encoding": "gzip" });
+    expect(res.status).toBe(200);
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    expect(new Uint8Array(init.body as ArrayBuffer)).toEqual(new Uint8Array(compressed));
+    expect((init.headers as Record<string, string>)["Content-Encoding"]).toBe("gzip");
+  });
+
+  it("gzip cannot smuggle an off-policy command past the parser", async () => {
+    const { gzipSync } = await import("node:zlib");
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    const body = gzipSync(wsPushBody([`${OID_Y} ${ZERO_OID} refs/heads/main\0report-status`]));
+    const res = await push(env, new Uint8Array(body), { "Content-Encoding": "gzip" });
+    expect(await res.text()).toContain("deletion");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("deflate body is inspected too", async () => {
+    const { deflateSync } = await import("node:zlib");
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await push(env, new Uint8Array(deflateSync(WS_MAIN_PUSH)), {
+      "Content-Encoding": "deflate",
+    });
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("unknown Content-Encoding fails closed (400), never forwarded", async () => {
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await push(env, WS_MAIN_PUSH, { "Content-Encoding": "br" });
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("corrupt gzip fails closed (400), never forwarded", async () => {
+    const env = await policyEnv();
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await push(env, new Uint8Array([0x1f, 0x8b, 0x00, 0x01, 0x02]), {
+      "Content-Encoding": "gzip",
+    });
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a PROJECT push with an unknown Content-Encoding fails closed (400)", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await app.fetch(
+      req("/@owner/repo.git/git-receive-pack", {
+        method: "POST",
+        headers: { ...basic(OWNER_TOKEN), "Content-Encoding": "br" },
+        body: WS_MAIN_PUSH,
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a gzipped PROJECT push is decoded before gating too", async () => {
+    const { gzipSync } = await import("node:zlib");
+    const env = makeEnv(); // flag off → in-protocol refusal proves the parse worked
+    await seedProject(env);
+    stubFetch(() => okUpstream());
+    const res = await app.fetch(
+      req("/@owner/repo.git/git-receive-pack", {
+        method: "POST",
+        headers: { ...basic(OWNER_TOKEN), "Content-Encoding": "gzip" },
+        body: new Uint8Array(gzipSync(WS_MAIN_PUSH)),
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("project pushes are gated");
   });
 });
 
@@ -837,7 +1096,7 @@ describe("git smart-HTTP proxy — workspace write ownership (S1)", () => {
     await seedWorkspace(env, "myws", WS_REMOTE, { createdByUserId: "user_other" });
     const fetchMock = stubFetch(() => okUpstream());
     const res = await app.fetch(
-      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(OTHER_TOKEN) }),
+      req(WS_RECV, { method: "POST", body: WS_MAIN_PUSH, headers: basic(OTHER_TOKEN) }),
       env,
     );
     expect(res.status).toBe(200);
@@ -851,7 +1110,7 @@ describe("git smart-HTTP proxy — workspace write ownership (S1)", () => {
     await seedWorkspace(env, "myws", WS_REMOTE, { createdByUserId: "user_other" });
     stubFetch(() => okUpstream());
     const res = await app.fetch(
-      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(OWNER_TOKEN) }),
+      req(WS_RECV, { method: "POST", body: WS_MAIN_PUSH, headers: basic(OWNER_TOKEN) }),
       env,
     );
     expect(res.status).toBe(200);
@@ -864,7 +1123,7 @@ describe("git smart-HTTP proxy — workspace write ownership (S1)", () => {
     await seedWorkspace(env, "myws", WS_REMOTE, { createdByUserId: "user_owner" });
     stubFetch(() => okUpstream());
     const res = await app.fetch(
-      req(WS_RECV, { method: "POST", body: "PACK", headers: basic(AGENT_TOKEN) }),
+      req(WS_RECV, { method: "POST", body: WS_MAIN_PUSH, headers: basic(AGENT_TOKEN) }),
       env,
     );
     expect(res.status).toBe(200);

@@ -176,6 +176,16 @@ export function isValidGitHubUrl(value: unknown): value is string {
   return typeof value === "string" && GITHUB_URL_RE.test(value);
 }
 
+// Project ids are crypto.randomUUID() values; anything else in a projectId
+// field is at best a typo and at worst a KV key-injection probe (the id is
+// interpolated into `workspace:<projectId>:<name>` keys).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Whether a value is a canonical UUID string (the shape of project ids). */
+export function isValidUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_RE.test(value);
+}
+
 /** @deprecated Use validateStringRecord instead. */
 export function isStringRecord(value: unknown): value is Record<string, string> {
   return (

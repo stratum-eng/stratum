@@ -29,7 +29,7 @@ import {
   ok,
   unauthorized,
 } from "../utils/response";
-import { isStringRecord, isValidSlug } from "../utils/validation";
+import { isStringRecord, isValidSlug, isValidUuid } from "../utils/validation";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -58,8 +58,11 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
     if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", `${namespace}/${slug}`);
     }
+    // S5 (#130): storage failures stay generic — echoing the storage error
+    // (which can carry KV keys/ids) would let a caller distinguish states the
+    // truth table deliberately collapses.
     logger.error("Failed to get project", projectResult.error);
-    return badRequest(projectResult.error.message);
+    return internalError("Internal error");
   }
   const project = projectResult.data;
 
@@ -100,7 +103,7 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
 
   if (!setResult.success) {
     logger.error("Failed to set workspace", setResult.error);
-    return badRequest(setResult.error.message);
+    return internalError("Internal error");
   }
 
   logger.info("Workspace created", { workspaceName, namespace, slug, projectId: project.id });
@@ -146,8 +149,9 @@ app.get("/:namespace/:slug/workspaces", async (c) => {
     if (projectResult.error.code === "NOT_FOUND") {
       return notFound("Project", `${namespace}/${slug}`);
     }
+    // S5 (#130): generic — see the create route.
     logger.error("Failed to get project", projectResult.error);
-    return badRequest(projectResult.error.message);
+    return internalError("Internal error");
   }
   const project = projectResult.data;
 
@@ -157,7 +161,7 @@ app.get("/:namespace/:slug/workspaces", async (c) => {
   const workspacesResult = await listWorkspaces(c.env.STATE, project.id, logger);
   if (!workspacesResult.success) {
     logger.error("Failed to list workspaces", workspacesResult.error);
-    return badRequest(workspacesResult.error.message);
+    return internalError("Internal error");
   }
 
   logger.info("Workspaces listed", {
@@ -195,12 +199,18 @@ app.post("/:name/commit", async (c) => {
 
   const { name: workspaceName } = c.req.param();
 
+  // S7 (#130): validate identifier shapes BEFORE they are interpolated into
+  // KV keys. Workspace names are slugs by construction; project ids are
+  // crypto.randomUUID() values — anything else (a ':', a path, an empty
+  // string) is a key-injection probe and is rejected outright.
+  if (!isValidSlug(workspaceName)) return badRequest("invalid workspace name");
+
   const body = await c.req.json<{ files?: unknown; message?: unknown; projectId?: unknown }>();
   if (!isStringRecord(body.files))
     return badRequest("files must be an object of string paths to string contents");
   if (typeof body.message !== "string" || !body.message.trim())
     return badRequest("message is required");
-  if (typeof body.projectId !== "string") return badRequest("projectId is required");
+  if (!isValidUuid(body.projectId)) return badRequest("projectId must be a UUID");
 
   // Bound the payload: the commit clones the repo into a ~128MB isolate, so an
   // unbounded file map is a memory/CPU DoS lever.
@@ -209,7 +219,13 @@ app.post("/:name/commit", async (c) => {
     return badRequest(`too many files in one commit (max ${MAX_COMMIT_FILES})`);
   }
   let totalBytes = 0;
-  for (const contents of Object.values(body.files)) {
+  for (const [path, contents] of Object.entries(body.files)) {
+    // S7 (#130): refuse traversal-shaped paths before any git work — the same
+    // guard commitAndPush enforces (defense in depth), surfaced early here so
+    // a hostile map doesn't cost a clone first.
+    if (path.includes("../") || path.startsWith("/")) {
+      return badRequest("file paths must be repo-relative (no '../' or leading '/')");
+    }
     totalBytes += contents.length;
     if (totalBytes > MAX_COMMIT_BYTES) {
       return badRequest(`commit payload too large (max ${MAX_COMMIT_BYTES} bytes)`);
@@ -221,8 +237,11 @@ app.post("/:name/commit", async (c) => {
     if (workspaceResult.error.code === "NOT_FOUND") {
       return notFound("Workspace", workspaceName);
     }
+    // S5 (#130): a corrupt/unreadable entry surfaces as a generic 500 — never
+    // the storage message (whose KV key embeds the project id), which would
+    // confirm to a stranger that this workspace exists.
     logger.error("Failed to get workspace", workspaceResult.error);
-    return badRequest(workspaceResult.error.message);
+    return internalError("Internal error");
   }
   const workspace = workspaceResult.data;
 
@@ -235,7 +254,7 @@ app.post("/:name/commit", async (c) => {
   if (!projectResult.success) {
     if (projectResult.error.code === "NOT_FOUND") return notFound("Workspace", workspaceName);
     logger.error("Failed to resolve project for commit authz", projectResult.error);
-    return badRequest(projectResult.error.message);
+    return internalError("Internal error");
   }
   const project = projectResult.data;
 
@@ -345,19 +364,25 @@ app.delete("/:name", async (c) => {
 
   const { name: workspaceName } = c.req.param();
 
+  // S7 (#130): same identifier-shape validation as the commit route, before
+  // the values reach a KV key.
+  if (!isValidSlug(workspaceName)) return badRequest("invalid workspace name");
+
   // Get projectId from query param
   const projectId = c.req.query("projectId");
   if (!projectId) {
     return badRequest("projectId query parameter is required");
   }
+  if (!isValidUuid(projectId)) return badRequest("projectId must be a UUID");
 
   const workspaceResult = await getWorkspace(c.env.STATE, projectId, workspaceName, logger);
   if (!workspaceResult.success) {
     if (workspaceResult.error.code === "NOT_FOUND") {
       return notFound("Workspace", workspaceName);
     }
+    // S5 (#130): generic — see the commit route.
     logger.error("Failed to get workspace", workspaceResult.error);
-    return badRequest(workspaceResult.error.message);
+    return internalError("Internal error");
   }
   const workspace = workspaceResult.data;
 
@@ -368,7 +393,7 @@ app.delete("/:name", async (c) => {
   if (!projectResult.success) {
     if (projectResult.error.code === "NOT_FOUND") return notFound("Workspace", workspaceName);
     logger.error("Failed to resolve project for delete authz", projectResult.error);
-    return badRequest(projectResult.error.message);
+    return internalError("Internal error");
   }
   const project = projectResult.data;
 
@@ -402,7 +427,7 @@ app.delete("/:name", async (c) => {
   const deleteResult = await deleteWorkspace(c.env.STATE, projectId, workspaceName, logger);
   if (!deleteResult.success) {
     logger.error("Failed to delete workspace", deleteResult.error);
-    return badRequest(deleteResult.error.message);
+    return internalError("Internal error");
   }
 
   logger.info("Workspace deleted", { workspaceName, projectId });
