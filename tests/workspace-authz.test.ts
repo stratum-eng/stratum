@@ -40,10 +40,13 @@ vi.mock("../src/storage/git-ops", () => ({
   commitAndPush: vi.fn(async () => ({ success: true, data: "sha_new" })),
   freshRepoToken: vi.fn(async () => ({ success: true, data: "tok" })),
   stageWorkspaceTree: vi.fn(),
+  stagedTreeKey: (projectId: string, workspace: string) => `repos/${projectId}/ws/${workspace}`,
+  stagedTreeShaKey: (projectId: string, workspace: string, sha: string) =>
+    `repos/${projectId}/ws/${workspace}/sha/${sha}`,
 }));
 vi.mock("../src/queue/events", () => ({ emitEvent: vi.fn(async () => undefined) }));
 
-import { commitAndPush } from "../src/storage/git-ops";
+import { commitAndPush, stageWorkspaceTree } from "../src/storage/git-ops";
 import { getProjectById, getWorkspace } from "../src/storage/state";
 import { canWriteProject, canWriteWorkspace } from "../src/utils/authz";
 
@@ -120,6 +123,45 @@ describe("POST /api/workspaces/:name/commit — authorization", () => {
     );
     expect(res.status).toBe(200);
     expect(commitAndPush).toHaveBeenCalled();
+  });
+
+  it("#124: stages the tip tree under BOTH the latest key and an immutable sha-keyed copy", async () => {
+    vi.mocked(canWriteProject).mockResolvedValue(true);
+    const stagedValue = new Uint8Array([1, 2, 3]);
+    vi.mocked(stageWorkspaceTree).mockResolvedValue({
+      success: true,
+      data: { treeOid: "t".repeat(40), objectCount: 1, value: stagedValue },
+      // biome-ignore lint/suspicious/noExplicitAny: minimal stage result stub
+    } as any);
+    const puts: { key: string; value: unknown }[] = [];
+    const stageTree = vi.fn(async () => {});
+    const env = {
+      ...makeEnv(),
+      REPO_DO_ENABLED: "true",
+      REPO_OBJECTS: {
+        put: vi.fn(async (key: string, value: unknown) => {
+          puts.push({ key, value });
+        }),
+      },
+      REPO_DO: { idFromName: (n: string) => n, get: () => ({ stageTree }) },
+    } as unknown as Env;
+
+    const res = await makeApp().fetch(
+      new Request("http://localhost/api/workspaces/fix-bug/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...WRITER },
+        body: JSON.stringify(body),
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+
+    // Latest-tip staging (existing behavior) ...
+    expect(vi.mocked(stageWorkspaceTree).mock.calls[0]?.[1]).toBe("repos/proj_1/ws/fix-bug");
+    // ... plus the sha-keyed copy of the same value, keyed by the new commit sha.
+    expect(puts).toEqual([{ key: "repos/proj_1/ws/fix-bug/sha/sha_new", value: stagedValue }]);
+    // The DO hot index is still seeded.
+    expect(stageTree).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an oversized file map before doing any work", async () => {

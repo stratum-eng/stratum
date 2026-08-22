@@ -7,6 +7,8 @@ import {
   commitAndPush,
   freshRepoToken,
   stageWorkspaceTree,
+  stagedTreeKey,
+  stagedTreeShaKey,
 } from "../storage/git-ops";
 import {
   deleteWorkspace,
@@ -284,7 +286,7 @@ app.post("/:name/commit", async (c) => {
   if (c.env.REPO_DO_ENABLED === "true" && c.env.REPO_OBJECTS) {
     const stageResult = await stageWorkspaceTree(
       c.env.REPO_OBJECTS,
-      `repos/${project.id}/ws/${workspaceName}`,
+      stagedTreeKey(project.id, workspaceName),
       fs,
       dir,
       commitResult.data,
@@ -294,20 +296,37 @@ app.post("/:name/commit", async (c) => {
       logger.warn("Failed to stage workspace tree to R2; merge will use cold path", {
         workspaceName,
       });
-    } else if (c.env.REPO_DO) {
-      // Also seed the per-repo DO's local hot index so the batch-merge path reads
-      // staged trees from SQLite (microseconds) instead of R2 (~30ms/change).
-      const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(project.id)) as unknown as {
-        stageTree(workspace: string, value: ArrayBuffer): Promise<void>;
-      };
-      await stub
-        .stageTree(workspaceName, stageResult.data.value.buffer as ArrayBuffer)
-        .catch((error) => {
-          logger.warn("Failed to seed DO hot index; batch merge will skip this change", {
-            workspaceName,
-            error: error instanceof Error ? error.message : String(error),
-          });
+    } else {
+      // #124: also store the tree under an immutable sha-keyed copy. The
+      // latest-tip key above is overwritten by every commit; the merge path
+      // reads the sha-keyed copy for the change's pinned workspace_head_sha, so
+      // a re-push between evaluation and merge cannot change what gets merged.
+      // Best-effort like the rest of staging: on failure the merge falls back
+      // to the git-based pinned path.
+      await c.env.REPO_OBJECTS.put(
+        stagedTreeShaKey(project.id, workspaceName, commitResult.data),
+        stageResult.data.value,
+      ).catch((error) => {
+        logger.warn("Failed to write sha-keyed staged tree; merge will use pinned git path", {
+          workspaceName,
+          error: error instanceof Error ? error.message : String(error),
         });
+      });
+      if (c.env.REPO_DO) {
+        // Also seed the per-repo DO's local hot index so the batch-merge path reads
+        // staged trees from SQLite (microseconds) instead of R2 (~30ms/change).
+        const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(project.id)) as unknown as {
+          stageTree(workspace: string, value: ArrayBuffer): Promise<void>;
+        };
+        await stub
+          .stageTree(workspaceName, stageResult.data.value.buffer as ArrayBuffer)
+          .catch((error) => {
+            logger.warn("Failed to seed DO hot index; batch merge will skip this change", {
+              workspaceName,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+      }
     }
   }
 

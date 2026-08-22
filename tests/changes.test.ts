@@ -1964,9 +1964,63 @@ describe("POST /api/projects/:name/changes/merge-batch", () => {
     const body = (await res.json()) as { skipped: { changeId: string; reason: string }[] };
     const skippedB2 = body.skipped.find((s) => s.changeId === "chg_b2");
     expect(skippedB2?.reason).toBe("workspace changed since evaluation");
-    // Only chg_b1 reaches the merge.
-    const items = vi.mocked(batchMergeStagedTrees).mock.calls[0]?.[4] as { changeId: string }[];
+    // Only chg_b1 reaches the merge, carrying its evaluated tree oid so the
+    // merge layer re-validates right where the synthetic commit is built (#124).
+    const items = vi.mocked(batchMergeStagedTrees).mock.calls[0]?.[4] as {
+      changeId: string;
+      expectedTreeOid?: string;
+    }[];
     expect(items.map((i) => i.changeId)).toEqual(["chg_b1"]);
+    expect(items[0]?.expectedTreeOid).toBe("a".repeat(40));
+  });
+
+  it("#124: GCs both the latest and the sha-keyed staged-tree copies of a merged pinned change", async () => {
+    vi.mocked(getChangesByIds).mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: "chg_b1",
+          project: "my-project",
+          workspace: "fix-bug",
+          status: "approved",
+          baseSha: "base1",
+          workspaceHeadSha: "wshead1",
+          evaluatedSha: "wshead1",
+          evaluatedTreeOid: "a".repeat(40),
+        },
+      ],
+      // biome-ignore lint/suspicious/noExplicitAny: minimal Change stub
+    } as any);
+    vi.mocked(batchMergeStagedTrees).mockResolvedValue({
+      success: true,
+      data: [{ changeId: "chg_b1", merged: true, commit: "merge-1" }],
+      // biome-ignore lint/suspicious/noExplicitAny: minimal result stub
+    } as any);
+    const r2Deletes: string[] = [];
+    env.REPO_OBJECTS = {
+      delete: vi.fn(async (k: string) => {
+        r2Deletes.push(k);
+      }),
+      // biome-ignore lint/suspicious/noExplicitAny: minimal R2 stub
+    } as any;
+
+    const res = await app.fetch(
+      request(
+        "POST",
+        "/api/projects/my-project/changes/merge-batch",
+        { changeIds: ["chg_b1"], force: true },
+        USER_AUTH,
+      ),
+      env,
+      // biome-ignore lint/suspicious/noExplicitAny: minimal ExecutionContext
+      exec() as any,
+    );
+    expect(res.status).toBe(200);
+    await Promise.all(waitUntils);
+    expect(r2Deletes.sort()).toEqual([
+      "repos/proj_test123/ws/fix-bug",
+      "repos/proj_test123/ws/fix-bug/sha/wshead1",
+    ]);
   });
 
   it("rejects a batch above the size cap", async () => {

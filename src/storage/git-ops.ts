@@ -720,16 +720,21 @@ export interface FastForwardResult {
 }
 
 /**
- * Attempt a fast-forward of the project's main to the workspace tip, skipping the
- * project clone and the in-memory 3-way merge that {@link mergeWorkspaceIntoProject}
- * performs. Correctness does not depend on a cached head: the non-force push is
- * accepted by Artifacts only when the project ref is still `expectedParent` (a
- * true fast-forward). Any race or non-descendant tip returns `fastForwarded:
- * false` so the caller falls back to the proven cold merge.
+ * Attempt a fast-forward of the project's main to the pinned workspace commit
+ * (the evaluated sha, #124) — or the workspace tip for legacy unpinned changes —
+ * skipping the project clone and the in-memory 3-way merge that
+ * {@link mergeWorkspaceIntoProject} performs. Correctness does not depend on a
+ * cached head: the non-force push is accepted by Artifacts only when the project
+ * ref is still `expectedParent` (a true fast-forward). Any race or non-descendant
+ * target returns `fastForwarded: false` so the caller falls back to the proven
+ * cold merge.
  *
  * Note: this still fetches the workspace fork (its objects live in a separate
  * Artifacts repo); what it removes is the project clone (`depth:50`) + `git.merge`.
  */
+/** Local ref used to push a pinned (non-tip) workspace commit to the project. */
+const PINNED_MERGE_REF = "refs/heads/stratum-pinned-merge";
+
 export async function fastForwardMerge(
   projectRemote: string,
   projectToken: string,
@@ -738,10 +743,14 @@ export async function fastForwardMerge(
   expectedParent: string,
   logger: Logger,
   timer?: PhaseTimer,
-  /** SEC-2: if set, refuse to fast-forward unless the workspace tip equals this
-   * (the evaluated sha), so a re-committed workspace can't be FF-merged
-   * unevaluated. On mismatch the caller cold-merges, which rejects it. */
-  expectedWorkspaceSha?: string,
+  /** #124: the evaluated workspace commit (`change.workspace_head_sha`). When
+   * set, the fast-forward TARGETS this sha: if the live tip moved past it
+   * (re-push between evaluation and merge), the PINNED sha is pushed — not the
+   * unevaluated tip. If the pinned sha is no longer present in the fetched
+   * workspace history (force-push rewound it), the merge fails closed with
+   * `PINNED_SHA_UNREACHABLE`. Omit for legacy live-tip behavior (changes that
+   * predate migration 024). */
+  pinnedWorkspaceSha?: string,
 ): Promise<Result<FastForwardResult, AppError>> {
   const measure = <T>(name: string, fn: () => Promise<T>): Promise<T> =>
     timer ? timer.measure(name, fn) : fn();
@@ -758,21 +767,40 @@ export async function fastForwardMerge(
   }
   const workspaceTip = tipResult.data;
 
-  // SEC-2: don't fast-forward a workspace that moved since evaluation. Fall back
-  // to cold merge (pinned) which returns STALE_WORKSPACE.
-  if (expectedWorkspaceSha !== undefined && workspaceTip !== expectedWorkspaceSha) {
-    logger.warn("Workspace tip changed since evaluation; refusing fast-forward", {
+  // The commit this merge will land. Defaults to the live tip (legacy changes
+  // with no pinned sha); a pinned change always lands its EVALUATED commit.
+  let target = workspaceTip;
+  if (pinnedWorkspaceSha !== undefined && pinnedWorkspaceSha !== workspaceTip) {
+    // Re-push between evaluation and merge. The merge gate is only sound if the
+    // commit that lands is the one that was evaluated (#123/#124), so merge the
+    // pinned sha — after proving it still exists in the fetched history.
+    const pinnedResult = await fromPromise(git.readCommit({ fs, dir, oid: pinnedWorkspaceSha }));
+    if (!pinnedResult.success) {
+      logger.error("Pinned workspace sha not reachable in workspace; failing closed", undefined, {
+        workspaceRemote,
+        pinnedWorkspaceSha,
+        workspaceTip,
+      });
+      return err(
+        new AppError(
+          "Evaluated workspace commit is no longer present in the workspace history; re-evaluate the change before merging",
+          "PINNED_SHA_UNREACHABLE",
+          409,
+        ),
+      );
+    }
+    logger.warn("Workspace tip moved since evaluation; fast-forwarding to the pinned sha", {
       workspaceRemote,
-      expected: expectedWorkspaceSha,
-      actual: workspaceTip,
+      pinned: pinnedWorkspaceSha,
+      tip: workspaceTip,
     });
-    return ok({ fastForwarded: false });
+    target = pinnedWorkspaceSha;
   }
 
-  // A fast-forward is only possible if the workspace tip descends from the
+  // A fast-forward is only possible if the merge target descends from the
   // project's current head. If not (or history is too shallow to tell), cold-merge.
   const descResult = await fromPromise(
-    git.isDescendent({ fs, dir, oid: workspaceTip, ancestor: expectedParent, depth: -1 }),
+    git.isDescendent({ fs, dir, oid: target, ancestor: expectedParent, depth: -1 }),
   );
   if (!descResult.success) {
     // Most commonly: expectedParent is older than the shallow workspace clone, so
@@ -780,13 +808,29 @@ export async function fastForwardMerge(
     // never fast-forwards and would otherwise look like the FF path "works".
     logger.warn("Could not determine workspace descent; falling back to cold merge", {
       workspaceRemote,
-      workspaceTip,
+      target,
       expectedParent,
     });
     return ok({ fastForwarded: false });
   }
   if (descResult.data !== true) {
     return ok({ fastForwarded: false });
+  }
+
+  // Push the target. The common case (target === tip) pushes the clone's `main`
+  // exactly as before; a pinned non-tip target is pushed via a local ref written
+  // at the pinned commit — O(1) extra work, no additional network round trips.
+  let pushRef = "main";
+  if (target !== workspaceTip) {
+    const writeRefResult = await fromPromise(
+      git.writeRef({ fs, dir, ref: PINNED_MERGE_REF, value: target, force: true }),
+    );
+    if (!writeRefResult.success) {
+      return err(
+        new ExternalServiceError("Git", "Failed to write pinned merge ref", writeRefResult.error),
+      );
+    }
+    pushRef = PINNED_MERGE_REF;
   }
 
   const pushResult = await measure("pushMs", () =>
@@ -796,7 +840,7 @@ export async function fastForwardMerge(
         dir,
         http,
         url: projectRemote,
-        ref: "main",
+        ref: pushRef,
         remoteRef: "main",
         onAuth: makeAuth(projectToken),
       }),
@@ -807,8 +851,11 @@ export async function fastForwardMerge(
     return ok({ fastForwarded: false });
   }
 
-  logger.info("Fast-forwarded project to workspace tip", { projectRemote, sha: workspaceTip });
-  return ok({ fastForwarded: true, commit: workspaceTip });
+  logger.info("Fast-forwarded project to evaluated workspace commit", {
+    projectRemote,
+    sha: target,
+  });
+  return ok({ fastForwarded: true, commit: target });
 }
 
 export interface BatchWorkspace {
@@ -1071,8 +1118,10 @@ const TREE_OID_HEX_LEN = 40;
 
 /**
  * Stage a workspace's tip TREE to R2 (ADR 004 Task 3): one value =
- * `[40-byte tipTreeOid][packed tree objects]`. Recomputed on every commit so the
- * merge always sees the LIVE tip (no stale snapshot) without fetching the fork.
+ * `[40-byte tipTreeOid][packed tree objects]`. Recomputed on every commit. The
+ * caller stores it under both the latest-tip key (overwritten per commit) and a
+ * sha-keyed copy (`<key>/sha/<commitSha>`, #124) so the merge can consume the
+ * tree of the EVALUATED commit even if the workspace was re-pushed since.
  */
 export async function stageWorkspaceTree(
   bucket: R2Bucket,
@@ -1128,6 +1177,18 @@ export function parseStagedTree(value: Uint8Array): StagedTree {
   return { treeOid, objects };
 }
 
+/** R2 key of the latest-tip staged tree for a workspace (overwritten per commit). */
+export function stagedTreeKey(projectId: string, workspace: string): string {
+  return `repos/${projectId}/ws/${workspace}`;
+}
+
+/** #124: sha-keyed staged-tree copy — immutable per workspace commit, so the
+ * merge can read the EVALUATED commit's tree after a re-push overwrote the
+ * latest-tip key. */
+export function stagedTreeShaKey(projectId: string, workspace: string, sha: string): string {
+  return `${stagedTreeKey(projectId, workspace)}/sha/${sha}`;
+}
+
 /** Load a workspace's staged tip tree from R2 (see stageWorkspaceTree). */
 export async function loadStagedTree(bucket: R2Bucket, key: string): Promise<StagedTree | null> {
   const obj = await bucket.get(key);
@@ -1139,13 +1200,23 @@ export interface StagedTreeItem {
   changeId: string;
   baseSha: string;
   staged: StagedTree;
+  /** #124: tree oid the change was evaluated against. When set, the synthetic
+   * commit is only built and merged if the staged tree matches — validating at
+   * the merge layer that what lands is exactly the evaluated content. */
+  expectedTreeOid?: string;
 }
 
 export interface StagedItemResult {
   changeId: string;
   merged: boolean;
   commit?: string;
+  /** Why the item did not merge (validation failure vs plain conflict). */
+  reason?: string;
 }
+
+/** Reason reported when a staged tree fails the evaluated-tree validation. */
+export const STALE_STAGED_TREE_REASON =
+  "Workspace changed since evaluation: staged tree does not match the evaluated revision";
 
 /**
  * Group-commit batch over R2-staged workspace trees (ADR 004 Task 5): operates on
@@ -1166,33 +1237,52 @@ export async function batchMergeStagedTrees(
 ): Promise<Result<StagedItemResult[], AppError>> {
   const gitdir = `${dir === "/" ? "" : dir}/.git`;
 
+  // #124 validation (O(1) per item — a string compare): a staged tree that does
+  // not match the tree the change was evaluated against must not be synthesized
+  // into a commit, let alone merged. Sha-keyed staging makes this a corruption
+  // guard rather than a common path.
+  const eligible = items.map(
+    (item) => item.expectedTreeOid === undefined || item.staged.treeOid === item.expectedTreeOid,
+  );
+
   // Phase 1 (off the merge critical path): place every item's objects, then build
   // the synthetic commits. The synth SHA-1 (`commitObject`) is async crypto with real
   // per-call overhead — running them sequentially inside the merge loop was the
   // dominant cost; `Promise.all` lets the crypto overlap. (Placement stays sequential:
   // concurrent writes race on MemoryFS object-dir creation.)
-  for (const item of items) {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (!item || !eligible[i]) continue;
     for (const o of item.staged.objects) await placeLooseObject(fs, gitdir, o.oid, o.bytes);
   }
   const synths = await Promise.all(
-    items.map((item) =>
-      commitObject({
-        tree: item.staged.treeOid,
-        parents: [item.baseSha],
-        message: `change ${item.changeId}`,
-        timestamp: Math.floor(Date.now() / 1000),
-      }),
+    items.map((item, i) =>
+      eligible[i]
+        ? commitObject({
+            tree: item.staged.treeOid,
+            parents: [item.baseSha],
+            message: `change ${item.changeId}`,
+            timestamp: Math.floor(Date.now() / 1000),
+          })
+        : Promise.resolve(null),
     ),
   );
-  for (const synth of synths) await placeLooseObject(fs, gitdir, synth.oid, synth.bytes);
+  for (const synth of synths) {
+    if (synth) await placeLooseObject(fs, gitdir, synth.oid, synth.bytes);
+  }
 
   // Phase 2: serial merge loop (the ref advance must be serialized). Checkpoint/
   // restore around each so a conflict can't dirty the next.
   const results: StagedItemResult[] = [];
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
+    if (!item) continue;
+    if (!eligible[i]) {
+      results.push({ changeId: item.changeId, merged: false, reason: STALE_STAGED_TREE_REASON });
+      continue;
+    }
     const synthOid = synths[i]?.oid;
-    if (!item || !synthOid) continue;
+    if (!synthOid) continue;
     const checkpoint = await fromPromise(git.resolveRef({ fs, dir, ref: "main" }));
     if (!checkpoint.success) {
       results.push({ changeId: item.changeId, merged: false });

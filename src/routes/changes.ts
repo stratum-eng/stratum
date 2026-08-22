@@ -36,6 +36,8 @@ import {
   mergeWorkspaceIntoProject,
   parseStagedTree,
   pushBranchToRemote,
+  stagedTreeKey,
+  stagedTreeShaKey,
 } from "../storage/git-ops";
 import { parseRepoUrl } from "../storage/git-providers";
 import { recordProvenance } from "../storage/provenance";
@@ -1030,7 +1032,14 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
       skipped.push({ changeId: m.changeId, reason: "workspace changed since evaluation" });
       continue;
     }
-    items.push({ changeId: m.changeId, baseSha: m.baseSha, staged });
+    items.push({
+      changeId: m.changeId,
+      baseSha: m.baseSha,
+      staged,
+      // #124 defense in depth: re-validated inside batchMergeStagedTrees, right
+      // where the synthetic commit is built (O(1) string compare).
+      ...(evaluatedTreeOid !== undefined ? { expectedTreeOid: evaluatedTreeOid } : {}),
+    });
   }
   if (items.length === 0) {
     clonePromise.catch(() => {});
@@ -1069,8 +1078,15 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
     }
     const change = changeById.get(r.changeId);
     landed.push({ changeId: r.changeId, commit: r.commit, change });
-    gcKeys.push(`repos/${project.id}/ws/${change?.workspace}`);
-    if (change?.workspace) mergedWorkspaces.push(change.workspace);
+    if (change?.workspace) {
+      gcKeys.push(stagedTreeKey(project.id, change.workspace));
+      // #124: GC the merged commit's immutable sha-keyed staged-tree copy too.
+      const pinnedSha = change.workspaceHeadSha ?? change.evaluatedSha;
+      if (pinnedSha !== undefined) {
+        gcKeys.push(stagedTreeShaKey(project.id, change.workspace, pinnedSha));
+      }
+      mergedWorkspaces.push(change.workspace);
+    }
     merged.push(r.changeId);
   }
   const mergedAt = new Date().toISOString();

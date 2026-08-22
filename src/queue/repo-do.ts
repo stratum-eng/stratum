@@ -5,6 +5,7 @@ import { blobObject, commitObject, treeObject } from "../storage/git-objects";
 import {
   type NodeFS,
   type StagedItemResult,
+  type StagedTree,
   type StagedTreeItem,
   batchMergeStagedTrees,
   cloneRepo,
@@ -12,6 +13,8 @@ import {
   freshRepoToken,
   loadStagedTree,
   mergeWorkspaceIntoProject,
+  stagedTreeKey,
+  stagedTreeShaKey,
 } from "../storage/git-ops";
 import { type CommitOutcome, commitPhasesFromSpans, recordCommitMetrics } from "../storage/metrics";
 import { putObject } from "../storage/object-store";
@@ -229,15 +232,37 @@ export class RepoDO extends DurableObject<Env> {
       return { success: false, error: "Project owner is being deleted" };
     }
 
-    const key = `repos/${project.id}/ws/${change.workspace}`;
-    const staged = await loadStagedTree(bucket, key);
-    if (!staged) return { fallback: true }; // not staged → cold path
+    const latestKey = stagedTreeKey(project.id, change.workspace);
+    // #124: the merge must consume the tree of the EVALUATED commit, not the
+    // latest staged tip (which every re-push overwrites). The pinned sha is the
+    // commit the change was evaluated against (#115/#123 cold-path pinning).
+    const pinnedSha = change.workspaceHeadSha ?? change.evaluatedSha;
+    const shaKey =
+      pinnedSha !== undefined
+        ? stagedTreeShaKey(project.id, change.workspace, pinnedSha)
+        : undefined;
 
-    // SEC-2: content-address the tree we are about to land against what was
-    // evaluated. This closes the residual TOCTOU between the route's pre-merge
-    // tip check and this staged-tree read: if the workspace was re-committed in
-    // that window, the staged tree oid won't match the evaluated tree oid.
-    // Legacy changes (pre-migration 026) have no evaluatedTreeOid and skip it.
+    let staged: StagedTree | null = null;
+    if (shaKey !== undefined) staged = await loadStagedTree(bucket, shaKey);
+    if (!staged) {
+      const latest = await loadStagedTree(bucket, latestKey);
+      if (!latest) return { fallback: true }; // not staged → cold path
+      if (pinnedSha !== undefined) {
+        // No sha-keyed tree (staged before sha-keying shipped, or evicted). The
+        // latest tree is only usable when it provably IS the evaluated content;
+        // otherwise fall back to the git-based path, which merges the pinned
+        // sha (fastForwardMerge / mergeWorkspaceIntoProject both pin, #123/#124).
+        if (change.evaluatedTreeOid === undefined || latest.treeOid !== change.evaluatedTreeOid) {
+          return { fallback: true };
+        }
+      }
+      staged = latest;
+    }
+
+    // SEC-2 + #124: content-address the tree we are about to land against what
+    // was evaluated. Closes the residual TOCTOU between the route's pre-merge
+    // tip check and this staged-tree read, and guards a corrupt sha-keyed
+    // object. Legacy changes (pre-migration 026) have no evaluatedTreeOid and skip it.
     if (change.evaluatedTreeOid !== undefined && staged.treeOid !== change.evaluatedTreeOid) {
       return {
         success: false,
@@ -249,12 +274,24 @@ export class RepoDO extends DurableObject<Env> {
     this.projectRemote = project.remote;
     let result: StagedItemResult;
     try {
-      result = await this.r2Coordinator().submit({ changeId, baseSha: change.baseSha, staged });
+      result = await this.r2Coordinator().submit({
+        changeId,
+        baseSha: change.baseSha,
+        staged,
+        // Re-validated inside the batch merge, right where the synthetic commit
+        // is built (#124 defense in depth; O(1) string compare).
+        ...(change.evaluatedTreeOid !== undefined
+          ? { expectedTreeOid: change.evaluatedTreeOid }
+          : {}),
+      });
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
     if (!result.merged || !result.commit) {
-      return { success: false, error: "Merge conflict: change could not be auto-merged" };
+      return {
+        success: false,
+        error: result.reason ?? "Merge conflict: change could not be auto-merged",
+      };
     }
 
     // Keep the cached head fresh so a later change that falls back to advance()
@@ -296,13 +333,21 @@ export class RepoDO extends DurableObject<Env> {
       log.error("Failed to record provenance after R2 merge", provenanceResult.error);
     }
 
-    // GC the staged tree now that it has landed (Task 6).
-    await bucket.delete(key).catch((error) => {
-      log.warn("Failed to delete staged tree", {
-        key,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    // GC the staged tree now that it has landed (Task 6) — both the latest-tip
+    // key and the merged commit's sha-keyed copy (#124). A newer, unmerged
+    // commit keeps its own sha-keyed copy, so deleting the latest key only ever
+    // costs a later merge its fast path, never its correctness.
+    const gcKeys = shaKey !== undefined ? [latestKey, shaKey] : [latestKey];
+    await Promise.all(
+      gcKeys.map((k) =>
+        bucket.delete(k).catch((error) => {
+          log.warn("Failed to delete staged tree", {
+            key: k,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }),
+      ),
+    );
     return { success: true, commit: result.commit, transitioned };
   }
 
@@ -450,6 +495,11 @@ export class RepoDO extends DurableObject<Env> {
       let commit: string | undefined;
       let outcome: CommitOutcome = "cold_fallback";
 
+      // #124: the commit this merge must land — the sha the change was evaluated
+      // against (#115/#123). Both fields pin the same revision; legacy changes
+      // (pre-migration 024/026) have neither and merge the live tip.
+      const pinnedSha = change.workspaceHeadSha ?? change.evaluatedSha;
+
       // Fast-forward fast path: only when we believe the project head is still the
       // change's base. A wrong cache cannot corrupt anything — the non-force push
       // inside fastForwardMerge rejects, and we cold-merge below.
@@ -462,8 +512,15 @@ export class RepoDO extends DurableObject<Env> {
           expectedParent,
           log,
           timer,
-          change.evaluatedSha,
+          pinnedSha,
         );
+        if (!ff.success && ff.error.code === "PINNED_SHA_UNREACHABLE") {
+          // The evaluated commit is gone from the workspace (force-push rewound
+          // it). No verifiable merge target exists — fail closed with the clear
+          // error instead of cold-merging, which would re-clone only to fail the
+          // same pinned-sha check.
+          return { success: false, error: ff.error.message, code: ff.error.code };
+        }
         if (ff.success && ff.data.fastForwarded && ff.data.commit) {
           commit = ff.data.commit;
           outcome = "fast_forward";
@@ -482,8 +539,10 @@ export class RepoDO extends DurableObject<Env> {
           {
             strategy: "merge",
             timer,
-            // SEC-2: pin the merged tip to the evaluated sha on the RepoDO cold
-            // fallback too. Legacy changes with no evaluatedSha skip it.
+            // Merge the exact evaluated commit (#115/#124) AND assert the pinned
+            // revision matches what was evaluated (SEC-2) — the same pinning the
+            // cold route/MergeQueue paths apply. Legacy changes skip both.
+            ...(change.workspaceHeadSha ? { workspaceSha: change.workspaceHeadSha } : {}),
             ...(change.evaluatedSha !== undefined
               ? { expectedWorkspaceSha: change.evaluatedSha }
               : {}),
