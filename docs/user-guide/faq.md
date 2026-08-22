@@ -109,8 +109,22 @@ Honestly, several:
   access.
 - **Evaluation runs synchronously** at change creation — there's no async
   evaluation queue yet, so very slow evaluators stretch the request.
+- **No Git LFS**: see
+  [Does Stratum support Git LFS?](#does-stratum-support-git-lfs) below.
 
 See `docs/CURRENT_CAPABILITIES.md` for the authoritative, current state.
+
+## Does Stratum support Git LFS?
+
+No. There is no LFS server: the git smart-HTTP router exposes only
+`info/refs`, `git-upload-pack`, and `git-receive-pack` — there is no
+`/info/lfs` route and no `objects/batch` endpoint, so `git lfs` clients get a
+`404 Not found` when they call the batch API and an LFS-enabled clone fails
+at that point. Combined with the 50 MB cap on git push request bodies,
+large-binary workflows are effectively blocked. Keep binaries out of
+Stratum-hosted repos, or keep LFS-dependent repos on GitHub and use layer
+mode. See `docs/CURRENT_CAPABILITIES.md` and the implementation sketch in
+`docs/REMAINING_WORK.md`.
 
 ## Can I use plain `git` with Stratum?
 

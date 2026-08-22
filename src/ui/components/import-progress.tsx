@@ -134,7 +134,7 @@ function classifyError(errorMessage: string): ErrorInfo {
         "Ensure the repository is a valid Git repository",
         "Very large repositories may timeout - try importing with a shallow clone (depth: 1)",
         "Check if the repository has submodules that might be causing issues",
-        "Some repositories require specific Git LFS setup",
+        "Git LFS is not supported - repositories using LFS import as pointer files, and LFS clones/pushes against Stratum will fail",
       ],
     };
   }

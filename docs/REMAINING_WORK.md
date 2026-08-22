@@ -74,6 +74,31 @@ access control within an org.
 Both packages live in the repo at full API parity but are not yet published,
 so consumers must install from source.
 
+## Feature gaps
+
+### Git LFS support
+
+Stratum has no Git LFS support at all — the smart-HTTP router serves only
+`info/refs`, `git-upload-pack`, and `git-receive-pack`; there is no
+`/info/lfs` route or `objects/batch` endpoint, so LFS-enabled clones fail at
+the batch call with a 404. With the 50 MB git push body cap
+(`MAX_GIT_BODY_BYTES` in `src/routes/git-http.ts`), large-binary workflows
+are blocked entirely (see the "Git LFS: not supported" section in
+[CURRENT_CAPABILITIES.md](./CURRENT_CAPABILITIES.md)).
+
+An implementation would require:
+
+- **LFS batch API**: `POST <repo>.git/info/lfs/objects/batch` plus
+  upload/download transfer endpoints, authenticated with the same API-key
+  Basic auth as the git router.
+- **R2 object store** for LFS content, addressed by OID (SHA-256), with
+  size verification on upload.
+- **Pointer handling in browse/diff**: detect LFS pointer files and resolve
+  or label them instead of rendering the raw pointer text.
+
+Until then, the guidance is: keep binaries out of Stratum-hosted repos, or
+keep LFS-dependent repos on GitHub in layer mode.
+
 ## Deferred UX recommendation
 
 From [research/master-plan-alignment.md](./research/master-plan-alignment.md),

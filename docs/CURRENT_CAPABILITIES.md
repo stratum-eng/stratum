@@ -80,3 +80,35 @@ Last updated: 2026-06-11 — reflects completion of the master-plan feature road
   along with the reachable history of a rotating slice of repos (coverage rotates
   across runs under a per-run cap), with a tested restore path
   (`docs/runbooks/backup-restore.md`).
+
+## Git LFS: not supported
+
+Git LFS is entirely absent from Stratum:
+
+- The git smart-HTTP router (`src/routes/git-http.ts`) exposes only
+  `info/refs`, `git-upload-pack`, and `git-receive-pack` for projects and
+  workspaces. There is **no `/info/lfs` route and no `objects/batch`
+  endpoint**, so an LFS-enabled clone or push fails when the `git lfs` client
+  calls the batch API — the request falls through to the app's 404 handler
+  (`{"error": "Not found"}`).
+- Nothing server-side understands LFS pointer files: browse and diff render a
+  pointer file as its small text content, and imports bring over pointers,
+  not the binaries behind them.
+- Git push request bodies are capped at **50 MB**
+  (`MAX_GIT_BODY_BYTES = 50 * 1024 * 1024` in `src/routes/git-http.ts`), so
+  committing large binaries directly instead of via LFS is also blocked
+  beyond that size.
+
+Together these mean large-binary workflows are not viable on Stratum today.
+Practical guidance:
+
+- Keep binaries out of Stratum-hosted repos (generated assets, models, media
+  belong in object storage referenced by URL).
+- Keep LFS-dependent repos on GitHub and use **layer mode** (bidirectional
+  sync) so agent work still flows through Stratum's gates.
+
+Supporting LFS would require, at minimum: implementing the LFS batch API
+(`POST <repo>.git/info/lfs/objects/batch`) plus the transfer endpoints, an R2
+object store for LFS content addressed by OID, and pointer-file awareness in
+the browse/diff surfaces so pointers resolve to their objects. This is
+tracked as future work in `REMAINING_WORK.md`.
