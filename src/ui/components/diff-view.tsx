@@ -1,19 +1,35 @@
 import type { FC } from "hono/jsx";
+import type { ChangeComment } from "../../storage/change-reviews";
+
+export interface DiffLine {
+  kind: "add" | "del" | "context" | "hunk" | "meta";
+  text: string;
+  /** 1-based line number in the old file (del/context lines). */
+  oldLine?: number;
+  /** 1-based line number in the new file (add/context lines). */
+  newLine?: number;
+}
 
 export interface DiffFile {
   path: string;
   additions: number;
   deletions: number;
-  lines: Array<{ kind: "add" | "del" | "context" | "hunk" | "meta"; text: string }>;
+  lines: DiffLine[];
 }
 
 /**
  * Parse a unified diff into per-file sections for rendering.
  * Tolerant of partial input: unrecognized lines render as context.
+ * Old/new line numbers are computed from hunk headers as lines stream by, so
+ * every content line can carry a stable anchor for line comments.
  */
 export function parseUnifiedDiff(diff: string): DiffFile[] {
   const files: DiffFile[] = [];
   let current: DiffFile | null = null;
+  let oldLine = 0;
+  let newLine = 0;
+  // Lines before any @@ header (or in malformed input) get no numbers.
+  let inHunk = false;
 
   for (const line of diff.split("\n")) {
     if (line.startsWith("--- ")) {
@@ -24,6 +40,7 @@ export function parseUnifiedDiff(diff: string): DiffFile[] {
       const path = rawPath.startsWith("b/") ? rawPath.slice(2) : rawPath;
       current = { path, additions: 0, deletions: 0, lines: [] };
       files.push(current);
+      inHunk = false;
       continue;
     }
     if (line.startsWith("Index:") || line.startsWith("diff ") || line.startsWith("index ")) {
@@ -35,6 +52,14 @@ export function parseUnifiedDiff(diff: string): DiffFile[] {
     if (!current) continue;
 
     if (line.startsWith("@@")) {
+      const header = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (header) {
+        oldLine = Number(header[1]);
+        newLine = Number(header[2]);
+        inHunk = true;
+      } else {
+        inHunk = false;
+      }
       current.lines.push({ kind: "hunk", text: line });
     } else if (line.startsWith("\\")) {
       // "\ No newline at end of file" — metadata about the adjacent line, not
@@ -42,16 +67,40 @@ export function parseUnifiedDiff(diff: string): DiffFile[] {
       current.lines.push({ kind: "meta", text: line });
     } else if (line.startsWith("+")) {
       current.additions += 1;
-      current.lines.push({ kind: "add", text: line });
+      current.lines.push({
+        kind: "add",
+        text: line,
+        ...(inHunk ? { newLine: newLine++ } : {}),
+      });
     } else if (line.startsWith("-")) {
       current.deletions += 1;
-      current.lines.push({ kind: "del", text: line });
+      current.lines.push({
+        kind: "del",
+        text: line,
+        ...(inHunk ? { oldLine: oldLine++ } : {}),
+      });
     } else {
-      current.lines.push({ kind: "context", text: line });
+      current.lines.push({
+        kind: "context",
+        text: line,
+        ...(inHunk ? { oldLine: oldLine++, newLine: newLine++ } : {}),
+      });
     }
   }
 
   return files;
+}
+
+/**
+ * Stable anchor id for a diff line: `L-{fileIndex}-{new|old}-{n}`. Added and
+ * context lines anchor on their new-file number; deleted lines only exist on
+ * the old side. Only the unified view carries the ids (an id must be unique
+ * per document, and the unified view is always rendered).
+ */
+export function diffLineAnchor(fileIndex: number, line: DiffLine): string | undefined {
+  if (line.newLine !== undefined) return `L-${fileIndex}-new-${line.newLine}`;
+  if (line.oldLine !== undefined) return `L-${fileIndex}-old-${line.oldLine}`;
+  return undefined;
 }
 
 const lineClass: Record<DiffFile["lines"][number]["kind"], string> = {
@@ -187,7 +236,7 @@ export const DiffView: FC<{ files: DiffFile[] }> = ({ files }) => {
         <span class="diff-label-unified">Switch to split view</span>
         <span class="diff-label-split">Switch to unified view</span>
       </label>
-      {files.map((file) => (
+      {files.map((file, fileIndex) => (
         <details class="diff-file" key={file.path} open={files.length <= 5}>
           <summary class="diff-file-header">
             <span class="diff-file-path">{file.path}</span>
@@ -197,16 +246,163 @@ export const DiffView: FC<{ files: DiffFile[] }> = ({ files }) => {
             </span>
           </summary>
           <pre class="diff-file-body">
-            {file.lines.map((line, index) => (
-              <span class={lineClass[line.kind]} key={index}>
-                {line.text}
-                {"\n"}
-              </span>
-            ))}
+            {file.lines.map((line, index) => {
+              const anchor = diffLineAnchor(fileIndex, line);
+              return (
+                <span
+                  class={lineClass[line.kind]}
+                  {...(anchor !== undefined ? { id: anchor } : {})}
+                  key={index}
+                >
+                  <span class="diff-lineno">{line.oldLine ?? ""}</span>
+                  <span class="diff-lineno">{line.newLine ?? ""}</span>
+                  {line.text}
+                  {"\n"}
+                </span>
+              );
+            })}
           </pre>
           <SplitTable file={file} />
         </details>
       ))}
+    </div>
+  );
+};
+
+export interface LineCommentThread {
+  root: ChangeComment;
+  replies: ChangeComment[];
+}
+
+/**
+ * Group line-anchored comments into threads: roots (comments with a file
+ * anchor and no parent) ordered by file, line, then creation time, each with
+ * its replies in chronological order.
+ */
+export function buildLineCommentThreads(comments: ChangeComment[]): LineCommentThread[] {
+  const repliesByRoot = new Map<string, ChangeComment[]>();
+  for (const comment of comments) {
+    if (comment.parentCommentId !== undefined) {
+      const existing = repliesByRoot.get(comment.parentCommentId) ?? [];
+      existing.push(comment);
+      repliesByRoot.set(comment.parentCommentId, existing);
+    }
+  }
+  return comments
+    .filter((comment) => comment.file !== undefined && comment.parentCommentId === undefined)
+    .sort((a, b) => {
+      const fileA = a.file ?? "";
+      const fileB = b.file ?? "";
+      if (fileA !== fileB) return fileA < fileB ? -1 : 1;
+      const lineDiff = (a.line ?? 0) - (b.line ?? 0);
+      if (lineDiff !== 0) return lineDiff;
+      return a.createdAt.localeCompare(b.createdAt);
+    })
+    .map((root) => ({
+      root,
+      replies: (repliesByRoot.get(root.id) ?? []).sort((a, b) =>
+        a.createdAt.localeCompare(b.createdAt),
+      ),
+    }));
+}
+
+const CommentBlock: FC<{ comment: ChangeComment }> = ({ comment }) => (
+  <div class="comment-item">
+    <div class="comment-meta">
+      <span class={`activity-actor activity-actor-${comment.authorType}`}>
+        {comment.authorType}
+      </span>
+      <span class="mono">{comment.authorId}</span>
+      <span class="review-time">{new Date(comment.createdAt).toLocaleString()}</span>
+    </div>
+    <pre class="comment-body">{comment.body}</pre>
+  </div>
+);
+
+/**
+ * Line comment threads rendered beneath the diff, grouped by file:line.
+ * Server-rendered forms only (reply, resolve/unresolve) — no client-side JS.
+ * When the thread's file is present in `files`, the header links to the
+ * line's anchor in the unified diff.
+ */
+export const LineCommentThreads: FC<{
+  changeId: string;
+  comments: ChangeComment[];
+  /** Rendered diff files, used to link threads to line anchors. */
+  files?: DiffFile[];
+  /** Whether to render reply and resolve/unresolve forms. */
+  canComment?: boolean;
+}> = ({ changeId, comments, files = [], canComment = false }) => {
+  const threads = buildLineCommentThreads(comments);
+  if (threads.length === 0) {
+    return <p class="review-empty">No line comments yet.</p>;
+  }
+  return (
+    <div class="line-threads">
+      {threads.map(({ root, replies }) => {
+        const fileIndex = files.findIndex((file) => file.path === root.file);
+        const side = root.side ?? "new";
+        const anchorHref =
+          fileIndex >= 0 && root.line !== undefined
+            ? `#L-${fileIndex}-${side}-${root.line}`
+            : undefined;
+        const location = `${root.file}:${root.line}`;
+        return (
+          <div
+            class={root.resolved ? "line-thread line-thread-resolved" : "line-thread"}
+            key={root.id}
+          >
+            <div class="line-thread-header">
+              {anchorHref !== undefined ? (
+                <a class="mono line-thread-anchor" href={anchorHref}>
+                  {location}
+                </a>
+              ) : (
+                <span class="mono">{location}</span>
+              )}
+              {root.side === "old" && <span class="line-thread-side">(old)</span>}
+              {root.resolved ? (
+                <span class="badge badge-approved">resolved</span>
+              ) : (
+                <span class="badge badge-open">open</span>
+              )}
+            </div>
+            <CommentBlock comment={root} />
+            {replies.length > 0 && (
+              <ul class="line-thread-replies">
+                {replies.map((reply) => (
+                  <li key={reply.id}>
+                    <CommentBlock comment={reply} />
+                  </li>
+                ))}
+              </ul>
+            )}
+            {canComment && (
+              <div class="line-thread-actions">
+                <form
+                  method="post"
+                  action={`/api/changes/${changeId}/comments`}
+                  class="comment-form"
+                >
+                  <input type="hidden" name="parentCommentId" value={root.id} />
+                  <textarea name="body" rows={2} placeholder="Reply…" required />
+                  <button type="submit" class="btn">
+                    Reply
+                  </button>
+                </form>
+                <form
+                  method="post"
+                  action={`/api/changes/${changeId}/comments/${root.id}/${root.resolved ? "unresolve" : "resolve"}`}
+                >
+                  <button type="submit" class="btn">
+                    {root.resolved ? "Unresolve" : "Resolve"}
+                  </button>
+                </form>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 };

@@ -1,7 +1,7 @@
 import type { FC } from "hono/jsx";
 import type { ChangeComment, ChangeReview } from "../../storage/change-reviews";
 import type { CostSummaryEntry } from "../../storage/costs";
-import { type DiffFile, DiffView } from "../components/diff-view";
+import { type DiffFile, DiffView, LineCommentThreads } from "../components/diff-view";
 import { Layout } from "../layout";
 
 interface ChangeDetailProps {
@@ -98,6 +98,11 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   canReview = false,
   user,
 }) => {
+  // Line-anchored comments (and their replies) render as threads beneath the
+  // diff; anchorless comments stay in the change-level discussion below.
+  const lineComments = comments.filter((comment) => comment.file !== undefined);
+  const discussionComments = comments.filter((comment) => comment.file === undefined);
+
   const hasGithubPr = change.githubPrUrl !== undefined;
   const canMerge = !hasGithubPr && canReview && MERGEABLE_STATUSES.includes(change.status);
   const canReject = !TERMINAL_STATUSES.includes(change.status);
@@ -282,6 +287,18 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
         </div>
       )}
 
+      {lineComments.length > 0 && (
+        <div class="card">
+          <h2>Line comments</h2>
+          <LineCommentThreads
+            changeId={change.id}
+            comments={lineComments}
+            files={diff ?? []}
+            canComment={!!user}
+          />
+        </div>
+      )}
+
       {costs.length > 0 && (
         <div class="card">
           <h2>Resource usage</h2>
@@ -303,6 +320,8 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
               <li key={review.id} class="review-item">
                 {review.verdict === "approve" ? (
                   <span class="badge badge-approved">approved</span>
+                ) : review.verdict === "comment" ? (
+                  <span class="badge">commented</span>
                 ) : (
                   <span class="badge badge-rejected">changes requested</span>
                 )}
@@ -327,17 +346,28 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
                 Request changes
               </button>
             </form>
+            <form
+              method="post"
+              action={`/api/changes/${change.id}/reviews`}
+              class="comment-form review-comment-form"
+            >
+              <input type="hidden" name="verdict" value="comment" />
+              <textarea name="comment" rows={2} placeholder="Comment without a verdict…" required />
+              <button type="submit" class="btn">
+                Comment
+              </button>
+            </form>
           </div>
         )}
       </div>
 
       <div class="card">
         <h2>Comments</h2>
-        {comments.length === 0 ? (
+        {discussionComments.length === 0 ? (
           <p class="review-empty">No comments yet.</p>
         ) : (
           <ul class="comment-list">
-            {comments.map((comment) => (
+            {discussionComments.map((comment) => (
               <li key={comment.id} class="comment-item">
                 <div class="comment-meta">
                   <span class={`activity-actor activity-actor-${comment.authorType}`}>

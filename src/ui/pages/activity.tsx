@@ -50,7 +50,12 @@ export function describeEvent(event: EventRecord): string {
     case "change.commented":
       return `Comment on change ${changeId ?? "?"}`;
     case "change.reviewed": {
-      const verdict = payload.verdict === "approve" ? "approved" : "changes requested";
+      const verdict =
+        payload.verdict === "approve"
+          ? "approved"
+          : payload.verdict === "comment"
+            ? "commented"
+            : "changes requested";
       return `Change ${changeId ?? "?"} reviewed → ${verdict}`;
     }
     case "sync.completed":

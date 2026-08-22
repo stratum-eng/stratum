@@ -1567,7 +1567,15 @@ paths:
       operationId: addChangeComment
       tags: [reviews]
       summary: Add a comment to a change
-      description: Users and agents with read access to the project may comment.
+      description: |
+        Users and agents with read access to the project may comment.
+
+        A comment can optionally be anchored to a diff line by passing `file`
+        and `line` together (`side` and `commitSha` are only allowed with such
+        an anchor). Passing `parentCommentId` posts a reply into an existing
+        thread: the parent must belong to the same change, replies inherit the
+        thread's anchor (anchor fields must be omitted), and replies to
+        replies are flattened onto the thread root.
       requestBody:
         required: true
         content:
@@ -1577,6 +1585,23 @@ paths:
               required: [body]
               properties:
                 body: { type: string, maxLength: 20000 }
+                file:
+                  type: string
+                  description: File path the comment is anchored to (requires line)
+                line:
+                  type: integer
+                  minimum: 1
+                  description: 1-based line number in the diff (requires file)
+                side:
+                  type: string
+                  enum: [old, new]
+                  description: Which half of the diff the line belongs to; only with file+line
+                commitSha:
+                  type: string
+                  description: Commit the anchor was recorded against; only with file+line
+                parentCommentId:
+                  type: string
+                  description: Thread root to reply to; mutually exclusive with anchor fields
       responses:
         "201":
           description: Comment created
@@ -1598,6 +1623,10 @@ paths:
       operationId: listChangeComments
       tags: [reviews]
       summary: List comments on a change
+      description: |
+        Comments are returned in `createdAt` order and each carries its
+        `parentCommentId` (plus any line anchor), so threads are
+        reconstructable: roots in order, replies grouped under their root.
       security: [{ bearerAuth: [] }, {}]
       responses:
         "200":
@@ -1615,6 +1644,73 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/changes/{id}/comments/{commentId}/resolve:
+    parameters:
+      - $ref: "#/components/parameters/ChangeId"
+      - name: commentId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: resolveChangeComment
+      tags: [reviews]
+      summary: Resolve a comment thread
+      description: |
+        Marks a thread-root comment resolved. Allowed for project writers or
+        the comment's author. Replies cannot be resolved — only the thread
+        root.
+      responses:
+        "200":
+          description: Thread resolved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  comment: { $ref: "#/components/schemas/ChangeComment" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/changes/{id}/comments/{commentId}/unresolve:
+    parameters:
+      - $ref: "#/components/parameters/ChangeId"
+      - name: commentId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: unresolveChangeComment
+      tags: [reviews]
+      summary: Reopen a resolved comment thread
+      description: Same authorization rules as resolve.
+      responses:
+        "200":
+          description: Thread reopened
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  comment: { $ref: "#/components/schemas/ChangeComment" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/changes/{id}/reviews:
     parameters:
       - $ref: "#/components/parameters/ChangeId"
@@ -1627,6 +1723,13 @@ paths:
         moves the change to `approved`; `request_changes` moves it to
         `needs_changes`. Only open, needs_changes, accepted, or approved
         changes can be reviewed.
+
+        A `comment` verdict is a comment-only review: `comment` (the text) is
+        required, the body is recorded in the change's discussion, the change
+        status is untouched, and it never counts toward required approvals nor
+        blocks a merge. It also never replaces an existing
+        approve/request_changes verdict by the same reviewer — a verdict row
+        with `comment` is only recorded when the reviewer has no verdict yet.
       requestBody:
         required: true
         content:
@@ -1637,7 +1740,7 @@ paths:
               properties:
                 verdict:
                   type: string
-                  enum: [approve, request_changes]
+                  enum: [approve, request_changes, comment]
                 comment: { type: string, maxLength: 20000 }
       responses:
         "201":
@@ -1650,7 +1753,10 @@ paths:
                   review: { $ref: "#/components/schemas/Review" }
                   changeStatus:
                     type: string
-                    enum: [approved, needs_changes]
+                    description: |
+                      approved or needs_changes after an approve/request_changes
+                      verdict; the change's unchanged status after a comment
+                      verdict.
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -3149,13 +3255,13 @@ components:
         reviewerId: { type: string }
         verdict:
           type: string
-          enum: [approve, request_changes]
+          enum: [approve, request_changes, comment]
         comment: { type: string }
         createdAt: { type: string, format: date-time }
 
     ChangeComment:
       type: object
-      required: [id, changeId, authorType, authorId, body, createdAt]
+      required: [id, changeId, authorType, authorId, body, createdAt, resolved]
       properties:
         id: { type: string }
         changeId: { type: string }
@@ -3165,6 +3271,25 @@ components:
         authorId: { type: string }
         body: { type: string }
         createdAt: { type: string, format: date-time }
+        file:
+          type: string
+          description: Diff anchor file path; absent on change-level comments
+        line:
+          type: integer
+          description: 1-based anchored line number
+        side:
+          type: string
+          enum: [old, new]
+          description: Which half of the diff the anchored line belongs to
+        commitSha:
+          type: string
+          description: Commit the anchor was recorded against
+        parentCommentId:
+          type: string
+          description: Thread root this comment replies to; absent on roots
+        resolved:
+          type: boolean
+          description: Thread resolution state (meaningful on thread roots)
 
     ActivityEvent:
       type: object
