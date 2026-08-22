@@ -174,8 +174,14 @@ export interface ImportJobMessage {
   sourceUrl?: string;
   provider?: GitProvider;
   branch: string;
+  /** Clone depth (1..MAX_CLONE_DEPTH); 0 means full history (depth omitted from the clone). */
   depth: number;
   timestamp: string;
+  /**
+   * User id of the account that triggered the import. Failure notifications are
+   * emailed to this user's address (in addition to the ADMIN_EMAIL copy).
+   */
+  initiatedBy?: string;
 }
 
 // Git provider types

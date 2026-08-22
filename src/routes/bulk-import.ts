@@ -4,14 +4,19 @@
  */
 
 import { Hono } from "hono";
-import { detectProvider, isValidRepoUrl, parseRepoUrl } from "../storage/git-providers";
+import {
+  detectProvider,
+  isValidRepoUrl,
+  parseRepoUrl,
+  resolveDefaultBranch,
+} from "../storage/git-providers";
 import { createImportJob, updateImportStatus } from "../storage/imports";
 import { getProjectByPath, setProject } from "../storage/state";
 import type { ArtifactsCreateResult, BulkImportJob, Env, ProjectEntry } from "../types";
 import { getArtifactsRepoName } from "../types";
 import { createLogger } from "../utils/logger";
 import { badRequest, created, forbidden, notFound, ok, unauthorized } from "../utils/response";
-import { isValidNamespace, isValidSlug } from "../utils/validation";
+import { isValidNamespace, isValidSlug, validateCloneDepth } from "../utils/validation";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -29,8 +34,10 @@ interface RepoImportRequest {
   namespace?: string;
   /** Optional custom slug (defaults to repo name) */
   slug?: string;
-  /** Branch to import (defaults to default branch) */
+  /** Branch to import (defaults to the provider's default branch) */
   branch?: string;
+  /** Clone depth: integer 1..1000, or 0 / "full" for full history (default 10) */
+  depth?: number | string;
   /** Visibility setting */
   visibility?: "private" | "public";
 }
@@ -80,7 +87,6 @@ export async function processRepoImport(
   const { url } = request;
   const namespace = request.namespace || getUserNamespace(username);
   const slug = request.slug || extractSlugFromUrl(url) || `repo-${index}`;
-  const branch = request.branch || "main";
   const visibility = request.visibility || "private";
 
   // Update job progress
@@ -116,6 +122,14 @@ export async function processRepoImport(
       return { success: false, error: "Invalid slug", repo: url };
     }
 
+    // Validate clone depth
+    const depthResult = validateCloneDepth(request.depth);
+    if (!depthResult.valid) {
+      job && job.failedRepos++;
+      return { success: false, error: depthResult.error, repo: url };
+    }
+    const depth = depthResult.depth;
+
     // Check if project already exists
     const existingResult = await getProjectByPath(env.STATE, namespace, slug, logger);
     if (existingResult.success) {
@@ -123,6 +137,11 @@ export async function processRepoImport(
       job && job.successfulRepos++;
       return { success: true, repo: url };
     }
+
+    // Resolve the branch to import: an explicitly requested branch wins;
+    // otherwise ask the provider for the repository's real default branch
+    // (fail-open to "main" — see resolveDefaultBranch).
+    const branch = request.branch || (await resolveDefaultBranch(url, env, logger));
 
     // Generate IDs
     const projectId = generateProjectId();
@@ -204,7 +223,8 @@ export async function processRepoImport(
         slug,
         githubUrl: url,
         branch,
-        depth: 10,
+        depth,
+        initiatedBy: ownerId,
       });
     } catch (queueError) {
       const msg = queueError instanceof Error ? queueError.message : String(queueError);

@@ -13,7 +13,7 @@ import {
   initAndPush,
   listFilesInRepo,
 } from "../storage/git-ops";
-import { buildAuthConfig } from "../storage/git-providers";
+import { buildAuthConfig, resolveDefaultBranch } from "../storage/git-providers";
 import {
   cancelImportJob,
   createImportJob,
@@ -21,6 +21,7 @@ import {
   getImportProgress,
   isImportCancelled,
   recoverStalledImport,
+  updateImportProgress,
   updateImportStatus,
 } from "../storage/imports";
 import { getOrgAccessLevel, getOrgBySlug } from "../storage/orgs";
@@ -52,12 +53,14 @@ import {
   unauthorized,
 } from "../utils/response";
 import {
+  DEFAULT_CLONE_DEPTH,
   isStringRecord,
   isValidGitHubUrl,
   isValidNamespace,
   isValidRepoUrl,
   isValidSlug,
   slugify,
+  validateCloneDepth,
 } from "../utils/validation";
 
 const DEFAULT_FILES: Record<string, string> = {
@@ -432,7 +435,8 @@ app.post(
                   slug,
                   githubUrl: existingImport.data.sourceUrl,
                   branch: existingImport.data.branch ?? "main",
-                  depth: 10,
+                  depth: DEFAULT_CLONE_DEPTH,
+                  initiatedBy: userId,
                 });
               } catch (queueError) {
                 logger.error(
@@ -484,12 +488,13 @@ app.post(
       if (contentType.includes("application/json")) {
         body = await c.req.json();
       } else {
-        // Form data
+        // Form data — pass depth through raw so validateCloneDepth can accept
+        // both numeric strings and the "full" keyword.
         const formData = await c.req.parseBody();
         body = {
           url: formData.url,
           branch: formData.branch,
-          depth: formData.depth ? Number(formData.depth) : undefined,
+          depth: formData.depth,
           visibility: formData.visibility,
         };
       }
@@ -497,7 +502,23 @@ app.post(
       if (!isValidRepoUrl(body.url) && !isValidGitHubUrl(body.url))
         return badRequest("url must be a valid repository URL from GitHub, GitLab, or Bitbucket");
 
-      const branch = typeof body.branch === "string" ? body.branch : "main";
+      // Validate clone depth (integer 1..MAX_CLONE_DEPTH, or 0 / "full" for
+      // full history; absent -> DEFAULT_CLONE_DEPTH).
+      const depthResult = validateCloneDepth(body.depth);
+      if (!depthResult.valid) {
+        return badRequest(depthResult.error);
+      }
+      const depth = depthResult.depth;
+
+      // Resolve the branch to import. An explicitly requested branch is
+      // authoritative; otherwise ask the provider for the repository's real
+      // default branch (falling back to "main" with a warning if the provider
+      // lookup fails — see resolveDefaultBranch for the fail-open rationale).
+      const requestedBranch =
+        typeof body.branch === "string" && body.branch.trim().length > 0
+          ? body.branch.trim()
+          : undefined;
+      const branch = requestedBranch ?? (await resolveDefaultBranch(body.url, c.env, logger));
 
       // Validate visibility if provided
       let visibility: "private" | "public" = "private";
@@ -601,7 +622,8 @@ app.post(
             slug,
             githubUrl: body.url,
             branch,
-            depth: 10,
+            depth,
+            initiatedBy: userId,
           });
         } catch (queueError) {
           // Log queue error but don't fall back - queue exists but send() failed
@@ -634,17 +656,19 @@ app.post(
           slug,
         });
         c.executionCtx.waitUntil(
-          processImportJob(c.env, project, importId, body.url, branch, logger).catch((error) => {
-            logger.error(
-              "Unhandled error in background import job",
-              error instanceof Error ? error : undefined,
-              {
-                namespace,
-                slug,
-                importId,
-              },
-            );
-          }),
+          processImportJob(c.env, project, importId, body.url, branch, logger, depth).catch(
+            (error) => {
+              logger.error(
+                "Unhandled error in background import job",
+                error instanceof Error ? error : undefined,
+                {
+                  namespace,
+                  slug,
+                  importId,
+                },
+              );
+            },
+          ),
         );
       }
 
@@ -679,6 +703,7 @@ async function processImportJob(
   githubUrl: string,
   branch: string,
   logger: Logger,
+  depth: number = DEFAULT_CLONE_DEPTH,
 ) {
   const { namespace, slug } = project;
   const artifactsRepoName = getArtifactsRepoName(namespace, slug);
@@ -714,8 +739,6 @@ async function processImportJob(
     // Check cancellation after status update
     if (await checkCancelled()) return;
 
-    const depth = 10; // Default depth
-
     const importResult = await importFromGitHub(
       env.ARTIFACTS,
       artifactsRepoName,
@@ -745,6 +768,17 @@ async function processImportJob(
     // Check cancellation before updating project
     if (await checkCancelled()) return;
 
+    // Clone finished — surface the phase transition so the progress UI moves
+    // off "cloning" while the project entry and snapshot are written.
+    await updateImportStatus(
+      env.DB,
+      namespace,
+      slug,
+      "processing",
+      logger,
+      "Repository cloned, finalizing import",
+    );
+
     // Update project with actual repo info and mark import as complete
     const updatedProject: ProjectEntry = {
       ...project,
@@ -770,13 +804,24 @@ async function processImportJob(
     // Release the rate limit lock on completion
     await releaseImportLock(env.STATE, namespace, slug, logger);
 
-    // Write repo snapshot to KV so page loads skip git clones going forward
-    await writeSnapshotFromRepo(
+    // Write repo snapshot to KV so page loads skip git clones going forward.
+    // The snapshot walk yields the real imported-file count — report it so the
+    // progress bar shows actual numbers instead of a perpetual 0.
+    const snapshot = await writeSnapshotFromRepo(
       env.STATE,
       env.ARTIFACTS,
       { remote: updatedProject.remote, namespace, slug },
       logger,
     );
+    if (snapshot) {
+      await updateImportProgress(
+        env.DB,
+        namespace,
+        slug,
+        { progress: { processedFiles: snapshot.fileCount, totalFiles: snapshot.fileCount } },
+        logger,
+      );
+    }
 
     logger.info("Import completed", { namespace, slug, importId });
   } catch (error) {

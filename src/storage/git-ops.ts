@@ -1996,9 +1996,11 @@ export async function importFromGitHub(
       }, timeoutMs);
     });
 
+    // depth <= 0 means "full history": omit depth from the import request so the
+    // Artifacts backend clones without a shallow cutoff.
     const doImport = () =>
       artifacts.import({
-        source: { url: githubUrl, branch, depth },
+        source: { url: githubUrl, branch, ...(depth > 0 ? { depth } : {}) },
         target: { name },
       });
 

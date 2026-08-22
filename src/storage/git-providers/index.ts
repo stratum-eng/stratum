@@ -4,6 +4,7 @@
  */
 
 import type { GitProvider } from "../../types";
+import type { Logger } from "../../utils/logger";
 import { bitbucketProvider } from "./bitbucket";
 import { githubProvider } from "./github";
 import { gitlabProvider } from "./gitlab";
@@ -115,6 +116,70 @@ export function buildAuthConfig(
       break;
   }
   return undefined;
+}
+
+/** Branch used when the provider's real default branch cannot be resolved. */
+export const FALLBACK_DEFAULT_BRANCH = "main";
+
+/**
+ * Resolve a repository's default branch from its provider API.
+ *
+ * Fail-open policy: when the URL's provider is unknown or the provider API call
+ * fails (network error, rate limit, unknown repo), this falls back to
+ * FALLBACK_DEFAULT_BRANCH ("main") and logs a warning instead of failing the
+ * import. A wrong fallback surfaces as a clear clone error on the import job,
+ * whereas failing closed would block imports on transient provider-API hiccups.
+ *
+ * @param url - Repository URL
+ * @param env - Environment carrying optional provider API tokens
+ * @param logger - Logger instance
+ * @returns The provider's default branch, or "main" when it cannot be resolved
+ */
+export async function resolveDefaultBranch(
+  url: string,
+  env: {
+    GITHUB_TOKEN?: string;
+    GITLAB_TOKEN?: string;
+    BITBUCKET_TOKEN?: string;
+    BITBUCKET_USERNAME?: string;
+    BITBUCKET_APP_PASSWORD?: string;
+  },
+  logger: Logger,
+): Promise<string> {
+  const parsed = parseRepoUrl(url);
+  if (!parsed) {
+    logger.warn("resolveDefaultBranch: unrecognized repository URL, falling back to 'main'", {
+      url,
+    });
+    return FALLBACK_DEFAULT_BRANCH;
+  }
+
+  const client = getProvider(parsed.provider);
+  const auth = buildAuthConfig(parsed.provider, env);
+
+  try {
+    const result = await client.getDefaultBranch(parsed.info.owner, parsed.info.repo, auth, logger);
+    if (result.success && result.data) {
+      logger.debug("Resolved default branch from provider", {
+        url,
+        provider: parsed.provider,
+        branch: result.data,
+      });
+      return result.data;
+    }
+    logger.warn("resolveDefaultBranch: provider lookup failed, falling back to 'main'", {
+      url,
+      provider: parsed.provider,
+      error: result.error,
+    });
+  } catch (error) {
+    logger.warn("resolveDefaultBranch: provider lookup threw, falling back to 'main'", {
+      url,
+      provider: parsed.provider,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return FALLBACK_DEFAULT_BRANCH;
 }
 
 /**

@@ -40,7 +40,8 @@ describe("bulk import namespace ownership", () => {
     const result = await processRepoImport(
       env,
       "job_2",
-      { url: "https://github.com/acme/api", namespace: "@attacker", slug: "api" },
+      // branch pinned so the test doesn't hit the provider API for default-branch resolution
+      { url: "https://github.com/acme/api", namespace: "@attacker", slug: "api", branch: "main" },
       "user_attacker",
       "attacker",
       0,

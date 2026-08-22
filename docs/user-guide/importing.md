@@ -22,12 +22,20 @@ curl -X POST "$STRATUM_HOST/api/projects/@username/repo/import" \
   -d '{"url": "https://github.com/owner/repo", "branch": "main"}'
 ```
 
-The body requires `url`; `branch` (default `main`), `depth` (clone depth), and
-`visibility` (`private`, the default, or `public`) are optional. A successful
+A successful
 request returns `201` with an `importId` and `status: "queued"`. Imports are
 rate limited (3 per minute per user, 1 concurrent import per project) and only
 allowed into your own namespace. If the project already exists with an
 incomplete import, the import is re-triggered and `200` is returned.
+
+### Options
+
+| Field        | Default                   | Description |
+| ------------ | ------------------------- | ----------- |
+| `url`        | (required)                | Repository URL on `github.com`, `gitlab.com`, or `bitbucket.org`. |
+| `branch`     | provider's default branch | Branch to import. When omitted, Stratum asks the provider API for the repository's real default branch; if that lookup fails the import falls back to `main` (fail-open) and logs a warning. |
+| `depth`      | `10`                      | Shallow clone depth: an integer from 1 to 1000, or `0` / `"full"` to import the branch's full history. |
+| `visibility` | `private`                 | `private` or `public`. |
 
 ## Track progress
 
@@ -89,6 +97,27 @@ curl -X POST "$STRATUM_HOST/api/projects/@username/repo/sync/settings" \
 
 `syncFrequency` is in minutes. Past runs are listed by
 `GET …/sync/history` (paginated with `limit`/`offset`).
+
+## Failure notifications
+
+If an import fails, Stratum emails the user who started it, with a copy to the
+instance admin (`ADMIN_EMAIL`) when one is configured.
+
+## Current limitations
+
+What import does **not** do yet:
+
+- **Public repositories only.** Imports clone anonymously — provider tokens are
+  not used for the clone, and GitHub sign-in only requests the `user:email`
+  OAuth scope. Token-authenticated clones of private repositories are future
+  work.
+- **Git data only.** Issues, pull requests, releases, and tags are not
+  imported — only the selected branch's commit history and files.
+- **Single branch.** Only one branch is imported per project; the clone is a
+  `singleBranch` clone bounded by `depth`.
+- **No self-hosted instances.** Only `github.com`, `gitlab.com`, and
+  `bitbucket.org` URLs are recognized; GitHub Enterprise Server and self-hosted
+  GitLab are not supported.
 
 Bidirectional GitHub sync — inbound webhooks and outbound PR promotion, i.e.
 **layer mode** — is covered in [Getting started](getting-started.md).
