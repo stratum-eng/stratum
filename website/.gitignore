@@ -12,3 +12,9 @@ public/openapi.yml
 !.env.example
 # macOS-specific files
 .DS_Store
+
+# The repository root ignores *.png. These three are generated brand assets that
+# must ship with the site (regenerate with `npm run brand`), so re-include them.
+!public/og.png
+!public/favicon-32.png
+!public/apple-touch-icon.png

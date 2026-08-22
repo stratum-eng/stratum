@@ -1,0 +1,47 @@
+{
+  "name": "stratum",
+  "title": "Stratum",
+  "description": "Gives any MCP-capable agent or editor the full evaluation-gated change flow: read files, fork workspaces, commit, open changes with each gate's verdict returned, review, merge, and track issues.",
+  "version": "0.1.0",
+  "documentation": "https://docs.usestratum.dev/guides/getting-started/",
+  "repository": "https://github.com/stratum-eng/stratum",
+  "license": "MIT",
+  "transport": {
+    "type": "stdio",
+    "command": "node",
+    "args": ["/path/to/stratum/mcp/dist/index.js"],
+    "env": {
+      "STRATUM_API_KEY": "<user or agent token>",
+      "STRATUM_HOST": "https://app.usestratum.dev"
+    }
+  },
+  "authentication": {
+    "type": "bearer",
+    "description": "Stratum user token (stratum_user_...) or agent token (stratum_agent_...), passed via the STRATUM_API_KEY environment variable.",
+    "documentation": "https://docs.usestratum.dev/reference/authentication/"
+  },
+  "constraints": [
+    "Agent tokens can never approve a change. Reviews are human-only on every surface, with no configuration that relaxes it.",
+    "Merges are rejected when a required evaluator is failing, approvals are short, or the workspace advanced after evaluation."
+  ],
+  "tools": [
+    "stratum_whoami",
+    "stratum_list_projects",
+    "stratum_get_project",
+    "stratum_list_files",
+    "stratum_get_file",
+    "stratum_list_workspaces",
+    "stratum_create_workspace",
+    "stratum_commit",
+    "stratum_list_changes",
+    "stratum_get_change",
+    "stratum_create_change",
+    "stratum_review_change",
+    "stratum_merge_change",
+    "stratum_reject_change",
+    "stratum_list_issues",
+    "stratum_create_issue",
+    "stratum_update_issue",
+    "stratum_get_activity"
+  ]
+}

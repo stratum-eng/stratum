@@ -1,0 +1,33 @@
+{
+  "linkset": [
+    {
+      "anchor": "https://docs.usestratum.dev",
+      "service-desc": [
+        {
+          "href": "https://docs.usestratum.dev/openapi.yml",
+          "type": "application/yaml",
+          "title": "Stratum REST API — OpenAPI 3.1 specification"
+        }
+      ],
+      "service-doc": [
+        {
+          "href": "https://docs.usestratum.dev/reference/endpoints/",
+          "type": "text/html",
+          "title": "Stratum API endpoint reference"
+        },
+        {
+          "href": "https://docs.usestratum.dev/reference/authentication/",
+          "type": "text/html",
+          "title": "Stratum API authentication"
+        }
+      ],
+      "service-meta": [
+        {
+          "href": "https://docs.usestratum.dev/llms.txt",
+          "type": "text/plain",
+          "title": "Documentation index for language models"
+        }
+      ]
+    }
+  ]
+}
