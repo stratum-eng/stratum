@@ -114,6 +114,7 @@ docs/
 - [ADR 003: D1 for Import State](adr/003-d1-for-import-state.md)
 - [ADR 004: High-Frequency Agent Commits to a Shared Repo](adr/004-high-frequency-agent-commits.md)
 - [ADR 005: Native `git push` via a Smart-HTTP Proxy](adr/005-git-smart-http-proxy.md)
+- [ADR 006: SSH Transport for Git](adr/006-ssh-transport.md)
 
 **Historical Reference:**
 - [Archived Documents](archive/README.md) - Code reviews, audits, etc.
