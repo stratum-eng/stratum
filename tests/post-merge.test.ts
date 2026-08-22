@@ -158,6 +158,7 @@ describe("runPostMergeCheck", () => {
       "minted-token",
       "sha_merge",
       mockLogger,
+      "main",
     );
     expect(revertToCommit).toHaveBeenCalledWith(
       project.remote,
@@ -165,6 +166,7 @@ describe("runPostMergeCheck", () => {
       "sha_premerge",
       expect.stringContaining("Revert merge"),
       mockLogger,
+      "main",
     );
     expect(updateChangeStatus).toHaveBeenCalledWith(
       env.DB,

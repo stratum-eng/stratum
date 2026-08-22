@@ -3,7 +3,7 @@ import { importFromGitHub } from "../storage/git-ops";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { listProjects } from "../storage/state";
 import { checkForSyncUpdates, getProjectSourceUrl, updateProjectAfterSync } from "../storage/sync";
-import { type Env, artifactsRepoName } from "../types";
+import { type Env, artifactsRepoName, projectDefaultBranch } from "../types";
 import { createLogger } from "../utils/logger";
 
 // The former unauthenticated `POST /projects/:name/sync` handler was removed: it
@@ -53,13 +53,12 @@ export async function syncAllProjects(
       }
 
       projectLogger.info("Syncing project", { commitsBehind: checkResult.data.commitsBehind });
-      const branch = project.sourceDefaultBranch || project.githubDefaultBranch || "main";
       const result = await importFromGitHub(
         env.ARTIFACTS,
         artifactsRepoName(project),
         sourceUrl,
         projectLogger,
-        branch,
+        projectDefaultBranch(project),
       );
       if (result.success) {
         projectLogger.info("Project synced successfully");
@@ -71,6 +70,7 @@ export async function syncAllProjects(
             remote: result.data.remote,
             namespace: project.namespace,
             slug: project.slug,
+            defaultBranch: projectDefaultBranch(project),
           },
           projectLogger,
         );

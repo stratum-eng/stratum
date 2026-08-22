@@ -6,6 +6,7 @@ import { commitPhasesFromSpans, recordCommitMetrics } from "../storage/metrics";
 import { recordProvenance } from "../storage/provenance";
 import { getProject, getWorkspace } from "../storage/state";
 import type { Env } from "../types";
+import { projectDefaultBranch } from "../types";
 import { type Logger, createLogger } from "../utils/logger";
 import { PhaseTimer } from "../utils/phase-timer";
 
@@ -92,6 +93,7 @@ export class MergeQueue extends DurableObject<Env> {
         {
           strategy: "merge",
           timer,
+          branch: projectDefaultBranch(project),
           // Merge the exact evaluated commit, not the workspace's live tip (#115),
           // AND assert that tip hasn't moved since evaluation (SEC-2). Both pin to
           // the same evaluated revision on the production merge path; legacy

@@ -3,6 +3,7 @@ import { type NodeFS, artifactsRepoNameFromRemote, pushMain } from "../storage/g
 import { MemoryFS } from "../storage/memory-fs";
 import { placeLooseObject, unpackObjects } from "../storage/object-loader";
 import type { Env } from "../types";
+import { projectDefaultBranch } from "../types";
 import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, fromPromise, ok } from "../utils/result";
@@ -13,20 +14,23 @@ const GITDIR = "/.git";
 
 /**
  * Rebuild a repo in an in-memory git store from a snapshot's pack + manifest:
- * write every object loose, point `main` at the tip, and verify the resolved tip
- * matches the manifest. Because the backup captured the FULL reachable object set,
- * the reconstructed pack is closed under reachability and the original tip sha is
- * preserved. Fully testable — no Artifacts.
+ * write every object loose, point the default branch at the tip, and verify the
+ * resolved tip matches the manifest. Because the backup captured the FULL
+ * reachable object set, the reconstructed pack is closed under reachability and
+ * the original tip sha is preserved. Fully testable — no Artifacts.
+ * `branch` defaults to "main"; pass the project's default branch for imported
+ * repos whose default is master/trunk/….
  */
 export async function reconstructRepo(
   pack: Uint8Array,
   manifest: RepoManifest,
   logger: Logger,
+  branch = "main",
 ): Promise<Result<{ fs: NodeFS; dir: string }, AppError>> {
   try {
     const fs = new MemoryFS().toNodeFS() as unknown as NodeFS;
     // biome-ignore lint/suspicious/noExplicitAny: isomorphic-git fs shape
-    await git.init({ fs: fs as any, dir: DIR, defaultBranch: "main" });
+    await git.init({ fs: fs as any, dir: DIR, defaultBranch: branch });
 
     for (const obj of unpackObjects(pack)) {
       await placeLooseObject(fs, GITDIR, obj.oid, obj.bytes);
@@ -35,13 +39,13 @@ export async function reconstructRepo(
       // biome-ignore lint/suspicious/noExplicitAny: isomorphic-git fs shape
       fs: fs as any,
       dir: DIR,
-      ref: "refs/heads/main",
+      ref: `refs/heads/${branch}`,
       value: manifest.tipSha,
       force: true,
     });
 
     // biome-ignore lint/suspicious/noExplicitAny: isomorphic-git fs shape
-    const resolved = await git.resolveRef({ fs: fs as any, dir: DIR, ref: "main" });
+    const resolved = await git.resolveRef({ fs: fs as any, dir: DIR, ref: branch });
     if (resolved !== manifest.tipSha) {
       return err(
         new AppError(
@@ -119,7 +123,10 @@ export async function restoreProjectRepo(
     }
   };
 
-  const rebuilt = await reconstructRepo(snapshot.pack, snapshot.manifest, logger);
+  // Restore under the project's real default branch so an imported master/trunk
+  // repo comes back with the ref every other git op targets.
+  const branch = projectDefaultBranch(project);
+  const rebuilt = await reconstructRepo(snapshot.pack, snapshot.manifest, logger, branch);
   if (!rebuilt.success) {
     await rollbackIfCreated();
     return err(rebuilt.error);
@@ -127,6 +134,7 @@ export async function restoreProjectRepo(
 
   const pushed = await pushMain(remote, token, rebuilt.data.fs, rebuilt.data.dir, logger, {
     force: repoExists,
+    branch,
   });
   if (!pushed.success) {
     await rollbackIfCreated();

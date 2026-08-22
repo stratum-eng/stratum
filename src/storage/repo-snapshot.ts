@@ -139,7 +139,7 @@ async function walkDir(fs: MinimalFS, base: string, prefix: string): Promise<str
 export async function writeSnapshotFromRepo(
   kv: KVNamespace,
   artifacts: ArtifactsNamespace,
-  project: { remote: string; namespace: string; slug: string },
+  project: { remote: string; namespace: string; slug: string; defaultBranch?: string },
   logger: Logger,
 ): Promise<void> {
   try {
@@ -152,7 +152,10 @@ export async function writeSnapshotFromRepo(
       });
       return;
     }
-    const cloneResult = await cloneRepo(project.remote, tokenResult.data, logger);
+    const cloneResult = await cloneRepo(project.remote, tokenResult.data, logger, {
+      // Imported repos keep the source's default branch name; "main" otherwise.
+      ref: project.defaultBranch ?? "main",
+    });
 
     if (!cloneResult.success) {
       logger.warn("writeSnapshotFromRepo: clone failed, skipping snapshot", {

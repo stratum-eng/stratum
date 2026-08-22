@@ -28,8 +28,9 @@ export async function getFileContent(
   token: string,
   path: string,
   logger: Logger,
+  branch = "main",
 ): Promise<Result<FileContentResult, AppError>> {
-  const readResult = await readFileFromRepo(remote, token, path, logger);
+  const readResult = await readFileFromRepo(remote, token, path, logger, branch);
 
   if (!readResult.success) {
     if (readResult.error.code === "FS_ERROR") {

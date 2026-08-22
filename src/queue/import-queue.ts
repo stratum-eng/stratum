@@ -25,7 +25,7 @@ import type {
   SyncJobMessage,
 } from "../types";
 import type { Message, MessageBatch } from "../types";
-import { getArtifactsRepoName } from "../types";
+import { getArtifactsRepoName, projectDefaultBranch } from "../types";
 import { escapeHtml } from "../utils/html";
 import { type Logger, createLogger } from "../utils/logger";
 import { emitEvent } from "./events";
@@ -330,7 +330,12 @@ async function processImportJob(
     await writeSnapshotFromRepo(
       env.STATE,
       env.ARTIFACTS,
-      { remote: updatedProject.remote, namespace, slug },
+      {
+        remote: updatedProject.remote,
+        namespace,
+        slug,
+        defaultBranch: projectDefaultBranch(updatedProject),
+      },
       logger,
     );
 
@@ -570,7 +575,12 @@ async function processSyncJob(
     await writeSnapshotFromRepo(
       env.STATE,
       env.ARTIFACTS,
-      { remote: updatedProject.remote, namespace, slug },
+      {
+        remote: updatedProject.remote,
+        namespace,
+        slug,
+        defaultBranch: projectDefaultBranch(updatedProject),
+      },
       logger,
     );
 

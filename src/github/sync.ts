@@ -6,6 +6,7 @@
 import type { D1Database, KVNamespace } from "@cloudflare/workers-types";
 import { getWorkspace } from "../storage/state";
 import type { Change, ProjectEntry } from "../types";
+import { projectDefaultBranch } from "../types";
 import { AppError, NotFoundError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
@@ -82,7 +83,7 @@ export async function pushChangeToGitHub(
   const prTitle = title || `Stratum Change: ${change.id.slice(0, 8)}`;
   const prBody = body || buildPRBody(change, project);
 
-  const baseBranch = project.sourceDefaultBranch || project.githubDefaultBranch || "main";
+  const baseBranch = projectDefaultBranch(project);
 
   try {
     let prNumber: number;

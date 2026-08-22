@@ -18,6 +18,7 @@ import { putObject } from "../storage/object-store";
 import { recordProvenance } from "../storage/provenance";
 import { getProject, getWorkspace } from "../storage/state";
 import type { Env } from "../types";
+import { projectDefaultBranch } from "../types";
 import { type Logger, createLogger } from "../utils/logger";
 import { PhaseTimer } from "../utils/phase-timer";
 import { GroupCommitCoordinator, type ItemOutcome } from "./group-commit";
@@ -154,6 +155,9 @@ export class RepoDO extends DurableObject<Env> {
   // --- Production R2 merge path (ADR 004 Tasks 5/6) ---
   private r2Coord?: GroupCommitCoordinator<StagedTreeItem, StagedItemResult>;
   private projectRemote?: string;
+  // The project's default branch ("main" for native repos, the source branch
+  // name for imports). Set alongside projectRemote before each batch submit.
+  private projectBranch = "main";
   // Warm project clone reused across batches: removes the per-batch clone so the
   // durable write is just merge+push, which lets concurrent merges coalesce into
   // large batches. Discarded on any push failure (stale head) -> re-clone next batch.
@@ -174,7 +178,9 @@ export class RepoDO extends DurableObject<Env> {
           const token = await freshRepoToken(this.env.ARTIFACTS, this.projectRemote, "write", log);
           if (!token.success) throw new Error(token.error.message);
           if (!this.warm) {
-            const cloned = await cloneRepo(this.projectRemote, token.data, log);
+            const cloned = await cloneRepo(this.projectRemote, token.data, log, {
+              ref: this.projectBranch,
+            });
             if (!cloned.success) throw new Error(cloned.error.message);
             this.warm = { fs: cloned.data.fs, dir: cloned.data.dir };
           }
@@ -185,6 +191,7 @@ export class RepoDO extends DurableObject<Env> {
             token.data,
             batch,
             log,
+            this.projectBranch,
           );
           if (!res.success) {
             // Push rejected / stale warm head -> drop the warm clone so the next
@@ -247,6 +254,7 @@ export class RepoDO extends DurableObject<Env> {
     }
 
     this.projectRemote = project.remote;
+    this.projectBranch = projectDefaultBranch(project);
     let result: StagedItemResult;
     try {
       result = await this.r2Coordinator().submit({ changeId, baseSha: change.baseSha, staged });
@@ -381,6 +389,7 @@ export class RepoDO extends DurableObject<Env> {
       this.benchConflicts = 0;
       this.warm = undefined;
       this.projectRemote = undefined;
+      this.projectBranch = "main";
       this.stagedTableReady = false;
     });
   }
@@ -463,6 +472,7 @@ export class RepoDO extends DurableObject<Env> {
           log,
           timer,
           change.evaluatedSha,
+          projectDefaultBranch(project),
         );
         if (ff.success && ff.data.fastForwarded && ff.data.commit) {
           commit = ff.data.commit;
@@ -482,6 +492,7 @@ export class RepoDO extends DurableObject<Env> {
           {
             strategy: "merge",
             timer,
+            branch: projectDefaultBranch(project),
             // SEC-2: pin the merged tip to the evaluated sha on the RepoDO cold
             // fallback too. Legacy changes with no evaluatedSha skip it.
             ...(change.evaluatedSha !== undefined

@@ -250,6 +250,26 @@ export function artifactsRepoName(project: ProjectEntry): string {
   return getArtifactsRepoName(project.namespace, project.slug);
 }
 
+/**
+ * The default branch of the project's Artifacts repo.
+ *
+ * `Artifacts.import` mirrors the SOURCE branch name into the target repo — it
+ * does not rename it to `main` (the push gate in routes/git-http.ts relies on
+ * this: a repo imported with a `master`/`trunk` default has no refs/heads/main).
+ * Workspace forks copy the parent's default branch under the same name, so this
+ * is also the branch every fork-based git op must target. Stratum-native repos
+ * (created via initAndPush) always have `main`, which the final fallback covers.
+ *
+ * Single source of truth for the `sourceDefaultBranch || githubDefaultBranch ||
+ * "main"` chain previously inlined at the push gate, sync, and PR paths.
+ */
+export function projectDefaultBranch(project: {
+  sourceDefaultBranch?: string;
+  githubDefaultBranch?: string;
+}): string {
+  return project.sourceDefaultBranch || project.githubDefaultBranch || "main";
+}
+
 export interface WorkspaceEntry {
   name: string;
   remote: string;

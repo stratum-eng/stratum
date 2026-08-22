@@ -3,6 +3,7 @@
  */
 
 import type { ProjectEntry, SyncCheckResult } from "../types";
+import { projectDefaultBranch } from "../types";
 import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
@@ -110,7 +111,7 @@ export async function checkForSyncUpdates(
   }
 
   const { owner, repo } = parsed.info;
-  const branch = project.sourceDefaultBranch || project.githubDefaultBranch || "main";
+  const branch = projectDefaultBranch(project);
   const currentCommit = project.lastSyncedCommit;
 
   logger.debug("Checking for sync updates", {

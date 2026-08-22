@@ -10,6 +10,7 @@ import {
 import { deleteWorkspace, getProjectByPath, getWorkspace } from "../storage/state";
 import { getUser, getUserByToken } from "../storage/users";
 import type { Env, ProjectEntry } from "../types";
+import { projectDefaultBranch } from "../types";
 import { canReadProject, canWriteProject, canWriteWorkspace } from "../utils/authz";
 import {
   buildReportStatus,
@@ -620,7 +621,7 @@ gitHttpRouter.post("/:namespace/:slug/git-receive-pack", async (c) => {
   // Same default-branch resolution the merge/sync paths use — a repo imported
   // with a `master` or `trunk` default must gate pushes to THAT ref, not to a
   // literal refs/heads/main it doesn't have.
-  const defaultBranch = project.sourceDefaultBranch || project.githubDefaultBranch || "main";
+  const defaultBranch = projectDefaultBranch(project);
   const defaultRef = `refs/heads/${defaultBranch}`;
   const command = commands[0];
   const isGateablePush =

@@ -1000,7 +1000,7 @@ describe("POST /api/changes/:id/merge", () => {
       "https://artifacts.example.com/repos/fix-bug",
       "workspace-token",
       expect.any(Object),
-      { strategy: "merge" },
+      { strategy: "merge", branch: "main" },
     );
     expect(markChangeMerged).toHaveBeenCalledWith(
       env.DB,
@@ -1237,7 +1237,7 @@ describe("POST /api/changes/:id/merge", () => {
       "https://artifacts.example.com/repos/fix-bug",
       "workspace-token",
       expect.any(Object),
-      { strategy: "squash" },
+      { strategy: "squash", branch: "main" },
     );
   });
 

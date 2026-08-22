@@ -11,6 +11,7 @@ import {
   updateProjectAfterSync,
 } from "../storage/sync";
 import type { Env } from "../types";
+import { projectDefaultBranch } from "../types";
 import { canWriteProject } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import { notFound, ok } from "../utils/response";
@@ -549,6 +550,7 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
       workspaceRemote: workspace.remote,
       workspaceToken: workspaceToken.data,
       strategy,
+      branch: projectDefaultBranch(project),
       conflictingFiles: conflictCtx.conflictingFiles,
       manualResolutions:
         strategy === "manual"
