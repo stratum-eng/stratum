@@ -15,5 +15,6 @@ Welcome to Stratum! This guide helps you get started.
 
 - [Getting Started](getting-started.md)
 - [Importing from GitHub](importing.md)
+- [CI Integration (Bring Your Own CI)](ci-integration.md)
 - [Troubleshooting](troubleshooting.md)
 - [FAQ](faq.md)

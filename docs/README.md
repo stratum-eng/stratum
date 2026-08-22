@@ -30,6 +30,7 @@ docs/
 │   ├── README.md                       # User guide overview
 │   ├── getting-started.md              # First steps tutorial
 │   ├── importing.md                    # GitHub import guide
+│   ├── ci-integration.md               # Bring-your-own-CI guide
 │   ├── troubleshooting.md              # Problem solving
 │   └── faq.md                          # Frequently asked questions
 ├── developer/                          # Developer Documentation
@@ -75,6 +76,7 @@ docs/
 1. [User Guide Overview](user-guide/README.md)
 2. [Getting Started](user-guide/getting-started.md)
 3. [Importing from GitHub](user-guide/importing.md)
+4. [CI Integration (Bring Your Own CI)](user-guide/ci-integration.md)
 
 **Help:**
 - [Troubleshooting](user-guide/troubleshooting.md)
