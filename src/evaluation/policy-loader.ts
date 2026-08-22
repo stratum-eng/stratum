@@ -9,6 +9,20 @@ const DEFAULT_POLICY: EvalPolicy = {
   minScore: 0.7,
 };
 
+/**
+ * Repo files that define merge protection. A change that edits one of these is
+ * altering the gate itself, so the merge path treats it specially (SA-3): such a
+ * change requires a human approval and cannot be force-merged, so a writer can't
+ * silently relax protection for later changes.
+ */
+export const PROTECTED_CONFIG_FILES = [".stratum/policy.yaml", "stratum.config.json"] as const;
+
+/** Does a unified diff (git-style `diff --git a/… b/…` headers) modify a
+ *  protected merge-protection config file? */
+export function diffTouchesProtectedConfig(diff: string): boolean {
+  return PROTECTED_CONFIG_FILES.some((path) => diff.includes(`diff --git a/${path} b/${path}`));
+}
+
 type PolicyLoad =
   | { status: "ok"; policy: EvalPolicy }
   | { status: "absent" }

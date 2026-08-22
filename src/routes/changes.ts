@@ -407,6 +407,14 @@ app.post("/changes/:id/merge", async (c) => {
   if (force && !forceAllowed) {
     return badRequest("Force merge is disabled by this project's policy");
   }
+  // A change that edits the merge-protection config can never be force-merged,
+  // even where the policy allows force — force skips the approval gate that keeps
+  // a protection relaxation from landing with no human review (SA-3).
+  if (force && change.touchesProtectedConfig) {
+    return badRequest(
+      "This change modifies the merge-protection config and cannot be force-merged; it requires a human approval",
+    );
+  }
 
   if (!MERGEABLE_STATUSES.includes(change.status) && !force) {
     return badRequest("Change must be approved, accepted, or promoted before merging");

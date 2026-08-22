@@ -31,11 +31,13 @@ export async function checkMergeProtection(
   }
 
   const merge = policy.merge;
-  if (!merge) return ok({ allowed: true, reasons: [] });
+  // A change that edits the merge-protection config is gated even when the policy
+  // has no merge block at all (SA-3), so we can't early-return on a missing merge.
+  if (!merge && !change.touchesProtectedConfig) return ok({ allowed: true, reasons: [] });
 
   const reasons: string[] = [];
 
-  if (merge.requiredEvaluators && merge.requiredEvaluators.length > 0) {
+  if (merge?.requiredEvaluators && merge.requiredEvaluators.length > 0) {
     const runsResult = await listEvalRuns(db, logger, change.id);
     if (!runsResult.success) {
       return err(
@@ -63,7 +65,14 @@ export async function checkMergeProtection(
     }
   }
 
-  const requiredApprovals = merge.requiredApprovals ?? 0;
+  // A change that edits the merge-protection config must always carry at least
+  // one human approval, even if the policy sets requiredApprovals: 0 — otherwise
+  // a writer could relax protection (allowForce, drop evaluators, zero approvals)
+  // in a change that merges with no human ever looking (SA-3).
+  const requiredApprovals = Math.max(
+    merge?.requiredApprovals ?? 0,
+    change.touchesProtectedConfig ? 1 : 0,
+  );
   if (requiredApprovals > 0) {
     // NOTE: self-approval exclusion (countApprovals' excludeUserId arg) is wired in a
     // follow-up — the `changes` table records no creating-user id yet (only agentId),

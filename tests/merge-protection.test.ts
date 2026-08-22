@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { loadPolicy } from "../src/evaluation/policy-loader";
+import { diffTouchesProtectedConfig, loadPolicy } from "../src/evaluation/policy-loader";
 import type { EvalPolicy } from "../src/evaluation/types";
 import { checkMergeProtection } from "../src/merge/protection";
 import { readFileFromRepo } from "../src/storage/git-ops";
@@ -154,6 +154,36 @@ describe("checkMergeProtection", () => {
     expect(result.success && result.data.allowed).toBe(true);
   });
 
+  it("requires a human approval for a change that edits the protection config, even with no merge block", async () => {
+    const db = makeProtectionD1({ approvals: 0 });
+    const policyChange: Change = { ...change, touchesProtectedConfig: true };
+    // No merge block at all — a policy-file edit must still be gated.
+    const policy: EvalPolicy = { evaluators: [] };
+
+    const result = await checkMergeProtection(db, mockLogger, policyChange, policy);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.allowed).toBe(false);
+    expect(result.data.reasons[0]).toBe("Requires 1 approval, has 0");
+  });
+
+  it("allows a protection-config change once it has an approval", async () => {
+    const db = makeProtectionD1({ approvals: 1 });
+    const policyChange: Change = { ...change, touchesProtectedConfig: true };
+    const policy: EvalPolicy = { evaluators: [] };
+
+    const result = await checkMergeProtection(db, mockLogger, policyChange, policy);
+    expect(result.success && result.data.allowed).toBe(true);
+  });
+
+  it("does not gate a normal change that leaves the protection config untouched", async () => {
+    const db = makeProtectionD1({ approvals: 0 });
+    const policy: EvalPolicy = { evaluators: [] };
+
+    const result = await checkMergeProtection(db, mockLogger, change, policy);
+    expect(result.success && result.data.allowed).toBe(true);
+  });
+
   it("collects every blocking reason", async () => {
     const db = makeProtectionD1({ runs: [], approvals: 0 });
     const policy: EvalPolicy = {
@@ -165,6 +195,30 @@ describe("checkMergeProtection", () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.reasons).toHaveLength(3);
+  });
+});
+
+describe("diffTouchesProtectedConfig", () => {
+  it("detects an edit to .stratum/policy.yaml", () => {
+    const diff = [
+      "diff --git a/.stratum/policy.yaml b/.stratum/policy.yaml",
+      "--- a/.stratum/policy.yaml",
+      "+++ b/.stratum/policy.yaml",
+      "@@ -1,1 +1,1 @@",
+      "-requiredApprovals: 1",
+      "+requiredApprovals: 0",
+    ].join("\n");
+    expect(diffTouchesProtectedConfig(diff)).toBe(true);
+  });
+
+  it("detects an edit to stratum.config.json", () => {
+    const diff = "diff --git a/stratum.config.json b/stratum.config.json\n+{}";
+    expect(diffTouchesProtectedConfig(diff)).toBe(true);
+  });
+
+  it("ignores a diff that only touches ordinary source files", () => {
+    const diff = "diff --git a/src/index.ts b/src/index.ts\n+const x = 1;";
+    expect(diffTouchesProtectedConfig(diff)).toBe(false);
   });
 });
 

@@ -400,6 +400,10 @@ export interface Change {
   agentModel?: string;
   /** The authoring agent's prompt hash, snapshotted at change creation. */
   agentPromptHash?: string;
+  /** True when the change's diff modifies a merge-protection config file
+   * (.stratum/policy.yaml / stratum.config.json). Such a change requires a human
+   * approval and cannot be force-merged, so protection can't be silently relaxed. */
+  touchesProtectedConfig?: boolean;
   /**
    * The workspace commit sha the evaluation ran against. The merge gate merges
    * *this* sha (not the workspace's live tip, #115), so a re-push between eval and

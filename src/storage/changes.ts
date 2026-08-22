@@ -20,6 +20,7 @@ interface ChangeRow {
   agent_model: string | null;
   agent_prompt_hash: string | null;
   workspace_head_sha: string | null;
+  touches_protected_config: number | null;
   created_at: string;
   merged_at: string | null;
   github_owner: string | null;
@@ -53,6 +54,8 @@ function rowToChange(row: ChangeRow): Change {
   if (row.agent_model !== null) change.agentModel = row.agent_model;
   if (row.agent_prompt_hash !== null) change.agentPromptHash = row.agent_prompt_hash;
   if (row.workspace_head_sha !== null) change.workspaceHeadSha = row.workspace_head_sha;
+  if (row.touches_protected_config !== null)
+    change.touchesProtectedConfig = row.touches_protected_config === 1;
   if (row.merged_at !== null) change.mergedAt = row.merged_at;
   if (row.github_owner !== null) change.githubOwner = row.github_owner;
   if (row.github_repo !== null) change.githubRepo = row.github_repo;
@@ -291,6 +294,7 @@ export async function updateChangeStatus(
     evaluatedSha?: string;
     evaluatedTreeOid?: string;
     workspaceHeadSha?: string;
+    touchesProtectedConfig?: boolean;
     mergedAt?: string;
     githubOwner?: string;
     githubRepo?: string;
@@ -333,6 +337,14 @@ export async function updateChangeStatus(
     addOptional("evaluated_sha", opts?.evaluatedSha);
     addOptional("evaluated_tree_oid", opts?.evaluatedTreeOid);
     addOptional("workspace_head_sha", opts?.workspaceHeadSha);
+    addOptional(
+      "touches_protected_config",
+      opts?.touchesProtectedConfig !== undefined
+        ? opts.touchesProtectedConfig
+          ? 1
+          : 0
+        : undefined,
+    );
     addOptional("merged_at", opts?.mergedAt);
     addOptional("github_owner", opts?.githubOwner);
     addOptional("github_repo", opts?.githubRepo);

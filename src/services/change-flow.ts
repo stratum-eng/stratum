@@ -5,6 +5,7 @@ import {
   SandboxEvaluator,
   SecretScanEvaluator,
   WebhookEvaluator,
+  diffTouchesProtectedConfig,
   loadPolicy,
 } from "../evaluation";
 import type { EvalPolicy, EvalResult, Evaluator } from "../evaluation/types";
@@ -358,6 +359,9 @@ export async function createChangeWithEvaluation(
     evaluatedSha,
     evaluatedTreeOid,
     ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
+    // Flag a change that edits the merge-protection config so the merge gate can
+    // require a human approval and forbid force-merging it (SA-3).
+    touchesProtectedConfig: diffTouchesProtectedConfig(diff),
   });
   if (!updateResult.success) {
     logger.error("Failed to update change status", updateResult.error);

@@ -51,6 +51,7 @@ vi.mock("../src/storage/deletion", () => ({
 
 vi.mock("../src/evaluation", () => ({
   loadPolicy: vi.fn(),
+  diffTouchesProtectedConfig: vi.fn(() => false),
   DiffEvaluator: vi.fn().mockImplementation(() => ({
     evaluate: vi.fn().mockResolvedValue({
       success: true,
@@ -1213,6 +1214,23 @@ describe("POST /api/changes/:id/merge", () => {
     const body = (await res.json()) as { merged: boolean };
     expect(body.merged).toBe(true);
     expect(mergeWorkspaceIntoProject).toHaveBeenCalled();
+  });
+
+  it("refuses to force-merge a change that edits the protection config, even with allowForce (SA-3)", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, touchesProtectedConfig: true },
+    });
+    // Even where the policy permits force, a protection-config edit can't skip
+    // the approval gate.
+    vi.mocked(loadPolicy).mockResolvedValue({ ...mockPolicy, merge: { allowForce: true } });
+
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/merge?force=true", undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect(mergeWorkspaceIntoProject).not.toHaveBeenCalled();
   });
 
   it("passes explicit squash strategy to merge implementation", async () => {
