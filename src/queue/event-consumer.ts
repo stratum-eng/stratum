@@ -1,4 +1,5 @@
 import { trackerForEventActor, trackerForSystem } from "../analytics/tracker";
+import { getChange } from "../storage/changes";
 import {
   type EventRecord,
   getEvent,
@@ -8,6 +9,7 @@ import {
   markEventProcessed,
   setCompletedHandlers,
 } from "../storage/events";
+import { deletePinnedStagedTreeForChange } from "../storage/staged-tree-gc";
 import type { Env, Message, MessageBatch } from "../types";
 import type { Logger } from "../utils/logger";
 import { createLogger } from "../utils/logger";
@@ -83,11 +85,58 @@ const deployForwardHandler: EventHandler = {
 };
 
 /**
+ * Reclaim the immutable R2 tree pinned by a terminal rejected change. This
+ * handler runs last: if R2 is transiently unavailable, event retry resumes at
+ * this handler without re-running analytics, issue auto-close, or webhooks.
+ */
+export const stagedTreeGcHandler: EventHandler = {
+  name: "staged-tree-gc",
+  async handle(env, event, logger) {
+    if (event.type !== "change.rejected" || !env.REPO_OBJECTS) return;
+
+    const changeId = event.payload.changeId;
+    if (typeof changeId !== "string" || changeId.length === 0) {
+      logger.warn("Rejected-change event missing changeId; staged-tree GC skipped", {
+        eventId: event.id,
+      });
+      return;
+    }
+
+    const changeResult = await getChange(env.DB, logger, changeId);
+    if (!changeResult.success) {
+      if (changeResult.error.code === "NOT_FOUND") {
+        logger.warn("Rejected change missing during staged-tree GC; skipping", {
+          eventId: event.id,
+          changeId,
+        });
+        return;
+      }
+      throw changeResult.error;
+    }
+
+    const key = await deletePinnedStagedTreeForChange(
+      env.REPO_OBJECTS,
+      changeResult.data,
+      event.projectId,
+    );
+    if (key !== null) {
+      logger.debug("Reclaimed rejected change staged tree", { changeId, key });
+    }
+  },
+};
+
+/**
  * Ordered handler registry. Every handler runs for every event and decides
  * internally whether the event type concerns it. Issue auto-close runs
- * before webhooks so receivers observe a consistent issue state.
+ * before webhooks so receivers observe a consistent issue state. GC runs last
+ * so a retry caused by R2 cleanup never replays externally-visible handlers.
  */
-const handlers: EventHandler[] = [analyticsHandler, issueAutoCloseHandler, webhookHandler];
+const handlers: EventHandler[] = [
+  analyticsHandler,
+  issueAutoCloseHandler,
+  webhookHandler,
+  stagedTreeGcHandler,
+];
 
 /**
  * Handlers for an *internal* outbox row — one that carries work rather than a
