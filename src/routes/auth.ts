@@ -315,7 +315,7 @@ app.get("/google", async (c) => {
     return c.json({ error: "Google OAuth is not configured" }, 501);
   }
 
-  const state = await issueOAuthState(c, c.env.STATE);
+  const state = await issueOAuthState(c, c.env.STATE, safeNextPath(c.req.query("next"), c.req.url));
 
   const params = new URLSearchParams({
     client_id: clientId,
@@ -350,7 +350,8 @@ app.get("/google/callback", async (c) => {
   if (!state) {
     return c.json({ error: "Missing state parameter" }, 400);
   }
-  if ((await consumeOAuthState(c, c.env.STATE, state)) === null) {
+  const consumed = await consumeOAuthState(c, c.env.STATE, state);
+  if (consumed === null) {
     logger.warn("Invalid, expired, or unbound state", { statePrefix: state.slice(0, 8) });
     return c.json({ error: "Invalid or expired state" }, 400);
   }
@@ -412,6 +413,7 @@ app.get("/google/callback", async (c) => {
       provider: "google",
       email: googleUser.email,
       suggestedUsername: suggestUsername(googleUser.email.split("@")[0] ?? ""),
+      ...(consumed.next !== undefined ? { next: consumed.next } : {}),
     });
   }
   const userId = existing.data.id;
@@ -445,7 +447,10 @@ app.get("/google/callback", async (c) => {
   });
 
   sessionLogger.info("Google OAuth successful, session created");
-  return c.redirect(consumePostLoginRedirect(c, "/"));
+  // As for GitHub: a `next` carried on the state wins, and the post-login
+  // cookie is consumed regardless so it cannot outlive this sign-in.
+  const remembered = consumePostLoginRedirect(c, "/");
+  return c.redirect(consumed.next ?? remembered);
 });
 
 // Logout is state-changing, so it happens on POST (the nav renders a form and
