@@ -17,26 +17,30 @@ whose history link is dead.
 
 ## The habit
 
-Add to the `## [Unreleased]` section in the same PR as the change, under a
-Keep a Changelog group (`Breaking`, `Added`, `Changed`, `Deprecated`, `Removed`,
-`Fixed`, `Security`). Then cut a release whenever a meaningful feature lands —
-small and often beats a quarterly mega-release.
+Add a new file under [`changelog.d/`](../../changelog.d/README.md) in the same PR as
+the change — not a direct edit to `CHANGELOG.md`'s `## [Unreleased]` section, which is
+how two PRs end up editing the same lines. A fragment is the same Keep a Changelog
+snippet you'd otherwise paste into `Unreleased`: one or more `### Group` headings
+(`Breaking`, `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`) with
+their bullets. Then cut a release whenever a meaningful feature lands — small and
+often beats a quarterly mega-release.
 
 ## Cutting a release
 
 **1. Prepare (local, one command).**
 
 ```bash
-npm run release:prepare            # auto-picks the bump from the Unreleased groups
+npm run release:prepare            # auto-picks the bump from the Unreleased + fragment groups
 npm run release:prepare -- --dry-run          # print the version, write nothing
 npm run release:prepare -- --bump minor       # or major / minor / patch
 ```
 
-This moves everything under `## [Unreleased]` into a new dated `## [X.Y.Z]` section,
-opens a fresh empty `Unreleased`, rewrites the compare links, and bumps `version` in
-the root `package.json`.
+This folds every `changelog.d/*.md` fragment into `## [Unreleased]`, moves the result
+into a new dated `## [X.Y.Z]` section, opens a fresh empty `Unreleased`, rewrites the
+compare links, bumps `version` in the root `package.json`, and deletes the fragments
+it consumed.
 
-The bump comes from the group headings in `Unreleased`:
+The bump comes from the group headings across `Unreleased` and every fragment:
 
 | Groups present | Bump |
 |---|---|
@@ -87,17 +91,19 @@ republished.
 ## Checking the changelog
 
 ```bash
-npm run release:check                # structure + package.json agreement
+npm run release:check                # structure + fragment validity + package.json agreement
 npm run release:notes                # print the newest release's notes
 npm run release:notes -- 0.1.0       # …or a specific version's
 npm run release:latest               # print the newest released version
 npm run release:previous             # print the version below it (empty if none)
 ```
 
-`release:check` catches exactly the failure this process exists to prevent: a version
+`release:check` catches exactly the failures this process exists to prevent: a version
 with no link definition, an undated or out-of-order release, a `package.json` that
-has drifted from the changelog. `tests/changelog.test.ts` runs the same validation
-against the real `CHANGELOG.md`, so `npm test` fails before a malformed changelog can
+has drifted from the changelog, and a malformed `changelog.d/` fragment (no content, a
+`### Group` heading that isn't one of the seven Keep a Changelog groups, or a group
+with no bullets). `tests/changelog.test.ts` runs the same validation against the real
+`CHANGELOG.md` and every real fragment, so `npm test` fails before a malformed one can
 reach the release workflow.
 
 ## Scope
@@ -111,7 +117,8 @@ independently; `release:prepare` does not touch them.
 | File | Role |
 |---|---|
 | `CHANGELOG.md` | Source of truth: versions, dates, notes, links |
-| `scripts/changelog.ts` | Pure parsing, bump inference, and rewriting |
+| `changelog.d/` | Where PRs add their entry — one new file each, folded in and deleted at release time |
+| `scripts/changelog.ts` | Pure parsing, fragment merging, bump inference, and rewriting |
 | `scripts/release.ts` | The `check` / `latest` / `previous` / `notes` / `prepare` CLI |
-| `tests/changelog.test.ts` | Unit tests, plus validation of the real changelog |
+| `tests/changelog.test.ts` | Unit tests, plus validation of the real changelog and real fragments |
 | `.github/workflows/release.yml` | Tags and publishes the GitHub release |

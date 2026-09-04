@@ -27,7 +27,8 @@
 ## Checklist
 
 - [ ] Tests added or updated for the change (coverage thresholds still pass)
-- [ ] `CHANGELOG.md` updated (`## [Unreleased]`) if this is user-visible
+- [ ] A `changelog.d/<slug>.md` fragment added if this is user-visible (not a direct
+      `CHANGELOG.md` edit — see `changelog.d/README.md`)
 - [ ] Public docs updated if this changes user-facing config, API shape, or evaluator/policy
       behavior — edit the canonical page under `docs/user-guide/` or `docs/api/`, then
       `cd website && npm run sync:guides` and commit the regenerated mirrors (see AGENTS.md)

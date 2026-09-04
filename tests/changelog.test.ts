@@ -12,6 +12,7 @@ import {
   isCalendarDate,
   isSemver,
   latestRelease,
+  mergeChangelogBodies,
   nextVersion,
   parseChangelog,
   previousRelease,
@@ -19,7 +20,18 @@ import {
   resolveBump,
   setPackageVersion,
   validateChangelog,
+  validateFragments,
+  withUnreleasedBody,
 } from "../scripts/changelog";
+
+// The repository's own changelog.d/ fragments — same reasoning as REAL_CHANGELOG
+// above: exercised against the real files, imported raw to keep this file
+// type-checking under the Workers tsconfig (no node:fs).
+const REAL_FRAGMENT_MODULES = import.meta.glob("../changelog.d/*.md", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
 
 const REPO = "https://github.com/stratum-eng/stratum";
 
@@ -422,6 +434,168 @@ describe("validateChangelog", () => {
   });
 });
 
+describe("mergeChangelogBodies", () => {
+  it("passes a single body through unchanged", () => {
+    expect(mergeChangelogBodies(["### Added\n- x"])).toBe("### Added\n- x");
+  });
+
+  it("returns empty for empty input", () => {
+    expect(mergeChangelogBodies([])).toBe("");
+    expect(mergeChangelogBodies(["", "   "])).toBe("");
+  });
+
+  it("concatenates bullets under a shared group with no forced blank line", () => {
+    expect(mergeChangelogBodies(["### Added\n- x", "### Added\n- y"])).toBe("### Added\n- x\n- y");
+  });
+
+  it("keeps first-seen group order across bodies", () => {
+    const merged = mergeChangelogBodies(["### Fixed\n- a\n\n### Added\n- b", "### Security\n- c"]);
+    expect(merged).toBe("### Fixed\n- a\n\n### Added\n- b\n\n### Security\n- c");
+  });
+
+  it("handles multiple groups within one fragment alongside another fragment's groups", () => {
+    const merged = mergeChangelogBodies(["### Added\n- a", "### Fixed\n- b\n\n### Added\n- c"]);
+    expect(merged).toBe("### Added\n- a\n- c\n\n### Fixed\n- b");
+  });
+
+  it("canonicalizes heading casing to the recognized spelling", () => {
+    expect(mergeChangelogBodies(["### added\n- x", "### Added\n- y"])).toBe("### Added\n- x\n- y");
+  });
+
+  it("preserves interior blank lines and indented continuation lines verbatim", () => {
+    const body = "### Added\n- x\n\n  more detail, indented.";
+    expect(mergeChangelogBodies([body])).toBe(body);
+  });
+
+  it("passes an unrecognized-but-preexisting heading through untouched", () => {
+    expect(mergeChangelogBodies(["### Notes\n- x"])).toBe("### Notes\n- x");
+  });
+
+  it("drops content before a body's first heading", () => {
+    expect(mergeChangelogBodies(["stray prose\n\n### Added\n- x"])).toBe("### Added\n- x");
+  });
+
+  it("infers a minor bump from a fragment alone when the direct Unreleased body is empty", () => {
+    // Regression: fragments must be merged in BEFORE resolveBump runs, or a PR
+    // whose only changelog content is a fragment silently bumps as a patch.
+    const merged = mergeChangelogBodies(["", "### Added\n- new feature"]);
+    expect(inferBump(merged)).toBe("minor");
+  });
+});
+
+describe("validateFragments", () => {
+  it("passes a well-formed single-group fragment", () => {
+    expect(validateFragments([{ name: "a.md", body: "### Added\n- x" }])).toEqual([]);
+  });
+
+  it("passes a well-formed multi-group fragment", () => {
+    const body = "### Added\n- x\n\n### Fixed\n- y";
+    expect(validateFragments([{ name: "a.md", body }])).toEqual([]);
+  });
+
+  it("accepts case-insensitive canonical headings", () => {
+    expect(validateFragments([{ name: "a.md", body: "### added\n- x" }])).toEqual([]);
+  });
+
+  it("flags an empty fragment", () => {
+    expect(validateFragments([{ name: "a.md", body: "   " }])).toEqual(["a.md: is empty"]);
+  });
+
+  it("flags a fragment with no heading at all", () => {
+    expect(validateFragments([{ name: "a.md", body: "just prose" }])).toContain(
+      "a.md: has no `### Group` heading",
+    );
+  });
+
+  it("flags content before the first heading", () => {
+    const problems = validateFragments([{ name: "a.md", body: "stray\n\n### Added\n- x" }]);
+    expect(problems).toContain("a.md: has content before its first `### Group` heading");
+  });
+
+  it("flags an unrecognized group name", () => {
+    const problems = validateFragments([{ name: "a.md", body: "### Notes\n- x" }]);
+    expect(problems.join("\n")).toContain("a.md: unrecognized group `Notes`");
+  });
+
+  it("flags a group with no bullets", () => {
+    expect(validateFragments([{ name: "a.md", body: "### Added" }])).toContain(
+      "a.md: `### Added` has no entries",
+    );
+  });
+
+  it("attributes each fragment's problems to its own name", () => {
+    const problems = validateFragments([
+      { name: "a.md", body: "" },
+      { name: "b.md", body: "### Notes\n- x" },
+    ]);
+    expect(problems).toContain("a.md: is empty");
+    expect(problems.join("\n")).toContain("b.md: unrecognized group `Notes`");
+  });
+});
+
+describe("withUnreleasedBody", () => {
+  it("replaces only Unreleased's body", () => {
+    const result = withUnreleasedBody(FIXTURE, "### Added\n- replaced");
+    expect(result.success && parseChangelog(result.data).sections[0]?.body).toBe(
+      "### Added\n- replaced",
+    );
+  });
+
+  it("leaves other sections, links, and the preamble untouched", () => {
+    const result = withUnreleasedBody(FIXTURE, "### Added\n- replaced");
+    expect(result.success && parseChangelog(result.data).sections[1]?.body).toBe(
+      "### Added\n- Initial release.",
+    );
+    expect(result.success && [...parseChangelog(result.data).links.keys()]).toEqual([
+      "Unreleased",
+      "0.1.0",
+    ]);
+  });
+
+  it("round-trips through parseChangelog", () => {
+    const result = withUnreleasedBody(FIXTURE, "### Fixed\n- x");
+    expect(result.success && parseChangelog(result.data).sections[0]?.version).toBe("Unreleased");
+  });
+
+  it("errors when there is no Unreleased section", () => {
+    const text = FIXTURE.replace("## [Unreleased]", "## [0.0.9] - 2026-01-01");
+    expect(withUnreleasedBody(text, "### Added\n- x").success).toBe(false);
+  });
+
+  it("still passes validateChangelog with zero new problems", () => {
+    const result = withUnreleasedBody(FIXTURE, "### Fixed\n- x");
+    expect(result.success && validateChangelog(result.data)).toEqual([]);
+  });
+});
+
+describe("fragment merge is transparent to the existing cut/bump machinery", () => {
+  it("merges a fragment onto Unreleased exactly as if it had been pasted in by hand", () => {
+    const merged = mergeChangelogBodies([
+      "### Added\n- A new thing.\n\n### Fixed\n- An old thing.",
+      "### Security\n- from a fragment",
+    ]);
+    expect(merged).toBe(
+      "### Added\n- A new thing.\n\n### Fixed\n- An old thing.\n\n### Security\n- from a fragment",
+    );
+  });
+
+  it("carries that merged body all the way through withUnreleasedBody and cutRelease", () => {
+    const merged = mergeChangelogBodies([
+      "### Added\n- A new thing.\n\n### Fixed\n- An old thing.",
+      "### Security\n- from a fragment",
+    ]);
+    const spliced = withUnreleasedBody(FIXTURE, merged);
+    if (!spliced.success) throw new Error("splice failed");
+
+    const cut = cutRelease(spliced.data, { version: "0.2.0", date: "2026-08-29", repoUrl: REPO });
+    if (!cut.success) throw new Error("cut failed");
+
+    // cutRelease moves the merged Unreleased body into the new dated section
+    // (index 1 — index 0 is the fresh empty Unreleased it opens).
+    expect(parseChangelog(cut.data).sections[1]?.body).toBe(merged);
+  });
+});
+
 describe("setPackageVersion", () => {
   const MANIFEST = [
     "{",
@@ -505,5 +679,14 @@ describe("the repository's own CHANGELOG.md", () => {
     for (const section of released) {
       expect(releaseNotes(REAL_CHANGELOG, section.version).success).toBe(true);
     }
+  });
+});
+
+describe("the repository's own changelog.d/ fragments", () => {
+  it("are all structurally sound", () => {
+    const fragments = Object.entries(REAL_FRAGMENT_MODULES)
+      .filter(([path]) => !path.endsWith("/README.md"))
+      .map(([path, body]) => ({ name: path.split("/").pop() ?? path, body }));
+    expect(validateFragments(fragments)).toEqual([]);
   });
 });

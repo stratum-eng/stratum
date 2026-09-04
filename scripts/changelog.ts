@@ -25,6 +25,10 @@ const BREAKING_GROUPS = new Set(["breaking", "removed"]);
 /** Group headings that force at least a minor bump under `auto`. */
 const FEATURE_GROUPS = new Set(["added"]);
 
+/** The seven Keep a Changelog groups this repo uses, in their canonical spelling. */
+const CANONICAL_GROUPS = ["Breaking", "Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"];
+const CANONICAL_GROUP_BY_LOWER = new Map(CANONICAL_GROUPS.map((group) => [group.toLowerCase(), group]));
+
 const HEADING_RE = /^## \[([^\]]+)\](?:\s+-\s+(\S+))?\s*$/;
 const GROUP_RE = /^### (.+?)\s*$/;
 const LINK_RE = /^\[([^\]]+)\]:\s*(\S+)\s*$/;
@@ -213,6 +217,125 @@ export function inferBump(body: string): Bump {
   return "patch";
 }
 
+interface GroupBlock {
+  /** Heading text exactly as written, e.g. `added` or `Added`. */
+  heading: string;
+  /** Lines under the heading, blank-trimmed at the edges. */
+  body: string;
+}
+
+/**
+ * Split a changelog body into its `### Group` blocks and whatever precedes the
+ * first heading. Mirrors `parseChangelog`'s split of a whole file into
+ * `## [version]` sections, one level down.
+ */
+function splitGroups(body: string): { preamble: string; groups: GroupBlock[] } {
+  const preamble: string[] = [];
+  const groups: GroupBlock[] = [];
+  let current: { heading: string; lines: string[] } | null = null;
+
+  const flush = (): void => {
+    if (!current) return;
+    groups.push({ heading: current.heading, body: trimBlankLines(current.lines) });
+    current = null;
+  };
+
+  for (const line of body.split("\n")) {
+    const heading = GROUP_RE.exec(line);
+    if (heading?.[1]) {
+      flush();
+      current = { heading: heading[1], lines: [] };
+      continue;
+    }
+    if (current) current.lines.push(line);
+    else preamble.push(line);
+  }
+  flush();
+
+  return { preamble: trimBlankLines(preamble), groups };
+}
+
+/** One `changelog.d/*.md` fragment, or any other body worth merging. */
+export interface ChangelogFragment {
+  /** Filename, e.g. `345-fragment-changelog.md` — used only in error messages. */
+  name: string;
+  body: string;
+}
+
+/**
+ * Merge one or more Keep a Changelog bodies (an `Unreleased` body, a
+ * `changelog.d/*.md` fragment, or any mix) into one coherent body. A group
+ * keeps the position it first appears in across `bodies`; its bullets are
+ * concatenated in that order, with a blank line between groups but not
+ * between two bodies' content under the same group — so the result reads as
+ * if everyone had appended to one `Unreleased` section by hand. A recognized
+ * heading (case-insensitively, one of the seven Keep a Changelog groups) is
+ * rendered in its canonical spelling regardless of how it was written; an
+ * unrecognized heading is kept exactly as written, so already-existing
+ * `Unreleased` content is never forced to change. Content before a body's
+ * first heading is dropped — validate untrusted input with
+ * `validateFragments` first so that path is never exercised for a real
+ * fragment.
+ */
+export function mergeChangelogBodies(bodies: string[]): string {
+  const order: string[] = [];
+  const bulletsByGroup = new Map<string, string[]>();
+
+  for (const body of bodies) {
+    for (const group of splitGroups(body).groups) {
+      if (group.body === "") continue;
+      const canonical = CANONICAL_GROUP_BY_LOWER.get(group.heading.toLowerCase()) ?? group.heading;
+      if (!bulletsByGroup.has(canonical)) {
+        order.push(canonical);
+        bulletsByGroup.set(canonical, []);
+      }
+      bulletsByGroup.get(canonical)?.push(group.body);
+    }
+  }
+
+  return order.map((heading) => `### ${heading}\n${bulletsByGroup.get(heading)?.join("\n")}`).join("\n\n");
+}
+
+/**
+ * Structural problems in `changelog.d/*.md` fragments: no content, content
+ * before the first `### Group` heading (including no heading at all), an
+ * unrecognized group name, or a group with no bullets. Each problem is
+ * prefixed with the fragment's name, so `release:check`/`npm test` can point
+ * at exactly which file is malformed.
+ */
+export function validateFragments(fragments: ChangelogFragment[]): string[] {
+  const problems: string[] = [];
+
+  for (const fragment of fragments) {
+    if (fragment.body.trim() === "") {
+      problems.push(`${fragment.name}: is empty`);
+      continue;
+    }
+
+    const { preamble, groups } = splitGroups(fragment.body);
+    if (preamble !== "") {
+      problems.push(`${fragment.name}: has content before its first \`### Group\` heading`);
+    }
+    if (groups.length === 0) {
+      problems.push(`${fragment.name}: has no \`### Group\` heading`);
+      continue;
+    }
+
+    for (const group of groups) {
+      if (!CANONICAL_GROUP_BY_LOWER.has(group.heading.toLowerCase())) {
+        problems.push(
+          `${fragment.name}: unrecognized group \`${group.heading}\` (expected one of ${CANONICAL_GROUPS.join(", ")})`,
+        );
+      }
+      if (group.body === "") {
+        problems.push(`${fragment.name}: \`### ${group.heading}\` has no entries`);
+      }
+    }
+  }
+
+  return problems;
+}
+
 /**
  * Apply an explicit bump request, or infer one. While the major version is 0
  * an inferred major is clamped to a minor, per SemVer's "anything MAY change
@@ -283,6 +406,24 @@ function renderChangelog(parsed: ParsedChangelog): string {
   }
   for (const [label, url] of parsed.links) parts.push(`[${label}]: ${url}`);
   return `${parts.join("\n")}\n`;
+}
+
+/**
+ * Replace the `## [Unreleased]` section's body with `body`; preamble, other
+ * sections, and links are untouched. The fragment-merge insertion point, kept
+ * separate from `cutRelease` so cutting a release never needs to know
+ * fragments exist.
+ */
+export function withUnreleasedBody(text: string, body: string): Result<string> {
+  const parsed = parseChangelog(text);
+  const index = parsed.sections.findIndex((section) => section.version === UNRELEASED);
+  if (index === -1) {
+    return { success: false, error: "CHANGELOG.md has no `## [Unreleased]` section" };
+  }
+
+  const sections = [...parsed.sections];
+  sections[index] = { version: UNRELEASED, body };
+  return { success: true, data: renderChangelog({ ...parsed, sections }) };
 }
 
 export interface CutOptions {

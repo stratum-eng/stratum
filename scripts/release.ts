@@ -3,12 +3,12 @@
  *
  * Run with: node --experimental-strip-types scripts/release.ts <command>
  *
- *   check                  Validate CHANGELOG.md and that package.json agrees with it
+ *   check                  Validate CHANGELOG.md, changelog.d/, and that package.json agrees
  *   latest                 Print the most recently released version (no `v` prefix)
  *   previous [version]     Print the release listed below `version` (default: latest);
  *                          prints nothing when there is none
  *   notes [version]        Print one release's changelog entries (default: latest)
- *   prepare [options]      Move `Unreleased` into a dated section and bump package.json
+ *   prepare [options]      Fold changelog.d/ into Unreleased, cut it, bump package.json
  *
  * `prepare` options:
  *   --bump auto|major|minor|patch   Default: auto (derived from the `Unreleased` groups)
@@ -19,16 +19,18 @@
  * See docs/developer/releasing.md for the whole flow.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
   type BumpRequest,
+  type ChangelogFragment,
   UNRELEASED,
   cutRelease,
   isSemver,
   latestRelease,
+  mergeChangelogBodies,
   nextVersion,
   parseChangelog,
   previousRelease,
@@ -36,11 +38,14 @@ import {
   resolveBump,
   setPackageVersion,
   validateChangelog,
+  validateFragments,
+  withUnreleasedBody,
 } from "./changelog.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CHANGELOG_PATH = resolve(REPO_ROOT, "CHANGELOG.md");
 const PACKAGE_PATH = resolve(REPO_ROOT, "package.json");
+const CHANGELOGD_PATH = resolve(REPO_ROOT, "changelog.d");
 
 const BUMPS: BumpRequest[] = ["auto", "major", "minor", "patch"];
 
@@ -74,10 +79,31 @@ function argValue(args: string[], flag: string): string | undefined {
   return value;
 }
 
-/** `check`: report every structural problem in CHANGELOG.md, plus package.json drift. */
+/**
+ * Every `changelog.d/*.md` fragment except its README, sorted by filename for
+ * a deterministic merge order. An absent directory means no fragments yet,
+ * not an error — nothing has required one until the first PR adds one.
+ */
+function readFragments(): Array<ChangelogFragment & { path: string }> {
+  let names: string[];
+  try {
+    names = readdirSync(CHANGELOGD_PATH);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((name) => name.endsWith(".md") && name !== "README.md")
+    .sort()
+    .map((name) => {
+      const path = resolve(CHANGELOGD_PATH, name);
+      return { name, path, body: readFileSync(path, "utf8") };
+    });
+}
+
+/** `check`: report every structural problem in CHANGELOG.md and changelog.d/, plus package.json drift. */
 function commandCheck(): void {
   const changelog = readChangelog();
-  const problems = validateChangelog(changelog);
+  const problems = [...validateChangelog(changelog), ...validateFragments(readFragments())];
 
   const latest = latestRelease(changelog);
   const pkg = readPackage();
@@ -87,9 +113,9 @@ function commandCheck(): void {
 
   if (problems.length > 0) {
     for (const problem of problems) console.error(`  • ${problem}`);
-    fail(`CHANGELOG.md has ${problems.length} problem(s)`);
+    fail(`Found ${problems.length} problem(s)`);
   }
-  console.log(`✓ CHANGELOG.md is well-formed; latest release is ${latest ?? "(none)"}`);
+  console.log(`✓ CHANGELOG.md and changelog.d/ are well-formed; latest release is ${latest ?? "(none)"}`);
 }
 
 /** `latest`: print the newest released version. */
@@ -121,7 +147,11 @@ function commandNotes(args: string[]): void {
   console.log(notes.data);
 }
 
-/** `prepare`: cut a release — date the `Unreleased` section, relink it, bump package.json. */
+/**
+ * `prepare`: fold changelog.d/ fragments into `Unreleased`, cut it into a
+ * dated section, relink it, bump package.json, and delete the fragments that
+ * were folded in.
+ */
 function commandPrepare(args: string[]): void {
   const bump = (argValue(args, "--bump") ?? "auto") as BumpRequest;
   if (!BUMPS.includes(bump)) fail(`--bump must be one of ${BUMPS.join(", ")}`);
@@ -133,10 +163,11 @@ function commandPrepare(args: string[]): void {
   const pkg = readPackage();
   if (!isSemver(pkg.version)) fail(`package.json version is not semver: ${pkg.version}`);
 
-  const problems = validateChangelog(changelog);
+  const fragments = readFragments();
+  const problems = [...validateChangelog(changelog), ...validateFragments(fragments)];
   if (problems.length > 0) {
     for (const problem of problems) console.error(`  • ${problem}`);
-    fail("Fix CHANGELOG.md before cutting a release (npm run release:check)");
+    fail("Fix CHANGELOG.md / changelog.d/ before cutting a release (npm run release:check)");
   }
 
   // The next version is computed from package.json, but the changelog is the
@@ -150,14 +181,21 @@ function commandPrepare(args: string[]): void {
     );
   }
 
+  // Fold fragments in BEFORE resolving the bump: an Unreleased body that is
+  // otherwise empty, with the only new content living in fragments, must
+  // still infer its bump from what those fragments actually add.
   const unreleased = parseChangelog(changelog).sections.find((s) => s.version === UNRELEASED);
-  const resolved = resolveBump(pkg.version, bump, unreleased?.body ?? "");
+  const mergedBody = mergeChangelogBodies([unreleased?.body ?? "", ...fragments.map((f) => f.body)]);
+  const merged = withUnreleasedBody(changelog, mergedBody);
+  if (!merged.success) fail(merged.error);
+
+  const resolved = resolveBump(pkg.version, bump, mergedBody);
   if (!resolved.success) fail(resolved.error);
 
   const next = nextVersion(pkg.version, resolved.data);
   if (!next.success) fail(next.error);
 
-  const cut = cutRelease(changelog, { version: next.data, date, repoUrl: pkg.repoUrl });
+  const cut = cutRelease(merged.data, { version: next.data, date, repoUrl: pkg.repoUrl });
   if (!cut.success) fail(cut.error);
 
   // Resolve both files before writing either: a manifest failure after the
@@ -172,7 +210,11 @@ function commandPrepare(args: string[]): void {
 
   writeFileSync(CHANGELOG_PATH, cut.data);
   writeFileSync(PACKAGE_PATH, bumped.data);
+  for (const fragment of fragments) unlinkSync(fragment.path);
   console.log(`✓ Prepared v${next.data} (${resolved.data} from ${pkg.version}), dated ${date}`);
+  if (fragments.length > 0) {
+    console.log(`  Folded in and removed ${fragments.length} changelog.d/ fragment(s).`);
+  }
   console.log("  Review the diff, open a PR, and merge it; then run the Release workflow.");
 }
 

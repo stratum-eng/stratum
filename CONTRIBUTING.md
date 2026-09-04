@@ -75,11 +75,11 @@ token.**
 
 ## Changelog & releases
 
-Every user-visible change belongs in the `## [Unreleased]` section of
-[`CHANGELOG.md`](CHANGELOG.md), in the same PR, under a
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) group (`Breaking`, `Added`,
-`Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`). That text becomes the release
-notes verbatim, so write it for someone deciding whether to upgrade.
+Every user-visible change gets one new file under [`changelog.d/`](changelog.d/README.md), in the
+same PR — not a direct edit to `CHANGELOG.md`'s `## [Unreleased]` section, which is how two PRs
+end up editing the same lines. Use a [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+group (`Breaking`, `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`). That text
+becomes the release notes verbatim, so write it for someone deciding whether to upgrade.
 
 Releases are cut from the changelog with `npm run release:prepare` and published by the
 **Release** workflow. Maintainers: see

@@ -65,9 +65,12 @@ Mirror lint → typecheck → test locally before pushing.
 - **Comments explain *why*, not *what*.** Add one only for a non-obvious constraint, invariant, or
   workaround. JSDoc on public APIs is welcome.
 - **Server-rendered only.** Do not introduce client-side JS into the UI.
-- **Every user-visible change gets a `CHANGELOG.md` entry** under `## [Unreleased]`, in the same
-  PR, under a Keep a Changelog group. That text ships verbatim as the release notes; the release
-  tooling infers the version bump from which groups are present (`docs/developer/releasing.md`).
+- **Every user-visible change gets a changelog entry**, in the same PR: add one new file under
+  `changelog.d/` (see `changelog.d/README.md`) rather than editing `CHANGELOG.md`'s `Unreleased`
+  section directly — two PRs editing `Unreleased` at once is the single most common source of PR
+  conflicts in this repo, and two PRs adding two different files can't collide. Use a Keep a
+  Changelog group heading; that text ships verbatim as release notes, and `release:prepare` infers
+  the version bump from which groups are present across all fragments (`docs/developer/releasing.md`).
 - **A change to user-facing config, API shape, or evaluator/policy behavior also updates the public
   docs** (`docs.usestratum.dev`) in the same PR — not just `CHANGELOG.md`. What a self-hoster or
   agent operator reads to configure `.stratum/policy.yaml` or use the API is what must not go
