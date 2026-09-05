@@ -338,6 +338,10 @@ jobs:
           OAUTH_REDIRECT_URI = "https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev/auth/github/callback"
           EMAIL_FROM_ADDRESS = "noreply@usestratum.dev"
           PREVIEW_ENV = "pr-${{ env.PR_NUMBER }}"
+          # Previews carry no analytics key, so nothing is sent today. Labelled
+          # anyway so contributor traffic can never be counted as production if
+          # one is ever added here.
+          STRATUM_ENVIRONMENT = "preview"
           EOF
           
           echo "✓ Generated wrangler.preview.toml"

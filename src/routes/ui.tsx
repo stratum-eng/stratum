@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { fetchInviteCodes, referralServiceConfigured } from "../beta/gate";
 import { cannotMintLegacyCredential } from "../middleware/auth";
+import { NO_ANALYTICS_HEADER } from "../middleware/web-analytics";
 import { createAgent, deleteAgent, getAgent, listAgents } from "../storage/agents";
 import {
   type ApiTokenSummary,
@@ -730,7 +731,14 @@ app.post("/settings/tokens", async (c) => {
   });
   // The plaintext exists nowhere else after this response: it must not be held
   // by a shared cache, nor re-served from the browser's back-forward cache.
-  return c.html(page, 200, { "Cache-Control": "no-store" });
+  return c.html(page, 200, {
+    "Cache-Control": "no-store",
+    // This response body contains a plaintext credential that exists nowhere
+    // else. The analytics injector denies `/settings/*` by prefix already;
+    // this is the local half of that control, set by the handler that knows
+    // it is rendering a secret rather than by a list in another directory.
+    [NO_ANALYTICS_HEADER]: "1",
+  });
 });
 
 // POST /settings/tokens/:id/revoke — Revoke one of the caller's own tokens
@@ -908,7 +916,14 @@ app.post("/settings/rotate-token", async (c) => {
   const page = await renderSettings(c, user, telemetryOptOut, logger, {
     freshToken: { kind: "api-key", value: rotateResult.data },
   });
-  return c.html(page, 200, { "Cache-Control": "no-store" });
+  return c.html(page, 200, {
+    "Cache-Control": "no-store",
+    // This response body contains a plaintext credential that exists nowhere
+    // else. The analytics injector denies `/settings/*` by prefix already;
+    // this is the local half of that control, set by the handler that knows
+    // it is rendering a secret rather than by a list in another directory.
+    [NO_ANALYTICS_HEADER]: "1",
+  });
 });
 
 // POST /settings/agents — Create an agent token; renders it once
@@ -950,7 +965,14 @@ app.post("/settings/agents", async (c) => {
   const page = await renderSettings(c, user, telemetryOptOut, logger, {
     freshToken: { kind: "agent", value: createResult.data.plaintext, agentName: name },
   });
-  return c.html(page, 200, { "Cache-Control": "no-store" });
+  return c.html(page, 200, {
+    "Cache-Control": "no-store",
+    // This response body contains a plaintext credential that exists nowhere
+    // else. The analytics injector denies `/settings/*` by prefix already;
+    // this is the local half of that control, set by the handler that knows
+    // it is rendering a secret rather than by a list in another directory.
+    [NO_ANALYTICS_HEADER]: "1",
+  });
 });
 
 // POST /settings/agents/:id/delete — Revoke an agent token

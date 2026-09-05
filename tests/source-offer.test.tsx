@@ -97,6 +97,7 @@ describe("AGPL §13 source offer", () => {
     "../src/email/templates.ts", // emails, not pages served over the network
     "../src/templates/index.ts", // scaffolding for user-created projects
     "../src/ui/components/source-footer.tsx", // defines the offer; its `</body>` is prose
+    "../src/middleware/web-analytics.ts", // rewrites a rendered page; its `</body>` is a search marker
   ];
 
   it("appears on every document Stratum serves", () => {

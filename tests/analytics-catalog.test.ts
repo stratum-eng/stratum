@@ -7,11 +7,13 @@ import {
   ALL_EVENT_NAMES,
   DOMAIN_EVENT_NAMES,
   SURFACE_EVENT_NAMES,
+  WEB_EVENT_NAMES,
   domainEventName,
   domainEventProperties,
   importSourceProvider,
   surfaceForRoute,
 } from "../src/analytics/events";
+import { bootstrapScript } from "../src/analytics/web-snippet";
 import type { EventRecord } from "../src/storage/events";
 
 function makeEvent(over: Partial<EventRecord> = {}): EventRecord {
@@ -41,6 +43,41 @@ describe("analytics catalog", () => {
   it("documents every surface event in the public FAQ", () => {
     for (const name of SURFACE_EVENT_NAMES) {
       expect(FAQ, `\`${name}\` is missing from docs/user-guide/faq.md`).toContain(`\`${name}\``);
+    }
+  });
+
+  // Browser events reach PostHog without passing through any code in `src/`,
+  // so nothing else in this suite would notice them going undocumented. The
+  // FAQ says the list is exhaustive; this is what makes that true rather than
+  // aspirational.
+  it("documents every browser event in the public FAQ", () => {
+    for (const name of WEB_EVENT_NAMES) {
+      expect(FAQ, `\`${name}\` is missing from docs/user-guide/faq.md`).toContain(`\`${name}\``);
+    }
+  });
+
+  // The other direction. WEB_EVENT_NAMES ⊆ FAQ says the docs cover the catalog;
+  // this says the catalog covers what the snippet actually lets through, so an
+  // event cannot be permitted at runtime while going undocumented.
+  it("documents every event the browser snippet permits", () => {
+    const allowlist = /var ALLOWED_EVENTS = \{([^}]*)\}/.exec(
+      bootstrapScript({
+        token: "phc_x",
+        apiHost: "/_ph",
+        uiHost: "https://us.posthog.com",
+        environment: "test",
+        route: "/",
+        distinctId: null,
+      }),
+    )?.[1];
+    expect(allowlist, "could not find ALLOWED_EVENTS in the emitted snippet").toBeTruthy();
+    const permitted = [...(allowlist as string).matchAll(/(\$[A-Za-z_]+):\s*1/g)].map((m) => m[1]);
+    expect(permitted.length).toBeGreaterThan(0);
+    for (const name of permitted) {
+      expect(
+        WEB_EVENT_NAMES,
+        `\`${name}\` is permitted by the snippet but not in the catalog`,
+      ).toContain(name);
     }
   });
 

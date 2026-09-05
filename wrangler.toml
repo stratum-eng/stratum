@@ -157,6 +157,13 @@ name = "EMAIL"
 # binding = "SANDBOX"
 
 [vars]
+# Browser analytics: PostHog's project token (`phc_…`), loaded in users' browsers.
+# A plain var, NOT a secret — it ships in every page of HTML, and calling it a
+# secret is how a personal API key (`phx_…`) ends up published. Deliberately
+# separate from POSTHOG_API_KEY: enabling server-side telemetry must never
+# silently start running third-party JS in your users' browsers. Unset = no
+# analytics script is served to anyone.
+# POSTHOG_PUBLIC_KEY = "phc_..."
 POSTHOG_HOST = "https://app.posthog.com"
 # Labels this deployment on every analytics event, so staging traffic can be
 # told apart from production's in one PostHog project. Any string; events from
@@ -312,6 +319,13 @@ crons = ["0 4 * * *", "0 6 * * *", "*/5 * * * *"]
 name = "EMAIL"
 
 [env.production.vars]
+# Browser analytics: PostHog's project token (`phc_…`), loaded in users' browsers.
+# A plain var, NOT a secret — it ships in every page of HTML, and calling it a
+# secret is how a personal API key (`phx_…`) ends up published. Deliberately
+# separate from POSTHOG_API_KEY: enabling server-side telemetry must never
+# silently start running third-party JS in your users' browsers. Unset = no
+# analytics script is served to anyone.
+# POSTHOG_PUBLIC_KEY = "phc_..."
 POSTHOG_HOST = "https://app.posthog.com"
 # Segments this environment's analytics (see top-level [vars]). Declared per-env
 # because named envs don't inherit top-level vars — the same footgun as the
@@ -463,6 +477,13 @@ dead_letter_queue = "stratum-deploys-dlq-staging"
 name = "EMAIL"
 
 [env.staging.vars]
+# Browser analytics: PostHog's project token (`phc_…`), loaded in users' browsers.
+# A plain var, NOT a secret — it ships in every page of HTML, and calling it a
+# secret is how a personal API key (`phx_…`) ends up published. Deliberately
+# separate from POSTHOG_API_KEY: enabling server-side telemetry must never
+# silently start running third-party JS in your users' browsers. Unset = no
+# analytics script is served to anyone.
+# POSTHOG_PUBLIC_KEY = "phc_..."
 POSTHOG_HOST = "https://app.posthog.com"
 # Segments this environment's analytics (see top-level [vars]). Declared per-env
 # because named envs don't inherit top-level vars — the same footgun as the

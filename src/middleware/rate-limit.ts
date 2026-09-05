@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import { isGitHttpPath } from "../routes/git-http";
+import { isPostHogProxyPath, isPostHogSdkPath } from "../routes/posthog-proxy";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 
@@ -50,6 +51,20 @@ export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<
     // corrupts it, so the read side is exempt. Push (git-receive-pack) is a
     // metered WRITE and must NOT be exempt — otherwise writes bypass the limiter
     // entirely. Exempt only upload-pack RPCs and the upload-pack ref advertise.
+
+    // Analytics gets its own bucket rather than an exemption. The problem is a
+    // SHARED budget — a pageview costs a `/flags` call plus a capture POST,
+    // keyed on the same user or IP as their API traffic, so a busy session
+    // could rate-limit itself out of the app being measured — and an absent
+    // budget is not the fix for that. The proxy's path allowlist, method
+    // allowlist and body cap bound the shape of each request, not how many
+    // arrive, and it is unauthenticated by nature.
+    //
+    // The SDK bundle route is not included: it is a cached GET on the ordinary
+    // budget, and exempting it would leave an unauthenticated route that makes
+    // an outbound fetch with no ceiling.
+    const isAnalyticsIngest = isPostHogProxyPath(c.req.path) && !isPostHogSdkPath(c.req.path);
+
     if (isGitHttpPath(c.req.path) && isExemptGitRead(c.req.path, c.req.query("service"))) {
       await next();
       return;
@@ -60,11 +75,18 @@ export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<
     const isAuthenticated = Boolean(userId ?? agentId);
 
     const defaultLimit = isAuthenticated ? 1000 : 60;
-    const limit = opts?.requestsPerMinute ?? defaultLimit;
+    // Far above what a real session produces and far below anything worth
+    // relaying through someone else's Worker.
+    const analyticsLimit = 600;
+    const limit = isAnalyticsIngest ? analyticsLimit : (opts?.requestsPerMinute ?? defaultLimit);
 
     const identifier = userId ?? agentId ?? c.req.header("CF-Connecting-IP") ?? "anonymous";
     const minuteBucket = Math.floor(Date.now() / 60000);
-    const key = `ratelimit:${identifier}:${minuteBucket}`;
+    // A distinct key prefix, so analytics and API traffic cannot exhaust each
+    // other's allowance.
+    const key = isAnalyticsIngest
+      ? `ratelimit:analytics:${identifier}:${minuteBucket}`
+      : `ratelimit:${identifier}:${minuteBucket}`;
 
     const nowSeconds = Math.floor(Date.now() / 1000);
     const nextMinuteSeconds = (minuteBucket + 1) * 60;

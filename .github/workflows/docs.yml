@@ -63,6 +63,10 @@ jobs:
 
       - name: Build
         working-directory: website
+        # Absent on forks and in PR builds, which is the intent: the build must
+        # succeed without it and simply ship no analytics.
+        env:
+          POSTHOG_PUBLIC_KEY: ${{ vars.POSTHOG_PUBLIC_KEY }}
         run: npm run build
 
       - name: Deploy to Cloudflare
@@ -71,4 +75,8 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy
+          # The Worker needs the same value the build used: the build bakes it
+          # into the HTML, this tells the proxy the deployment has analytics on.
+          # Absent, the proxy answers 204 and relays nothing.
+          POSTHOG_PUBLIC_KEY: ${{ vars.POSTHOG_PUBLIC_KEY }}
+        run: npx wrangler deploy --var POSTHOG_PUBLIC_KEY:"$POSTHOG_PUBLIC_KEY"

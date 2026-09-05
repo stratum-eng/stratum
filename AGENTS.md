@@ -11,6 +11,21 @@ serverless Git. The web UI is **server-rendered JSX**: every page must work with
 disabled. A few inline scripts exist purely as progressive enhancement — never add a
 client-side framework or a build step.
 
+**The one exception is product analytics**, which loads PostHog's SDK in the browser. It has
+**two** bootstraps, and an audit that reads only the first has read half of it:
+`src/analytics/web-snippet.ts` for the app, which redacts every URL, title and element it
+sends, and an inline one in `website/astro.config.mjs` for the docs site, which does not — docs
+URLs are public content, and which page someone read is the whole question there. It is bound by the rule it is an exception to: no framework, no
+build step, nothing rendered or gated by it, and every page still works with it blocked or
+absent. Two things earned the exception and are the terms of keeping it. The bundle is
+**version-pinned and served from our own origin**, so third-party code cannot change size or
+behaviour in a release nobody here chose — an unpinned CDN script on pages that render private
+repositories under an authenticated session is the risk this rule exists to prevent, and
+"it's only analytics" is not an answer to it. And it is **off unless `POSTHOG_PUBLIC_KEY` is
+set**, separately from server-side telemetry, so a self-hoster never gets browser JavaScript
+they did not ask for. Do not widen this into a precedent for shipping client-side JS
+generally: the next thing that wants to be an exception needs its own argument, not this one.
+
 ## Repository layout
 
 | Path | What it is |
@@ -64,7 +79,9 @@ Mirror lint → typecheck → test locally before pushing.
   silently swallow an error — log it (see `src/utils/logger.ts`).
 - **Comments explain *why*, not *what*.** Add one only for a non-obvious constraint, invariant, or
   workaround. JSDoc on public APIs is welcome.
-- **Server-rendered only.** Do not introduce client-side JS into the UI.
+- **Server-rendered only.** Do not introduce client-side JS into the UI. The single
+  exception, its terms, and why it is not a precedent are described under "What this project
+  is" above.
 - **Every user-visible change gets a `CHANGELOG.md` entry** under `## [Unreleased]`, in the same
   PR, under a Keep a Changelog group. That text ships verbatim as the release notes; the release
   tooling infers the version bump from which groups are present (`docs/developer/releasing.md`).

@@ -234,6 +234,17 @@ you own — an agent inherits its owner's choice, so routing traffic through an
 agent does not re-enable it. The change takes effect on your next request. It
 is not retroactive: events already sent are not deleted.
 
+**Browser analytics is separate, and off unless you turn it on.** Everything
+described above is sent by the server. A second, independent switch —
+`POSTHOG_PUBLIC_KEY` — additionally loads PostHog's JavaScript SDK in your
+users' browsers. The documentation site is built separately and reads the same
+variable at build time, so it is set in both places if you run both. It is a distinct key on purpose: enabling server-side
+telemetry has never meant running third-party code in your users' browsers or
+sending their IP addresses anywhere, and setting `POSTHOG_API_KEY` still does
+not. If it is unset, no analytics script is served, to anyone. It must be a PostHog **project** key (`phc_…`); anything else is
+refused rather than published, because the value appears in every page of HTML
+and a personal API key (`phx_…`) pasted there would be a credential leak.
+
 **Per instance.** Analytics only runs at all if you set a `POSTHOG_API_KEY`,
 and self-hosted instances can set `STRATUM_TELEMETRY_DISABLED = "true"` in
 `wrangler.toml` to switch it off for everyone. Declare it in **each**
@@ -262,6 +273,20 @@ truth, and a test fails the build if this table and that file disagree.
 | `background_job_completed` | Once per background job reaching a terminal state | `job`, `outcome`, `attempts` |
 | `stratum.<event type>` | Once per repository activity (a change opening, a merge, a deploy) | `project_id`, `actor_type`, plus the per-type properties below |
 
+If you have also set `POSTHOG_PUBLIC_KEY`, the SDK sends these from the
+browser. They are produced by PostHog's code, not Stratum's, so the guarantees
+below describe how we configure it rather than what we choose to emit:
+
+| Event | Sent when |
+|-------|-----------|
+| `$pageview` | A page is loaded |
+| `$pageleave` | A page is left |
+| `$autocapture` | A link, button, or form control is interacted with |
+| `$rageclick` | The same spot is clicked repeatedly, if your PostHog project enables it |
+| `$identify` | A signed-in user is associated with their account |
+| `$set` | Person properties are recorded, as part of identifying |
+| `$create_alias` | A pre-sign-in anonymous session is linked to the account |
+
 Every event additionally carries `environment` — the label the operator set in
 `STRATUM_ENVIRONMENT`, so staging traffic can be told apart from production —
 and `$lib_version`, the Stratum version that sent it, so a change in a metric
@@ -288,6 +313,82 @@ Everything else in an event's payload is dropped: workspace names, commit
 shas, issue titles, import URLs, and deployment failure text all stay on your
 instance. An event type not listed above contributes no extra properties at
 all.
+
+### What the browser sends, and what it does not
+
+**Everything in this section describes the Stratum application.** The
+documentation site is a separate deployment with separate rules, described
+after it — its pages are published documentation with no accounts and nothing
+private, so it deliberately does not redact what the application must.
+
+Browser analytics on the application is held to the same promise as the server,
+but it takes more work to keep, because PostHog's SDK collects by default and
+this app's URLs and page titles are made of the things the promise forbids.
+
+- **The same route patterns.** The server hands the SDK the route pattern it
+  matched, and every URL-bearing property is rewritten to it before the event
+  leaves the browser. `$current_url` becomes `https://your-host/:namespace/:slug`.
+  Query strings, refs and `#fragment` anchors go with it.
+- **Page titles are dropped**, because this app's titles contain repository,
+  file, and issue names.
+- **Referrers are dropped**, not rewritten. The referrer is the *previous*
+  page's URL, and the route pattern describes the current one, so rewriting it
+  would be silently wrong rather than merely absent. The referring **domain**
+  is kept, since it has no path and is what makes acquisition answerable.
+- **Anything unrecognised is dropped.** The filter is an allowlist: a property
+  a future SDK release introduces is removed unless it has been reviewed and
+  named. It cannot leak by being new.
+- **Clicked elements are recorded without their text or attributes.** Otherwise
+  a click on a repository link would send the repository name as link text and
+  its path as an `href`. You therefore see that a file link was clicked, not
+  which file.
+- **No Core Web Vitals or dead-click tracking.** Both are implemented in code
+  posthog-js downloads at runtime, and Stratum blocks runtime downloads so the
+  only script your users receive is the pinned one served from your origin.
+  The trade is deliberate: unpinned third-party code on pages that render
+  private repositories is worse than a missing metric.
+- **No session replay.** Stratum does not record sessions. It renders private
+  source, and no masking configuration makes recording it a good idea.
+- **Do Not Track is respected**, and so is Global Privacy Control — the SDK
+  checks `navigator.doNotTrack`, `navigator.msDoNotTrack`, `window.doNotTrack`
+  and `navigator.globalPrivacyControl`. This is the only control a signed-out
+  visitor has, since the per-account setting needs an account.
+- **IP addresses.** This is the one thing the browser sends that the server
+  never did. PostHog derives approximate location from it. Requests are
+  proxied through your own instance at `/_ph/*`, so PostHog sees your Worker
+  rather than your users — and the client IP is forwarded in a header, because
+  without it every user appears to be in a Cloudflare datacentre. If that
+  trade is wrong for your instance, leave `POSTHOG_PUBLIC_KEY` unset.
+- **Why the requests go through your instance.** The SDK and its events are
+  served from your own origin rather than PostHog's. It keeps the script under
+  your Content-Security-Policy, lets it be version-pinned and cached, and means
+  content blockers do not silently bias your numbers toward users who do not
+  run one. That last reason is a deliberate choice and is stated here rather
+  than left for you to discover in `src/routes/posthog-proxy.ts`. The proxy
+  forwards only PostHog's ingestion paths, strips your session cookie and
+  `Referer` before forwarding, and refuses anything else. It is inert unless
+  `POSTHOG_PUBLIC_KEY` is set, so an instance that never turned browser
+  analytics on is not running a relay, and it refuses a beacon from an account
+  that has opted out — which is what stops a browser tab opened *before* you
+  opted out from continuing to report. That account check applies to the
+  application only; the documentation site has no accounts.
+
+### What the documentation site sends
+
+`docs.usestratum.dev` is built and deployed separately, and it is instrumented
+separately. The differences are deliberate:
+
+- **URLs are sent as they are**, not rewritten to route patterns. Which
+  documentation page someone read is the entire question there, and every one
+  of those URLs is public.
+- **Clicked link text and attributes are not masked**, for the same reason:
+  they are published documentation, so masking them would cost the answer and
+  protect nothing.
+- **There is no account**, so there is no per-account opt-out to honour and no
+  user is ever identified. `respect_dnt` is the only control, and it is on.
+- **No session replay**, the same as the application.
+- It is off unless `POSTHOG_PUBLIC_KEY` is present at build time, so a fork
+  building these docs ships nothing.
 
 ### The details worth knowing
 

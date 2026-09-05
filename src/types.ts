@@ -105,6 +105,19 @@ export interface Env {
   STATE: KVNamespace;
   DB: D1Database;
   POSTHOG_API_KEY?: string;
+  /**
+   * The PostHog **project** token, published in every page of HTML.
+   *
+   * Deliberately separate from `POSTHOG_API_KEY` and deliberately a `[vars]`
+   * entry rather than a secret. Reusing the existing secret would silently
+   * redefine what a self-hoster's configuration means — today it exports
+   * server-side route patterns, it would additionally load third-party
+   * JavaScript in their users' browsers and send those users' IP addresses —
+   * for operators who set it long ago and took no action since. Browser
+   * analytics is therefore opt-in on its own key, and a value that ships in
+   * public HTML is not a secret.
+   */
+  POSTHOG_PUBLIC_KEY?: string;
   POSTHOG_HOST?: string;
   STRATUM_TELEMETRY_DISABLED?: string;
   /**

@@ -3,8 +3,70 @@ import { defineConfig } from "astro/config";
 import sitemap from "@astrojs/sitemap";
 import starlight from "@astrojs/starlight";
 import starlightLlmsTxt from "starlight-llms-txt";
+import { readPostHogProjectKey } from "./analytics-key.mjs";
 
 const SITE = "https://docs.usestratum.dev";
+
+/**
+ * Browser analytics for the docs site, off unless a project key is supplied at
+ * build time. A fork, a PR preview, or anyone running `npm run build` without
+ * the variable produces a site that sends nothing — the build must not depend
+ * on it.
+ *
+ * Unlike the app, docs URLs are public content and are sent as-is: which page
+ * someone read is the entire question. For the same reason `mask_all_text` and
+ * `mask_all_element_attributes` are deliberately NOT set here, though they are
+ * on the app: the link text and hrefs on this site are published documentation,
+ * so masking them would cost the answer to "which doc did they click" and
+ * protect nothing. There is no session here, so every visitor is anonymous and
+ * `respect_dnt` is their only control — in posthog-js 1.427.2 it honours
+ * `navigator.globalPrivacyControl` as well as the legacy DNT header. Session
+ * replay is not loaded on either property.
+ */
+// Same name as the app's var, deliberately: two switches for one feature that
+// differ only by word order would be a trap. Read at build time via
+// `process.env` and inlined below, so Astro's `PUBLIC_` prefix convention —
+// which exists to expose a variable through `import.meta.env` — does not apply.
+const POSTHOG_KEY = readPostHogProjectKey(process.env.POSTHOG_PUBLIC_KEY);
+const SDK_VERSION = "1.427.2";
+/** @type {import("astro").AstroUserConfig["integrations"] extends any ? Array<{tag: "script", attrs?: Record<string, string | boolean | undefined>, content?: string}> : never} */
+const analyticsHead = POSTHOG_KEY
+  ? [
+      {
+        tag: /** @type {const} */ ("script"),
+        attrs: { src: `/_ph/static/${SDK_VERSION}/array.js`, defer: true },
+      },
+      {
+        tag: /** @type {const} */ ("script"),
+        attrs: { defer: true },
+        content: `(function () {
+  // \`defer\` is ignored on an inline script, and these tags sit in <head>, so
+  // calling init here would run before the deferred bundle defines \`posthog\`.
+  // Deferred scripts run before DOMContentLoaded, so this orders us after it.
+  function start() {
+    if (typeof posthog === "undefined") return;
+    posthog.init(${JSON.stringify(POSTHOG_KEY)}, {
+  api_host: "/_ph",
+  ui_host: "https://us.posthog.com",
+  person_profiles: "identified_only",
+  disable_session_recording: true,
+  disable_external_dependency_loading: true,
+  respect_dnt: true,
+  capture_pageview: true,
+  capture_pageleave: true,
+  autocapture: true,
+  loaded: function (ph) { ph.register({ environment: "docs" }); },
+    });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
+  } else {
+    start();
+  }
+})();`,
+      },
+    ]
+  : [];
 const DESCRIPTION =
   "The governance layer for AI-written code — evaluation-gated merges, provenance, and agent identities, built on Cloudflare Workers.";
 
@@ -52,6 +114,7 @@ export default defineConfig({
         }),
       ],
       head: [
+        ...analyticsHead,
         // JetBrains Mono, matching the app's typography.
         { tag: "link", attrs: { rel: "preconnect", href: "https://fonts.googleapis.com" } },
         {
