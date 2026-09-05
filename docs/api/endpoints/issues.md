@@ -40,7 +40,10 @@ Ordered newest-first by issue number.
 ## Update an Issue
 `PATCH /api/projects/{namespace}/{slug}/issues/{number}`
 
-Requires **write** access. Only the fields present are written.
+Requires **write** access **and a user identity** — an agent token is refused
+with `401`. This is the editing and labelling path, so an agent can open an
+issue and comment on it but cannot retitle, reassign, relabel, or close one.
+Only the fields present in the body are written.
 
 ```json
 { "title": "…", "body": "…", "status": "closed",

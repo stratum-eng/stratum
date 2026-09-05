@@ -11,19 +11,20 @@ codes are in the [OpenAPI specification](openapi.yml).
 | 200 | OK |
 | 201 | Created |
 | 202 | Accepted — the work runs asynchronously (e.g. project/account deletion) |
-| 302 | Redirect — form-encoded requests to form-friendly endpoints redirect instead of returning JSON |
+| 302 / 303 | Redirect — form-encoded requests to form-friendly endpoints redirect instead of returning JSON |
 | 400 | Bad Request |
 | 401 | Unauthorized |
 | 403 | Forbidden |
 | 404 | Not Found |
 | 409 | Conflict — merge staleness and merge conflicts (see codes below) |
 | 410 | Gone — the resource was deleted |
+| 413 | Payload Too Large — a request body exceeded its cap (`PAYLOAD_TOO_LARGE`; the git and `/mcp` paths have their own caps) |
 | 422 | Unprocessable — the request was understood but cannot be applied |
 | 429 | Rate Limited |
 | 500 | Server Error |
-| 501 | Not Implemented |
+| 501 | Not Implemented — an optional integration is not configured on this instance (e.g. GitHub/Google OAuth) |
 | 502 | Bad Gateway — an upstream provider call failed |
-| 503 | Service Unavailable |
+| 503 | Service Unavailable — a dependency is unhealthy, or an optional binding is absent (see `DEPLOY_QUEUE_UNAVAILABLE`) |
 | 504 | Gateway Timeout — an operation exceeded its bound (see `PUSH_TIMEOUT`) |
 
 ## Machine-readable error codes
@@ -51,7 +52,14 @@ codes are in the [OpenAPI specification](openapi.yml).
 - `SESSION_REQUIRED` — `403`; the endpoint accepts the browser session cookie
   only. Applies to token management (`/api/users/me/tokens`,
   `legacy-token/disable`) and to `rotate-token` when called with a scoped token
-- `SESSION_EXPIRED` — the browser session is no longer valid
+- `SESSION_EXPIRED` — `401`; the browser session is no longer valid
+- `ADMIN_REQUIRES_DIRECT_CREDENTIAL` — `403`; an MCP/CLI OAuth grant was used on
+  `/api/admin/*`. Refused before routing, even when the account behind the grant
+  is the instance administrator
+- `CSRF` — `403`; a `POST`/`PUT`/`PATCH`/`DELETE` arrived with an `Origin` or
+  `Referer` that is missing, malformed, or names a different host. Enforced for
+  session-cookie callers and for the few unauthenticated endpoints that must not
+  be forgeable (magic-link verify); bearer-token callers are unaffected
 - `SYNC_DIVERGED` — the upstream and the Stratum copy have genuinely diverged in
   content. The fetch window is deepened incrementally first, so this is a real
   conflict rather than a too-shallow clone
@@ -66,12 +74,19 @@ codes are in the [OpenAPI specification](openapi.yml).
   what was evaluated
 - `MERGE_CONFLICT` — the merge produced conflicts; the response includes a
   conflict id for `POST /api/projects/conflicts/{id}/resolve`
-- `PROTECTION_BLOCKED` — the merge is blocked by branch protection; the
-  response lists the `reasons`
-- `TARGET_DELETING` — the project (or its owner) is being deleted
-- `NOT_REDRIVABLE` — the deletion job is not in an incomplete state
-- `GONE` — the resource was deleted
-- `INVALID_PATH` — the requested path is invalid
+- `PROTECTION_BLOCKED` — `403` (not a 409, despite sitting beside the staleness
+  codes); the merge is blocked by branch protection and the response lists the
+  `reasons`. A policy that names an evaluator whose binding is absent — most
+  commonly `sandbox`, whose `[[sandboxes]]` binding is commented out by default —
+  fails closed rather than being skipped, so it shows up here permanently until
+  the binding is enabled or the evaluator is dropped from the policy
+- `TARGET_DELETING` — `409`; the project (or its owner) is being deleted
+- `NOT_REDRIVABLE` — `409`; the deletion job is not in an incomplete state
+- `IMPORT_IN_PROGRESS` — `409`; the project's import has not finished, so the
+  requested operation would race it
+- `GONE` — `410`; the resource was deleted
+- `INVALID_PATH` — `422`; the requested path is invalid (e.g. a conflict
+  resolution naming a path outside the repo)
 - `AMBIGUOUS_REF` — `409`; a `?ref=` names something that is both a branch and a
   tag, so the read is refused rather than guessing
 - `BRANCH_EXISTS` — `409`; a branch of that name already exists
@@ -90,3 +105,46 @@ codes are in the [OpenAPI specification](openapi.yml).
   explanatory message, a gated push reports it over the git protocol as a
   per-ref `ng` reason, and an import records a `failed` queue job. Match on the
   message, not on this identifier.
+
+### Post-merge deployments
+
+- `DEPLOY_QUEUE_UNAVAILABLE` — `503`; the instance has no `DEPLOY_QUEUE`
+  binding, so deployments are not enabled here. Checked before the row's status
+  is changed, so approving or retrying is still possible once it is configured
+- `DEPLOYMENT_NOT_PENDING` — `409`; the deployment is not awaiting approval (it
+  already ran, or someone else approved it first)
+- `DEPLOYMENT_NOT_RETRYABLE` — `409`; only a finished deployment can be retried.
+  A `queued`, `running` or `pending_approval` row still has a future, and
+  retrying one would publish the same commit twice
+- `DEPLOYMENT_RETRY_EXISTS` — `409`; that attempt number already exists —
+  someone retried first, and their row is the live one
+
+### Manual conflict resolution
+
+`POST /api/projects/conflicts/{id}/resolve` runs the same gates a change does,
+and reports them with its own codes:
+
+- `SECRET_DETECTED` — `422`; the secret scan rejected the resolution; the
+  response carries `issues`
+- `EVALUATION_FAILED` — `422`; the evaluator suite rejected the resolution; the
+  response carries `issues`
+- `EVAL_PREP_FAILED` — `502`; the diff the evaluators would judge could not be
+  built
+- `INVALID_INPUT` — `400`/`422`; the resolution body is malformed, names an
+  unknown strategy, or carries a file over the 10 MB per-file cap
+
+### Generic codes
+
+Anything thrown as an `AppError` and not matched above surfaces with its own
+code and status: `VALIDATION_ERROR` (`400`), `NOT_FOUND` (`404`), `FORBIDDEN`
+(`403`), `CONFLICT` (`409`), `PAYLOAD_TOO_LARGE` (`413`),
+`EXTERNAL_SERVICE_ERROR` / `GITHUB_ERROR` / `GIT_PROTOCOL` (`502`), and
+`INTERNAL_ERROR` (`500`). Treat these as families, not as a stable contract for
+a specific endpoint — the coded errors above are the ones worth branching on.
+
+Separately, an **import job** records a failure *category* on the job row —
+`NETWORK_ERROR`, `TIMEOUT`, `AUTH_ERROR`, `NOT_FOUND`, `RATE_LIMITED`,
+`UNSUPPORTED_CONTENT`, `STORAGE_ERROR`, `GIT_ERROR`, `CANCELLED`,
+`UNKNOWN_ERROR` — classified from the failure message. These are not API error
+responses: they appear on the admin metrics API and in the failure notification,
+not as a `code` on a request you made.

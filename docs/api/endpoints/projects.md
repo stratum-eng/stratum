@@ -12,6 +12,10 @@
 ## Import from GitHub
 `POST /api/projects/{namespace}/{slug}/import`
 
+See the [Importing from GitHub guide](../../user-guide/importing.md) for the
+available options, how to track an import's progress, and keeping the project
+in sync with its source.
+
 ## Delete Project
 `DELETE /api/projects/{namespace}/{slug}`
 

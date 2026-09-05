@@ -88,24 +88,51 @@ The bounds now in place, outermost first:
 | `DISABLE_AIOHTTP_TRANSPORT` | `True` | makes the line above actually fire |
 | `cf-aig-request-timeout` | 420000 ms | a slow call, at the gateway |
 | `cf-aig-max-attempts` | 1 | gateway retries multiplying PR-Agent's own |
+| `config.max_model_tokens` | 14000 | the prompt growing until the call cannot finish |
 
 `DISABLE_AIOHTTP_TRANSPORT` is not incidental. LiteLLM's aiohttp transport ignores the
 per-request timeout, so `config.ai_timeout` was silently unenforced — the logs read
 `timeout value=600.0, time taken=1801.57 seconds`. It only holds on the httpx path.
 
-Output length is the lever that keeps calls under the wall, so `pr_reviewer.num_max_findings`
+Output length is one lever that keeps calls under the wall, so `pr_reviewer.num_max_findings`
 and the `require_*` toggles are cost controls as much as noise controls.
 
-Input size is the secondary lever. `ignore.glob` drops generated files from the diff the model
-sees — `worker-configuration.d.ts` (476 KB, from `npm run cf-typegen`) and the five committed
+### Prompt size is the other lever, and it binds first
+
+TTFB grows with the prompt, so the wall is a token budget as much as a clock. Measured on
+2026-09-04, one auto-review per row:
+
+| PR | Input tokens | Wall clock | Result |
+|---|---|---|---|
+| #361 | 4,487 | 3m40s | posted |
+| docs/deployments-roadmap | 6,473 | 1m58s | posted |
+| docs/deploy-quickstart | 7,800 | 2m34s | posted |
+| #362 | 16,788 | 8m00s | posted, ~10s of margin |
+| #358 | pruned to 32,000 (from 36,219) | 20m, killed | nothing |
+| #359 | pruned to 32,000 (from 177,415) | 20m, killed | nothing |
+
+The 420s wall sits somewhere around 17–20K input tokens. Above it a call cannot land, and the
+failure is not one timeout but six: PR-Agent retries each model twice across a three-model
+chain, so a doomed review spends 420s per attempt until `timeout-minutes` kills the job during
+attempt three. It never reaches the `gpt-5.6-terra` fallback — the runner dies first. Both
+killed runs above are that shape; neither had anything to do with the fallback chain's health.
+
+`config.max_model_tokens` (14000) is what keeps the prompt under the wall: PR-Agent prunes the
+diff to that budget before calling. Note that `config.custom_model_max_tokens` (131072) does
+*not* do this — PR-Agent clamps it with `max_model_tokens`, whose default is 32000, which is why
+every oversized PR logged `total tokens over limit: 32000` while the 131072 sat there inert.
+Raise the budget only alongside streaming.
+
+`ignore.glob` trims the input before the budget has to. It drops generated files from the diff
+the model sees — `worker-configuration.d.ts` (476 KB, from `npm run cf-typegen`) and the five committed
 `package-lock.json` files are together about a megabyte, so a dependency bump or a typegen
 refresh would otherwise crowd out the code worth reviewing. Extend the glob list when you
 commit something else that a machine writes.
 
 We deliberately have *not* trimmed `patch_extra_lines_before` (5) or `allow_dynamic_context`.
 Those are the surrounding lines the model reads to understand a hunk, so cutting them buys
-input tokens at the cost of review quality — and input is not the binding constraint: a typical
-review runs 10–14K tokens against a 32K cap. Revisit only if reviews start clipping.
+input tokens at the cost of review quality, and the budget above already bounds the prompt.
+Revisit only if reviews start clipping.
 
 ### Re-enabling auto_improve
 
@@ -159,7 +186,12 @@ rate limits / spend caps on the Cloudflare gateway are the backstop.
 ## Known limitations
 
 - Fallback chain is availability-based, not quality-based; if GLM-5.3 errors persistently you
-  are silently reviewed by flash-tier — check gateway logs when reviews look shallow.
+  are silently reviewed by flash-tier — check gateway logs when reviews look shallow. It is also
+  no help against a timeout: the 20-minute job cap fires before the chain reaches its last model.
+- Large PRs are reviewed partially. Anything over the 14K prompt budget gets pruned, and the
+  pruned files are named in the run log ("insufficient token budget to process"). PR #359 was
+  177K tokens of diff; no setting makes that reviewable in one pass. Split the PR, or `/ask`
+  about the specific files that were dropped.
 - `auto_improve` is off; code suggestions are on-demand via an `/improve` comment. See
   [Timeouts](#timeouts).
 - `auto_describe` is off. Its walkthrough comment restated the author's own description plus a

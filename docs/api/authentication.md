@@ -19,7 +19,12 @@ For programmatic access:
   read, fork workspaces, commit, open changes, comment, and open issues — but
   every **deciding** endpoint requires a user identity and refuses an agent
   token: review verdicts (approve and request-changes alike), merge, reject,
-  re-evaluate, GitHub PR promotion, and issue editing/closing. Session-only
+  re-evaluate, GitHub PR promotion, issue editing/closing, approving a gated
+  deployment, and managing a project's deploy secrets — the secret routes refuse
+  an agent outright, including one whose *owner* is a project admin, because
+  deploy credentials are the one thing an agent is never trusted with. Retrying
+  an already-finished deployment is not a deciding endpoint and *is* open to an
+  agent with write access. Session-only
   endpoints (token management) refuse agent and scoped tokens alike — the one
   exception is `rotate-token`, [below](#the-legacy-token). Revoke one by
   deleting the agent (settings UI, or `DELETE /api/agents/{id}`).
@@ -137,7 +142,8 @@ carve-outs listed below.
 | | |
 |---|---|
 | Access token prefix | `stratum_mcp_` |
-| Lifetime | 1 hour, refreshed with a rotating 30-day refresh token |
+| Lifetime | 1 hour, refreshed with a rotating 30-day refresh token. The refresh window slides on every rotation but is capped **180 days** from first issue, so an actively used grant still returns the user to the consent screen twice a year |
+| Authorization code | 60 seconds, single use |
 | Scopes | `mcp:read` (= a `read` token), `mcp:write` (= a `read_write` token) |
 | PKCE | Required, `S256` only |
 | Discovery | `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server` |
@@ -187,3 +193,8 @@ For local development:
 ```bash
 curl http://localhost:8787/dev-login
 ```
+
+The route is gated on `DEV_LOGIN_ENABLED = "true"` **and** a `localhost` /
+`127.0.0.1` request host, checked as one condition so neither gate can be
+bypassed alone. The flag is `"true"` only in the top-level (local) `wrangler.toml`
+config and `"false"` in staging and production, where the route answers `403`.

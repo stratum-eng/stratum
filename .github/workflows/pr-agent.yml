@@ -105,14 +105,25 @@ jobs:
           config.model: "openai/workers-ai/@cf/zai-org/glm-5.3"
           config.fallback_models: '["openai/workers-ai/@cf/zai-org/glm-5.3-flash","openai/openai/gpt-5.6-terra"]'
           # Gateway models are absent from LiteLLM's token registry; cap explicitly.
+          # This is the model's context window, not the prompt budget — PR-Agent
+          # clamps it with max_model_tokens below, which is the number that binds.
           config.custom_model_max_tokens: "131072"
+          # The prompt budget: PR-Agent prunes the diff down to this before calling.
+          # It is a latency control, not a context control. GLM-5.3 does not stream,
+          # so time-to-first-byte is the whole generation and grows with the prompt:
+          # 4.5K tokens ran ~3min, 16.8K ran ~7.5min, and the default 32K ceiling
+          # blew past the 420s wall on every attempt — two PRs (#358, #359) burned
+          # the full 20min job cap without posting a review. 14K keeps a full-size
+          # review inside one attempt. Raise it only alongside streaming.
+          config.max_model_tokens: "14000"
           # /improve makes two sequential model calls: generate suggestions, then a
           # self-reflection pass that re-ranks them. That second call is mandatory in
           # 0.41.0 (pr_code_suggestions.py) and defaults to config.model, so without
           # this it is a second full reasoning generation.
           config.model_reasoning: "openai/workers-ai/@cf/zai-org/glm-5.3-flash"
-          # Per-attempt bound, ~2x the slowest healthy call we have measured (a full
-          # /review at ~222s). LiteLLM only enforces this on its httpx path — the
+          # Per-attempt bound. The slowest review that has ever landed ran ~440s at
+          # 16.8K input tokens, which is why max_model_tokens is set below that rather
+          # than this being raised. LiteLLM only enforces this on its httpx path — the
           # aiohttp transport ignores it, which is how a call ran 1800s against a
           # nominal 600s limit — so the transport is disabled alongside it.
           config.ai_timeout: "420"

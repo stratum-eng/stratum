@@ -30,7 +30,10 @@ invariants GitHub doesn't have:
 - **Force-merge is deny-by-default** — the override only exists if the policy
   explicitly sets `merge.allowForce: true`.
 - **Post-merge smoke with auto-revert**: a configured command runs against the
-  merged HEAD, and a failure automatically lands a forward revert commit.
+  merged HEAD, and a failure automatically lands a forward revert commit. This
+  one needs the Cloudflare Sandboxes beta, which is off by default everywhere
+  (see the next answer); without the binding the command is skipped with a
+  warning.
 - **Provenance and cost are recorded per merged change** — model, prompt hash,
   eval score, LLM tokens, sandbox time.
 - A malformed `.stratum/policy.yaml` **fails closed** (blocks merges) instead of
@@ -42,12 +45,20 @@ No. Stratum has no native CI runner — no workflows, hosted runners, matrix
 builds, artifacts, caching, scheduled jobs, deployment environments, or
 status-check aggregation (it does not collect external CI check results the way
 a GitHub PR's checks tab does). Its code execution is limited to the evaluation
-pipeline: the sandbox evaluator (needs the optional `SANDBOX` binding; fails
-closed without it), the `webhook` evaluator (a synchronous call-out to CI *you*
-host, which must answer within the request timeout — default 10s), and the
-post-merge smoke command run in a sandbox. Bring your own CI and wire it in via
-the webhook evaluator, or use layer mode and keep running GitHub Actions on the
-promoted PRs. See [CI Integration](/guides/ci-integration/).
+pipeline: the sandbox evaluator, the `webhook` evaluator (a synchronous call-out
+to CI *you* host, which must answer within the request timeout — default 10s),
+and the post-merge smoke command run in a sandbox.
+
+Of those, **only the webhook evaluator works out of the box.** Both sandbox
+paths need the Cloudflare Sandboxes beta, and `[[sandboxes]]` is commented out
+in `wrangler.toml` — so the hosted instance and any fresh self-host have no
+`SANDBOX` binding. Without it the sandbox evaluator does not skip, it **fails
+closed** (score 0 / failed), and naming `sandbox` in `merge.requiredEvaluators`
+therefore blocks every merge in that project; `merge.postMergeCommand` is
+skipped with a warning instead. If you want tests gating merges today, bring
+your own CI and wire it in via the webhook evaluator, or use layer mode and keep
+running GitHub Actions on the promoted PRs. See
+[CI Integration](/guides/ci-integration/).
 
 Two things on that list have since arrived in a narrow form. Stratum now has an
 **encrypted per-project secret store** — but it is deploy-only: the deploy
@@ -114,8 +125,8 @@ agent, not laundered through a human account.
 ## What does it cost, and what is metered?
 
 The software is MIT-licensed and free; self-hosted, you pay only for the
-Cloudflare resources you use (Workers, Artifacts, D1, KV, Queues, plus AI
-Gateway and Sandboxes if you enable those evaluators). Stratum meters estimated
+Cloudflare resources you use (Workers, Artifacts, D1, KV, Queues, plus Workers
+AI and Sandboxes if you enable those evaluators). Stratum meters estimated
 resource usage per change — LLM tokens, sandbox execution milliseconds, and git
 operations — and shows it alongside the evaluation evidence, so you can see what
 each (agent) change cost you. The hosted instance has open signup and is free
@@ -180,9 +191,13 @@ SSH transport is not supported (Workers have no raw TCP listener).
 
 Node.js 22.13+ and your own Cloudflare account with Workers, **Artifacts (which
 is in beta — you need access to it)**, D1, KV, Queues, and Durable Objects.
-Optional: the Workers AI binding for the LLM evaluator, Sandboxes for the
-sandbox evaluator (without the binding that evaluator fails closed), R2 for
-backups, and Cloudflare Email for magic links.
+Optional: the Workers AI binding for the LLM evaluator, R2 for backups, and
+Cloudflare Email for magic links. Sandboxes — for the `sandbox` evaluator and
+`merge.postMergeCommand` — is a gated beta whose `[[sandboxes]]` binding is
+commented out in `wrangler.toml`; uncomment it in every `[env.*]` block you
+deploy once your account has access, and until then keep both features out of
+your policy, since the evaluator fails closed (and a `requiredEvaluators` entry
+for it blocks all merges).
 The [README Quick Start](https://github.com/stratum-eng/stratum/blob/main/README.md#quick-start) covers secrets,
 migrations, and deployment; keep production and staging in separate
 Artifacts namespaces.

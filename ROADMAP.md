@@ -124,8 +124,11 @@ build, the set of projects this serves stays small. Rationale for each in
 
 ### Merge conflict resolution for changes
 
-- [ ] A conflicting three-way merge falls back to a squash merge; there is no interactive
-      conflict resolution for changes. (GitHub *sync* conflicts do have a resolution UI.)
+- [ ] A conflicting three-way merge is **refused**, not silently squashed: the merge answers
+      `409 MERGE_CONFLICT` with a `conflictId` and the conflicting paths. What is missing is
+      an interactive way to resolve one for a *change* — resolution today is the out-of-band
+      `POST /api/projects/conflicts/{id}/resolve` (`accept-project`, `accept-workspace`, or
+      `manual`). (GitHub *sync* conflicts do have a resolution UI.)
 
 ## Explicitly not planned
 

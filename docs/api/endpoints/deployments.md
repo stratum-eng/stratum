@@ -1,9 +1,9 @@
 # Deployments and Deploy Secrets API
 
-Post-merge deployments and the per-project secret store that feeds them. See
-the [Deployments user guide](../../user-guide/deployments.md) for the concepts
-— the `deploys:` policy block, the three targets, limits, and what each status
-means — and the [OpenAPI specification](../openapi.yml) for exact schemas.
+Post-merge deployments and the encrypted per-project secret store that feeds
+them. See the [Deployments user guide](../../user-guide/deployments.md) for the
+concepts — the `deploys:` policy block, the three targets, limits, and what each
+status means — and the [OpenAPI specification](../openapi.yml) for exact schemas.
 
 Two authorization rules here are stricter than the usual project read/write
 split:

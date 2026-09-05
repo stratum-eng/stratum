@@ -34,7 +34,8 @@ Users only. Merged changes cannot be rejected.
 ## Merge
 `POST /api/changes/{id}/merge`
 
-Runs the full merge gate. Common refusals:
+Runs the full merge gate. Common refusals (see [Error codes](../errors.md) for
+the full list and the response shapes):
 
 | Code | Meaning |
 |---|---|

@@ -103,7 +103,7 @@ Details worth knowing:
 | Property | Value |
 |---|---|
 | PKCE | **Required**, `S256` only. `plain` is not offered and cannot be stored. |
-| Authorization code lifetime | 60 seconds, single use. A replayed code revokes every token issued from it — but a redemption that merely *fails validation* (wrong client, wrong verifier, wrong redirect URI) leaves the code untouched, so observing one is not enough to disrupt the real client. |
+| Authorization code lifetime | 60 seconds, single use. A replayed code revokes **every grant that client holds for you** (RFC 6749 §10.5), not just the one the code produced — but a redemption that merely *fails validation* (wrong client, wrong verifier, wrong redirect URI) leaves the code untouched, so observing one is not enough to disrupt the real client. |
 | Access token lifetime | 1 hour |
 | Refresh token lifetime | 30 days, **rotated** on every use |
 | Redirect URIs | `https`, or plaintext `http` on loopback (`localhost`, `127.0.0.1`, `[::1]`) for native apps. Matched exactly against the registered list, except that a loopback redirect may use any port, which RFC 8252 requires because a native app binds whatever port is free when it starts. |

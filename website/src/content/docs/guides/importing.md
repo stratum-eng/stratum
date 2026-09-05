@@ -53,8 +53,11 @@ curl -H "Authorization: Bearer $STRATUM_API_KEY" \
 This returns an `ImportProgress` object: a `status` (`queued`, `cloning`,
 `processing`, `completed`, `failed`, `cancelled`, …), a `progress` object
 (`totalFiles`, `processedFiles`, `currentFile`, `bytesTransferred`,
-`totalBytes`), and any `errors` and `logs`. Polling also recovers imports that
-have stalled for more than 5 minutes.
+`totalBytes`), and any `errors` and `logs`. Polling also recovers an import that
+has been in an actively-progressing state (`cloning`, `processing`, `syncing`,
+`cancelling`) for more than **20 minutes** without its timestamp advancing.
+`queued` is deliberately excluded — a job waiting to be picked up is not
+stalled, and the scheduled sweep covers it under a one-hour grace period.
 
 `processedFiles` and `totalFiles` are not an incrementing counter: they are
 both written once, from the file walk that builds the repository snapshot, in

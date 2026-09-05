@@ -104,6 +104,31 @@ Tag fetching pulls only tag-reachable objects and caps the tag count, reporting
 
 ## Evaluation
 
+### Every change fails on `SANDBOX binding is not configured`
+
+Your policy names a `sandbox` evaluator on an instance without the Cloudflare
+Sandboxes binding. `[[sandboxes]]` is commented out in `wrangler.toml` (it is a
+gated beta), so this is the default state on the hosted instance and on a fresh
+self-host.
+
+The evaluator is **not skipped**. It is replaced with one that returns score 0 /
+failed and the reason *"sandbox unavailable: SANDBOX binding is not configured —
+enable `[[sandboxes]]` in `wrangler.toml` or remove the sandbox evaluator from
+the policy"*. That drags the aggregate verdict down, and if `sandbox` is listed in
+`merge.requiredEvaluators` it blocks **every** merge in the project.
+
+Remove the `sandbox` evaluator (and any `"sandbox"` entry in
+`requiredEvaluators`) from `.stratum/policy.yaml`, or enable the binding. Note
+the recovery commit edits a protected config file, so it needs a human approval
+and cannot be force-merged. `merge.postMergeCommand` behaves differently: with
+no binding it is skipped with a warning rather than failing the merge.
+
+The `llm` evaluator fails closed the same way when the `AI` binding is absent
+(`llm unavailable: AI binding is not configured`), though `wrangler.toml` does
+bind Workers AI in every environment.
+
+The remaining entries in this section apply only where Sandboxes **is** enabled.
+
 ### `sandbox budget exceeded (install)` or `(command)`
 
 The evaluation ran out of its **total** time budget — `totalBudgetMs`, default

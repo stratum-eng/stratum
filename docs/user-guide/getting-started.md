@@ -39,8 +39,12 @@ exists. A separate display name, shown in the header, can be changed any time.
 Stratum is MIT-licensed and self-hostable on your own Cloudflare account. You
 need Node.js 22.13+ and a Cloudflare account with Workers, **Artifacts (beta)**,
 D1, KV, Queues, Durable Objects, and R2; the Workers AI binding is optional and
-only needed for the LLM evaluator,
-and Sandboxes only for the sandbox evaluator. Follow the
+only needed for the LLM evaluator. Sandboxes — needed by the `sandbox`
+evaluator and by `merge.postMergeCommand` — is a **gated Cloudflare beta**, and
+its `[[sandboxes]]` binding ships **commented out** in `wrangler.toml`, so
+neither the hosted instance nor a fresh self-host has it. Leave both features
+out of your policy until you have Sandboxes access and have uncommented the
+binding in every `[env.*]` block you deploy. Follow the
 [Quick Start in the README](../../README.md#quick-start) — everywhere this guide
 says `app.usestratum.dev`, substitute your own instance's origin.
 
@@ -120,12 +124,15 @@ evaluators:
     secret: "a-long-random-string-you-generated"
     timeoutMs: 120000
 
-  # Run the test suite in a Cloudflare Sandbox.
-  - type: sandbox
-    command: "npm test"
-    timeoutMs: 120000
-    totalBudgetMs: 150000
-    allowInstallScripts: false
+  # Run the test suite in a Cloudflare Sandbox. LEFT COMMENTED ON PURPOSE:
+  # Sandboxes is a gated beta and its binding is off by default, and this
+  # evaluator does not skip when the binding is missing — it returns
+  # score 0 / failed. Uncomment only once [[sandboxes]] is enabled.
+  # - type: sandbox
+  #   command: "npm test"
+  #   timeoutMs: 120000
+  #   totalBudgetMs: 150000
+  #   allowInstallScripts: false
 
   # AI review of the diff via the Workers AI binding, scored 0.0-1.0.
   # Omitting `model` uses the default (@cf/meta/llama-3.1-8b-instruct);
@@ -135,17 +142,29 @@ evaluators:
 
 merge:
   requiredApprovals: 1
-  requiredEvaluators: ["secret_scan", "diff", "sandbox"]
+  # Only evaluators that actually run belong here. "sandbox" would block every
+  # merge in this project while the Sandboxes binding is absent.
+  requiredEvaluators: ["secret_scan", "diff"]
   allowForce: false
   requireFreshBase: true
-  postMergeCommand: "npm test"
-  postMergeTimeoutMs: 120000
-  autoRevert: true
+  # Sandboxes-only, so also commented out. Unlike the evaluator, this one
+  # degrades quietly: with no binding the smoke test is skipped with a warning.
+  # postMergeCommand: "npm test"
+  # postMergeTimeoutMs: 120000
+  # autoRevert: true
 ```
 
 A malformed policy file **fails closed**: the merge gate blocks rather than
 silently falling back to defaults, so a typo in a stricter policy can't quietly
 downgrade your governance.
+
+The same fail-closed instinct is why the Sandboxes-dependent entries above are
+commented out. `merge.requiredEvaluators` is enforced against the *latest run*
+of each named evaluator, and an evaluator whose binding is missing runs and
+fails rather than being skipped — so naming `sandbox` on an instance without
+Sandboxes makes every change in that project permanently unmergeable. Recovering
+means editing `.stratum/policy.yaml`, which is itself a protected config file
+requiring a human approval and refusing force-merge.
 
 ### The evaluators
 
@@ -168,12 +187,18 @@ downgrade your governance.
   `secret` signs the delivery so your CI can verify it came from Stratum; the
   value is used exactly as written, so generate a real secret rather than a
   `${...}` placeholder — nothing interpolates it.
-- **`sandbox`** — clones the workspace into a Cloudflare Sandbox and runs
-  `command` (default: the project's test command), passing or failing on exit
-  code. Requires the Sandboxes binding on self-hosted instances; when the
-  binding is absent this evaluator **fails closed** rather than silently
-  passing. `timeoutMs` and `installTimeoutMs` bound the scored command and the
-  dependency install separately; `totalBudgetMs` (default 150s) bounds their
+- **`sandbox`** — **needs the Sandboxes beta, which is off by default
+  everywhere, including the hosted instance.** `[[sandboxes]]` is commented out
+  in `wrangler.toml`, so unless you self-host, have Sandboxes access, and
+  uncomment the binding, this evaluator is unavailable — and *unavailable does
+  not mean skipped*: it is substituted with an evaluator that returns score 0 /
+  failed, so it drags the aggregate verdict down, and listing it in
+  `merge.requiredEvaluators` blocks every merge in the project. Where the
+  binding *is* enabled it materializes the workspace tree at the evaluated
+  commit into a fresh Sandbox and runs `command` (default `npm test`), passing
+  or failing on exit code. `timeoutMs` and `installTimeoutMs` bound the scored
+  command and the dependency install separately (defaults 60s and 90s, each
+  clamped to 1s–120s); `totalBudgetMs` (default 150s) bounds their
   *sum* — each phase gets `min(configured, budget remaining)`, and running out
   fails the evaluation instead of hanging. Dependency installs pass
   `--ignore-scripts` by default, since the evaluated tree is untrusted code an
@@ -213,8 +238,11 @@ Everything under `merge:` is branch protection, enforced at the merge step:
   workspace advanced after it was evaluated (`409 STALE_WORKSPACE`) — you can
   never merge commits the evaluators didn't see.
 - **`postMergeCommand`** + **`postMergeTimeoutMs`** — a smoke command run in a
-  sandbox against the merged HEAD (e.g. `npm test`), with a default timeout of
-  60 seconds.
+  Cloudflare Sandbox against the merged HEAD (e.g. `npm test`), with a default
+  timeout of 60 seconds. This needs the same Sandboxes beta binding as the
+  `sandbox` evaluator, but unlike the evaluator it fails *open*: with no binding
+  the check is skipped with a log warning and the merge stands, so a policy that
+  sets it on an instance without Sandboxes is silently getting no smoke test.
 - **`autoRevert`** — if the post-merge command fails, Stratum lands a forward
   revert commit, marks the change `reverted`, and emits a `change.reverted`
   event. On by default when a `postMergeCommand` is set.
@@ -305,8 +333,10 @@ workspace  →  commit  →  change (evaluation runs)  →  review  →  merge
    `strategy: "squash"` opts into a squash), serialized per-project through a
    Durable Object merge queue so there are no races. The merge is rejected if a
    required evaluator is failing, approvals are short, the base is stale
-   (`requireFreshBase`), or the workspace moved since evaluation. If a
-   `postMergeCommand` is configured it runs against the merged HEAD, and a
+   (`requireFreshBase`), or the workspace moved since evaluation. A conflicting
+   three-way merge is refused with `409 MERGE_CONFLICT` and a conflict id rather
+   than silently falling back to a squash. If a `postMergeCommand` is configured
+   *and* the Sandboxes binding is present, it runs against the merged HEAD and a
    failure auto-reverts.
 
    ```bash

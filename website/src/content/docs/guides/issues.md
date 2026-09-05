@@ -11,7 +11,7 @@ can be tied back to, not to be a full project-management tool.
 ## Opening an issue
 
 ```bash
-curl -X POST https://app.usestratum.dev/api/projects/acme/billing/issues \
+curl -X POST https://app.usestratum.dev/api/projects/@acme/billing/issues \
   -H "Authorization: Bearer stratum_user_xxxxx" \
   -H "Content-Type: application/json" \
   -d '{"title": "Retry storms on 429 from the GitHub API",
@@ -42,7 +42,7 @@ rather than by an opaque id.
 must belong to the same project — a link into another project is rejected.
 
 ```bash
-curl -X POST https://app.usestratum.dev/api/projects/acme/billing/issues \
+curl -X POST https://app.usestratum.dev/api/projects/@acme/billing/issues \
   -H "Authorization: Bearer stratum_user_xxxxx" \
   -H "Content-Type: application/json" \
   -d '{"title": "Retry storms on 429", "linkedChangeId": "chg_123"}'
@@ -57,7 +57,7 @@ are logged and skipped rather than failing the merge.
 All of it is one `PATCH`:
 
 ```bash
-curl -X PATCH https://app.usestratum.dev/api/projects/acme/billing/issues/42 \
+curl -X PATCH https://app.usestratum.dev/api/projects/@acme/billing/issues/42 \
   -H "Authorization: Bearer stratum_user_xxxxx" \
   -H "Content-Type: application/json" \
   -d '{"labels": ["bug", "needs-repro"], "assignee": "usr_abc", "status": "open"}'
@@ -83,7 +83,7 @@ combine:
 
 ```bash
 # Open bugs assigned to a given user, mentioning "retry"
-curl "https://app.usestratum.dev/api/projects/acme/billing/issues?status=open&label=bug&assignee=usr_abc&q=retry" \
+curl "https://app.usestratum.dev/api/projects/@acme/billing/issues?status=open&label=bug&assignee=usr_abc&q=retry" \
   -H "Authorization: Bearer stratum_user_xxxxx"
 ```
 
@@ -100,7 +100,7 @@ Results are ordered newest-first by issue number. Paginate with `limit`
 ## Comments
 
 ```bash
-curl -X POST https://app.usestratum.dev/api/projects/acme/billing/issues/42/comments \
+curl -X POST https://app.usestratum.dev/api/projects/@acme/billing/issues/42/comments \
   -H "Authorization: Bearer stratum_user_xxxxx" \
   -H "Content-Type: application/json" \
   -d '{"body": "Reproduced against the 2026-08-30 build."}'
