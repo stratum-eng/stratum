@@ -181,15 +181,26 @@ async function deliver(env: Env, logger: Logger, input: UsageNoticeInput): Promi
     // its email and its banner for the rest of the period — one delivery
     // failure silencing a warning nobody gets a second chance at.
     try {
-      await send(env, logger, {
-        subject,
-        actorUserId: input.actorUserId,
-        meter: total.meter,
-        used: total.quantity,
-        limit,
-        period: input.period,
-      });
-      await markSent(env, logger, key);
+      // Only on a delivery that happened. `send` returns early — successfully,
+      // without throwing — when there is no recipient, when EMAIL /
+      // EMAIL_FROM_ADDRESS / DB is unconfigured, or when the user row cannot be
+      // read. Marking the receipt on those would burn the once-per-period slot
+      // on a notice nobody received, and the operator who then fixes the
+      // configuration would still hear nothing for the rest of the month. This
+      // is the same failure as the crossing-gate one above, one layer down: the
+      // gate fix caught the throwing path and left the silent ones.
+      if (
+        await send(env, logger, {
+          subject,
+          actorUserId: input.actorUserId,
+          meter: total.meter,
+          used: total.quantity,
+          limit,
+          period: input.period,
+        })
+      ) {
+        await markSent(env, logger, key);
+      }
     } catch (error) {
       // Deliberately NOT marked sent: the receipt is what makes this
       // once-per-crossing, so leaving it unwritten is what lets the next
@@ -249,22 +260,22 @@ async function send(
     limit: number;
     period: string;
   },
-): Promise<void> {
+): Promise<boolean> {
   const recipientId =
     opts.actorUserId ?? (opts.subject.ownerType === "user" ? opts.subject.ownerId : undefined);
-  if (!recipientId) return;
+  if (!recipientId) return false;
   const fromAddress = env.EMAIL_FROM_ADDRESS;
   // Both halves are required and one of them was declared for staging only until
   // this work; without either, the send path returns early and the feature would
   // ship silently never sending. See wrangler.toml's [env.production.vars].
-  if (!env.EMAIL || !fromAddress || !env.DB) return;
+  if (!env.EMAIL || !fromAddress || !env.DB) return false;
 
   const user = await getUser(env.DB, recipientId, logger);
   if (!user.success) {
     logger.warn("Usage threshold notice not sent: recipient could not be resolved", {
       userId: recipientId,
     });
-    return;
+    return false;
   }
 
   const content = getUsageThresholdEmail({
@@ -292,4 +303,5 @@ async function send(
     limit: opts.limit,
     period: opts.period,
   });
+  return true;
 }

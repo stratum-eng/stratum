@@ -370,6 +370,42 @@ describe("the 80% banner", () => {
     expect(attempts).toBe(2);
   });
 
+  it("retries after a period where email was unconfigured", async () => {
+    // `send` returns early — successfully, without throwing — when
+    // EMAIL_FROM_ADDRESS is unset. The receipt must NOT be written for a notice
+    // that was never delivered, or the operator who fixes the configuration
+    // hears nothing for the rest of the month. The throwing path was fixed
+    // first; this is the silent one underneath it.
+    const env = cloud();
+    let sends = 0;
+    const email = { send: async () => void sends++ } as unknown as Env["EMAIL"];
+
+    const drive = async (withFromAddress: boolean) => {
+      const pending: Array<Promise<unknown>> = [];
+      noticeUsageThresholds(
+        {
+          ...env,
+          EMAIL: email,
+          ...(withFromAddress ? { EMAIL_FROM_ADDRESS: "noreply@stratum.test" } : {}),
+        } as Env,
+        logger,
+        {
+          recorded: { ownerId: "usr_1", ownerType: "user" },
+          actorUserId: "usr_1",
+          period: PERIOD,
+          totals: [{ meter: "llm_tokens_month", source: "platform", quantity: 900, added: 100 }],
+          waitUntil: (promise) => pending.push(promise),
+        },
+      );
+      await Promise.all(pending);
+    };
+
+    await drive(false); // over the threshold, but nothing can be delivered
+    expect(sends).toBe(0);
+    await drive(true); // configuration fixed — the notice must still be owed
+    expect(sends).toBe(1);
+  });
+
   it("does not appear for a month it was not about", async () => {
     // The period is in the key, so a new month reads as "no banner" with
     // nothing sweeping the old one.
