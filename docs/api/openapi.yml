@@ -3005,6 +3005,105 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/users/me/usage:
+    get:
+      operationId: getMyUsage
+      tags: [users]
+      summary: Get the caller's metered usage for the current period
+      description: |
+        Read-only, and deliberately the only billing surface a token can reach:
+        nothing here raises a limit, buys capacity, or attaches a payment method.
+
+        An **agent token** reports its OWNER's allowance, because that is the
+        account its evaluations are charged to.
+
+        `used` counts platform-billed consumption only. Spend on a project's own
+        provider key is reported separately in `byok` and never counted against
+        an allowance. On an instance with no billing service configured — every
+        self-hosted deployment — `metered` is `false` and every limit is `-1`.
+
+        A limit of `-1` is unlimited and `0` is a plan that forbids the meter
+        outright, so render words rather than computing a percentage against
+        either; `percentUsed` and `remaining` are `null` in both cases.
+      responses:
+        "200":
+          description: Usage for the current billing period
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  [subject, usedSource, plan, metered, period, resetsAt, meters, rates]
+                properties:
+                  subject:
+                    type: object
+                    description: Whose allowance this is — the enforcement subject.
+                    required: [ownerId, ownerType]
+                    properties:
+                      ownerId: { type: string }
+                      ownerType: { type: string, enum: [user, org] }
+                  usedSource:
+                    type: string
+                    enum: [meter, ledger]
+                    description: |
+                      `meter` is the live enforcement counter a limit is compared
+                      against. `ledger` is the recorded aggregate alone — every
+                      self-hoster, and any instance whose meter binding is
+                      missing or unreadable — which omits work done in an org
+                      namespace, where the org is the recorded owner.
+                  plan:
+                    type: string
+                    description: Opaque plan name; `unlimited` when there is none.
+                  metered:
+                    type: boolean
+                    description: Whether any allowance is in force at all.
+                  period: { type: string, description: "'YYYY-MM' UTC." }
+                  resetsAt:
+                    type: string
+                    format: date-time
+                    description: When the monthly meters roll over.
+                  meters:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        [meter, used, byok, limit, unlimited, blocked, percentUsed, remaining]
+                      properties:
+                        meter:
+                          type: string
+                          enum: [llm_tokens_month, sandbox_ms_month, deploys_month]
+                        used:
+                          type: integer
+                          description: Platform-billed consumption — the only kind a limit binds.
+                        byok:
+                          type: integer
+                          description: Spend on a project's own provider key; never counted against the limit.
+                        limit: { type: integer, description: "`-1` unlimited, `0` a hard block." }
+                        unlimited: { type: boolean }
+                        blocked: { type: boolean }
+                        percentUsed:
+                          type: number
+                          nullable: true
+                          description: Null when there is no finite limit.
+                        remaining:
+                          type: integer
+                          nullable: true
+                          description: Floored at zero; null when unlimited.
+                  rates:
+                    type: array
+                    description: Burst ceilings. Reported as a limit only.
+                    items:
+                      type: object
+                      required: [rate, limit, unlimited]
+                      properties:
+                        rate: { type: string, enum: [evaluations_per_hour] }
+                        limit: { type: integer }
+                        unlimited: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/users/me/rotate-token:
     post:
       operationId: rotateToken
