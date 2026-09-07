@@ -422,7 +422,14 @@ function privateIpv6Reason(host: string): string | null {
   // Same reasoning as Teredo: 6to4 and the NAT64 prefixes embed an IPv4
   // address, so a literal here is a private-IPv4 reach wearing a v6 costume.
   if (h0 === 0x2002) return `${host} is a 6to4 address (2002::/16)`;
-  if (h0 === 0x0064 && h1 === 0xff9b) {
+  // Exactly the two registered prefixes, not the whole /32 they sit in:
+  // 64:ff9b::/96 is the well-known prefix (first 96 bits, so h2-h5 zero) and
+  // 64:ff9b:1::/48 is local-use (first 48 bits, so h2 === 1). Matching on
+  // h0/h1 alone would also swallow 64:ff9b:2::/48, which is reserved for
+  // nothing and belongs to nobody's blocklist.
+  const wellKnownNat64 = h2 === 0 && h3 === 0 && h4 === 0 && h5 === 0;
+  const localUseNat64 = h2 === 1;
+  if (h0 === 0x0064 && h1 === 0xff9b && (wellKnownNat64 || localUseNat64)) {
     return `${host} is an IPv4/IPv6 translation address (64:ff9b::/96, 64:ff9b:1::/48)`;
   }
   return null;

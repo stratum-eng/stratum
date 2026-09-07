@@ -168,6 +168,7 @@ describe("parseLlmProviders — the allowlist is the only place an endpoint is n
     // rules never get to look at it: 2002:7f00:1:: is 127.0.0.1 in a costume.
     ["https://[2002:7f00:1::1]/v1", "6to4"],
     ["https://[64:ff9b::7f00:1]/v1", "IPv4/IPv6 translation"],
+    ["https://[64:ff9b:1::7f00:1]/v1", "IPv4/IPv6 translation"],
   ])("rejects %s at parse time", (baseUrl, expected) => {
     const parse = parseLlmProviders(JSON.stringify([{ ...ANTHROPIC_ENTRY, baseUrl }]));
     expect(parse.status, `${baseUrl} was accepted`).toBe("invalid");
@@ -195,6 +196,11 @@ describe("parseLlmProviders — the allowlist is the only place an endpoint is n
       "https://[2003::1]/v1",
       "https://[64:ff9c::1]/v1",
       "https://[101::1]/v1",
+      // The neighbour that matters: inside 64:ff9b::/32 but in neither
+      // registered prefix. 64:ff9c:: only brackets the /32 from outside, so it
+      // could not catch a mask that swallowed the whole /32 — which is exactly
+      // the bug the first version of this rule shipped with.
+      "https://[64:ff9b:2::1]/v1",
     ]) {
       expect(blockedHostReason(new URL(baseUrl).hostname), baseUrl).toBeNull();
     }
