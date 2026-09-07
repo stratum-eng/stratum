@@ -44,15 +44,24 @@ export function repoDoConfigError(
  * treats it as off.
  */
 export function entitlementsConfigError(
-  env: Pick<Env, "ENTITLEMENTS_ENFORCE" | "BILLING_SERVICE_URL">,
+  env: Pick<Env, "ENTITLEMENTS_ENFORCE" | "BILLING_SERVICE_URL" | "BILLING_SERVICE_SECRET">,
 ): string | null {
-  if (env.ENTITLEMENTS_ENFORCE === "1" && !env.BILLING_SERVICE_URL) {
+  if (env.ENTITLEMENTS_ENFORCE !== "1") return null;
+  // BOTH, because `entitlementsEnabled` requires both: with the URL set and the
+  // secret missing the seam reports itself off, every check returns `inert()`,
+  // and an operator who believes they switched enforcement on gets silence.
+  // Naming only the URL — as this did — meant the one misconfiguration hardest
+  // to notice from the outside was the one the guard did not report.
+  const missing: string[] = [];
+  if (!env.BILLING_SERVICE_URL) missing.push("BILLING_SERVICE_URL");
+  if (!env.BILLING_SERVICE_SECRET) missing.push("BILLING_SERVICE_SECRET");
+  if (missing.length > 0) {
     return (
-      "ENTITLEMENTS_ENFORCE is '1' but BILLING_SERVICE_URL is not set — no plan " +
-      "limits can be fetched, so every owner resolves to unlimited and every " +
-      "enforcement point admits. Set BILLING_SERVICE_URL (and the " +
-      "BILLING_SERVICE_SECRET secret) for the [env.<env>] block, or unset " +
-      "ENTITLEMENTS_ENFORCE."
+      `ENTITLEMENTS_ENFORCE is '1' but ${missing.join(" and ")} ` +
+      `${missing.length === 1 ? "is" : "are"} not set — no plan limits can be ` +
+      "fetched, so every owner resolves to unlimited and every enforcement " +
+      "point admits. Set BILLING_SERVICE_URL as a var and BILLING_SERVICE_SECRET " +
+      "as a secret for the [env.<env>] block, or unset ENTITLEMENTS_ENFORCE."
     );
   }
   return null;

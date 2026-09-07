@@ -328,6 +328,48 @@ describe("the 80% banner", () => {
     expect(await loadUsageBanner(cloud(), logger, "usr_1", PERIOD)).toBeNull();
   });
 
+  it("retries a later write when the first delivery failed", async () => {
+    // The regression this replaced: the gate was the CROSSING
+    // (`before < threshold && quantity >= threshold`), which fires once per
+    // period. That is right only while the send succeeds — a failed delivery
+    // left the receipt unwritten to be retried, but every later write already
+    // had `before >= threshold` and was skipped before the receipt was read, so
+    // the notice was lost for the period anyway. The receipt is the
+    // once-per-period guard; this gate only asks whether the subject is over.
+    const env = cloud();
+    let attempts = 0;
+    const failingOnce = {
+      send: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("mail provider unavailable");
+      },
+    } as unknown as Env["EMAIL"];
+
+    const drive = async (quantity: number, added: number) => {
+      const pending: Array<Promise<unknown>> = [];
+      // `send` returns early without EMAIL_FROM_ADDRESS, so the stub would
+      // never be reached and the test would pass on a delivery that never
+      // happened — which is how the first version of it measured nothing.
+      noticeUsageThresholds(
+        { ...env, EMAIL: failingOnce, EMAIL_FROM_ADDRESS: "noreply@stratum.test" } as Env,
+        logger,
+        {
+          recorded: { ownerId: "usr_1", ownerType: "user" },
+          actorUserId: "usr_1",
+          period: PERIOD,
+          totals: [{ meter: "llm_tokens_month", source: "platform", quantity, added }],
+          waitUntil: (promise) => pending.push(promise),
+        },
+      );
+      await Promise.all(pending);
+    };
+
+    await drive(800, 800); // crosses; the send throws and writes no receipt
+    await drive(850, 50); // already over the line — this is the write that used to be skipped
+
+    expect(attempts).toBe(2);
+  });
+
   it("does not appear for a month it was not about", async () => {
     // The period is in the key, so a new month reads as "no banner" with
     // nothing sweeping the old one.

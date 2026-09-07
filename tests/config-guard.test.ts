@@ -26,9 +26,35 @@ describe("entitlementsConfigError", () => {
     const problem = entitlementsConfigError({
       ENTITLEMENTS_ENFORCE: "1",
       BILLING_SERVICE_URL: undefined,
+      BILLING_SERVICE_SECRET: "s3cret",
     });
     expect(problem).toContain("ENTITLEMENTS_ENFORCE");
     expect(problem).toContain("BILLING_SERVICE_URL");
+    expect(problem).not.toContain("BILLING_SERVICE_SECRET is");
+  });
+
+  it("flags a missing BILLING_SERVICE_SECRET, which disables the seam just as silently", () => {
+    // `entitlementsEnabled` requires BOTH. With the URL set and the secret
+    // missing the seam reports itself off, every check returns inert, and an
+    // operator who believes they switched enforcement on gets no signal at all
+    // — which is precisely what this guard exists to prevent.
+    const problem = entitlementsConfigError({
+      ENTITLEMENTS_ENFORCE: "1",
+      BILLING_SERVICE_URL: "https://billing.test",
+      BILLING_SERVICE_SECRET: undefined,
+    });
+    expect(problem).toContain("BILLING_SERVICE_SECRET");
+    expect(problem).toContain("every enforcement");
+  });
+
+  it("names both when both are missing", () => {
+    const problem = entitlementsConfigError({
+      ENTITLEMENTS_ENFORCE: "1",
+      BILLING_SERVICE_URL: undefined,
+      BILLING_SERVICE_SECRET: undefined,
+    });
+    expect(problem).toContain("BILLING_SERVICE_URL and BILLING_SERVICE_SECRET");
+    expect(problem).toContain("are not set");
   });
 
   it("is silent when enforcement is on and the service is configured", () => {
@@ -36,6 +62,7 @@ describe("entitlementsConfigError", () => {
       entitlementsConfigError({
         ENTITLEMENTS_ENFORCE: "1",
         BILLING_SERVICE_URL: "https://billing.test",
+        BILLING_SERVICE_SECRET: "s3cret",
       }),
     ).toBeNull();
   });

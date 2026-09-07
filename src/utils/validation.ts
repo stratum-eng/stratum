@@ -297,7 +297,7 @@ function privateIpv4Reason(host: string): string | null {
     if (n > 255) return notCanonical;
     octets.push(n);
   }
-  const [a, b] = octets as [number, number, number, number];
+  const [a, b, c] = octets as [number, number, number, number];
   if (a === 127) return `${host} is in the loopback range 127.0.0.0/8`;
   if (a === 0) return `${host} is in the unspecified range 0.0.0.0/8`;
   if (a === 169 && b === 254) return `${host} is in the link-local range 169.254.0.0/16`;
@@ -305,6 +305,26 @@ function privateIpv4Reason(host: string): string | null {
   if (a === 172 && b >= 16 && b <= 31) return `${host} is in the private range 172.16.0.0/12`;
   if (a === 192 && b === 168) return `${host} is in the private range 192.168.0.0/16`;
   if (a === 100 && b >= 64 && b <= 127) return `${host} is in the shared range 100.64.0.0/10`;
+  // Everything below is non-global: not "private" in the RFC 1918 sense, but
+  // not a public destination either, and each has been someone's internal
+  // network. 240/4 is the sharpest — nominally reserved, and used for real
+  // internal addressing inside more than one cloud provider — so a Worker that
+  // will fetch it is a Worker that can be pointed at that infrastructure.
+  if (a >= 224 && a <= 239) return `${host} is in the multicast range 224.0.0.0/4`;
+  if (a >= 240) return `${host} is in the reserved range 240.0.0.0/4`;
+  if (a === 198 && (b === 18 || b === 19)) {
+    return `${host} is in the benchmark range 198.18.0.0/15`;
+  }
+  if (a === 192 && b === 0 && c === 0) {
+    return `${host} is in the IETF protocol-assignments range 192.0.0.0/24`;
+  }
+  if (
+    (a === 192 && b === 0 && c === 2) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113)
+  ) {
+    return `${host} is in a documentation range (TEST-NET-1/2/3)`;
+  }
   return null;
 }
 
@@ -378,6 +398,14 @@ function privateIpv6Reason(host: string): string | null {
   }
   if ((h0 & 0xfe00) === 0xfc00) return `${host} is an IPv6 unique-local address`;
   if ((h0 & 0xffc0) === 0xfe80) return `${host} is an IPv6 link-local address`;
+  // `ff02::1` is all-nodes on the local link, which is a local-segment reach
+  // rather than a public fetch; site-local is deprecated but still carried on
+  // networks that adopted it before it was.
+  if ((h0 & 0xff00) === 0xff00) return `${host} is an IPv6 multicast address`;
+  if ((h0 & 0xffc0) === 0xfec0) return `${host} is an IPv6 site-local address`;
+  if (h0 === 0x2001 && h1 === 0x0db8) {
+    return `${host} is in the IPv6 documentation range 2001:db8::/32`;
+  }
   return null;
 }
 

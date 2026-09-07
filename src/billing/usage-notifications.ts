@@ -144,8 +144,17 @@ async function deliver(env: Env, logger: Logger, input: UsageNoticeInput): Promi
     // can approach — they hit it on the first unit, where the refusal speaks.
     if (!Number.isInteger(limit) || limit <= 0) continue;
     const threshold = limit * USAGE_NOTICE_THRESHOLD;
-    const before = total.quantity - total.added;
-    if (!(before < threshold && total.quantity >= threshold)) continue;
+    // AT or above, not the crossing itself. An edge trigger
+    // (`before < threshold && quantity >= threshold`) fires exactly once per
+    // period, which is correct only while the send succeeds: a delivery that
+    // failed left the receipt unwritten to be retried, but every later write
+    // already has `before >= threshold`, so it was skipped here — before the
+    // receipt was ever consulted — and the notice was lost for the period after
+    // all. The receipt below is what makes this once-per-period; this line only
+    // decides whether the subject is over the line. Costs one KV read per meter
+    // per recording once a subject is above 80%, which is the price of the
+    // warning actually arriving.
+    if (total.quantity < threshold) continue;
 
     const key =
       `${RECEIPT_PREFIX}${subject.ownerType}:${subject.ownerId}:${input.period}:` +

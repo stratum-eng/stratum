@@ -61,9 +61,10 @@ running GitHub Actions on the promoted PRs. See
 [CI Integration](/guides/ci-integration/).
 
 Two things on that list have since arrived in a narrow form. Stratum now has an
-**encrypted per-project secret store** — but it is deploy-only: the deploy
-runner is its sole reader, and the webhook evaluator's `secret` still lives
-literally in the policy file. And it can **deploy the merged tree** to
+**encrypted per-project secret store**, read by the deploy runner and, since
+BYOK, by the `llm` evaluator for a project's own provider key. It is not a
+general-purpose store: nothing else reads it, and the webhook evaluator's
+`secret` still lives literally in the policy file. And it can **deploy the merged tree** to
 Cloudflare or Vercel from a `deploys:` block, with an optional approval gate
 and a retry. That is not deployment environments: there is no
 staging/production separation, no per-environment variables, no build step, no
@@ -130,8 +131,10 @@ full binding list is in the [README](https://github.com/stratum-eng/stratum#prer
 — Workers, Artifacts, D1, KV, Queues, Durable Objects, R2 and Analytics Engine,
 plus Workers AI for the `llm` evaluator (or an `LLM_PROVIDERS` allowlist, so
 projects can bring their own model key instead) and Sandboxes for the `sandbox`
-evaluator **and** `merge.postMergeCommand`. Stratum meters resource
-usage per change — LLM tokens, sandbox execution milliseconds, and git
+evaluator **and** `merge.postMergeCommand`. Pointing the `llm` evaluator at
+your own provider through `LLM_PROVIDERS` adds that provider's own charges,
+billed to you by them and not visible on your Cloudflare bill. Stratum meters
+resource usage per change — LLM tokens, sandbox execution milliseconds, and git
 operations — and shows it alongside the evaluation evidence, so you can see what
 each (agent) change cost you. LLM tokens are the counts the provider reported,
 falling back to a `~4 chars/token` estimate (marked as estimated) only when a response

@@ -145,6 +145,20 @@ describe("parseLlmProviders — the allowlist is the only place an endpoint is n
     // drifted, and why the rule now lives in the shared one.
     ["https://metadata/v1", "single-label host"],
     ["https://intranet/v1", "single-label host"],
+    // Non-global, but not RFC 1918 either — each of these has been somebody's
+    // internal network. 240/4 is the one that matters most: nominally reserved,
+    // and used for real internal addressing inside more than one cloud provider.
+    ["https://224.0.0.1/v1", "multicast range 224.0.0.0/4"],
+    ["https://240.0.0.1/v1", "reserved range 240.0.0.0/4"],
+    ["https://255.255.255.255/v1", "reserved range 240.0.0.0/4"],
+    ["https://198.18.0.1/v1", "benchmark range 198.18.0.0/15"],
+    ["https://192.0.0.170/v1", "IETF protocol-assignments range 192.0.0.0/24"],
+    ["https://192.0.2.1/v1", "documentation range"],
+    // `ff02::1` is all-nodes on the local link — a local-segment reach, not a
+    // public fetch.
+    ["https://[ff02::1]/v1", "multicast"],
+    ["https://[fec0::1]/v1", "site-local"],
+    ["https://[2001:db8::1]/v1", "documentation range"],
   ])("rejects %s at parse time", (baseUrl, expected) => {
     const parse = parseLlmProviders(JSON.stringify([{ ...ANTHROPIC_ENTRY, baseUrl }]));
     expect(parse.status, `${baseUrl} was accepted`).toBe("invalid");
@@ -155,8 +169,18 @@ describe("parseLlmProviders — the allowlist is the only place an endpoint is n
   it("does not over-reject public addresses that merely look private", () => {
     // 172.32/16 is outside the 172.16/12 block, and 10.x only matches the first
     // octet — a check written as a string prefix would fail both of these.
-    for (const baseUrl of ["https://172.32.0.1/v1", "https://110.0.0.1/v1"]) {
-      expect(blockedHostReason(new URL(baseUrl).hostname)).toBeNull();
+    // 223.x is the last octet below multicast and 198.17/198.20 bracket the
+    // benchmark block — the ranges added above must not swallow their neighbours.
+    for (const baseUrl of [
+      "https://172.32.0.1/v1",
+      "https://110.0.0.1/v1",
+      "https://223.255.255.255/v1",
+      "https://198.17.0.1/v1",
+      "https://198.20.0.1/v1",
+      "https://192.0.1.1/v1",
+      "https://[2001:db9::1]/v1",
+    ]) {
+      expect(blockedHostReason(new URL(baseUrl).hostname), baseUrl).toBeNull();
     }
   });
 

@@ -181,9 +181,9 @@ wrong, so none of these fall back to the operator's model.
 Only reachable on an instance whose operator has configured a billing service
 **and** switched enforcement on. The reason names what ran out, when it resets,
 and both ways forward: bring your own provider key, or raise the plan. Your own
-key lifts the **token** allowance only — the hourly evaluation ceiling bounds
-evaluation and Worker capacity, which is the operator's whoever owns the model
-account, so it still applies.
+key lifts the **token** allowance only. The hourly evaluation ceiling still
+applies whichever account owns the model key, because what it bounds is
+evaluation and Worker capacity on the instance rather than model spend.
 
 Check `/settings/usage` (or `GET /api/users/me/usage`, or `stratum_get_usage`
 over MCP) for what is left and when the period rolls over. Self-hosted, none of

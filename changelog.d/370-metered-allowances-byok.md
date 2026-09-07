@@ -140,7 +140,12 @@
   straight from `.stratum/policy.yaml` — had the last two gaps too, so a
   `webhook` entry pointed at `[::127.0.0.1]` or at `feb0::…` used to reach the
   loopback and link-local addresses it was written to refuse. Both are refused
-  now. The bare-label rule moved into that shared filter as well: `metadata` is
+  now. The filter also refuses the non-global ranges that are neither RFC 1918
+  nor obviously local — IPv4 multicast, `240.0.0.0/4` (nominally reserved, and
+  used for real internal addressing inside more than one cloud provider), the
+  RFC 2544 benchmark block, `192.0.0.0/24` and the TEST-NETs; IPv6 multicast
+  (`ff02::1` is all-nodes on the local link), site-local, and `2001:db8::/32`.
+  The bare-label rule moved into that shared filter as well: `metadata` is
   the metadata endpoint's short name on both AWS and GCP, DNS is what makes it
   an address, and the webhook check had the rule while the provider allowlist
   did not.

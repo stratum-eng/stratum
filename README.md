@@ -81,11 +81,13 @@ Humans and AI agents are both first-class citizens, with different powers by des
   self-host has it. Uncomment it (and add it to each `[env.*]` block you deploy) only once
   your account has Sandboxes access.
 
-  Missing bindings do not crash the Worker, but the two evaluator bindings **fail closed**
-  rather than degrade: with no `SANDBOX` binding a `sandbox` evaluator is replaced by one
-  that returns score 0 / failed, and the same is true of `llm` with no `AI` binding. Naming
-  either in `merge.requiredEvaluators` while its binding is absent blocks **every** merge in
-  that project. `merge.postMergeCommand` is the exception — with no `SANDBOX` binding it is
+  Missing bindings do not crash the Worker, but the evaluators that need one **fail
+  closed** rather than degrade: with no `SANDBOX` binding a `sandbox` evaluator is
+  replaced by one that returns score 0 / failed, and an `llm` evaluator does the same
+  with no `AI` binding — *unless* it names a provider from `LLM_PROVIDERS`, which runs
+  on the project's own key and needs no `AI` binding at all. Naming an evaluator in
+  `merge.requiredEvaluators` while the binding it actually uses is absent blocks
+  **every** merge in that project. `merge.postMergeCommand` is the exception — with no `SANDBOX` binding it is
   skipped with a warning.
 
 ### Installation
