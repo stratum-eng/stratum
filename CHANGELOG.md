@@ -485,7 +485,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `127.0.0.1` do not stand in for each other.
 
 ### Removed
-- **The standalone `mcp/` package (`@stratum-eng/mcp`).** It was a stdio process
+- **The standalone `mcp/` package (`@stratum/mcp`).** It was a stdio process
   that wrapped the REST API over the network — 609 lines holding no state,
   touching no local git, and offering nothing the Worker could not do itself,
   in exchange for a clone-and-build install. The remote endpoint replaces it
@@ -760,7 +760,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operations generated from the route code, replacing the 4-path stub.
 - Real user documentation: a full getting-started walkthrough and a 15-question
   FAQ (`docs/user-guide/`).
-- `@stratum-eng/mcp` (`mcp/`): MCP server exposing the full eval-gated change flow —
+- `@stratum/mcp` (`mcp/`): MCP server exposing the full eval-gated change flow —
   projects, workspaces, commits, changes, reviews, merges, and issues — so any
   MCP-capable agent or editor (Claude Code, Cursor, Zed, Copilot, custom agents)
   can work against Stratum without a bespoke integration.
