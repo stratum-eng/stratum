@@ -159,6 +159,15 @@ describe("parseLlmProviders — the allowlist is the only place an endpoint is n
     ["https://[ff02::1]/v1", "multicast"],
     ["https://[fec0::1]/v1", "site-local"],
     ["https://[2001:db8::1]/v1", "documentation range"],
+    // The v6 counterparts of the v4 rows above. The v4 half rejected the
+    // benchmark and protocol-assignments blocks while the v6 half took them,
+    // which is one filter disagreeing with itself about the same question.
+    ["https://[100::1]/v1", "discard-only range 100::/64"],
+    ["https://[2001:2::1]/v1", "protocol-assignments range 2001::/23"],
+    // 6to4 and NAT64 carry an IPv4 destination inside a v6 literal, so the v4
+    // rules never get to look at it: 2002:7f00:1:: is 127.0.0.1 in a costume.
+    ["https://[2002:7f00:1::1]/v1", "6to4"],
+    ["https://[64:ff9b::7f00:1]/v1", "IPv4/IPv6 translation"],
   ])("rejects %s at parse time", (baseUrl, expected) => {
     const parse = parseLlmProviders(JSON.stringify([{ ...ANTHROPIC_ENTRY, baseUrl }]));
     expect(parse.status, `${baseUrl} was accepted`).toBe("invalid");
@@ -179,6 +188,13 @@ describe("parseLlmProviders — the allowlist is the only place an endpoint is n
       "https://198.20.0.1/v1",
       "https://192.0.1.1/v1",
       "https://[2001:db9::1]/v1",
+      // 2001:200::/32 is a real allocated global range, and it sits just past
+      // the 2001::/23 mask — the /23 must not reach it. 2003:: brackets 6to4
+      // and 64:ff9c:: brackets the NAT64 prefix.
+      "https://[2001:200::1]/v1",
+      "https://[2003::1]/v1",
+      "https://[64:ff9c::1]/v1",
+      "https://[101::1]/v1",
     ]) {
       expect(blockedHostReason(new URL(baseUrl).hostname), baseUrl).toBeNull();
     }

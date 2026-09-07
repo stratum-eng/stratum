@@ -406,6 +406,25 @@ function privateIpv6Reason(host: string): string | null {
   if (h0 === 0x2001 && h1 === 0x0db8) {
     return `${host} is in the IPv6 documentation range 2001:db8::/32`;
   }
+  // The IPv4 half rejects the benchmark range and the IETF protocol-assignments
+  // block; these are the v6 analogues, and leaving them out is how the two
+  // halves of one filter disagree about the same question.
+  if (h0 === 0x0100 && h1 === 0 && h2 === 0 && h3 === 0) {
+    return `${host} is in the IPv6 discard-only range 100::/64`;
+  }
+  // 2001::/23 is IANA's IETF-protocol-assignments block: benchmarking
+  // (2001:2::/48), AMT, the PCP anycast addresses, and Teredo. Teredo alone is
+  // nominally global, but it tunnels to an arbitrary IPv4 destination that the
+  // v4 rules above never get to inspect — so the whole block goes.
+  if (h0 === 0x2001 && (h1 & 0xfe00) === 0) {
+    return `${host} is in the IPv6 protocol-assignments range 2001::/23`;
+  }
+  // Same reasoning as Teredo: 6to4 and the NAT64 prefixes embed an IPv4
+  // address, so a literal here is a private-IPv4 reach wearing a v6 costume.
+  if (h0 === 0x2002) return `${host} is a 6to4 address (2002::/16)`;
+  if (h0 === 0x0064 && h1 === 0xff9b) {
+    return `${host} is an IPv4/IPv6 translation address (64:ff9b::/96, 64:ff9b:1::/48)`;
+  }
   return null;
 }
 

@@ -154,3 +154,9 @@
   `[{llm}, {llm, provider: …}]` silently ran twice on the operator's Workers AI
   bill — the fail-open this work exists to prevent. Both the parser and the
   provider resolution now refuse rather than choosing one.
+- The shared outbound-host filter now rejects the non-global IPv6 ranges it was
+  still accepting: discard-only (`100::/64`), IETF protocol assignments
+  (`2001::/23`, which covers benchmarking and Teredo), 6to4 (`2002::/16`) and
+  the NAT64 prefixes (`64:ff9b::/96`, `64:ff9b:1::/48`). The IPv4 half already
+  refused its equivalents, so webhook delivery and BYOK provider URLs were
+  applying two different rules through one filter.
