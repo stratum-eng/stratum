@@ -56,13 +56,15 @@ export function entitlementsConfigError(
   if (!env.BILLING_SERVICE_URL) missing.push("BILLING_SERVICE_URL");
   if (!env.BILLING_SERVICE_SECRET) missing.push("BILLING_SERVICE_SECRET");
   if (missing.length > 0) {
-    return (
-      `ENTITLEMENTS_ENFORCE is '1' but ${missing.join(" and ")} ` +
-      `${missing.length === 1 ? "is" : "are"} not set — no plan limits can be ` +
-      "fetched, so every owner resolves to unlimited and every enforcement " +
-      "point admits. Set BILLING_SERVICE_URL as a var and BILLING_SERVICE_SECRET " +
-      "as a secret for the [env.<env>] block, or unset ENTITLEMENTS_ENFORCE."
-    );
+    // Joined rather than concatenated: mixing a template literal with `+` trips
+    // biome's useTemplate, and the autofix for it is one unreadable line.
+    return [
+      `ENTITLEMENTS_ENFORCE is '1' but ${missing.join(" and ")}`,
+      `${missing.length === 1 ? "is" : "are"} not set — no plan limits can be`,
+      "fetched, so every owner resolves to unlimited and every enforcement point",
+      "admits. Set BILLING_SERVICE_URL as a var and BILLING_SERVICE_SECRET as a",
+      "secret for the [env.<env>] block, or unset ENTITLEMENTS_ENFORCE.",
+    ].join(" ");
   }
   return null;
 }
