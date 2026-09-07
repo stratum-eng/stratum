@@ -1,6 +1,6 @@
 # The Stratum CLI
 
-`@stratum/cli` puts the change flow in the terminal: projects, workspaces,
+`@stratum-eng/cli` puts the change flow in the terminal: projects, workspaces,
 commits, evaluation-gated changes, reviews, and issues, each command a thin
 wrapper over the [REST API](../api/endpoints/README.md). It is built for humans
 and shell scripts; agents are usually better served by the

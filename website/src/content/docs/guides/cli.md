@@ -1,10 +1,10 @@
 ---
 title: "The Stratum CLI"
-description: "Install and use @stratum/cli — projects, workspaces, commits, and the change flow from the terminal."
+description: "Install and use @stratum-eng/cli — projects, workspaces, commits, and the change flow from the terminal."
 editUrl: "https://github.com/stratum-eng/stratum/edit/main/docs/user-guide/cli.md"
 ---
 
-`@stratum/cli` puts the change flow in the terminal: projects, workspaces,
+`@stratum-eng/cli` puts the change flow in the terminal: projects, workspaces,
 commits, evaluation-gated changes, reviews, and issues, each command a thin
 wrapper over the [REST API](/reference/endpoints/). It is built for humans
 and shell scripts; agents are usually better served by the

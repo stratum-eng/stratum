@@ -68,7 +68,7 @@ under [Deployments](#deployments).
 
 ### Publish the client packages to npm
 
-- [ ] `@stratum/cli` and `@stratum/agent` both live in this repo at full API parity, but
+- [ ] `@stratum-eng/cli` and `@stratum-eng/agent` both live in this repo at full API parity, but
       neither is published, so consumers must build from source. Publishing needs a release
       workflow, provenance attestation, and a version policy across the two. (The MCP
       server no longer needs publishing at all — it is served by the Worker at `/mcp`.)

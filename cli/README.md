@@ -1,4 +1,4 @@
-# @stratum/cli
+# @stratum-eng/cli
 
 CLI for Stratum — code hosting for the AI engineering era. Wraps the Stratum REST API.
 

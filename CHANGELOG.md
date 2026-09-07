@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 - **Stratum is no longer MIT-licensed.** The server, the web UI, `docs/`, and the
-  `website/` sources are now **AGPL-3.0-or-later**; the `@stratum/cli` and `@stratum/agent` packages are
+  `website/` sources are now **AGPL-3.0-or-later**; the `@stratum-eng/cli` and `@stratum-eng/agent` packages are
   **Apache-2.0**, chosen over MIT for its express patent grant. Everything
   released through v0.2.0 stays MIT and always will — anyone holding that code
   keeps their MIT rights in it, forks included. The new terms apply from this
@@ -296,7 +296,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   grant cannot reach `/api/admin/*` (even for the instance administrator, whom
   `resolveAdminAuth` would otherwise authorize on an `ADMIN_EMAIL` match), and
   cannot rotate the never-expiring legacy API key.
-- **CLI and MCP server guides.** Dedicated documentation for `@stratum/cli`
+- **CLI and MCP server guides.** Dedicated documentation for `@stratum-eng/cli`
   (`docs/user-guide/cli.md`) and the MCP server (`docs/user-guide/mcp.md`),
   published at `/guides/cli/` and `/guides/mcp/` — configuration, the full
   command/tool surface (including `project delete` and `account delete`, which
