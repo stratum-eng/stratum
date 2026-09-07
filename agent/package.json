@@ -1,5 +1,5 @@
 {
-  "name": "@stratum/agent",
+  "name": "@stratum-eng/agent",
   "version": "0.1.0",
   "description": "Reference agent for Stratum — fork, edit with an LLM, commit, open a Change",
   "license": "Apache-2.0",

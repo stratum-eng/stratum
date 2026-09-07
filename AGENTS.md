@@ -33,8 +33,8 @@ generally: the next thing that wants to be an exception needs its own argument, 
 | Path | What it is |
 |------|------------|
 | `src/` | The Worker: routes, middleware, storage, queue consumers, evaluation engine, UI, and the remote MCP server (`src/mcp/`, served at `/mcp`) |
-| `cli/` | `@stratum/cli` — standalone publishable package |
-| `agent/` | `@stratum/agent` — reference agent, standalone publishable package |
+| `cli/` | `@stratum-eng/cli` — standalone publishable package |
+| `agent/` | `@stratum-eng/agent` — reference agent, standalone publishable package |
 | `tests/` | Vitest suites: unit (`tests/*.test.ts`), `tests/integration/`, `tests/smoke/` |
 | `migrations/` | D1 SQL migrations |
 | `docs/` | User, API, developer docs, ADRs (`docs/adr/`), and runbooks (`docs/runbooks/`) |

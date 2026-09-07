@@ -208,7 +208,7 @@ Artifacts namespaces.
 ## What license is Stratum under, and what does self-hosting oblige me to?
 
 Licensing is by directory: the server, web UI, `docs/`, and `website/` sources
-are **AGPL-3.0-or-later**; the `@stratum/cli` and `@stratum/agent` packages are
+are **AGPL-3.0-or-later**; the `@stratum-eng/cli` and `@stratum-eng/agent` packages are
 **Apache-2.0**; the published agent skills under
 `website/public/.well-known/agent-skills/` stay **MIT**, because they exist to be
 pasted into third-party agents. Releases through v0.2.0 were MIT and stay MIT.

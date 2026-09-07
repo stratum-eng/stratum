@@ -76,7 +76,7 @@ off the request path, are what this item still covers.
 Team write/admin grants are org-wide. Per-project grants allow finer-grained
 access control within an org.
 
-### Publish @stratum/cli and @stratum/agent to npm
+### Publish @stratum-eng/cli and @stratum-eng/agent to npm
 
 Both packages live in the repo at full API parity but are not yet published,
 so consumers must install from source.

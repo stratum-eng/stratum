@@ -344,8 +344,8 @@ queue consumer and a stale-event sweep · workspace TTL sweep.
 **Interfaces**
 Server-rendered web UI · REST API (93 paths) · remote MCP server at `/mcp` with an
 OAuth 2.1 authorization server (dynamic client registration, PKCE, rotating refresh
-tokens) · `@stratum/cli` covering the change flow, issues, and activity ·
-`@stratum/agent` reference agent.
+tokens) · `@stratum-eng/cli` covering the change flow, issues, and activity ·
+`@stratum-eng/agent` reference agent.
 
 ## Known limitations
 
@@ -510,8 +510,8 @@ copyleft, what you run inside your own pipeline is not.
 
 | Path | License |
 |---|---|
-| [`cli/`](cli) — `@stratum/cli` | [Apache-2.0](cli/LICENSE) |
-| [`agent/`](agent) — `@stratum/agent` | [Apache-2.0](agent/LICENSE) |
+| [`cli/`](cli) — `@stratum-eng/cli` | [Apache-2.0](cli/LICENSE) |
+| [`agent/`](agent) — `@stratum-eng/agent` | [Apache-2.0](agent/LICENSE) |
 | `website/public/.well-known/agent-skills/` — the published agent skills | MIT |
 | everything else — the server, the web UI, `docs/`, `website/` | [AGPL-3.0-or-later](LICENSE) |
 

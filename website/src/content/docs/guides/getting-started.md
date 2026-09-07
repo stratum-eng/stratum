@@ -370,7 +370,7 @@ If a change was linked to an issue, the issue auto-closes on merge.
 
 ## 6. Connect your tools
 
-### CLI — `@stratum/cli`
+### CLI — `@stratum-eng/cli`
 
 The CLI wraps the full REST API: projects, workspaces, commits, changes
 (including review and merge), issues, and activity. It is not yet published to

@@ -1,4 +1,4 @@
-# @stratum/agent
+# @stratum-eng/agent
 
 Reference agent for Stratum: proves the platform end-to-end for agent workflows.
 
@@ -7,7 +7,7 @@ export STRATUM_HOST=https://your-stratum-instance
 export STRATUM_API_KEY=stratum_user_…
 export ANTHROPIC_API_KEY=sk-ant-…
 
-npx @stratum/agent \
+npx @stratum-eng/agent \
   --repo @user/my-api \
   --objective "Fix the N+1 query in the users endpoint" \
   --model claude-sonnet-4-6

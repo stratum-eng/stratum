@@ -36,7 +36,7 @@ Please include:
 
 ## Scope
 
-In scope: the Worker (`src/`), the `@stratum/cli` and `@stratum/agent` packages, authentication and
+In scope: the Worker (`src/`), the `@stratum-eng/cli` and `@stratum-eng/agent` packages, authentication and
 token handling, the evaluation engine, and the merge/Git pipeline.
 
 Out of scope: vulnerabilities in third-party dependencies (report those upstream), denial-of-service

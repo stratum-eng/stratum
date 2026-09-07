@@ -1,5 +1,5 @@
 {
-  "name": "@stratum/cli",
+  "name": "@stratum-eng/cli",
   "version": "0.2.0",
   "description": "CLI for Stratum \u2014 code hosting for the AI engineering era",
   "license": "Apache-2.0",

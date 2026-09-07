@@ -137,7 +137,7 @@ environment (`wrangler.toml:75`), so it works out of the box.
 
 ## Tooling
 
-- `cli/` — @stratum/cli covering projects, workspaces, commits, changes incl.
+- `cli/` — @stratum-eng/cli covering projects, workspaces, commits, changes incl.
   review/merge, issues, activity and account. `stratum login` is a
   browser-based OAuth 2.1 + PKCE flow against a loopback redirect (RFC 8252),
   with `--read-only` for an `mcp:read` grant and `--key <token>` as the
@@ -145,7 +145,7 @@ environment (`wrangler.toml:75`), so it works out of the box.
   clears the local credential and revokes the grant on a best-effort basis
   (`cli/src/index.ts:148-171`). Deployments have no CLI command yet — use the
   API or the UI.
-- `agent/` — @stratum/agent reference agent: identity → fork → Claude edit plan
+- `agent/` — @stratum-eng/agent reference agent: identity → fork → Claude edit plan
   → commit → Change with evaluation.
 
 ## Known limitations / future work
