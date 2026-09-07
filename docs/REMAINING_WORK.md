@@ -85,6 +85,16 @@ and at `GET /api/users/me/usage`.
 - **BYOK couples the merge gate to `DEPLOY_SECRET_KEY`.** Rotating that key
   already makes every stored deploy secret undecryptable, and now blocks the
   gate on every BYOK project until each re-enters its provider key.
+- **The `webhook` evaluator's `secret` is a credential in a committed file.**
+  Unlike `deploys:`, which takes secret *names* and resolves the values from
+  D1, `evaluators: [{ type: webhook, secret: ... }]` takes the HMAC key
+  literally, so it lives in `.stratum/policy.yaml` — in git, in every clone, and
+  in any policy export. `sanitizePolicy` strips it before the policy reaches a
+  model or a webhook body, which is the codebase already treating it as a
+  credential, and the storage half is simply missing. Closing it means the
+  `deploys:` shape — a name resolved from `project_secrets` — plus a migration
+  path for projects using the literal form today. Predates the metering work and
+  was left alone by it.
 
 ### Monitoring dashboard UI
 
