@@ -5,16 +5,30 @@ import {
   SandboxEvaluator,
   SecretScanEvaluator,
   WebhookEvaluator,
+  WorkersAiProvider,
   diffTouchesProtectedConfig,
   loadPolicy,
 } from "../evaluation";
+import { resolveLlmProvider } from "../evaluation/llm-byok";
+import { llmProviderCatalog } from "../evaluation/llm-providers";
 import type { SandboxRepoAccess } from "../evaluation/sandbox-evaluator";
-import type { EvalPolicy, EvalResult, EvaluationContext, Evaluator } from "../evaluation/types";
+import type {
+  BillingContext,
+  EvalPolicy,
+  EvalResult,
+  EvaluationContext,
+  Evaluator,
+} from "../evaluation/types";
 import { buildEvaluationReport, reportEvaluationToGitHub } from "../github/sync";
 import { type EventActor, emitEvent } from "../queue/events";
 import { getAgent } from "../storage/agents";
 import { createChange, updateChangeStatus } from "../storage/changes";
-import { type CostSample, recordCosts } from "../storage/costs";
+import {
+  type BillingSubject,
+  type CostSample,
+  recordCosts,
+  resolveBillingSubject,
+} from "../storage/costs";
 import { recordEvalRuns } from "../storage/eval-runs";
 import {
   artifactsRepoNameFromRemote,
@@ -30,6 +44,7 @@ import {
   type ProjectEntry,
   getArtifactsRepoName,
   projectDefaultBranch,
+  projectDisplayName,
 } from "../types";
 import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
@@ -97,9 +112,56 @@ export class UnavailableEvaluator implements Evaluator {
 }
 
 /**
+ * The evaluation-time view of an already-resolved billing subject, or
+ * `undefined` when none could be named.
+ *
+ * Takes the subject rather than the `ProjectEntry` it came from, and that is the
+ * whole point of the signature. `ownerType` admits `"agent"` and an agent is not
+ * a payer — it belongs to one — so naming the payer means walking
+ * `agents.owner_id`, which is D1 and therefore async. This function used to
+ * refuse an agent-owned project instead, which left `LLMEvaluator` with no
+ * billing context and so no meter check at all: the walk existed in
+ * `resolveEnforcementSubject` and nothing ever reached it. Every call site now
+ * resolves once with `resolveBillingSubject` and passes the result to both this
+ * and `recordCosts`, so the allowance and the ledger cannot disagree about who
+ * pays, and neither pays for two D1 reads of the same fact.
+ *
+ * `projectId` is checked because KV entries are cast without validation
+ * (`src/storage/state.ts`) and legacy rows can lack fields the type promises. A
+ * context keyed on `""` would be worse than none: spend that *looks* attributed
+ * aggregates under an empty key no account will ever reconcile.
+ *
+ * @param subject - From `resolveBillingSubject`; `null` when nobody can be named
+ * @param projectId - The project whose policy is being enforced
+ * @param actorUserId - The user who ran the evaluation, when the caller knows
+ *   one. Carried alongside the payer rather than instead of it: PRD §4a checks a
+ *   limit against the actor while the ledger keeps recording the owner. For an
+ *   agent-authored change this is the agent's OWNER.
+ */
+export function billingContextFor(
+  subject: BillingSubject | null,
+  projectId: string | undefined,
+  actorUserId?: string,
+): BillingContext | undefined {
+  if (!subject || !projectId) return undefined;
+  return {
+    ownerId: subject.ownerId,
+    ownerType: subject.ownerType,
+    projectId,
+    ...(actorUserId ? { actorUserId } : {}),
+  };
+}
+
+/**
  * Build the evaluator set for a policy: the always-on blocking secret scan plus
  * whatever the policy configures. Evaluators whose binding is missing become
  * UnavailableEvaluator (score 0, fail) rather than silently vanishing.
+ *
+ * Takes the whole `ProjectEntry` rather than a display name because the payer
+ * has to be nameable from it. Nothing built here receives the project: the
+ * billing subject reaches evaluators on the `EvaluationContext` that
+ * `runEvaluation` forwards, and inside this function the entry is used for the
+ * log line below and nothing else.
  *
  * `workspaceRepo` is read access to the workspace being evaluated (remote +
  * read token + the pinned evaluated commit); the sandbox evaluator needs it to
@@ -108,13 +170,33 @@ export class UnavailableEvaluator implements Evaluator {
  * ops decision) — a policy naming `sandbox` fails closed with a reason that
  * says exactly which prerequisite is missing.
  */
-export function buildEvaluators(
+export async function buildEvaluators(
   env: Env,
   policy: EvalPolicy,
-  projectName: string,
+  project: ProjectEntry,
   logger: Logger,
   workspaceRepo?: SandboxRepoAccess,
-): Array<{ type: string; evaluator: Evaluator }> {
+  /**
+   * Cloudflare Workers `ExecutionContext.waitUntil`, when the caller has one.
+   *
+   * Used by the metered evaluator for one thing: warming an ORG's entitlements
+   * off the response path (PRD §4a). Auth middleware warms the caller, but it
+   * knows the caller and not the project, so nothing before this point can warm
+   * the org a project belongs to. Absent means no warm — the check then resolves
+   * to the actor, which is the safe direction and the documented first-contact
+   * behaviour, never a blocking fetch on the merge path.
+   */
+  waitUntil?: (promise: Promise<unknown>) => void,
+): Promise<Array<{ type: string; evaluator: Evaluator }>> {
+  // Async only because of this: a policy that selects a BYOK provider needs the
+  // project's credential resolved before the evaluator exists. It is a no-op —
+  // no D1 read, no key derivation — for every policy that names no provider,
+  // which is every policy that has not opted in.
+  const llmProvider = await resolveLlmProvider(env, project, policy, logger);
+
+  // Guarded, because a legacy entry can carry no namespace — see
+  // `projectDisplayName`, and this file's own `resolveProjectHead`.
+  const projectName = projectDisplayName(project);
   const evaluators: Array<{ type: string; evaluator: Evaluator }> = [
     { type: "secret_scan", evaluator: new SecretScanEvaluator() },
   ];
@@ -126,14 +208,40 @@ export function buildEvaluators(
           return [{ type: "diff", evaluator: new DiffEvaluator() }];
         case "webhook":
           return [{ type: "webhook", evaluator: new WebhookEvaluator() }];
-        case "llm":
-          if (env.AI) return [{ type: "llm", evaluator: new LLMEvaluator(env.AI) }];
+        case "llm": {
+          // Every failure to resolve a project-supplied credential lands here,
+          // and NONE of them falls back to `env.AI`. Falling back would move
+          // the spend to the operator's bill — the hole BYOK closes — and would
+          // turn a misconfigured gate into one that quietly passes on someone
+          // else's budget. Fail closed with the reason instead.
+          if (llmProvider.status === "unavailable") {
+            return [
+              { type: "llm", evaluator: new UnavailableEvaluator("llm", llmProvider.reason) },
+            ];
+          }
+          const enforcement = { env, ...(waitUntil !== undefined ? { waitUntil } : {}) };
+          if (llmProvider.status === "byok") {
+            return [
+              {
+                type: "llm",
+                evaluator: new LLMEvaluator(llmProvider.provider, "byok", enforcement),
+              },
+            ];
+          }
+          if (env.AI)
+            return [
+              {
+                type: "llm",
+                evaluator: new LLMEvaluator(new WorkersAiProvider(env.AI), "platform", enforcement),
+              },
+            ];
           return [
             {
               type: "llm",
               evaluator: new UnavailableEvaluator("llm", "AI binding is not configured"),
             },
           ];
+        }
         case "sandbox":
           if (!env.SANDBOX) {
             // Fail closed with an actionable reason: the [[sandboxes]] binding
@@ -191,21 +299,47 @@ export async function runEvaluation(
   diff: string,
   policy: EvalPolicy,
   logger: Logger,
-  /** What the diff is a diff of. Forwarded to every evaluator so one that
-   * reproduces the change out-of-process can pin the base it applies to (#274).
-   * Callers pass the base resolved from the clone the diff came from, never a
-   * fresh read of the project head. */
+  /** What the diff is a diff of, and who pays for evaluating it. Forwarded to
+   * every evaluator so one that reproduces the change out-of-process can pin
+   * the base it applies to (#274). Callers pass the base resolved from the
+   * clone the diff came from, never a fresh read of the project head, and the
+   * billing subject from `billingContextFor`.
+   *
+   * One object is shared by every evaluator in the `Promise.all` below, so it
+   * must stay immutable data. Hanging a mutable balance or counter off it would
+   * be a race across concurrently running evaluators, not a shared budget. */
   context?: EvaluationContext,
 ): Promise<{ evalRuns: EvaluationRun[]; evalResult: EvalResult }> {
   const evalRuns = await Promise.all(
     evaluators.map(async ({ type, evaluator }) => {
-      const result = await evaluator.evaluate(diff, policy, logger, context);
-      return {
-        evaluatorType: type,
-        result: result.success
-          ? result.data
-          : { score: 0, passed: false, reason: result.error.message },
-      };
+      // `evaluate` returns a Result by contract, and this catch is what keeps
+      // that contract from being a promise the caller cannot rely on. One
+      // evaluator that REJECTS — a Durable Object RPC that could not be
+      // reached, a runtime fault — would otherwise reject this `Promise.all`
+      // and take change creation down with it, discarding every other
+      // evaluator's verdict on the way. A gate that could not run is a gate
+      // that did not pass; it is reported as a failing verdict, exactly as a
+      // returned error already is, and never as a missing one.
+      try {
+        const result = await evaluator.evaluate(diff, policy, logger, context);
+        return {
+          evaluatorType: type,
+          result: result.success
+            ? result.data
+            : { score: 0, passed: false, reason: result.error.message },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error(
+          `Evaluator "${type}" threw instead of returning a result`,
+          error instanceof Error ? error : new Error(message),
+          { evaluatorType: type },
+        );
+        return {
+          evaluatorType: type,
+          result: { score: 0, passed: false, reason: `${type} evaluator failed: ${message}` },
+        };
+      }
     }),
   );
 
@@ -367,7 +501,13 @@ export async function createChangeWithEvaluation(
   }
 
   const branch = projectDefaultBranch(project);
-  const policy = await loadPolicy(project.remote, projectReadToken.data, logger, branch);
+  const policy = await loadPolicy(
+    project.remote,
+    projectReadToken.data,
+    logger,
+    branch,
+    llmProviderCatalog(env, logger),
+  );
 
   const diffResult = await getDiffBetweenRepos(
     project.remote,
@@ -393,16 +533,30 @@ export async function createChangeWithEvaluation(
     baseOid,
   } = diffResult.data;
 
-  const evaluators = buildEvaluators(env, policy, projectName, logger, {
-    remote: workspaceRemote,
-    token: workspaceReadToken.data,
-    ref: evaluatedSha,
-  });
+  const evaluators = await buildEvaluators(
+    env,
+    policy,
+    project,
+    logger,
+    {
+      remote: workspaceRemote,
+      token: workspaceReadToken.data,
+      ref: evaluatedSha,
+    },
+    waitUntil,
+  );
   // `baseOid`, not the `baseSha` resolved further up: that one is read before
   // the diff clone, so the default branch can advance in between. The evaluated
   // base must be the one the diff was actually built against (#274).
+  // Once per request, and before the evaluation rather than after it: the same
+  // subject gates the meters below and is recorded in the ledger, so resolving
+  // it twice would pay for two agent walks and could name two different payers.
+  const createSubject = await resolveBillingSubject(env.DB, logger, project);
   const { evalRuns, evalResult } = await runEvaluation(evaluators, diff, policy, logger, {
     baseSha: baseOid,
+    // The actor is the human behind the change — the agent's owner for an
+    // agent-authored one — which is who an allowance follows under PRD §4a.
+    billing: billingContextFor(createSubject, project.id, createdByUserId),
   });
 
   const newStatus: Change["status"] = evalResult.passed ? "accepted" : "needs_changes";
@@ -423,7 +577,18 @@ export async function createChangeWithEvaluation(
   await recordCosts(
     env.DB,
     logger,
-    { project: projectName, projectId: project.id, changeId: change.id, workspace: workspaceName },
+    {
+      project: projectName,
+      projectId: project.id,
+      changeId: change.id,
+      workspace: workspaceName,
+      ...(createSubject ?? {}),
+      notify: {
+        env,
+        ...(createdByUserId !== undefined ? { actorUserId: createdByUserId } : {}),
+        ...(waitUntil !== undefined ? { waitUntil } : {}),
+      },
+    },
     createCostSamples,
   );
 

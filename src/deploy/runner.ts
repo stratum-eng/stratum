@@ -29,11 +29,13 @@
  * injects its own seams: without them, testing any of the above needs a real git
  * remote, a real clock, and a real provider account.
  */
+import { checkMeter, resolveEnforcementSubject, settleMeter } from "../billing/enforcement";
+import { type LlmProviderCatalog, llmProviderCatalog } from "../evaluation/llm-providers";
 import { parsePolicyContent } from "../evaluation/policy-loader";
 import type { DeployConfig, DeployRejection } from "../evaluation/types";
 import { type StratumEvent, emitEvent } from "../queue/events";
 import { getChange } from "../storage/changes";
-import { recordCosts } from "../storage/costs";
+import { recordCosts, resolveBillingSubject } from "../storage/costs";
 import { isTargetDeleting } from "../storage/deletion";
 import {
   type Deployment,
@@ -353,7 +355,7 @@ async function runMergeMessage(
   }
 
   const files = treeResult.data;
-  const policy = policyFromTree(files, logger);
+  const policy = policyFromTree(files, logger, llmProviderCatalog(env, logger));
 
   // A rejected entry becomes a visible failed row, never a dropped one: a deploy
   // the author wrote and that never runs means production silently stopped
@@ -488,7 +490,7 @@ async function runDeploymentMessage(
 
   // Config comes from the pinned commit here too, so an approval granted days
   // later still deploys with the configuration the commit was reviewed under.
-  const policy = policyFromTree(treeResult.data, logger);
+  const policy = policyFromTree(treeResult.data, logger, llmProviderCatalog(env, logger));
   const config = policy.deploys.find((entry) => entry.name === deployment.name);
   if (!config) {
     const rejection = policy.rejections.find((entry) => entry.name === deployment.name);
@@ -572,6 +574,17 @@ async function runOneDeployment(
     });
   }
 
+  // Volume, and only volume (PRD §8). The queue is FIFO with
+  // `max_concurrency = 1` and no priority, so this cannot make anything fairer;
+  // what it bounds is how many deploys a month one subject may run. It goes
+  // BEFORE the claim so a refusal never takes the lease it would then have to
+  // release, and a refusal writes a persisted `failed` row with a named reason
+  // and acks — the message is not left to burn its two retries into the DLQ
+  // over a limit that redelivery cannot change, and it is never silently acked,
+  // because a deploy that did not happen must be visible.
+  const volume = await checkDeployVolume(ctx, deployment);
+  if (volume.refusal !== null) return await failWithoutRunning(ctx, deployment, volume.refusal);
+
   const claim = await claimDeployment(env.DB, logger, {
     projectId: project.id,
     deploymentId: deployment.id,
@@ -582,6 +595,9 @@ async function runOneDeployment(
       deploymentId: deployment.id,
       projectId: project.id,
     });
+    // This message will be redelivered and will reserve again; the unit taken
+    // above belongs to no deploy, so it goes back.
+    await volume.release();
     return { deploymentId: deployment.id, name: deployment.name, status: deployment.status };
   }
   if (!claim.data.claimed) {
@@ -593,8 +609,14 @@ async function runOneDeployment(
       projectId: project.id,
       why: claim.data.reason,
     });
+    // Whoever does hold the lease reserved its own unit; this attempt's is not
+    // paying for anything.
+    await volume.release();
     return { deploymentId: deployment.id, name: deployment.name, status: deployment.status };
   }
+  // Past this point the attempt owns the row and the `finally` below always
+  // writes it terminal, so the reservation is spent on a deploy that happened —
+  // successful or failed — and is never released.
 
   const startedAt = ctx.now();
   /**
@@ -691,6 +713,76 @@ async function runOneDeployment(
   if (writtenReason !== null) record.reason = writtenReason;
   if (terminal.url !== undefined) record.url = terminal.url;
   return record;
+}
+
+/** A volume decision, plus the means to hand back what it reserved. */
+interface DeployVolumeCheck {
+  /** Why this deploy may not run, or `null` when it may. */
+  refusal: string | null;
+  /**
+   * Gives back the unit this check reserved. Called on every path that does NOT
+   * go on to run the deploy, because `reserve` is a charge and only a deploy
+   * that actually happens should carry one.
+   */
+  release: () => Promise<void>;
+}
+
+/** Nothing was checked, so there is nothing to refuse and nothing to give back. */
+const NO_VOLUME_CHECK: DeployVolumeCheck = { refusal: null, release: async () => {} };
+
+/**
+ * Whether this deploy fits the subject's monthly allowance.
+ *
+ * The enforcement subject is the deploy's requester when a human asked for one
+ * (an approve or a retry), and otherwise the project's own billing subject —
+ * but only when that names a PERSON. A merge-triggered deploy of an ORG-owned
+ * project names no actor, and `resolveEnforcementSubject` reports the check
+ * unavailable there rather than making the org its own subject, which would
+ * hand every org a fresh, permanently unlimited deploy allowance (PRD §4a). So
+ * that one case is deliberately unmetered, and logged where it happens.
+ *
+ * Inert with the billing service unconfigured — `resolveEnforcementSubject`
+ * names nobody and `checkMeter` returns before it reads anything — so a
+ * self-hoster's deploys cost neither the D1 walk nor the check.
+ */
+async function checkDeployVolume(
+  ctx: RunContext,
+  deployment: Deployment,
+): Promise<DeployVolumeCheck> {
+  const { env, logger, project } = ctx;
+  const actorUserId = deployment.requestedByType === "user" ? deployment.requestedById : undefined;
+  const subject = await resolveEnforcementSubject(env, logger, {
+    ...(actorUserId !== undefined ? { actorUserId } : {}),
+    owner: { ownerId: project.ownerId, ownerType: project.ownerType },
+  });
+  if (!subject) return NO_VOLUME_CHECK;
+  const nowMs = ctx.now();
+  const decision = await checkMeter(env, logger, {
+    subject,
+    meter: "deploys_month",
+    estimate: 1,
+    nowMs,
+    what: "This deployment",
+  });
+  // A deploy meter has no natural settle — the true cost of a deploy is one
+  // deploy — so the reservation is released explicitly by whoever decides this
+  // attempt is not the one that runs. Without it, every attempt that stops
+  // before the claim (a lease held elsewhere, a D1 failure, a redelivered
+  // message) burned another unit, and one deploy could cost two or three.
+  const release = decision.reserved
+    ? async () => {
+        await settleMeter(env, logger, {
+          subject,
+          meter: "deploys_month",
+          delta: -1,
+          nowMs,
+        });
+      }
+    : NO_VOLUME_CHECK.release;
+  return {
+    refusal: decision.admitted ? null : (decision.reason ?? "Deploy allowance exhausted"),
+    release,
+  };
 }
 
 /**
@@ -852,6 +944,7 @@ async function readTree(
     projectDefaultBranch(project),
   );
 
+  const subject = await resolveBillingSubject(env.DB, logger, project);
   // Recorded whether or not the read succeeded: a clone that failed still cost
   // the round trip.
   await recordCosts(
@@ -861,6 +954,12 @@ async function readTree(
       project: project.name,
       projectId: project.id,
       ...(changeId !== undefined ? { changeId } : {}),
+      ...(subject ?? {}),
+      // Best-effort inline, with no `waitUntil`: this is a queue consumer and
+      // there is no request to schedule against (PRD §8). `git_ops` maps to no
+      // meter today, so this notices nothing until `deploys_month` gains a D1
+      // writer — wired anyway so that writer does not have to remember.
+      notify: { env },
     },
     [{ kind: "git_ops", quantity: 1 }],
   );
@@ -877,14 +976,23 @@ async function readTree(
  * effect. A malformed file yields one named rejection rather than silence,
  * because a single YAML typo must not quietly stop production updating.
  */
-function policyFromTree(files: ReadonlyMap<string, Uint8Array>, logger: Logger): TreePolicy {
+function policyFromTree(
+  files: ReadonlyMap<string, Uint8Array>,
+  logger: Logger,
+  /** The same allowlist the evaluation path parses with. Passed even though
+   * only `deploys:` is read here: a policy naming a provider the parser cannot
+   * resolve is *malformed*, and reading it without the catalog would report
+   * "no deploy configuration could be read" for a file that is perfectly
+   * valid. */
+  providers: LlmProviderCatalog,
+): TreePolicy {
   const decoder = new TextDecoder();
 
   for (const { path, format } of POLICY_FILES) {
     const bytes = files.get(path);
     if (bytes === undefined) continue;
 
-    const parsed = parsePolicyContent(decoder.decode(bytes), format, logger);
+    const parsed = parsePolicyContent(decoder.decode(bytes), format, logger, providers);
     if (parsed.status === "malformed") {
       return {
         deploys: [],
@@ -966,6 +1074,15 @@ async function createDeployment(
  * Write a terminal `failed` on a row that was never claimed — the change was
  * reverted, the project is being deleted, the tree would not read, or the deploy
  * is no longer declared. Leaving it `queued` would strand it forever.
+ *
+ * `onlyIfUnclaimed` because this runs BEFORE `claimDeployment`: a redelivery of
+ * the same message may already hold the lease and be deploying, and `running` is
+ * not a terminal status, so the write would otherwise land on a live row and
+ * release its lease. When it does not land — that case, or a row that reached a
+ * terminal status first — the row belongs to someone else, so no
+ * `deployment.failed` is emitted and the row's own status is reported back. An
+ * event announcing a failure for a deploy that is about to succeed is worse than
+ * no event: it is the one a webhook consumer acts on.
  */
 async function failWithoutRunning(
   ctx: RunContext,
@@ -980,12 +1097,21 @@ async function failWithoutRunning(
     status: "failed",
     reason: truncated,
     completedAt: ctx.iso(),
+    onlyIfUnclaimed: true,
   });
   if (!completed.success) {
     ctx.logger.error("Could not fail the deployment", completed.error, {
       deploymentId: deployment.id,
       projectId: ctx.project.id,
     });
+  }
+  if (!completed.success || !completed.data) {
+    ctx.logger.warn("Deployment was not failed; leaving it to its owner", {
+      deploymentId: deployment.id,
+      projectId: ctx.project.id,
+      reason: truncated,
+    });
+    return { deploymentId: deployment.id, name: deployment.name, status: deployment.status };
   }
 
   await emitDeploymentEvent(ctx, deployment, "deployment.failed", { reason: truncated });
@@ -1022,12 +1148,16 @@ async function supersedeWithoutRunning(
     status: "superseded",
     reason: truncated,
     completedAt: ctx.iso(),
+    onlyIfUnclaimed: true,
   });
   if (!completed.success) {
     ctx.logger.error("Could not supersede the deployment", completed.error, {
       deploymentId: deployment.id,
       projectId: ctx.project.id,
     });
+  }
+  if (!completed.success || !completed.data) {
+    return { deploymentId: deployment.id, name: deployment.name, status: deployment.status };
   }
 
   return {

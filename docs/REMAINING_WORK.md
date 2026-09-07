@@ -39,9 +39,62 @@ OAuth options. Required for most paid team adoption.
 
 ### Multi-tenancy and billing
 
-Tenant isolation, usage metering, and billing integration for Stratum Cloud.
-Per-change cost tracking (LLM tokens, sandbox time, git ops) already exists
-and provides the metering foundation.
+**Delivered.** Cost records name their payer (`owner_id`, `owner_type`) and
+their source (`platform` or `byok`) and roll up into `usage_periods`, an
+owner-scoped monthly aggregate. A `UsageMeter` Durable Object holds the monthly
+reserve/settle counters and a bucketed sliding `evaluations_per_hour` window. An
+entitlements seam fetches a subject's allowances from a billing service and is
+inert with `BILLING_SERVICE_URL` unset; enforcement consults it at the LLM
+evaluator, the deploy consumer, the request limiter and private-project
+creation, observe-only unless `ENTITLEMENTS_ENFORCE=1`. Limits are checked
+against the acting user rather than the project's owner, so an allowance follows
+the person — except for an org the billing service positively reports as
+pooling, which is the subject for its own projects. `.stratum/policy.yaml` can select an operator-configured LLM
+provider and run the merge gate on the project's own key. Usage is visible at
+`/settings/usage`, in an 80% banner and email, over MCP (`stratum_get_usage`)
+and at `GET /api/users/me/usage`.
+
+**Still open.**
+
+- **The paid half lives outside this repository**, by design: plan definitions,
+  Stripe checkout, subscription webhooks and invoicing sit behind
+  `BILLING_SERVICE_URL`. Nothing in the tree knows what a plan costs, and the
+  entitlements payload is the whole contract.
+- **No org billing.** There is no org UI at all, so there is no seat model, no
+  per-seat pricing, and no way for an org to see or manage its own usage: an
+  org's threshold notice reaches the person who ran the evaluation, by email,
+  because there is no org page to show it on.
+- **Hard tenant isolation is still the access model, not an infrastructure
+  boundary.** Every tenant shares one D1 database, one KV namespace and one
+  Worker; separation is enforced by authorization checks and by scoping every
+  query, which is what this item originally meant by "tenant isolation".
+- **No retention or storage limits.** The metered flows are LLM tokens, sandbox
+  milliseconds and deploys, plus a private-project gauge. Repository storage,
+  event/audit retention and artifact size are unmetered and unbounded.
+- **Org creation is still subject to no per-user quota.** Charging the actor closed the allowance
+  *reset* (a new org no longer means a new allowance), but `POST /api/orgs`
+  itself has no per-user cap, and the multi-account variant of the same trick is
+  accepted rather than solved. The escalation ladder — rate-limit org creation,
+  require OAuth beyond the first org, a card to raise limits — is designed and
+  unbuilt.
+- **Enforcement has never bound anything in production.** It ships observe-only
+  so a month of recorded decisions can be read before any of them blocks a merge.
+- **Entitlements fail open**, so a billing outage permits unmetered usage for up
+  to one cache TTL, reconcilable from the ledger afterwards; an upgrade likewise
+  takes effect up to one TTL late.
+- **BYOK couples the merge gate to `DEPLOY_SECRET_KEY`.** Rotating that key
+  already makes every stored deploy secret undecryptable, and now blocks the
+  gate on every BYOK project until each re-enters its provider key.
+- **The `webhook` evaluator's `secret` is a credential in a committed file.**
+  Unlike `deploys:`, which takes secret *names* and resolves the values from
+  D1, `evaluators: [{ type: webhook, secret: ... }]` takes the HMAC key
+  literally, so it lives in `.stratum/policy.yaml` — in git, in every clone, and
+  in any policy export. `sanitizePolicy` strips it before the policy reaches a
+  model or a webhook body, which is the codebase already treating it as a
+  credential, and the storage half is simply missing. Closing it means the
+  `deploys:` shape — a name resolved from `project_secrets` — plus a migration
+  path for projects using the literal form today. Predates the metering work and
+  was left alone by it.
 
 ### Monitoring dashboard UI
 

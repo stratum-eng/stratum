@@ -7,15 +7,75 @@ export interface EvalResult {
   passed: boolean;
   reason: string;
   issues?: string[];
-  /** Resource usage the evaluator incurred, recorded for cost tracking. */
-  costs?: Array<{ kind: "llm_tokens" | "sandbox_ms"; quantity: number; estimated?: boolean }>;
+  /**
+   * Resource usage the evaluator incurred, recorded for cost tracking.
+   *
+   * Structurally a subset of `CostSample` (src/storage/costs.ts) rather than an
+   * import of it, so the evaluation layer does not depend on storage. `source`
+   * is what lets an evaluator running on the project's own provider credential
+   * say so: every recording site flattens this array straight into
+   * `recordCosts`, so a field missing here is a distinction that cannot be made
+   * at all.
+   * Omitted means `"platform"` — the operator paid.
+   */
+  costs?: Array<{
+    kind: "llm_tokens" | "sandbox_ms";
+    quantity: number;
+    estimated?: boolean;
+    source?: "platform" | "byok";
+  }>;
 }
 
 /**
- * What the diff is a diff *of*. A diff alone does not identify the tree it
- * applies to, so an evaluator that reproduces the change out-of-process (the
- * webhook evaluator) cannot tell which base it should apply the hunks to
- * (#274).
+ * Who pays for the metered resources an evaluation consumes.
+ *
+ * The LLM evaluator spends the operator's Workers AI budget on every call, and
+ * before this existed nothing at the evaluator layer could say whose change
+ * caused it. Carrying the subject on the evaluation context is what makes that
+ * spend attributable, and later meterable, without every evaluator having to
+ * grow a project-shaped constructor argument.
+ *
+ * `ownerType` is narrower than `ProjectEntry.ownerType`, which also admits
+ * `"agent"`: an agent is not a billing subject, it resolves to the user that
+ * owns it. `billingContextFor` yields nothing rather than performing that
+ * resolution.
+ */
+export interface BillingContext {
+  /** The paying user or org. Never an agent id — see `ownerType`. */
+  ownerId: string;
+  ownerType: "user" | "org";
+  /** The project whose policy is being enforced. */
+  projectId: string;
+  /**
+   * The user who ran this evaluation, when the call site knows one.
+   *
+   * Not the payer, and deliberately a separate field from `ownerId`: PRD §4a
+   * separates the subject a spend is RECORDED against from the subject a LIMIT
+   * is checked against, because an org-owned project bills the org and an org
+   * costs nothing to create. Recording still names the owner above; enforcement
+   * uses this. Absent where no acting user exists (a queue consumer), which is
+   * not the same as free — it means the check falls back to the recorded
+   * subject.
+   *
+   * Like every other field here, it must never be forwarded off-box: the
+   * webhook evaluator names the fields it sends for exactly this reason.
+   */
+  actorUserId?: string;
+}
+
+/**
+ * What an evaluation is *of*, and who pays for it: the tree the diff applies
+ * to, plus the billing subject. A diff alone does not identify the tree, so an
+ * evaluator that reproduces the change out-of-process (the webhook evaluator)
+ * cannot tell which base it should apply the hunks to (#274).
+ *
+ * **Nothing on this type may be forwarded off-box wholesale.** The webhook
+ * evaluator POSTs to a URL taken from `.stratum/policy.yaml` — repository
+ * content — and it stays safe only because it names the fields it sends
+ * (`diff`, sanitized policy, `baseSha`) instead of spreading this object. A
+ * `...context` there would ship `billing.ownerId` to an arbitrary endpoint the
+ * policy file chose. Add a field here and that exclusion is one careless
+ * refactor away; `tests/evaluator-billing-context.test.ts` pins it.
  */
 export interface EvaluationContext {
   /**
@@ -28,6 +88,15 @@ export interface EvaluationContext {
    * commit would report a verdict for a combination the change never proposed.
    */
   baseSha?: string;
+  /**
+   * Who pays for whatever this evaluation spends.
+   *
+   * Optional so evaluators that consume nothing metered — every evaluator
+   * today except `llm` — can ignore it entirely. Absent where no billing
+   * subject can be named, which is deliberately not the same as free: an
+   * agent-owned project has a payer, it just has to be resolved first.
+   */
+  billing?: BillingContext;
 }
 
 export interface Evaluator {
@@ -152,4 +221,31 @@ export type EvaluatorConfig =
     }
   | { type: "webhook"; url: string; secret?: string; timeoutMs?: number }
   | SandboxEvaluatorConfig
-  | { type: "llm"; model?: string; threshold?: number; maxDiffChars?: number };
+  | LlmEvaluatorConfig;
+
+/**
+ * The `llm` evaluator's slice of `.stratum/policy.yaml`.
+ *
+ * Named rather than inlined for the reason `SandboxEvaluatorConfig` is: two
+ * places narrow this shape out of a policy (`LLMEvaluator`, and the BYOK
+ * provider resolution), and an inline re-declaration in either would drift.
+ *
+ * Produced only by `sanitizeLlmConfig` (`policy-loader.ts`), which is a
+ * whitelist: these four fields are the whole surface a repository's policy file
+ * may set. There is deliberately **no `baseUrl`** — see `llm-providers.ts`.
+ */
+export interface LlmEvaluatorConfig {
+  type: "llm";
+  /**
+   * Selects one of the operator's `LLM_PROVIDERS` entries by name, running the
+   * evaluation on the project's own credential (BYOK). Absent means Workers AI,
+   * on the operator's bill. A name the operator has not configured is not a
+   * fallback: it fails the policy file closed.
+   */
+  provider?: string;
+  model?: string;
+  /** Score at or above which the model's verdict is allowed to pass. */
+  threshold?: number;
+  /** Diff characters sent to the model; clamped again by the evaluator. */
+  maxDiffChars?: number;
+}

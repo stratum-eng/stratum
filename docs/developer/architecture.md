@@ -501,6 +501,40 @@ export class MergeQueue extends DurableObject {
 - Auto-rebase for clean merges
 - Batch merging for non-conflicting changes
 
+## Usage Meter
+
+Durable Object holding one billing subject's counters: the monthly meters
+(`llm_tokens_month`, `sandbox_ms_month`, `deploys_month`) under a single record
+keyed by period, and the rolling rate windows (`evaluations_per_hour`) under a
+second one. Two records, because their lifetimes are unrelated — an hourly
+window straddling midnight on the 1st must not be reset by the month rolling.
+
+`reserve` takes capacity before the work runs and `settle` reconciles it against
+what was actually spent, so N concurrent evaluations cannot each read the same
+pre-spend total. A `reserve` with no `settle` is exactly a rate check, which is
+what the hourly window uses.
+
+It is a Durable Object rather than KV for the reason `MagicLinkRateLimiter`
+gives, plus one more. KV reads come from a per-colo edge cache about a minute
+stale, which the request limiter tolerates only because its bucket also rolls
+every minute — window and staleness are the same size. Stretch the window to an
+hour and an N/hour limit admits roughly N x colos x 60 to a distributed caller.
+The hourly window is summed over 5-minute buckets rather than held in one hourly
+bucket, so a fresh hour cannot admit the whole allowance in its first second;
+that bounds the burst at up to 2x the limit across a boundary rather than
+eliminating it.
+
+The object is subject-keyed on the **enforcement** subject (the acting user, or
+an org positively known to pool on a paid plan), which is not necessarily the
+subject a cost record names. It is never touched at all when
+`BILLING_SERVICE_URL` is unset.
+
+Deleting a **project** deliberately does *not* purge it, unlike `RepoDO` and
+`MergeQueue`: the meter is keyed on a subject rather than a project, and purging
+it on project deletion would refund the month by deleting a project — the same
+refund keeping `usage_periods` out of the project-scoped tables prevents. The
+**account** cascade erases it, and nothing else does.
+
 ## Queue Processing
 
 Background jobs processed by Cloudflare Queues.
@@ -596,6 +630,12 @@ src/
 │   └── run-backup.ts        # Backup orchestration
 ├── beta/
 │   └── gate.ts              # Beta access gating
+├── billing/
+│   ├── enforcement.ts       # Consulting a limit: the one place it decides
+│   ├── entitlements.ts      # What a plan allows; inert without a billing service
+│   ├── usage-banner.ts      # The 80% banner's stored receipt
+│   ├── usage-notifications.ts # Edge-triggered threshold email
+│   └── usage-report.ts      # One account's usage, for the page and MCP
 ├── email/
 │   └── templates.ts         # Email templates
 ├── evaluation/
@@ -617,7 +657,7 @@ src/
 │   ├── dispatch.ts          # Runs tool calls against the real routers, in-process
 │   ├── protocol.ts          # JSON-RPC 2.0 / MCP message layer
 │   ├── schema.ts            # Tool arg schemas: JSON Schema + validator
-│   └── tools.ts             # The eighteen tools
+│   └── tools.ts             # The nineteen tools
 ├── merge/
 │   ├── post-merge.ts        # Post-merge actions
 │   └── protection.ts        # Merge protection rules
@@ -641,6 +681,7 @@ src/
 │   ├── merge-queue.ts       # Merge queue durable object
 │   ├── repo-do.ts           # Repository durable object
 │   ├── ttl-sweep.ts         # TTL cleanup
+│   ├── usage-meter.ts       # Usage meter durable object
 │   └── webhook-delivery.ts  # Outbound webhook delivery
 ├── routes/
 │   ├── agents.ts            # Agent management
@@ -707,6 +748,7 @@ src/
 │   ├── state.ts             # KV state management
 │   ├── sync.ts              # Sync status tracking
 │   ├── teams.ts
+│   ├── usage.ts             # usage_periods, the owner-scoped monthly aggregate
 │   ├── users.ts
 │   └── webhooks.ts
 ├── templates/

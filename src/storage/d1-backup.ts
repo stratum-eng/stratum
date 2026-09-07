@@ -43,6 +43,13 @@ export const BACKUP_TABLES: readonly string[] = [
   "import_metrics",
   "failed_imports",
   "cost_records",
+  // The owner-scoped usage aggregate (migration 049). Backed up rather than
+  // excluded, and NOT recoverable from `cost_records` above: the project
+  // cascade hard-deletes cost rows while this table survives, so replaying the
+  // ledger after a restore would rebuild only the usage of projects that still
+  // exist and hand everybody else their month back. Declares no foreign keys,
+  // so its position here is only to sit beside the ledger it derives from.
+  "usage_periods",
   "events",
   "sync_history",
   "issues",

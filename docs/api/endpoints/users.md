@@ -8,6 +8,26 @@ credential — in [Authentication](../authentication.md).
 
 Returns the authenticated user's profile.
 
+## Get Current Usage
+
+`GET /api/users/me/usage`
+
+The caller's metered usage against their plan for the current billing period:
+each meter's consumption and limit, the rate ceilings, the period, and when it
+resets. A limit of `-1` is unlimited and `0` is a plan that forbids that meter
+outright, so a client renders words rather than computing a percentage against
+either.
+
+Read-only, and deliberately the **only** billing surface a token can reach:
+there is no endpoint here to raise a limit, buy capacity, or attach a payment
+method. An **agent token** reports its owner's allowance, because that is the
+account its evaluations are charged to.
+
+Figures cover platform-billed usage only. Spend on a project's own provider key
+(BYOK) is reported separately and never counted against an allowance. On an
+instance with no billing service configured — every self-hosted deployment —
+`metered` is `false` and every limit is unlimited.
+
 ## API tokens
 
 Listing, creating, revoking, and disabling the legacy token accept the

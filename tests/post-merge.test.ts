@@ -7,6 +7,7 @@ import { getCommitParent, readRepoFiles, revertToCommit } from "../src/storage/g
 import type { Env, ProjectEntry, SandboxInstance } from "../src/types";
 import type { Logger } from "../src/utils/logger";
 import { makeExecutingSandbox } from "./helpers/fake-sandbox";
+import { makeSqliteD1 } from "./helpers/sqlite-d1";
 
 vi.mock("../src/storage/git-ops", () => ({
   readRepoFiles: vi.fn(),
@@ -320,5 +321,83 @@ describe("runPostMergeCheck", () => {
       mockLogger,
     );
     expect(run).toHaveBeenCalledWith("make check", { timeout: 120_000 });
+  });
+});
+
+describe("runPostMergeCheck cost attribution", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(readRepoFiles).mockResolvedValue({
+      success: true,
+      data: new Map([["src/index.ts", new TextEncoder().encode("export {};")]]),
+    });
+  });
+
+  /** Real SQLite with the production migrations, so the row is really written. */
+  function sandboxEnvWithDb(): { env: Env; raw: ReturnType<typeof makeSqliteD1>["raw"] } {
+    const { db, raw } = makeSqliteD1();
+    const sandbox: SandboxInstance = {
+      writeFile: vi.fn().mockResolvedValue(undefined),
+      run: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "ok", stderr: "" }),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    };
+    const env = {
+      DB: db,
+      SANDBOX: { create: vi.fn().mockResolvedValue(sandbox) },
+    } as unknown as Env;
+    return { env, raw };
+  }
+
+  it("bills the sandbox run and the tree read to the project's owner", async () => {
+    // This is the one metered path outside the evaluators: a post-merge command
+    // is sandbox time somebody pays for.
+    const { env, raw } = sandboxEnvWithDb();
+    const result = await runPostMergeCheck(
+      env,
+      project,
+      {
+        changeId: "chg_1",
+        mergeCommit: "sha_merge",
+        policy: policyWith({ postMergeCommand: "npm test" }),
+      },
+      mockLogger,
+    );
+
+    expect(result.status).toBe("passed");
+    const rows = raw
+      .prepare(
+        "SELECT kind, owner_id, owner_type, source, change_id FROM cost_records ORDER BY kind",
+      )
+      .all() as unknown as Array<Record<string, unknown>>;
+    expect(rows.map((r) => r.kind)).toEqual(["git_ops", "sandbox_ms"]);
+    for (const row of rows) {
+      expect(row.owner_id).toBe("user_1");
+      expect(row.owner_type).toBe("user");
+      // Sandbox time is always the operator's compute; BYOK is an LLM concept.
+      expect(row.source).toBe("platform");
+      expect(row.change_id).toBe("chg_1");
+    }
+  });
+
+  it("records the run unattributed rather than skipping it when the owner is unnameable", async () => {
+    const { env, raw } = sandboxEnvWithDb();
+    const ownerless = { ...project, ownerId: "" } as ProjectEntry;
+    const result = await runPostMergeCheck(
+      env,
+      ownerless,
+      {
+        changeId: "chg_1",
+        mergeCommit: "sha_merge",
+        policy: policyWith({ postMergeCommand: "npm test" }),
+      },
+      mockLogger,
+    );
+
+    expect(result.status).toBe("passed");
+    const rows = raw.prepare("SELECT owner_id FROM cost_records").all() as unknown as Array<{
+      owner_id: string | null;
+    }>;
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(row.owner_id).toBeNull();
   });
 });

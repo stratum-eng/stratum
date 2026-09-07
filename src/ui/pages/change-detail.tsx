@@ -1,4 +1,5 @@
 import type { FC } from "hono/jsx";
+import type { UsageBannerNotice } from "../../billing/usage-banner";
 import type { ChangeComment, ChangeReview } from "../../storage/change-reviews";
 import type { CostSummaryEntry } from "../../storage/costs";
 import { type DiffFile, DiffView, LineCommentThreads } from "../components/diff-view";
@@ -44,6 +45,8 @@ interface ChangeDetailProps {
   /** Namespaced project ref for the header; legacy changes may lack one. */
   projectRef?: { name: string; namespace: string; slug: string; visibility?: string } | null;
   user?: { id: string; email: string; username: string } | null;
+  /** The 80% warning, when this account has one. See `Layout`. */
+  usageNotice?: UsageBannerNotice | null;
 }
 
 function statusBadgeClass(status: string): string {
@@ -101,6 +104,7 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   canReview = false,
   projectRef = null,
   user,
+  usageNotice,
 }) => {
   // Line-anchored comments (and their replies) render as threads beneath the
   // diff; anchorless comments stay in the change-level discussion below.
@@ -116,6 +120,7 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
     <Layout
       title={`Change ${change.id}`}
       user={user}
+      usageNotice={usageNotice}
       {...(change.status === "open" ? { refreshSeconds: 10 } : {})}
     >
       {projectRef && <ProjectHeader project={projectRef} active="changes" canWrite={canReview} />}

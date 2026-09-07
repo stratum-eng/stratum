@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { buildUsageReport } from "../billing/usage-report";
 import { cannotMintLegacyCredential } from "../middleware/auth";
 import {
   MAX_TOKEN_EXPIRY_DAYS,
@@ -60,6 +61,41 @@ app.get("/me", async (c) => {
   logger.debug("User retrieved", { userId });
 
   return ok({ id: user.id, email: user.email, createdAt: user.createdAt });
+});
+
+/**
+ * GET /api/users/me/usage — the caller's metered usage against their plan.
+ *
+ * Read-only, and deliberately the ONLY billing surface reachable from a token:
+ * there is no endpoint here to raise a limit, buy capacity or attach a payment
+ * method (PRD §4c). An agent that can lift its own ceiling does not have one,
+ * which is the same line this codebase already draws at review verdicts.
+ *
+ * An AGENT token resolves to its owner (`agentOwnerId`), because that is the
+ * §4a enforcement subject its evaluations are actually charged to — an agent
+ * shown its own empty allowance would be reading a number no check uses.
+ */
+app.get("/me/usage", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+    userId: c.get("userId"),
+  });
+
+  // The acting user, or the person an agent acts for. Never a project's org:
+  // limits follow the person (PRD §4a).
+  const actorUserId = c.get("userId") ?? c.get("agentOwnerId");
+  if (!actorUserId) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const report = await buildUsageReport(c.env, logger, { actorUserId });
+  if (!report.success) {
+    logger.error("Failed to build usage report", report.error);
+    return internalError("Usage could not be read");
+  }
+  return ok(report.data);
 });
 
 // POST /api/users/me/rotate-token - Replace the caller's API key

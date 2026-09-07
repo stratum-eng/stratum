@@ -227,59 +227,222 @@ export function isValidRepoUrl(value: unknown): value is string {
 }
 
 /**
- * Whether a hostname is a private/disallowed IP literal. Handles the obfuscated
- * encodings a naive string blocklist misses: integer (2130706433), hex
- * (0x7f000001, 0x7f.0.0.1), octal (0177.0.0.1), and IPv6 unspecified/expanded
- * loopback ([::], [0:0:0:0:0:0:0:1]). The rule is allowlist-shaped: an IP-ish
- * host must be a canonical public dotted-decimal IPv4 (or a public IPv6) — any
- * non-canonical numeric form fails closed. Returns false for DNS names, which
- * the caller filters separately.
+ * Why this hostname must not be fetched from the Worker, or null when it is fine.
+ *
+ * **The one host filter in this codebase.** `validateWebhookUrl` below and the
+ * LLM provider allowlist (`blockedHostReason` in `evaluation/llm-providers.ts`)
+ * both go through here, because two filters that must agree eventually do not:
+ * the provider copy missed CGNAT, `.internal` (GCP's metadata endpoint is
+ * `metadata.google.internal`) and everything in `fe80::/10` that is not spelled
+ * `fe80`.
+ *
+ * It handles the obfuscated encodings a naive string blocklist misses: integer
+ * (2130706433), hex (0x7f000001, 0x7f.0.0.1), octal (0177.0.0.1), and every
+ * IPv6 spelling of the same address — `[::]`, `[0:0:0:0:0:0:0:1]`,
+ * `[::ffff:127.0.0.1]` and `[::127.0.0.1]`, which the URL parser rewrites to
+ * `[::7f00:1]` before anything here sees it. The rule is allowlist-shaped: an
+ * IP-ish host must be a canonical public dotted-decimal IPv4 (or a public
+ * IPv6) — any non-canonical numeric form fails closed.
+ *
+ * **Known limit:** this is an address check, not a resolution check. A public
+ * DNS name that resolves to 127.0.0.1 defeats it, and nothing before the fetch
+ * can see that.
  */
-function isPrivateIpLiteral(hostname: string): boolean {
-  // Bracketed IPv6 literal, e.g. "[::1]".
-  if (hostname.startsWith("[")) {
-    const inner = hostname.slice(1, -1).toLowerCase();
-    const compact = inner.replace(/[0:]/g, "");
-    // "" ← "::" / "0:0:…:0" (unspecified); "1" ← "::1" / "0:0:…:1" (loopback).
-    if (compact === "" || compact === "1") return true;
-    if (/^f[cd]/.test(inner)) return true; // ULA fc00::/7
-    if (/^fe80/.test(inner)) return true; // link-local
-    if (inner.includes("::ffff:")) return true; // IPv4-mapped
-    return false;
-  }
+export function privateHostReason(hostname: string): string | null {
+  // A trailing dot is the same name to a resolver; lowercase for the literals.
+  const host = hostname.toLowerCase().replace(/\.$/, "");
 
+  if (host === "localhost" || host.endsWith(".localhost")) {
+    return "'localhost' names the loopback interface";
+  }
+  if (host.startsWith("[")) return privateIpv6Reason(host);
+  // A bare single label is either an intranet name — `metadata`, the AWS/GCP
+  // metadata endpoint's short name, resolves to 169.254.169.254 on an instance
+  // — or an obfuscated integer/hex IP. Neither is a public host, and DNS is
+  // what makes it one, which is exactly what this check cannot see. Rejected
+  // here rather than at one call site, because the caller that had this rule
+  // and the caller that did not is how the two filters drifted apart before.
+  if (!host.includes(".")) return `${host} is a single-label host, not a public name`;
+  if (host.endsWith(".internal")) {
+    // metadata.google.internal is the cloud metadata endpoint — the single most
+    // valuable SSRF target there is, and it is a DNS name, not an address.
+    return `${host} is an internal-only name (.internal)`;
+  }
+  if (host.endsWith(".local")) return `${host} is a link-local mDNS name (.local)`;
+  return privateIpv4Reason(host);
+}
+
+/** @see privateHostReason — kept as a boolean for the call sites that only branch. */
+function isPrivateIpLiteral(hostname: string): boolean {
+  return privateHostReason(hostname) !== null;
+}
+
+function privateIpv4Reason(host: string): string | null {
   // Only inspect hosts that look like a numeric IP literal (all digits/dots, or
   // containing a hex "0x"). A real DNS name — even a hex-word one like
   // "beef.cafe" — has other letters and is left to the DNS-name checks.
-  const looksNumeric = /^[0-9.]+$/.test(hostname) || /0x/i.test(hostname);
-  if (!looksNumeric) return false;
+  const looksNumeric = /^[0-9.]+$/.test(host) || /0x/i.test(host);
+  if (!looksNumeric) return null;
 
   // Accept ONLY canonical dotted-decimal IPv4; integer/hex/octal/short forms are
   // obfuscated addresses → reject.
-  const parts = hostname.split(".");
-  if (parts.length !== 4) return true;
+  const notCanonical = `${host} is not a canonical dotted-quad IPv4 address`;
+  const parts = host.split(".");
+  if (parts.length !== 4) return notCanonical;
   const octets: number[] = [];
   for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) return true; // hex/non-decimal octet
-    if (part.length > 1 && part[0] === "0") return true; // leading zero (octal ambiguity)
+    if (!/^\d{1,3}$/.test(part)) return notCanonical; // hex/non-decimal octet
+    if (part.length > 1 && part[0] === "0") return notCanonical; // octal ambiguity
     const n = Number(part);
-    if (n > 255) return true;
+    if (n > 255) return notCanonical;
     octets.push(n);
   }
-  const [a, b] = octets as [number, number, number, number];
-  if (a === 0 || a === 10 || a === 127) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64/10
-  return false;
+  const [a, b, c] = octets as [number, number, number, number];
+  if (a === 127) return `${host} is in the loopback range 127.0.0.0/8`;
+  if (a === 0) return `${host} is in the unspecified range 0.0.0.0/8`;
+  if (a === 169 && b === 254) return `${host} is in the link-local range 169.254.0.0/16`;
+  if (a === 10) return `${host} is in the private range 10.0.0.0/8`;
+  if (a === 172 && b >= 16 && b <= 31) return `${host} is in the private range 172.16.0.0/12`;
+  if (a === 192 && b === 168) return `${host} is in the private range 192.168.0.0/16`;
+  if (a === 100 && b >= 64 && b <= 127) return `${host} is in the shared range 100.64.0.0/10`;
+  // Everything below is non-global: not "private" in the RFC 1918 sense, but
+  // not a public destination either, and each has been someone's internal
+  // network. 240/4 is the sharpest — nominally reserved, and used for real
+  // internal addressing inside more than one cloud provider — so a Worker that
+  // will fetch it is a Worker that can be pointed at that infrastructure.
+  if (a >= 224 && a <= 239) return `${host} is in the multicast range 224.0.0.0/4`;
+  if (a >= 240) return `${host} is in the reserved range 240.0.0.0/4`;
+  if (a === 198 && (b === 18 || b === 19)) {
+    return `${host} is in the benchmark range 198.18.0.0/15`;
+  }
+  if (a === 192 && b === 0 && c === 0) {
+    return `${host} is in the IETF protocol-assignments range 192.0.0.0/24`;
+  }
+  if (
+    (a === 192 && b === 0 && c === 2) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113)
+  ) {
+    return `${host} is in a documentation range (TEST-NET-1/2/3)`;
+  }
+  return null;
+}
+
+/**
+ * The eight 16-bit groups of a bracketed IPv6 literal, or null when the text is
+ * not one this parser recognises.
+ *
+ * Expanded rather than string-matched because every interesting IPv6 range has
+ * more than one spelling: `fe80::/10` is not only the literal prefix "fe80",
+ * and `::127.0.0.1` reaches the loopback through a dotted tail the URL parser
+ * has already rewritten to hex.
+ */
+function expandIpv6(inner: string): number[] | null {
+  if (!/^[0-9a-f:.]+$/.test(inner)) return null;
+
+  let text = inner;
+  // A trailing dotted quad (::ffff:127.0.0.1) is two hextets written in decimal.
+  const dotted = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text);
+  if (dotted) {
+    const octets = dotted.slice(1, 5).map(Number);
+    if (octets.some((n) => n > 255)) return null;
+    const high = ((octets[0] as number) << 8) | (octets[1] as number);
+    const low = ((octets[2] as number) << 8) | (octets[3] as number);
+    text = `${text.slice(0, dotted.index)}${high.toString(16)}:${low.toString(16)}`;
+  }
+  if (text.includes(".")) return null;
+
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] === "" ? [] : (halves[0] as string).split(":");
+  const tail = halves.length === 2 && halves[1] !== "" ? (halves[1] as string).split(":") : [];
+  const groups = [...head, ...tail];
+  if (groups.some((group) => !/^[0-9a-f]{1,4}$/.test(group))) return null;
+  if (halves.length === 1 ? groups.length !== 8 : groups.length > 7) return null;
+
+  const zeros = new Array(8 - groups.length).fill(0) as number[];
+  return [
+    ...head.map((group) => Number.parseInt(group, 16)),
+    ...zeros,
+    ...tail.map((group) => Number.parseInt(group, 16)),
+  ];
+}
+
+function privateIpv6Reason(host: string): string | null {
+  const hextets = expandIpv6(host.slice(1, -1));
+  // Fail closed: a bracketed literal this parser cannot read is not one anybody
+  // should be pointing a Worker at.
+  if (hextets === null) return `${host} is not a recognizable IPv6 address`;
+  const [h0, h1, h2, h3, h4, h5, h6, h7] = hextets as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+
+  if (h0 === 0 && h1 === 0 && h2 === 0 && h3 === 0) {
+    if (h4 === 0 && h5 === 0 && h6 === 0 && h7 === 0) {
+      return `${host} is the IPv6 unspecified address`;
+    }
+    if (h4 === 0 && h5 === 0 && h6 === 0 && h7 === 1) {
+      return `${host} is the IPv6 loopback address`;
+    }
+    if (h4 === 0 && h5 === 0xffff) return `${host} is an IPv4-mapped IPv6 address`;
+    // ::/64 holds nothing routable, and it is where an IPv4-compatible address
+    // (`::127.0.0.1`, which normalizes to `::7f00:1`) lands.
+    return `${host} is in the reserved ::/64 range, which includes IPv4-compatible addresses`;
+  }
+  if ((h0 & 0xfe00) === 0xfc00) return `${host} is an IPv6 unique-local address`;
+  if ((h0 & 0xffc0) === 0xfe80) return `${host} is an IPv6 link-local address`;
+  // `ff02::1` is all-nodes on the local link, which is a local-segment reach
+  // rather than a public fetch; site-local is deprecated but still carried on
+  // networks that adopted it before it was.
+  if ((h0 & 0xff00) === 0xff00) return `${host} is an IPv6 multicast address`;
+  if ((h0 & 0xffc0) === 0xfec0) return `${host} is an IPv6 site-local address`;
+  if (h0 === 0x2001 && h1 === 0x0db8) {
+    return `${host} is in the IPv6 documentation range 2001:db8::/32`;
+  }
+  // The IPv4 half rejects the benchmark range and the IETF protocol-assignments
+  // block; these are the v6 analogues, and leaving them out is how the two
+  // halves of one filter disagree about the same question.
+  if (h0 === 0x0100 && h1 === 0 && h2 === 0 && h3 === 0) {
+    return `${host} is in the IPv6 discard-only range 100::/64`;
+  }
+  // 2001::/23 is IANA's IETF-protocol-assignments block: benchmarking
+  // (2001:2::/48), AMT, the PCP anycast addresses, and Teredo. Teredo alone is
+  // nominally global, but it tunnels to an arbitrary IPv4 destination that the
+  // v4 rules above never get to inspect — so the whole block goes.
+  if (h0 === 0x2001 && (h1 & 0xfe00) === 0) {
+    return `${host} is in the IPv6 protocol-assignments range 2001::/23`;
+  }
+  // Same reasoning as Teredo: 6to4 and the NAT64 prefixes embed an IPv4
+  // address, so a literal here is a private-IPv4 reach wearing a v6 costume.
+  if (h0 === 0x2002) return `${host} is a 6to4 address (2002::/16)`;
+  // Exactly the two registered prefixes, not the whole /32 they sit in:
+  // 64:ff9b::/96 is the well-known prefix (first 96 bits, so h2-h5 zero) and
+  // 64:ff9b:1::/48 is local-use (first 48 bits, so h2 === 1). Matching on
+  // h0/h1 alone would also swallow 64:ff9b:2::/48, which is reserved for
+  // nothing and belongs to nobody's blocklist.
+  const wellKnownNat64 = h2 === 0 && h3 === 0 && h4 === 0 && h5 === 0;
+  const localUseNat64 = h2 === 1;
+  if (h0 === 0x0064 && h1 === 0xff9b && (wellKnownNat64 || localUseNat64)) {
+    return `${host} is an IPv4/IPv6 translation address (64:ff9b::/96, 64:ff9b:1::/48)`;
+  }
+  return null;
 }
 
 /**
  * Validates an outbound webhook URL. Requires http(s) and rejects hostnames
- * that resolve to private space (loopback, RFC 1918, link-local, ULA, CGNAT),
- * including obfuscated IP encodings. DNS-level rebinding is out of scope here;
- * Workers egress is not a guaranteed second layer, so keep this the primary gate.
+ * that resolve to private space (loopback, RFC 1918, link-local, ULA, CGNAT,
+ * `.internal`/`.local`, bare single labels), including obfuscated IP
+ * encodings — see
+ * {@link privateHostReason}, which is the shared filter. DNS-level rebinding is
+ * out of scope here; Workers egress is not a guaranteed second layer, so keep
+ * this the primary gate.
  */
 export function validateWebhookUrl(value: unknown, logger?: Logger): ValidationResult<string> {
   const log = logger ?? defaultLogger;
@@ -300,16 +463,7 @@ export function validateWebhookUrl(value: unknown, logger?: Logger): ValidationR
   }
 
   const hostname = parsed.hostname.toLowerCase();
-  if (
-    hostname === "localhost" ||
-    isPrivateIpLiteral(hostname) ||
-    hostname.endsWith(".internal") ||
-    hostname.endsWith(".local") ||
-    hostname.endsWith(".localhost") ||
-    // A bare single label (no dot) is either an intranet name or an obfuscated
-    // integer/hex IP — reject. Bracketed IPv6 handled above.
-    (!hostname.includes(".") && !hostname.startsWith("["))
-  ) {
+  if (isPrivateIpLiteral(hostname)) {
     log.debug("Validation failed - webhook URL targets a private host", { hostname });
     return err([{ field: "url", message: "URL must target a public host" }]);
   }

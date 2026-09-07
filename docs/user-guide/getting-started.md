@@ -142,11 +142,15 @@ evaluators:
   #   totalBudgetMs: 150000
   #   allowInstallScripts: false
 
-  # AI review of the diff via the Workers AI binding, scored 0.0-1.0.
-  # Omitting `model` uses the default (@cf/meta/llama-3.1-8b-instruct);
-  # a model id Workers AI doesn't serve makes this evaluator fail closed.
+  # AI review of the diff, scored 0.0-1.0. With no `provider` this runs on
+  # the instance's Workers AI binding, and omitting `model` uses the default
+  # (@cf/meta/llama-3.1-8b-instruct); a model id Workers AI doesn't serve makes
+  # this evaluator fail closed. Naming a `provider` runs the review on your own
+  # key instead (see below) and then `model` is required.
   - type: llm
     threshold: 0.7
+    # provider: anthropic
+    # model: claude-sonnet-4-5
 
 merge:
   requiredApprovals: 1
@@ -216,17 +220,117 @@ requiring a human approval and refusing force-merge.
   when you need it is *not* a failing install, but a native module that
   installs unbuilt and then fails when the test command loads it.
 - **`llm`** — sends the diff to an LLM for review against your criteria.
-  `model` picks the reviewer and must be a model the **Workers AI binding**
-  serves (default: `@cf/meta/llama-3.1-8b-instruct`); `threshold` is the
-  minimum passing score (0.0–1.0); `maxDiffChars` bounds how much diff is
-  sent (default 24,000, max 100,000). An unavailable model or unparseable
-  verdict fails closed. Token usage is recorded on the change as a cost
-  record.
+  `model` picks the reviewer (default: `@cf/meta/llama-3.1-8b-instruct`, which
+  the **Workers AI binding** serves); `threshold` is the minimum passing score
+  (0.0–1.0); `maxDiffChars` bounds how much diff is sent (default 24,000, max
+  100,000); `provider` runs the review on your own key instead of the
+  instance's binding (see [Bringing your own model key](#bringing-your-own-model-key)).
+  An unavailable model or unparseable verdict fails closed. Token usage is
+  recorded on the change as a cost record — the counts the provider reports,
+  or an estimate marked as estimated when a response omits them.
+  **A policy may declare at most one `llm` entry** — a second one is a
+  merge-blocking policy error, because the two entries cannot both be the
+  configuration in force.
+
+  Those four keys are the *only* keys this entry accepts. It is a whitelist:
+  anything else you write here — including `baseUrl` — is ignored with a
+  warning in the instance's logs and never reaches the reviewer. There is
+  deliberately no way for a policy file to name an endpoint; a project may
+  only select a provider the operator has already configured.
+
+A policy may declare **at most 16 `evaluators:` entries**; more than that is a
+policy error and blocks merges, the same as any other unusable entry. (The
+`deploys:` list has the same cap, for the same reason: one merge must not turn
+into an unbounded number of external calls.)
 
 Two top-level knobs sit alongside `evaluators`: `requireAll` (default `true`)
 makes the aggregate verdict demand every evaluator pass — set it to `false` to
 pass when any one does — and `minScore` (default `0.7`, clamped to 0–1) is the
 per-evaluator pass threshold the `diff` and `sandbox` evaluators score against.
+
+### Bringing your own model key
+
+By default the `llm` evaluator runs on the instance's Workers AI binding, and
+the operator pays for the tokens. A project can instead run the merge gate on
+its own account — its own provider, its own model, its own bill.
+
+It takes two things, and both are deliberate:
+
+1. **The operator configures the provider.** A named allowlist lives in the
+   instance's `LLM_PROVIDERS` variable; each entry has a `name`, a `kind`
+   (`anthropic` or `openai-compatible`), and the `baseUrl` for that endpoint.
+   Self-hosting? That variable is yours to set. Unset — the default — the
+   binding is the only option and everything below is inert.
+2. **The project stores the key.** The credential goes in the project's secret
+   store, the same one deploys use (*Project → Settings → Deploy secrets*, or
+   `PUT /api/projects/{namespace}/{slug}/secrets/{name}`), under the name
+   derived from the provider: provider `anthropic` reads `ANTHROPIC_API_KEY`,
+   provider `my-gateway` reads `MY_GATEWAY_API_KEY`. Only a project admin who
+   is not an agent may write it, and no route, log line or evaluation reason
+   ever reads it back.
+
+Then name the provider in the policy:
+
+```yaml
+evaluators:
+  - type: llm
+    provider: anthropic
+    model: claude-sonnet-4-5
+    threshold: 0.7
+```
+
+**`model` is required whenever `provider` is set.** The default model id is a
+Workers AI one and would fail every call against any other endpoint, so a
+provider entry that does not name its model is rejected rather than guessed at.
+
+**Everything here fails closed, and never falls back to the instance's
+binding.** A provider name the instance has not configured, a missing or
+undecryptable key, an instance with no `DEPLOY_SECRET_KEY`, a provider that
+answers with a redirect — each one fails the `llm` gate with a reason naming
+which of them it was, and none of them quietly moves your review back onto the
+operator's account. The corollary is worth planning for: a policy that names a provider
+this instance does not have is a **policy error, and policy errors block
+merges**.
+
+Two more consequences to know before you switch:
+
+- **Any project *writer* can spend your credit** by opening changes. BYOK moves
+  the token bill to your provider account; it does not add an approval step in
+  front of it.
+- **On a hosted instance, your own key lifts the token allowance and nothing
+  else.** The evaluation rate ceiling below is independent of who is billed for
+  tokens: it bounds evaluation and Worker capacity, which is the operator's
+  whoever owns the model account.
+
+### Usage limits on a hosted instance
+
+Self-hosted, there are no limits: the whole metering path is inert unless the
+operator has configured a billing service, and every allowance reads as
+unlimited. On a hosted instance the shape is:
+
+- **A monthly token allowance**, plus monthly sandbox time and deploy counts.
+  Only platform-billed usage counts against it — spend on your own provider key
+  is billed by that provider and is tracked separately.
+- **An hourly ceiling on evaluations**, which bounds burst rather than spend.
+  **Bringing your own key does not lift it.**
+- **An allowance follows the person, not the project.** By default it is checked
+  against whoever ran the evaluation (an agent spends its owner's), so it is the
+  same allowance whether you work in your own namespace or an organization's, and
+  creating another organization does not hand you a fresh one. The one exception
+  is an organization on a plan that pools: there the organization is the subject
+  and its members draw on its allowance rather than their own. An organization
+  the billing service has never heard of is not that — pooling has to be
+  positively granted, or creating an organization would be the reset this rule
+  exists to close.
+
+You can see all of it — consumption, allowance, and when the period resets — at
+`/settings/usage`, or over MCP with `stratum_get_usage`. Crossing 80% of a meter
+raises a banner and sends one email. Where an operator has switched enforcement
+on, an exhausted allowance surfaces as a **failing gate** on the change that hit
+it — never as a skipped one — naming what ran out, when it resets, and both ways
+out. An operator who has not switched it on records the same decisions and
+admits every one of them, which is how a new limit gets measured before it
+blocks anything.
 
 ### The merge protections
 

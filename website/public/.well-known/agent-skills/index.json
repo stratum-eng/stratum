@@ -16,14 +16,14 @@
       "name": "stratum-mcp",
       "type": "skill-md",
       "description": "Connect an MCP-capable agent or editor to Stratum and use its tools for the full evaluation-gated change flow.",
-      "digest": "sha256:d352270d7d2d93c6b6647303059b586d076c1581b62312b7d3ffdef985f28a83",
+      "digest": "sha256:e2590f255d512fa0fa910544dc12b928518117d5b5372601d8a0a861788460c1",
       "url": "https://docs.usestratum.dev/.well-known/agent-skills/stratum-mcp/SKILL.md"
     },
     {
       "name": "stratum-merge-gate",
       "type": "skill-md",
       "description": "Get a change through Stratum's evaluation gates and merged, and read the verdict when a gate blocks it.",
-      "digest": "sha256:f56f4e49447e1866268b9e9eb956e26faa1029971f402511c29de276a18d8ad6",
+      "digest": "sha256:ace75ea8b95503b50381093e6466835c76c506a5fb629afffa603ff5f50a64b9",
       "url": "https://docs.usestratum.dev/.well-known/agent-skills/stratum-merge-gate/SKILL.md"
     }
   ]

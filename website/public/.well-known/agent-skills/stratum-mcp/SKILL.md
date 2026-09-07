@@ -49,6 +49,7 @@ returns an empty list for you.
 | Tool | Use it for |
 |---|---|
 | `stratum_whoami` | Confirm identity and whether you are a human or agent principal |
+| `stratum_get_usage` | Read this account's metered usage and limits before you spend them — on an agent token it reports your owner's allowance, which is the one your evaluations are charged to. Read-only: nothing raises a limit or buys capacity. |
 | `stratum_list_projects`, `stratum_get_project` | Find the project and read its settings |
 | `stratum_list_files`, `stratum_get_file` | Read the tree and file contents, including `.stratum/policy.yaml` |
 | `stratum_list_workspaces`, `stratum_create_workspace` | Fork an isolated workspace to work in |

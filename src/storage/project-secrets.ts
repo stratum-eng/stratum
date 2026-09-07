@@ -1,9 +1,16 @@
 /**
- * Per-project encrypted secret store, backing deploy provider credentials.
+ * Per-project encrypted secret store, backing deploy provider credentials and
+ * the per-project LLM provider keys BYOK runs on.
  *
- * Write-only by construction: the only function that yields a plaintext value is
- * {@link loadSecretValues}, which exists for the deploy runner and is deliberately
- * not reachable from any route. Everything else returns names and metadata.
+ * Write-only by construction *to a caller*: the only function that yields a
+ * plaintext value is {@link loadSecretValues}, and no route returns, renders or
+ * logs what it resolves. It is no longer unreachable from a route, though —
+ * BYOK resolves a provider credential on the change-creation path, so the
+ * routes that create or re-evaluate a change (`routes/changes.ts`,
+ * `routes/git-http.ts`, `routes/sync-management.ts`) reach it through
+ * `evaluation/llm-byok.ts`. What keeps that safe is the rule below, not the
+ * call graph: the value it returns goes into one outbound request header and
+ * nowhere else. Everything else here returns names and metadata.
  */
 import type { Env } from "../types";
 import { type SecretScope, decryptSecret, deriveSecretKey, encryptSecret } from "../utils/crypto";
@@ -101,7 +108,43 @@ function validateName(name: string): ValidationError | null {
   );
 }
 
+/**
+ * Characters no credential contains and that a header cannot carry: C0, DEL,
+ * and NUL among them.
+ *
+ * Rejected at the WRITE, which is the only place the value is ever attacker-
+ * chosen. A stored value ends up in an outbound header, and `new Headers()`
+ * throws a `TypeError` whose message QUOTES the offending value — so a CR, LF
+ * or NUL in a stored secret turns into an error message carrying the secret,
+ * which then becomes an evaluation reason persisted on the change and rendered
+ * on a page that is world-readable for a public project. The provider closes
+ * the other end (`evaluation/llm-provider.ts` builds its headers outside the
+ * try and maps a failure to a constant), so neither end alone is load-bearing.
+ */
+/**
+ * Does `value` contain a C0 control character or DEL?
+ *
+ * A char-code scan rather than a regex: matching control characters is the
+ * whole point here, which Biome's `noControlCharactersInRegex` flags, and a
+ * suppression for a rule this deliberately trips reads worse than the loop.
+ */
+function hasControlCharacter(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
 function validateValue(value: string): ValidationError | null {
+  if (hasControlCharacter(value)) {
+    // Deliberately says nothing about the value — not its length, not the
+    // offending character, and above all not the value itself: this message is
+    // rendered back to the caller.
+    return new ValidationError(
+      "Secret value must not contain control characters (including CR, LF, tab and NUL)",
+    );
+  }
   const bytes = new TextEncoder().encode(value).length;
   if (bytes <= MAX_SECRET_VALUE_BYTES) return null;
   return new ValidationError(`Secret value exceeds ${MAX_SECRET_VALUE_BYTES} bytes`, {
@@ -127,11 +170,28 @@ async function resolveKey(env: SecretKeyEnv): Promise<Result<CryptoKey, AppError
     );
   }
   try {
-    return ok(await deriveSecretKey(secret));
+    // Cached per isolate, keyed on the value so a rebind (or a test) is never
+    // served the key of a different secret. PBKDF2 at 100k iterations was
+    // affordable once per deploy; BYOK puts it on the change-creation path,
+    // which already does two clones and a diff, and that path runs on every
+    // change rather than on every merge. The *promise* is cached rather than
+    // the key so two concurrent evaluations in one isolate derive once, not
+    // twice. The derived key is non-extractable and the secret is already in
+    // this isolate's `env`, so the cache widens nothing.
+    if (derivedKeyCache?.secret !== secret) {
+      derivedKeyCache = { secret, key: deriveSecretKey(secret) };
+    }
+    return ok(await derivedKeyCache.key);
   } catch (error) {
+    // Never leave a rejected promise memoized: the next request would replay
+    // the same failure forever without retrying the derivation.
+    derivedKeyCache = null;
     return err(toAppError(error, "deriveSecretKey", {}));
   }
 }
+
+/** @see resolveKey — one entry, because one instance has one `DEPLOY_SECRET_KEY`. */
+let derivedKeyCache: { secret: string; key: Promise<CryptoKey> } | null = null;
 
 /**
  * Creates or replaces a project's secret, returning only its metadata.
@@ -278,8 +338,16 @@ export async function deleteSecret(
 }
 
 /**
- * Resolves plaintext secret values for the deploy runner. **The only read path
- * for a value anywhere in the codebase** — do not call it from a route.
+ * Resolves plaintext secret values. **The only read path for a value anywhere
+ * in the codebase**, and the rule for a caller is that the plaintext goes
+ * straight into the one outbound request that needs it and is never returned,
+ * rendered, logged, or interpolated into an error.
+ *
+ * Two callers today: the deploy runner (`deploy/runner.ts`), and BYOK provider
+ * resolution (`evaluation/llm-byok.ts`), which the change-creation and
+ * re-evaluation routes reach synchronously. The comment that used to stand here
+ * said no route may call it; that stopped being true when BYOK landed, and a
+ * rule nobody can follow is worse than the honest one above.
  *
  * Derives the AES key once for the whole batch: PBKDF2 at 100k iterations is CPU
  * work and the deploy consumer runs under a CPU limit, so per-secret derivation

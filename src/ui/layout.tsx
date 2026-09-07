@@ -1,4 +1,6 @@
 import type { FC } from "hono/jsx";
+import type { UsageBannerNotice } from "../billing/usage-banner";
+import { meterTitle } from "../billing/usage-report";
 import { SourceFooter } from "./components/source-footer";
 
 /**
@@ -21,11 +23,58 @@ interface LayoutProps {
    * see the URL, and a page under /new/import is still "new" to the reader.
    */
   active?: NavItem;
+  /**
+   * The 80% usage warning, when this account has crossed one (PRD §8).
+   *
+   * A prop rather than something the layout fetches: the layout is a pure
+   * component with no request context, and the route that renders a page is
+   * the only place that can decide whether one KV read is worth taking. Pages
+   * that do not thread it simply do not warn.
+   */
+  usageNotice?: UsageBannerNotice | null | undefined;
   children?: unknown;
 }
 
+/**
+ * "You are near a limit", shown where a user is already looking.
+ *
+ * A page nobody visits warns nobody, which is why this lives in the shared
+ * chrome and not on `/settings/usage` alone. It has no dismiss control on
+ * purpose: dismissal is state, state without script means a cookie or a POST,
+ * and the notice is true until the period rolls over anyway.
+ *
+ * The last sentence turns on whether limits actually BIND
+ * (`enforcementBinding`), not on whether billing is configured. Through the
+ * observe-only month the instance has allowances and refuses nothing, and a
+ * banner promising a refusal that cannot happen teaches people to disbelieve
+ * the one that eventually does.
+ */
+const UsageBanner: FC<{ notice: UsageBannerNotice }> = ({ notice }) => (
+  // `<output>` rather than a div with role="status": it is the semantic element
+  // for exactly this, which is what Biome's useSemanticElements asks for, and it
+  // carries the same implicit ARIA role to a screen reader.
+  <output class="usage-banner">
+    <span>
+      You have used {notice.percent}% of this account's monthly{" "}
+      {meterTitle(notice.meter).toLowerCase()} allowance for {notice.period} (
+      {notice.used.toLocaleString("en-US")} of {notice.limit.toLocaleString("en-US")}).{" "}
+      {notice.enforcing
+        ? "Work that needs it is refused once it runs out."
+        : "Nothing is refused yet — this instance is measuring usage, not enforcing it."}
+    </span>
+    <a href="/settings/usage">View usage</a>
+  </output>
+);
+
 /** The page chrome shared by every server-rendered page: header nav, main column, footer, and the CSP-nonced scripts. */
-export const Layout: FC<LayoutProps> = ({ title, user, refreshSeconds, active, children }) => {
+export const Layout: FC<LayoutProps> = ({
+  title,
+  user,
+  refreshSeconds,
+  active,
+  usageNotice,
+  children,
+}) => {
   const current = (item: NavItem) => (active === item ? "page" : undefined);
   return (
     <html lang="en">
@@ -106,7 +155,10 @@ export const Layout: FC<LayoutProps> = ({ title, user, refreshSeconds, active, c
             )}
           </div>
         </nav>
-        <main class="main">{children}</main>
+        <main class="main">
+          {usageNotice && <UsageBanner notice={usageNotice} />}
+          {children}
+        </main>
         <SourceFooter />
       </body>
     </html>

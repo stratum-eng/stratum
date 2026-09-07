@@ -1,11 +1,13 @@
 import { Hono } from "hono";
+import { llmProviderCatalog } from "../evaluation/llm-providers";
 import { loadPolicy } from "../evaluation/policy-loader";
 import { scanContentForSecrets } from "../evaluation/secret-scanner";
 import { checkResolutionMergeProtection } from "../merge/protection";
 import { authMiddleware } from "../middleware/auth";
-import { buildEvaluators, runEvaluation } from "../services/change-flow";
+import { billingContextFor, buildEvaluators, runEvaluation } from "../services/change-flow";
 import { recordAudit } from "../storage/audit";
 import { getChange } from "../storage/changes";
+import { recordCosts, resolveBillingSubject } from "../storage/costs";
 import {
   MAX_FILE_BYTES,
   buildManualResolutionDiff,
@@ -22,8 +24,9 @@ import {
   updateProjectAfterSync,
 } from "../storage/sync";
 import type { Env } from "../types";
-import { projectDefaultBranch } from "../types";
+import { projectDefaultBranch, projectDisplayName } from "../types";
 import { canWriteProject } from "../utils/authz";
+import { getWaitUntil } from "../utils/execution-ctx";
 import { createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 import { notFound, ok } from "../utils/response";
@@ -619,6 +622,12 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
   if (!projectToken.success) return c.json({ error: projectToken.error.message }, 502);
   if (!workspaceToken.success) return c.json({ error: workspaceToken.error.message }, 502);
 
+  // One resolution for every billing site on this route. Both recording sites
+  // and the manual path's meters attribute the same project, and for an
+  // agent-owned one this is a `getAgent` D1 read — paid for once, and unable to
+  // name two different payers for the same request.
+  const billingSubject = await resolveBillingSubject(c.env.DB, logger, project);
+
   // Route a manual resolution through the same merge gate a normal Change goes
   // through: the project's configured evaluator suite, then merge protection
   // (required evaluators + required approvals), both run against the exact
@@ -655,19 +664,57 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
     }
     const { diff, baseSha } = diffResult.data;
 
-    const policy = await loadPolicy(project.remote, projectToken.data, logger, branch);
-    const projectName = `${conflictCtx.namespace}/${conflictCtx.slug}`;
+    const policy = await loadPolicy(
+      project.remote,
+      projectToken.data,
+      logger,
+      branch,
+      llmProviderCatalog(c.env, logger),
+    );
     // No workspace repo access is passed for the sandbox evaluator: the content
     // being judged here has no commit of its own yet — that's the point, it must
     // pass BEFORE resolveConflict creates one — so there is no ref a sandbox
     // could check out. A policy naming `sandbox` fails closed via
     // UnavailableEvaluator, same as any other missing prerequisite.
-    const evaluators = buildEvaluators(c.env, policy, projectName, logger);
+    const evaluators = await buildEvaluators(
+      c.env,
+      policy,
+      project,
+      logger,
+      undefined,
+      getWaitUntil(c),
+    );
     // `buildManualResolutionDiff` resolved this base from the clone it built the
     // diff on, so it names the tree the resolution actually applies to (#274).
+    // This path runs the LLM evaluator too, so it needs a payer as much as
+    // change creation does.
     const { evalRuns, evalResult } = await runEvaluation(evaluators, diff, policy, logger, {
       baseSha,
+      // The resolver is the actor: this route is user-credentialed, and PRD §4a
+      // checks the allowance against the person who ran the suite.
+      billing: billingContextFor(billingSubject, project.id, userId),
     });
+
+    // Recorded here, BEFORE the verdict is acted on, because the spend is
+    // already incurred: a resolution the suite rejects burned exactly the same
+    // model tokens as one it accepts, and the early return below would drop
+    // them. Mirrors the recording POST /changes/:id/evaluate does, with one
+    // git_op rather than its pair — `buildManualResolutionDiff` cloned once.
+    await recordCosts(
+      c.env.DB,
+      logger,
+      {
+        project: projectDisplayName(project),
+        projectId: project.id,
+        // The Change whose merge attempt produced this conflict, when the
+        // conflict context named one — a resolution is part of landing it.
+        ...(conflictCtx.changeId ? { changeId: conflictCtx.changeId } : {}),
+        workspace: conflictCtx.workspaceName,
+        ...(billingSubject ?? {}),
+        notify: { env: c.env, actorUserId: userId, waitUntil: getWaitUntil(c) },
+      },
+      [{ kind: "git_ops", quantity: 1 }, ...evalRuns.flatMap(({ result }) => result.costs ?? [])],
+    );
 
     if (!evalResult.passed) {
       logger.warn("Manual conflict resolution blocked by evaluator suite", {
@@ -757,6 +804,36 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
           : undefined,
     },
     logger,
+  );
+
+  // `resolveConflict` runs for EVERY strategy, so this is recorded here rather
+  // than in the `manual` branch above, which only ever sees the evaluator
+  // suite's spend. Without it, accept-project and accept-workspace resolutions
+  // record nothing at all, and manual under-records the git work it paid for.
+  //
+  // Recorded before the failure branch below, for the same reason the manual
+  // branch records before its 422: a resolution that clones and then fails to
+  // push cost the operator what a successful one did, and a failure must not be
+  // the cheap way to use the platform.
+  //
+  // The count is what the strategy WOULD do, not a measurement — `resolveConflict`
+  // reports only a commit sha, so there is nothing to measure. It therefore
+  // over-bills a resolution that dies before its first clone (a rejected token)
+  // and is exact otherwise. Tolerable while `git_ops` maps to no meter
+  // (`meterForCostKind`); if it ever gains one, `resolveConflict` has to report
+  // the operations it actually completed rather than being guessed at here.
+  const resolveGitOps = strategy === "accept-workspace" ? 3 : 2;
+  await recordCosts(
+    c.env.DB,
+    logger,
+    {
+      project: projectDisplayName(project),
+      projectId: project.id,
+      ...(conflictCtx.changeId ? { changeId: conflictCtx.changeId } : {}),
+      workspace: conflictCtx.workspaceName,
+      ...(billingSubject ?? {}),
+    },
+    [{ kind: "git_ops", quantity: resolveGitOps }],
   );
 
   if (!resolveResult.success) {

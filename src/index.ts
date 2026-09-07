@@ -58,6 +58,7 @@ import { createLogger } from "./utils/logger";
 export { MergeQueue } from "./queue/merge-queue";
 export { MagicLinkRateLimiter } from "./queue/magic-link-limiter";
 export { RepoDO } from "./queue/repo-do";
+export { UsageMeter } from "./queue/usage-meter";
 
 const app = new Hono<{ Bindings: Env }>();
 

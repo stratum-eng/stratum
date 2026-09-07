@@ -12,9 +12,13 @@
  *    path. `canReadProject` returns true unconditionally for a public project,
  *    and a provider error payload can echo request context back at us.
  *
- * No route on either router returns a secret value; there is no read path for
- * one anywhere in the codebase (`loadSecretValues` is the deploy runner's, and
- * is not reachable from here).
+ * No route on either router returns a secret value. `loadSecretValues` is the
+ * only function that yields one, and it is not reachable from this router at
+ * all — but it is no longer route-unreachable in general: BYOK resolves a
+ * project's provider credential on the change-creation path
+ * (`evaluation/llm-byok.ts`). That value never comes back out either; it goes
+ * straight into the provider request header. The invariant these routes keep is
+ * the narrower, checkable one: nothing here reads a value.
  *
  * The browser talks to these same routes. An HTML form can only issue GET or
  * POST and cannot read a JSON body, so the secret writes have form-friendly
