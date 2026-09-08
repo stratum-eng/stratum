@@ -84,6 +84,59 @@ cover).
 
 ## Deployment Process
 
+### One-click deploy (Deploy to Cloudflare button)
+
+The README carries a [Deploy to Cloudflare](https://developers.cloudflare.com/workers/platform/deploy-buttons/)
+button:
+
+```md
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/stratum-eng/stratum)
+```
+
+The URL is the whole mechanism — `deploy.workers.cloudflare.com` reads the public
+repository, and on the user's own Cloudflare account it clones the repo into their
+GitHub/GitLab account, provisions the resources the Wrangler config declares
+(KV, D1, R2, Queues, Durable Objects, Workers AI, Hyperdrive, Vectorize, Secrets
+Store — and nothing else), rewrites the config with the new resource IDs, runs the
+`deploy` script from `package.json`, and connects Workers Builds so later pushes
+redeploy.
+
+Four things in this repository exist to make that flow work. Breaking any of them
+breaks the button silently — nobody notices until someone else's deploy fails:
+
+1. **The top-level `wrangler.toml` block is the template.** The button never passes
+   `--env`, so it deploys the top-level config, not `[env.production]`. Placeholder
+   resource IDs there are fine (they get rewritten), missing ones are not — every
+   binding needs a default name/ID present in the file.
+2. **No `script_name` on the top-level Durable Object bindings.** The setup page
+   invites the user to rename the Worker; a pinned `script_name = "stratum"` would
+   then point at a script that does not exist on their account, and the deploy dies.
+   The named envs still pin it, because their Worker names are fixed.
+3. **`package.json` runs migrations in `deploy`.** `deploy` is
+   `npm run db:migrations:apply && wrangler deploy`, and the migration command names
+   the *binding* (`wrangler d1 migrations apply DB --remote`), not the database —
+   the user may well have renamed the database. Without this, the Worker deploys
+   against an empty D1 and every request that touches it fails.
+4. **`.dev.vars.example` is the secret manifest.** Cloudflare renders one input per
+   key on the setup page and stores what is typed as a Worker secret. Descriptions
+   for those inputs (and for bindings and vars) come from `cloudflare.bindings` in
+   `package.json`, which supports inline markdown.
+
+Known gaps, all of them account-side rather than repo-side:
+
+- **Artifacts is a private beta** and is not an auto-provisioned resource type. The
+  binding is required — the change flow uses `env.ARTIFACTS` unguarded — so the
+  button only completes on an account that already has access.
+- **`OAUTH_REDIRECT_URI` cannot be right at deploy time**, because the Worker's URL
+  does not exist yet. It is fixed after the fact, or sidestepped by using magic-link
+  sign-in.
+- **`[[send_email]]`** needs Email Routing enabled on a domain in the account
+  (`wrangler email sending enable yourdomain.com`); nothing provisions that.
+- **The deploy DLQ** (`stratum-deploys-dlq`) is commented out of the top-level
+  config. A `dead_letter_queue` is a bare name rather than a binding, so nothing
+  provisions it, and `wrangler deploy` fails outright on a bound queue that does not
+  exist. Named envs keep theirs; CI creates them from `scripts/wrangler-queues.mjs`.
+
 ### Manual Deployment
 
 **Staging:**
@@ -97,11 +150,13 @@ npx wrangler d1 migrations apply stratum-staging --env=staging --remote
 
 **Production:**
 ```bash
-# Deploy to production
-npx wrangler deploy
+# Deploy to production — the env flag is not optional. A bare `wrangler deploy`
+# publishes the top-level *template* config, placeholder resource IDs and all,
+# to a Worker named `stratum`: the production Worker.
+npx wrangler deploy --env=production
 
 # Apply database migrations
-npx wrangler d1 migrations apply stratum --remote
+npx wrangler d1 migrations apply stratum --env=production --remote
 ```
 
 ### Automated Deployment (GitHub Actions)

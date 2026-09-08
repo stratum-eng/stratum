@@ -1,0 +1,58 @@
+# Stratum secrets — copy to `.dev.vars` for local `wrangler dev`, or set on a
+# deployed Worker with `wrangler secret put <NAME>`.
+#
+# This file is ALSO the secret manifest for the "Deploy to Cloudflare" button:
+# Cloudflare reads `.dev.vars.example`, renders one input per key on the setup
+# page, and stores whatever the user types as a Worker secret. Every key here is
+# optional at deploy time — leave one blank and the feature it powers stays off.
+# Descriptions for these fields live in `package.json` under `cloudflare.bindings`.
+#
+# Plain (non-secret) configuration lives in `[vars]` in wrangler.toml, not here.
+
+# --- Authentication: set at least one method, or nobody can sign in ----------
+
+# Email magic links. Requires Email Routing on a domain in your Cloudflare
+# account: `wrangler email sending enable yourdomain.com`.
+EMAIL_FROM_ADDRESS=
+
+# GitHub OAuth (also the identity used for repo import). Create an OAuth app at
+# https://github.com/settings/developers with the callback URL set to
+# <your worker URL>/auth/github/callback — the same value as OAUTH_REDIRECT_URI.
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+
+# Google OAuth. Callback URL must match GOOGLE_REDIRECT_URI in [vars].
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+
+# --- Admin surface -----------------------------------------------------------
+
+# /api/admin/* (backups, restore plans, audit, metrics) is unreachable unless at
+# least one of these is set: an API key sent as `X-Admin-API-Key`, or the email
+# address of a signed-in user who should be treated as an admin.
+ADMIN_API_KEY=
+ADMIN_EMAIL=
+
+# --- Optional ----------------------------------------------------------------
+
+# Encrypts stored per-project deploy secrets. Rotating it makes every previously
+# stored secret undecryptable. Generate with: openssl rand -hex 32
+DEPLOY_SECRET_KEY=
+
+# Encrypts D1/KV backup bundles written to R2. Same rotation caveat as above.
+BACKUP_ENCRYPTION_SECRET=
+
+# Required for promote-to-PR and for posting eval verdicts back to GitHub; also
+# raises the rate limits on repo import.
+GITHUB_TOKEN=
+
+# Verifies inbound GitHub webhooks (sync from GitHub back into Stratum).
+GITHUB_WEBHOOK_SECRET=
+
+# Server-side telemetry. Sends route patterns only, never concrete paths.
+# Browser analytics is a separate, non-secret var (POSTHOG_PUBLIC_KEY in [vars]).
+POSTHOG_API_KEY=
+
+# Closed-beta invite gate. Only read when BETA_GATE = "1" and
+# REFERRAL_SERVICE_URL are both set in [vars]; must match the referral service.
+REFERRAL_SERVICE_SECRET=

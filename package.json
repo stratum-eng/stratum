@@ -11,7 +11,8 @@
   "repository": { "type": "git", "url": "https://github.com/stratum-eng/stratum.git" },
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "npm run db:migrations:apply && wrangler deploy",
+    "db:migrations:apply": "wrangler d1 migrations apply DB --remote",
     "deploy:production": "wrangler deploy --env=production",
     "deploy:staging": "wrangler deploy --env=staging",
     "test": "vitest run",
@@ -28,6 +29,49 @@
     "release:notes": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts notes",
     "release:prepare": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts prepare",
     "cf-typegen": "wrangler types"
+  },
+  "cloudflare": {
+    "bindings": {
+      "ARTIFACTS": {
+        "description": "Cloudflare **Artifacts** (private beta) stores every Stratum repository. Stratum will not start a forge project without it — request access before deploying."
+      },
+      "DB": {
+        "description": "D1 database for changes, issues, events, audit and cost records. Schema is applied by the deploy command (`wrangler d1 migrations apply DB --remote`)."
+      },
+      "STATE": {
+        "description": "KV namespace holding project/workspace identity and session state."
+      },
+      "BACKUPS": {
+        "description": "R2 bucket for nightly D1 dumps and repo packs. Backups no-op if this is unbound."
+      },
+      "AI": {
+        "description": "Workers AI, used by the `llm` evaluator. Naming `llm` in `merge.requiredEvaluators` without this binding blocks every merge in that project."
+      },
+      "OAUTH_REDIRECT_URI": {
+        "description": "Set to `https://<your-worker-url>/auth/github/callback` after the first deploy, and register the same URL in your GitHub OAuth app."
+      },
+      "GITHUB_CLIENT_ID": {
+        "description": "GitHub OAuth app client ID — create one at [github.com/settings/developers](https://github.com/settings/developers). Leave blank to use email magic links instead."
+      },
+      "GITHUB_CLIENT_SECRET": {
+        "description": "Client secret for the same GitHub OAuth app."
+      },
+      "EMAIL_FROM_ADDRESS": {
+        "description": "Sender for magic-link emails, e.g. `noreply@yourdomain.com`. Requires `wrangler email sending enable yourdomain.com` on a domain in this account."
+      },
+      "ADMIN_API_KEY": {
+        "description": "Sent as the `X-Admin-API-Key` header to reach `/api/admin/*` (backups, restore, audit, metrics). Generate with `openssl rand -hex 32`. Without this or `ADMIN_EMAIL` the admin surface is unreachable."
+      },
+      "ADMIN_EMAIL": {
+        "description": "A signed-in user with this email address is treated as an admin. An alternative to `ADMIN_API_KEY`."
+      },
+      "DEPLOY_SECRET_KEY": {
+        "description": "Master key encrypting per-project deploy secrets. Generate with `openssl rand -hex 32`; rotating it makes every stored secret undecryptable."
+      },
+      "GITHUB_TOKEN": {
+        "description": "Required for promote-to-PR and for reporting eval verdicts to GitHub; also raises repo import rate limits."
+      }
+    }
   },
   "dependencies": {
     "@isomorphic-git/lightning-fs": "^4.6.2",

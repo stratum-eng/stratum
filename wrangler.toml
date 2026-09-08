@@ -75,20 +75,23 @@ bucket_name = "stratum-backups"
 [ai]
 binding = "AI"
 
+# No `script_name` here, deliberately: all three classes are exported by this
+# Worker (src/index.ts), so the binding resolves to the script being deployed
+# whatever it is named. The named envs below DO pin script_name, because their
+# Worker name is fixed. Hardcoding it here would break every deploy that renames
+# the Worker — including the Deploy to Cloudflare button, whose setup page
+# invites exactly that, and which would then bind to a script that does not exist.
 [[durable_objects.bindings]]
 name = "MERGE_QUEUE"
 class_name = "MergeQueue"
-script_name = "stratum"
 
 [[durable_objects.bindings]]
 name = "REPO_DO"
 class_name = "RepoDO"
-script_name = "stratum"
 
 [[durable_objects.bindings]]
 name = "MAGIC_LINK_LIMITER"
 class_name = "MagicLinkRateLimiter"
-script_name = "stratum"
 
 [[queues.producers]]
 binding = "EVENTS_QUEUE"
@@ -137,7 +140,13 @@ max_concurrency = 1
 max_retries = 2
 retry_delay = 60
 visibility_timeout_ms = 900000  # 15 min; see src/deploy/limits.ts
-dead_letter_queue = "stratum-deploys-dlq"
+# A bound dead-letter queue must already exist — `wrangler deploy` fails outright
+# on a queue that does not, and nothing provisions a DLQ automatically (it is a
+# bare name here, not a binding). Left commented out so a first deploy of this
+# template succeeds; exhausted deploy messages are dropped instead of parked
+# until you create the queue and uncomment the line:
+#   wrangler queues create stratum-deploys-dlq
+# dead_letter_queue = "stratum-deploys-dlq"
 
 # "0 4 * * *"   — daily backup, on its OWN trigger so the ~15-min invocation
 #                 budget is never shared with (and starved by) the sync/TTL work

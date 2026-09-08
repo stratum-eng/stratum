@@ -58,6 +58,37 @@ Humans and AI agents are both first-class citizens, with different powers by des
 
 ## Quick start
 
+### One-click deploy
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/stratum-eng/stratum)
+
+Cloudflare clones this repository into your own GitHub or GitLab account, provisions
+the D1 database, KV namespace, R2 bucket, Queues, Durable Objects and Workers AI
+binding that the top-level `wrangler.toml` declares, applies the D1 migrations, and
+deploys the Worker with [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/)
+wired up, so every later push to your copy redeploys itself. The setup page lets you
+rename the Worker and its resources, edit anything in `[vars]`, and fill in the
+secrets listed in [`.dev.vars.example`](.dev.vars.example) — every one of those is
+optional, and each turns on the feature it belongs to.
+
+Two things the button cannot do for you:
+
+- **Artifacts access.** [Cloudflare Artifacts](https://developers.cloudflare.com/artifacts/)
+  is a private beta, and is not one of the resource types Cloudflare auto-provisions
+  for a deploy button. Artifacts is where Stratum stores every repository — it backs
+  the change flow in *both* modes, GitHub-layer included, and is not optional — so
+  the button only works on an account that already has beta access. Request it before
+  clicking, or the deploy will fail on that binding.
+- **`OAUTH_REDIRECT_URI`.** Your Worker's URL does not exist until the deploy
+  finishes, so this var still points at `localhost`. Afterwards, set it to
+  `https://<your-worker-url>/auth/github/callback` (in your new repo's
+  `wrangler.toml`, then push) and register the same URL in your OAuth app. Magic-link
+  sign-in does not need it.
+
+The rest of this section is the same deployment done by hand, which is also how you
+upgrade an instance the button created (`git pull` from this repo, push, Workers
+Builds redeploys).
+
 ### Prerequisites
 
 - **Node.js 22.13+** (the test suite uses `node:sqlite`, unflagged only from 22.13)
