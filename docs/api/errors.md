@@ -70,6 +70,11 @@ codes are in the [OpenAPI specification](openapi.yml).
   (`merge.requireFreshBase`); re-evaluate on the new base
 - `STALE_WORKSPACE` — the workspace advanced after evaluation; the merge is
   rejected so unevaluated commits can never land
+- `STALE_PROJECT` — `409`; the project's default branch advanced between the
+  point a manual conflict resolution was evaluated and the point it would have
+  been committed. The same principle as `STALE_WORKSPACE` from the other side:
+  the resolution would otherwise have landed on a base no evaluator saw. Nothing
+  is committed — re-resolve against the current revision
 - `WORKSPACE_UNVERIFIABLE` — the workspace state could not be verified against
   what was evaluated
 - `MERGE_CONFLICT` — the merge produced conflicts; the response includes a

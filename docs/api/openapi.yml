@@ -981,6 +981,16 @@ paths:
         Applies a resolution strategy to a conflict previously recorded by a
         failed merge and commits the result to the project. Requires project
         write access.
+
+        The `manual` strategy is the only one that introduces content no
+        evaluator has seen, so it is gated: the project's evaluator suite and
+        merge protection both run on the resolution before anything is
+        committed. That evaluation is pinned to the revision it read, so if a
+        push lands on the default branch in between, the resolution is refused
+        with `409 STALE_PROJECT` rather than committed onto the newer tip —
+        re-resolve against the current revision. The `accept-*` strategies
+        re-stage content that is already committed on one side of the conflict
+        and are neither evaluated nor pinned.
       requestBody:
         required: true
         content:
@@ -1017,6 +1027,14 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The project advanced past the revision this resolution was evaluated
+            against (code STALE_PROJECT). Nothing was committed; re-resolve
+            against the current revision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "410":
           description: Conflict not found or already resolved
           content:

@@ -755,12 +755,31 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
         strategy === "manual"
           ? (body.resolutions as Array<{ file: string; content: string }>)
           : undefined,
+      // #337: pin the commit the gates above ran against. resolveConflict takes
+      // its own clone of the project, so without this the evaluated base and the
+      // commit's actual parent could be different revisions — the resolution
+      // would land on top of a push that arrived in between, unevaluated, and
+      // `evaluatedBaseSha` below would record a parent the commit does not have.
+      // Deliberately read from the audit record rather than re-derived: the value
+      // pinned here IS the value written there, so the two cannot disagree.
+      ...(manualResolutionAudit !== undefined
+        ? { expectedBaseSha: manualResolutionAudit.evaluatedBaseSha }
+        : {}),
     },
     logger,
   );
 
   if (!resolveResult.success) {
-    const status = resolveResult.error.statusCode === 401 ? 401 : 422;
+    // 409 (STALE_PROJECT, #337) is passed through rather than flattened to 422:
+    // the resolution was not invalid, the project moved underneath it, and the
+    // caller's next step is to re-resolve against the new tip — a different
+    // remedy from fixing the payload, so it needs a different status.
+    const status =
+      resolveResult.error.statusCode === 401
+        ? 401
+        : resolveResult.error.statusCode === 409
+          ? 409
+          : 422;
     return c.json({ error: resolveResult.error.message, code: resolveResult.error.code }, status);
   }
 
@@ -788,6 +807,10 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
   // conflict, and against which sha the evaluator suite ran (#260). Best-effort
   // by contract, same as recordSyncHistory above — an audit-log failure must
   // not undo an already-pushed, already-gated resolution.
+  //
+  // `evaluatedBaseSha` is now the commit's actual parent, not merely the
+  // revision the gates happened to read: resolveConflict was pinned to it above
+  // and refuses to commit anywhere else (#337).
   if (manualResolutionAudit) {
     await recordAudit(c.env.DB, logger, {
       action: "conflict.resolved_manually",

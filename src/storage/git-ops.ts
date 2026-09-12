@@ -2238,11 +2238,96 @@ export interface ResolveConflictOpts {
   conflictingFiles?: string[];
   /** Default branch shared by the project repo and its workspace fork ("main" if omitted). */
   branch?: string;
+  /**
+   * The project commit the caller's decision was made against — for `manual`,
+   * the base `buildManualResolutionDiff` resolved and the evaluator suite ran
+   * on. When set, the clone this function takes must still be at that commit or
+   * the resolution is refused with STALE_PROJECT (409).
+   *
+   * Without it the two clones are independent (#337): the route evaluates the
+   * resolution against the tip it saw, and this function commits onto whatever
+   * tip its own, later clone sees. A push landing in between moved the base, and
+   * because the second clone's HEAD *is* the new tip, the resolution committed
+   * cleanly on top of content no evaluator had seen — while the audit record
+   * named the evaluated base as the parent. Nothing errored.
+   *
+   * This is the same pinning the merge path applies with
+   * {@link MergeWorkspaceOptions.expectedWorkspaceSha}, from the other side: there
+   * the workspace must not have moved, here the project must not have.
+   */
+  expectedBaseSha?: string;
+}
+
+/**
+ * Assert an already-cloned project repo is still at `expectedBaseSha` (#337).
+ *
+ * A no-op when the caller passed no expectation, so an unpinned call keeps its
+ * previous behavior rather than starting to fail. A tip that cannot be resolved
+ * is an error, never a pass: "we could not tell" must not read as "it matches".
+ */
+async function assertExpectedBase(
+  fs: NodeFS,
+  dir: string,
+  branch: string,
+  expectedBaseSha: string | undefined,
+  logger: Logger,
+  context: { projectRemote: string },
+): Promise<Result<void, AppError>> {
+  if (expectedBaseSha === undefined) return ok(undefined);
+
+  // Both refs, because they answer different halves of "the evaluated base is
+  // what this resolution builds on": `HEAD` is the parent `git.commit` will
+  // record, and `branch` is the ref `git.push` will advance. A `cloneRepo` with
+  // `ref: branch` leaves them equal, so under current behavior this is one
+  // assertion made twice — but it is the invariant the pin actually needs, and
+  // stating it here means a future change to how the clone checks out cannot
+  // quietly narrow the guarantee to the ref that happens to still match.
+  for (const ref of ["HEAD", branch]) {
+    const tipResult = await fromPromise(git.resolveRef({ fs, dir, ref }));
+    if (!tipResult.success) {
+      logger.error("Failed to resolve project tip for base pin", tipResult.error, {
+        ...context,
+        ref,
+      });
+      return err(
+        new AppError(
+          "Failed to resolve the project's current revision to verify the evaluated base",
+          "GIT_ERROR",
+          500,
+        ),
+      );
+    }
+
+    if (tipResult.data !== expectedBaseSha) {
+      logger.warn("Project moved since the resolution was evaluated; refusing to commit", {
+        ...context,
+        ref,
+        expected: expectedBaseSha,
+        actual: tipResult.data,
+      });
+      return err(
+        new AppError(
+          "Project changed since this resolution was evaluated: re-resolve against the current revision",
+          "STALE_PROJECT",
+          409,
+        ),
+      );
+    }
+  }
+
+  return ok(undefined);
 }
 
 /**
  * Resolve a merge conflict by applying a strategy and producing a new commit.
  * Returns { commitSha } on success, or a structured error — never throws.
+ *
+ * `manual` content is gated before it gets here (the route runs the evaluator
+ * suite and merge protection on it), so that strategy accepts
+ * {@link ResolveConflictOpts.expectedBaseSha} and fails closed when the project
+ * has moved past the evaluated base. The `accept-*` strategies re-stage content
+ * that is already committed on one side and are not evaluated, so they take no
+ * pin.
  */
 export async function resolveConflict(
   opts: ResolveConflictOpts,
@@ -2288,6 +2373,18 @@ export async function resolveConflict(
     });
     if (!cloneResult.success) return err(cloneResult.error);
     const { fs, dir } = cloneResult.data;
+
+    // #337: refuse to commit onto a base the caller did not evaluate. Checked
+    // before anything else this clone is used for, so a moved project costs one
+    // clone rather than a full file-count read.
+    //
+    // This is the whole window: the commit below is parented on this clone's
+    // tip, so once it matches, a push that lands afterwards is rejected by the
+    // non-fast-forward push rather than silently reparented.
+    const pinResult = await assertExpectedBase(fs, dir, branch, opts.expectedBaseSha, logger, {
+      projectRemote,
+    });
+    if (!pinResult.success) return err(pinResult.error);
 
     // Guard: total file count
     const filesResult = await listFilesAtCommit(fs, branch, logger);
