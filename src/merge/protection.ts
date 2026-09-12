@@ -48,12 +48,26 @@ export async function checkMergeProtection(
       );
     }
 
-    const latestByType = new Map<string, { passed: boolean; ranAt: string }>();
+    // Two passes, because a type can appear both across rounds and within one.
+    // The newest round wins over older ones — a re-evaluation must be able to
+    // clear an earlier failure — but *within* that round every run of a type is
+    // folded with AND, the same rule `requiredEvaluatorReasons` applies to the
+    // in-memory path. A policy may declare the same type more than once (two
+    // webhook receivers, two diff evaluators), and last-write-wins let a
+    // passing duplicate mask a failing sibling recorded moments earlier (#336).
+    const latestRoundByType = new Map<string, string>();
     for (const run of runsResult.data) {
-      const current = latestByType.get(run.evaluatorType);
-      if (!current || run.ranAt >= current.ranAt) {
-        latestByType.set(run.evaluatorType, { passed: run.passed, ranAt: run.ranAt });
+      const current = latestRoundByType.get(run.evaluatorType);
+      if (current === undefined || run.ranAt > current) {
+        latestRoundByType.set(run.evaluatorType, run.ranAt);
       }
+    }
+
+    const latestByType = new Map<string, { passed: boolean }>();
+    for (const run of runsResult.data) {
+      if (run.ranAt !== latestRoundByType.get(run.evaluatorType)) continue;
+      const current = latestByType.get(run.evaluatorType);
+      latestByType.set(run.evaluatorType, { passed: (current?.passed ?? true) && run.passed });
     }
 
     for (const required of merge.requiredEvaluators) {

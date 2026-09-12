@@ -125,7 +125,7 @@ export function buildEvaluators(
         case "diff":
           return [{ type: "diff", evaluator: new DiffEvaluator() }];
         case "webhook":
-          return [{ type: "webhook", evaluator: new WebhookEvaluator() }];
+          return [{ type: "webhook", evaluator: new WebhookEvaluator(cfg) }];
         case "llm":
           if (env.AI) return [{ type: "llm", evaluator: new LLMEvaluator(env.AI) }];
           return [

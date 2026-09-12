@@ -142,6 +142,22 @@ export interface SandboxEvaluatorConfig {
   allowInstallScripts?: boolean;
 }
 
+/**
+ * The `webhook` evaluator's slice of `.stratum/policy.yaml`.
+ *
+ * Named for the same reason {@link SandboxEvaluatorConfig} is, and with a
+ * sharper edge: a policy may declare several `webhook` entries, so the
+ * evaluator must be handed *its own* entry rather than searching the policy for
+ * one at evaluation time (#336). An inline re-declaration in the evaluator
+ * would silently drift from this one.
+ */
+export interface WebhookEvaluatorConfig {
+  type: "webhook";
+  url: string;
+  secret?: string;
+  timeoutMs?: number;
+}
+
 export type EvaluatorConfig =
   | {
       type: "diff";
@@ -150,6 +166,6 @@ export type EvaluatorConfig =
       forbiddenPatterns?: string[];
       requiredPatterns?: string[];
     }
-  | { type: "webhook"; url: string; secret?: string; timeoutMs?: number }
+  | WebhookEvaluatorConfig
   | SandboxEvaluatorConfig
   | { type: "llm"; model?: string; threshold?: number; maxDiffChars?: number };

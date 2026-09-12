@@ -148,6 +148,68 @@ describe("checkMergeProtection", () => {
     expect(result.success && result.data.allowed).toBe(true);
   });
 
+  it("#336: a passing duplicate in the same round can't mask a failing sibling", async () => {
+    // Two webhook receivers, one round. Both rows carry the batch's single
+    // `ran_at`, and both say `webhook` — so a last-write-wins read of the type
+    // saw only whichever row came second and let the gate open on a receiver
+    // that had rejected the change.
+    const db = makeProtectionD1({
+      runs: [
+        makeRun({
+          id: "run_1",
+          evaluator_type: "webhook",
+          passed: 0,
+          ran_at: "2026-01-02T00:00:00.000Z",
+        }),
+        makeRun({
+          id: "run_2",
+          evaluator_type: "webhook",
+          passed: 1,
+          ran_at: "2026-01-02T00:00:00.000Z",
+        }),
+      ],
+    });
+    const policy: EvalPolicy = { evaluators: [], merge: { requiredEvaluators: ["webhook"] } };
+
+    const result = await checkMergeProtection(db, mockLogger, change, policy);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.allowed).toBe(false);
+    expect(result.data.reasons[0]).toContain("'webhook' failed");
+  });
+
+  it("#336: folding duplicates does not resurrect a failure an earlier round left", async () => {
+    // The AND fold is scoped to the newest round: two receivers that both pass
+    // on re-evaluation clear a failure from the round before, which a fold
+    // across all rows would block forever.
+    const db = makeProtectionD1({
+      runs: [
+        makeRun({
+          id: "run_1",
+          evaluator_type: "webhook",
+          passed: 0,
+          ran_at: "2026-01-01T00:00:00.000Z",
+        }),
+        makeRun({
+          id: "run_2",
+          evaluator_type: "webhook",
+          passed: 1,
+          ran_at: "2026-01-02T00:00:00.000Z",
+        }),
+        makeRun({
+          id: "run_3",
+          evaluator_type: "webhook",
+          passed: 1,
+          ran_at: "2026-01-02T00:00:00.000Z",
+        }),
+      ],
+    });
+    const policy: EvalPolicy = { evaluators: [], merge: { requiredEvaluators: ["webhook"] } };
+
+    const result = await checkMergeProtection(db, mockLogger, change, policy);
+    expect(result.success && result.data.allowed).toBe(true);
+  });
+
   it("blocks when approvals are below the required count", async () => {
     const db = makeProtectionD1({ approvals: 1 });
     const policy: EvalPolicy = { evaluators: [], merge: { requiredApprovals: 2 } };

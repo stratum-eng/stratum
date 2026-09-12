@@ -64,9 +64,15 @@ export async function recordEvalRuns(
     const runs: EvalRun[] = [];
     const statements: D1PreparedStatement[] = [];
 
+    // One timestamp for the whole batch, not one per row: every run here came
+    // from a single `runEvaluation` pass, and `ran_at` is what identifies that
+    // round downstream. Stamping rows individually let a batch straddle a
+    // millisecond boundary, which `checkMergeProtection` would then read as two
+    // rounds, keeping only the later half of one evaluation (#336).
+    const ranAt = new Date().toISOString();
+
     for (const { evaluatorType, result } of results) {
       const id = newId("evl");
-      const ranAt = new Date().toISOString();
       const run: EvalRun = {
         id,
         changeId,

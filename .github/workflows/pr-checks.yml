@@ -127,6 +127,44 @@ jobs:
           path: coverage/
 
   # ========================================================================
+  # Engines Floor
+  # ========================================================================
+  engines-floor:
+    # `engines` in package.json claims >=22.13.0, but every job above runs the
+    # floating "22", which resolves to the newest 22.x. That gap hid #340: the
+    # `node:sqlite` shim behind the D1 test harness could not bind numbered
+    # parameters on 22.14.0, so a contributor on an older 22.x saw 43 red tests
+    # on a clean checkout while CI stayed green. Running the suite at the exact
+    # declared floor is what keeps that claim honest — this job going red means
+    # either the code stopped supporting the floor or the floor should move.
+    name: Unit Tests (engines floor)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Same reason as the Unit Tests job: the wrangler migration-chain
+          # guard reads wrangler.toml at origin/main and fails rather than skips.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          # The exact floor `engines` declares, not a range. Bump both together.
+          node-version: "22.13.0"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # No coverage here: the Unit Tests job owns the thresholds and the
+      # artifact. This job answers one question — does the suite pass at the
+      # oldest Node we claim to support.
+      - name: Run tests
+        run: npm test
+
+  # ========================================================================
   # Integration Tests
   # ========================================================================
   integration-tests:
@@ -173,7 +211,7 @@ jobs:
   # ========================================================================
   pr-status:
     name: PR Status Summary
-    needs: [lint, typecheck, test, integration-tests]
+    needs: [lint, typecheck, test, engines-floor, integration-tests]
     runs-on: ubuntu-latest
     if: always()
     permissions:
@@ -194,6 +232,7 @@ jobs:
               lint: '${{ needs.lint.result }}',
               typecheck: '${{ needs.typecheck.result }}',
               test: '${{ needs.test.result }}',
+              enginesFloor: '${{ needs.engines-floor.result }}',
               integration: '${{ needs.integration-tests.result }}'
             };
 
@@ -210,7 +249,7 @@ jobs:
               conclusion: allPassed ? 'success' : 'failure',
               output: {
                 title: status,
-                summary: `Lint: ${jobs.lint}, Type Check: ${jobs.typecheck}, Tests: ${jobs.test}, Integration: ${jobs.integration}`
+                summary: `Lint: ${jobs.lint}, Type Check: ${jobs.typecheck}, Tests: ${jobs.test}, Engines floor: ${jobs.enginesFloor}, Integration: ${jobs.integration}`
               }
             });
 
