@@ -2415,7 +2415,13 @@ export async function resolveConflict(
       SYSTEM_AUTHOR,
       branch,
     );
-    if (!commitResult.success) return mapPushError(commitResult.error);
+    // The pin above proved the clone was at the evaluated base; this push is
+    // where a project that moved in between surfaces, since the commit's parent
+    // is that base and the remote will refuse a non-fast-forward. Reported as
+    // the same STALE_PROJECT the pin itself raises (#337).
+    if (!commitResult.success) {
+      return mapPushError(commitResult.error, opts.expectedBaseSha !== undefined);
+    }
     return ok({ commitSha: commitResult.data });
   }
 
@@ -2546,7 +2552,33 @@ export async function resolveConflict(
   return err(new AppError(`Unknown strategy: ${strategy}`, "INVALID_INPUT", 400));
 }
 
-function mapPushError(error: AppError): Result<never, AppError> {
+/**
+ * Whether a failed push was rejected because the remote ref had moved on —
+ * isomorphic-git's `PushRejectedError` with reason `not-fast-forward`, which
+ * `commitAndPush` wraps as an ExternalServiceError.
+ *
+ * `tag-exists`, the error's other reason, is deliberately not matched: it says
+ * nothing about the base. The message fallback covers a cause that arrived as a
+ * plain Error rather than the library's class.
+ */
+function isNonFastForwardRejection(error: AppError): boolean {
+  const cause = error instanceof ExternalServiceError ? error.cause : undefined;
+  if (cause !== undefined && (cause as { code?: unknown }).code === "PushRejectedError") {
+    return (cause as { data?: { reason?: unknown } }).data?.reason === "not-fast-forward";
+  }
+  const text = `${error.message} ${cause?.message ?? ""}`;
+  return /not a simple fast-forward|non-fast-forward/i.test(text);
+}
+
+/**
+ * @param pinned - Whether the caller pinned an expected base (#337). A push
+ * rejected as non-fast-forward then means the project moved between the pin
+ * check and the push — the same condition, and the same remedy, as a pin that
+ * failed outright, so it reports STALE_PROJECT (409) rather than a 502 that
+ * reads as "the remote is broken, try again". Without a pin there is no claim
+ * about what the base should have been, so the 502 stands.
+ */
+function mapPushError(error: AppError, pinned = false): Result<never, AppError> {
   const msg = error.message.toLowerCase();
   if (
     msg.includes("401") ||
@@ -2555,6 +2587,15 @@ function mapPushError(error: AppError): Result<never, AppError> {
     msg.includes("forbidden")
   ) {
     return err(new AppError("GitHub token expired or insufficient permissions", "AUTH_ERROR", 401));
+  }
+  if (pinned && isNonFastForwardRejection(error)) {
+    return err(
+      new AppError(
+        "Project changed since this resolution was evaluated: re-resolve against the current revision",
+        "STALE_PROJECT",
+        409,
+      ),
+    );
   }
   return err(error);
 }

@@ -150,6 +150,15 @@ a specific endpoint — the coded errors above are the ones worth branching on.
 Separately, an **import job** records a failure *category* on the job row —
 `NETWORK_ERROR`, `TIMEOUT`, `AUTH_ERROR`, `NOT_FOUND`, `RATE_LIMITED`,
 `UNSUPPORTED_CONTENT`, `STORAGE_ERROR`, `GIT_ERROR`, `CANCELLED`,
-`UNKNOWN_ERROR` — classified from the failure message. These are not API error
-responses: they appear on the admin metrics API and in the failure notification,
-not as a `code` on a request you made.
+`UNKNOWN_ERROR` — classified from the failure message. As *categories* these are
+not API error responses: they appear on the admin metrics API and in the failure
+notification, not as a `code` on a request you made.
+
+Two of those names do also exist as response codes in their own right, so match
+on the endpoint rather than on the name alone:
+
+- `GIT_ERROR` — `500`; a git operation the request depended on could not be
+  completed. Returned by `POST /api/projects/conflicts/{id}/resolve` when the
+  project's current revision cannot be read, so the evaluated base cannot be
+  verified. The request was well formed; retrying can succeed
+- `AUTH_ERROR` — `401`; the repository credential was rejected or has expired

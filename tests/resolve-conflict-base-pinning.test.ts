@@ -19,6 +19,8 @@ import { createLogger } from "../src/utils/logger";
 const state = vi.hoisted(() => ({
   build: undefined as undefined | ((fs: unknown, dir: string) => Promise<unknown>),
   pushes: [] as { url?: string; ref?: string; oid?: string }[],
+  /** Reject the push the way a remote whose ref moved on does. */
+  rejectPush: undefined as undefined | "not-fast-forward" | "tag-exists" | "other",
 }));
 
 vi.mock("isomorphic-git", async (importActual) => {
@@ -33,6 +35,12 @@ vi.mock("isomorphic-git", async (importActual) => {
         await state.build(args.fs, args.dir);
       }),
       push: vi.fn(async (args: { fs: never; dir: string; url?: string; ref?: string }) => {
+        if (state.rejectPush === "other") throw new Error("remote hung up unexpectedly");
+        if (state.rejectPush !== undefined) {
+          // The library's own error, so the mapping is exercised on the real
+          // shape (code + data.reason) rather than on a hand-rolled lookalike.
+          throw new actual.Errors.PushRejectedError(state.rejectPush);
+        }
         const oid = await real.resolveRef({
           fs: args.fs,
           dir: args.dir,
@@ -89,6 +97,7 @@ describe("resolveConflict — evaluated-base pinning (#337)", () => {
   beforeEach(() => {
     state.build = undefined;
     state.pushes = [];
+    state.rejectPush = undefined;
   });
 
   const resolveManual = (expectedBaseSha?: string) =>
@@ -146,6 +155,58 @@ describe("resolveConflict — evaluated-base pinning (#337)", () => {
 
     expect(result.success).toBe(true);
     expect(state.pushes).toHaveLength(1);
+  });
+
+  it("#337: a push rejected as non-fast-forward under a pin reports STALE_PROJECT", async () => {
+    // The residual race the pin cannot close by itself: the clone was at the
+    // evaluated base, and the project moved between that check and the push. The
+    // commit's parent is the evaluated base, so the remote refuses it — nothing
+    // lands either way, but the caller's remedy is to re-resolve, not to retry a
+    // "the remote is broken" 502.
+    const [base] = await precomputeOids(1);
+    state.build = (fs, dir) => buildHistory(fs, dir, 1);
+    state.rejectPush = "not-fast-forward";
+
+    const result = await resolveManual(base as string);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.code).toBe("STALE_PROJECT");
+    expect(result.error.statusCode).toBe(409);
+    expect(state.pushes).toHaveLength(0);
+  });
+
+  it("#337: an unpinned call still reports a rejected push as an upstream failure", async () => {
+    // No pin means no claim about what the base should have been, so there is
+    // nothing to tell the caller to re-resolve against.
+    state.build = (fs, dir) => buildHistory(fs, dir, 1);
+    state.rejectPush = "not-fast-forward";
+
+    const result = await resolveManual(undefined);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.code).toBe("EXTERNAL_SERVICE_ERROR");
+    expect(result.error.statusCode).toBe(502);
+  });
+
+  it("#337: a rejection that is not about the base keeps its own status", async () => {
+    // `tag-exists` is the PushRejectedError's other reason and says nothing
+    // about the project having moved; neither does an unrelated push failure.
+    const [base] = await precomputeOids(1);
+    state.build = (fs, dir) => buildHistory(fs, dir, 1);
+
+    state.rejectPush = "tag-exists";
+    const tagResult = await resolveManual(base as string);
+    expect(tagResult.success).toBe(false);
+    if (tagResult.success) return;
+    expect(tagResult.error.code).toBe("EXTERNAL_SERVICE_ERROR");
+
+    state.rejectPush = "other";
+    const otherResult = await resolveManual(base as string);
+    expect(otherResult.success).toBe(false);
+    if (otherResult.success) return;
+    expect(otherResult.error.code).toBe("EXTERNAL_SERVICE_ERROR");
   });
 
   it("fails closed when the project tip cannot be resolved at all", async () => {

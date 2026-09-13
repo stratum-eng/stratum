@@ -7,5 +7,8 @@
   no error, and the audit record named the evaluated revision as the commit's parent when
   it was not. The evaluated base is now pinned through to the commit, and a project that
   moved is refused with `409 STALE_PROJECT` ("re-resolve against the current revision")
-  instead of being silently committed. `accept-project` and `accept-workspace` re-stage
-  content already committed on one side of the conflict and are unaffected.
+  instead of being silently committed. That covers the narrow race as well as the common
+  case: if the project moves between the check and the push, the remote refuses the
+  commit, and that rejection now reports `STALE_PROJECT` too rather than a `502` that
+  reads as an upstream outage. `accept-project` and `accept-workspace` re-stage content
+  already committed on one side of the conflict and are unaffected.

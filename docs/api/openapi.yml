@@ -1030,8 +1030,9 @@ paths:
         "409":
           description: >
             The project advanced past the revision this resolution was evaluated
-            against (code STALE_PROJECT). Nothing was committed; re-resolve
-            against the current revision.
+            against (code STALE_PROJECT) — detected before committing, or by the
+            remote refusing the commit if the project moved in between. Nothing
+            was committed either way; re-resolve against the current revision.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
