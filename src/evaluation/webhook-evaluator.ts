@@ -5,7 +5,13 @@ import type { Result } from "../utils/result";
 import { err, ok } from "../utils/result";
 import { validateWebhookUrl } from "../utils/validation";
 import { sanitizePolicy } from "./sanitize-policy";
-import type { EvalPolicy, EvalResult, EvaluationContext, Evaluator } from "./types";
+import type {
+  EvalPolicy,
+  EvalResult,
+  EvaluationContext,
+  Evaluator,
+  WebhookEvaluatorConfig,
+} from "./types";
 
 async function computeHmacSha256(secret: string, body: string): Promise<string> {
   const encoder = new TextEncoder();
@@ -23,6 +29,22 @@ async function computeHmacSha256(secret: string, body: string): Promise<string> 
 }
 
 export class WebhookEvaluator implements Evaluator {
+  /**
+   * @param config - The single `webhook` entry this instance evaluates.
+   *
+   * Bound at construction rather than re-derived from the policy inside
+   * `evaluate` (#336). A policy may declare several webhook receivers, and
+   * `buildEvaluators` builds one instance per entry; a `find` by type inside
+   * `evaluate` resolved every one of them to the *first* entry, so the second
+   * receiver was never contacted, both requests were signed with the first
+   * secret, and both eval rows recorded `webhook` — leaving a
+   * `requiredEvaluators: ["webhook"]` gate satisfied by one endpoint asked
+   * twice. Taking the entry as a parameter makes that class of mistake
+   * unrepresentable, and drops the evaluator's assumption that it is handed a
+   * policy still containing its own entry.
+   */
+  constructor(private readonly config: WebhookEvaluatorConfig) {}
+
   async evaluate(
     diff: string,
     policy: EvalPolicy,
@@ -31,11 +53,7 @@ export class WebhookEvaluator implements Evaluator {
   ): Promise<Result<EvalResult, AppError>> {
     logger.debug("Starting webhook evaluation");
 
-    const config = policy.evaluators.find((e) => e.type === "webhook");
-    if (!config || config.type !== "webhook") {
-      logger.warn("No webhook configuration found");
-      return ok({ score: 0, passed: false, reason: "Webhook: no configuration found." });
-    }
+    const { config } = this;
 
     // The URL comes from the repo's own policy file, so it must pass the same
     // private-host / SSRF filter as delivery webhooks. Fail the evaluation

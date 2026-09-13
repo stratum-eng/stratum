@@ -1,0 +1,19 @@
+-- One evaluation pass ("round") writes several eval_runs rows, and the merge
+-- gate has to tell rounds apart: a required evaluator type passes only when
+-- every run of it in the NEWEST round passed, so folding two rounds together
+-- can leave a change blocked on a verdict a later round already superseded.
+--
+-- Round identity was previously inferred from `ran_at` being equal, which is
+-- not sound: two passes (a change's initial evaluation and a re-evaluation, or
+-- two concurrent POST /changes/:id/evaluate calls — the route takes no lock)
+-- can land in the same millisecond and read as one round.
+--
+-- `round_id` is written as "<ran_at>#<random>", so it identifies the round
+-- exactly AND sorts chronologically as a plain string: the prefix is a
+-- fixed-width ISO 8601 UTC timestamp, the same property the deployments tables
+-- rely on for their own ordering comparisons. Two rounds in the same
+-- millisecond therefore still order deterministically rather than merging.
+--
+-- Nullable with no backfill: rows written before this migration have no round
+-- to name, and the gate falls back to the old `ran_at` grouping for them.
+ALTER TABLE eval_runs ADD COLUMN round_id TEXT;
