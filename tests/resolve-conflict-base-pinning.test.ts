@@ -20,7 +20,7 @@ const state = vi.hoisted(() => ({
   build: undefined as undefined | ((fs: unknown, dir: string) => Promise<unknown>),
   pushes: [] as { url?: string; ref?: string; oid?: string }[],
   /** Reject the push the way a remote whose ref moved on does. */
-  rejectPush: undefined as undefined | "not-fast-forward" | "tag-exists" | "other",
+  rejectPush: undefined as undefined | "not-fast-forward" | "tag-exists" | "other" | "message-only",
 }));
 
 vi.mock("isomorphic-git", async (importActual) => {
@@ -36,6 +36,11 @@ vi.mock("isomorphic-git", async (importActual) => {
       }),
       push: vi.fn(async (args: { fs: never; dir: string; url?: string; ref?: string }) => {
         if (state.rejectPush === "other") throw new Error("remote hung up unexpectedly");
+        if (state.rejectPush === "message-only") {
+          // A plain Error carrying the library's wording but none of its
+          // structure — what a proxy or hook echoing git's text produces.
+          throw new Error("Push rejected because it was not a simple fast-forward.");
+        }
         if (state.rejectPush !== undefined) {
           // The library's own error, so the mapping is exercised on the real
           // shape (code + data.reason) rather than on a hand-rolled lookalike.
@@ -188,6 +193,24 @@ describe("resolveConflict — evaluated-base pinning (#337)", () => {
     if (result.success) return;
     expect(result.error.code).toBe("EXTERNAL_SERVICE_ERROR");
     expect(result.error.statusCode).toBe(502);
+  });
+
+  it("#337: wording alone does not make a failure a stale base", async () => {
+    // Classification reads PushRejectedError's `code`/`data.reason`, never the
+    // message: an unrelated failure that merely mentions fast-forwards (a proxy
+    // or server hook echoing git's text) must not tell the caller to re-resolve
+    // over something re-resolving cannot fix.
+    const [base] = await precomputeOids(1);
+    state.build = (fs, dir) => buildHistory(fs, dir, 1);
+    state.rejectPush = "message-only";
+
+    const result = await resolveManual(base as string);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.code).toBe("EXTERNAL_SERVICE_ERROR");
+    expect(result.error.statusCode).toBe(502);
+    expect(state.pushes).toHaveLength(0);
   });
 
   it("#337: a rejection that is not about the base keeps its own status", async () => {

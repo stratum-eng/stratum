@@ -2557,17 +2557,24 @@ export async function resolveConflict(
  * isomorphic-git's `PushRejectedError` with reason `not-fast-forward`, which
  * `commitAndPush` wraps as an ExternalServiceError.
  *
+ * Structured data only, never the message text. `git.push` raises that class for
+ * every real non-fast-forward, and `resolveConflict` runs in the same isolate as
+ * its caller, so the cause reaches here with its `code` and `data` intact —
+ * matching on wording would add no coverage and could misread an unrelated push
+ * failure whose text happens to mention fast-forwards, telling the caller to
+ * re-resolve over something a re-resolution cannot fix. Missing a rejection
+ * degrades to the 502 this would have returned anyway, which is the safe
+ * direction; a false STALE_PROJECT is not.
+ *
  * `tag-exists`, the error's other reason, is deliberately not matched: it says
- * nothing about the base. The message fallback covers a cause that arrived as a
- * plain Error rather than the library's class.
+ * nothing about the base.
  */
 function isNonFastForwardRejection(error: AppError): boolean {
   const cause = error instanceof ExternalServiceError ? error.cause : undefined;
-  if (cause !== undefined && (cause as { code?: unknown }).code === "PushRejectedError") {
-    return (cause as { data?: { reason?: unknown } }).data?.reason === "not-fast-forward";
+  if (cause === undefined || (cause as { code?: unknown }).code !== "PushRejectedError") {
+    return false;
   }
-  const text = `${error.message} ${cause?.message ?? ""}`;
-  return /not a simple fast-forward|non-fast-forward/i.test(text);
+  return (cause as { data?: { reason?: unknown } }).data?.reason === "not-fast-forward";
 }
 
 /**
