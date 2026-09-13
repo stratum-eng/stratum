@@ -761,6 +761,46 @@ describe("POST /api/projects/conflicts/:id/resolve (route)", () => {
     expect(wroteAudit).toBe(false);
   });
 
+  it("#337: an unresolvable project tip surfaces as 500, not 422", async () => {
+    const kv = makeKv();
+    vi.mocked(resolveConflict).mockClear();
+    vi.mocked(getProjectByPath).mockResolvedValue({
+      success: true,
+      data: { ...PROJECT, ownerId: "user_test" },
+    } as Awaited<ReturnType<typeof getProjectByPath>>);
+    vi.mocked(getWorkspace).mockResolvedValue({
+      success: true,
+      data: WORKSPACE,
+    } as Awaited<ReturnType<typeof getWorkspace>>);
+    // What the base pin returns when it cannot read the clone's tip at all.
+    vi.mocked(resolveConflict).mockResolvedValue({
+      success: false,
+      error: new AppError(
+        "Failed to resolve the project's current revision to verify the evaluated base",
+        "GIT_ERROR",
+        500,
+      ),
+    });
+
+    const res = await app.fetch(
+      new Request("http://localhost/api/projects/conflicts/conflict-abc/resolve", {
+        method: "POST",
+        headers: { ...AUTH_HEADER, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategy: "manual",
+          resolutions: [{ file: "src/foo.ts", content: "export const x = 1;" }],
+        }),
+      }),
+      { STATE: kv, DB: makeDb() },
+    );
+
+    // An infrastructure failure is not malformed input; 422 would have told the
+    // caller to go fix a payload that is fine.
+    expect(res.status).toBe(500);
+    const body = await res.json<{ code: string }>();
+    expect(body.code).toBe("GIT_ERROR");
+  });
+
   it("#337: accept-project passes no pin — it re-stages already-committed content", async () => {
     const kv = makeKv();
     vi.mocked(resolveConflict).mockClear();

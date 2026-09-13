@@ -1045,6 +1045,15 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: >
+            An infrastructure failure while applying the resolution — most often
+            a clone whose current revision could not be read, so the evaluated
+            base could not be verified. Reported as 5xx rather than 422 because
+            the request itself was well formed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "502":
           description: Failed to mint repository tokens
           content:

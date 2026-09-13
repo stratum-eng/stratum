@@ -770,16 +770,27 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
   );
 
   if (!resolveResult.success) {
-    // 409 (STALE_PROJECT, #337) is passed through rather than flattened to 422:
-    // the resolution was not invalid, the project moved underneath it, and the
-    // caller's next step is to re-resolve against the new tip — a different
-    // remedy from fixing the payload, so it needs a different status.
-    const status =
+    // Preserve the error's own status wherever this route can represent it
+    // faithfully, instead of flattening everything to 422.
+    //
+    // 409 is STALE_PROJECT (#337): the resolution was not invalid, the project
+    // moved underneath it, and the remedy is to re-resolve against the new tip
+    // rather than to fix the payload. 5xx covers the infrastructure failures
+    // this path can hit — a clone whose tip will not resolve, an FS write that
+    // failed, a push the remote rejected upstream — none of which are malformed
+    // input, which is the one thing 422 claims. 422 remains the default, and
+    // still covers every validation failure (traversal, oversize file, empty
+    // resolutions, a merge that would not apply).
+    const status: 401 | 409 | 422 | 500 | 502 =
       resolveResult.error.statusCode === 401
         ? 401
         : resolveResult.error.statusCode === 409
           ? 409
-          : 422;
+          : resolveResult.error.statusCode === 502
+            ? 502
+            : resolveResult.error.statusCode >= 500
+              ? 500
+              : 422;
     return c.json({ error: resolveResult.error.message, code: resolveResult.error.code }, status);
   }
 
