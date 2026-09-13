@@ -24,7 +24,7 @@ interface StoredRow {
   round_id: string | null;
 }
 
-function makeD1(): D1Database {
+function makeD1(): { db: D1Database; rows: StoredRow[] } {
   const rows: StoredRow[] = [];
 
   function makeStmt(sql: string, bindings: unknown[]) {
@@ -57,7 +57,7 @@ function makeD1(): D1Database {
     };
   }
 
-  return {
+  const db = {
     prepare: (sql: string) => makeStmt(sql, []),
     batch: async (
       statements: Array<{
@@ -67,13 +67,17 @@ function makeD1(): D1Database {
       return Promise.all(statements.map((stmt) => stmt.run()));
     },
   } as unknown as D1Database;
+
+  return { db, rows };
 }
 
 describe("eval run storage", () => {
   let db: D1Database;
+  /** The stub's backing rows, for seeding shapes `recordEvalRuns` cannot write. */
+  let rows: StoredRow[];
 
   beforeEach(() => {
-    db = makeD1();
+    ({ db, rows } = makeD1());
   });
 
   it("records and lists per-evaluator results with issues", async () => {
@@ -149,16 +153,33 @@ describe("eval run storage", () => {
     expect(new Set(listed.data.map((r) => r.roundId)).size).toBe(2);
   });
 
-  it("reads a row with no round_id as having no round (pre-migration-048 rows)", async () => {
-    await recordEvalRuns(db, mockLogger, "chg_legacy", [
-      { evaluatorType: "diff", result: { score: 1, passed: true, reason: "ok" } },
-    ]);
-    // Simulate a row written before the column existed: SELECT * returns no key
-    // for it at all, which must read as absent rather than as the string
-    // "undefined".
+  it("reads a pre-migration-048 row as having no round", async () => {
+    // Seeded directly, because `recordEvalRuns` cannot produce these shapes: it
+    // always writes a round. Both reach the gate in a mixed history — the column
+    // present but NULL, and, on a database where migration 048 has not run, the
+    // key absent from `SELECT *` entirely. Neither may read as a round.
+    const legacy = {
+      change_id: "chg_legacy",
+      evaluator_type: "diff",
+      score: 1,
+      passed: 1,
+      reason: "ok",
+      issues: null,
+      ran_at: "2026-01-01T00:00:00.000Z",
+    };
+    rows.push({ ...legacy, id: "evl_null_column", round_id: null });
+    // The pre-migration database: no such column, so no such key on the row.
+    rows.push({ ...legacy, id: "evl_no_column" } as StoredRow);
+
     const listed = await listEvalRuns(db, mockLogger, "chg_legacy");
     expect(listed.success).toBe(true);
     if (!listed.success) return;
-    expect(listed.data[0]?.roundId).toBeTypeOf("string");
+    expect(listed.data).toHaveLength(2);
+    expect(listed.data.map((run) => run.roundId)).toEqual([undefined, undefined]);
+    // Omitted rather than present-and-undefined, so `roundId ?? ranAt` in the
+    // merge gate falls back instead of comparing against the string "undefined".
+    for (const run of listed.data) {
+      expect(Object.hasOwn(run, "roundId")).toBe(false);
+    }
   });
 });
