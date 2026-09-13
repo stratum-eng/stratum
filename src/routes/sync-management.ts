@@ -755,12 +755,42 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
         strategy === "manual"
           ? (body.resolutions as Array<{ file: string; content: string }>)
           : undefined,
+      // #337: pin the commit the gates above ran against. resolveConflict takes
+      // its own clone of the project, so without this the evaluated base and the
+      // commit's actual parent could be different revisions — the resolution
+      // would land on top of a push that arrived in between, unevaluated, and
+      // `evaluatedBaseSha` below would record a parent the commit does not have.
+      // Deliberately read from the audit record rather than re-derived: the value
+      // pinned here IS the value written there, so the two cannot disagree.
+      ...(manualResolutionAudit !== undefined
+        ? { expectedBaseSha: manualResolutionAudit.evaluatedBaseSha }
+        : {}),
     },
     logger,
   );
 
   if (!resolveResult.success) {
-    const status = resolveResult.error.statusCode === 401 ? 401 : 422;
+    // Preserve the error's own status wherever this route can represent it
+    // faithfully, instead of flattening everything to 422.
+    //
+    // 409 is STALE_PROJECT (#337): the resolution was not invalid, the project
+    // moved underneath it, and the remedy is to re-resolve against the new tip
+    // rather than to fix the payload. 5xx covers the infrastructure failures
+    // this path can hit — a clone whose tip will not resolve, an FS write that
+    // failed, a push the remote rejected upstream — none of which are malformed
+    // input, which is the one thing 422 claims. 422 remains the default, and
+    // still covers every validation failure (traversal, oversize file, empty
+    // resolutions, a merge that would not apply).
+    const status: 401 | 409 | 422 | 500 | 502 =
+      resolveResult.error.statusCode === 401
+        ? 401
+        : resolveResult.error.statusCode === 409
+          ? 409
+          : resolveResult.error.statusCode === 502
+            ? 502
+            : resolveResult.error.statusCode >= 500
+              ? 500
+              : 422;
     return c.json({ error: resolveResult.error.message, code: resolveResult.error.code }, status);
   }
 
@@ -788,6 +818,10 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
   // conflict, and against which sha the evaluator suite ran (#260). Best-effort
   // by contract, same as recordSyncHistory above — an audit-log failure must
   // not undo an already-pushed, already-gated resolution.
+  //
+  // `evaluatedBaseSha` is now the commit's actual parent, not merely the
+  // revision the gates happened to read: resolveConflict was pinned to it above
+  // and refuses to commit anywhere else (#337).
   if (manualResolutionAudit) {
     await recordAudit(c.env.DB, logger, {
       action: "conflict.resolved_manually",

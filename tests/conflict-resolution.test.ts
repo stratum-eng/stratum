@@ -188,6 +188,7 @@ import app from "../src/index";
 import { getChange } from "../src/storage/changes";
 import { buildManualResolutionDiff, resolveConflict } from "../src/storage/git-ops";
 import { getProjectByPath, getWorkspace } from "../src/storage/state";
+import { AppError } from "../src/utils/errors";
 
 const PROJECT = {
   id: "proj-1",
@@ -656,6 +657,177 @@ describe("POST /api/projects/conflicts/:id/resolve (route)", () => {
 
     expect(res.status).toBe(404);
     expect(vi.mocked(resolveConflict)).not.toHaveBeenCalled();
+  });
+
+  it("#337: pins resolveConflict to the sha the gates evaluated", async () => {
+    const kv = makeKv();
+    vi.mocked(resolveConflict).mockClear();
+    vi.mocked(getProjectByPath).mockResolvedValue({
+      success: true,
+      data: { ...PROJECT, ownerId: "user_test" },
+    } as Awaited<ReturnType<typeof getProjectByPath>>);
+    vi.mocked(getWorkspace).mockResolvedValue({
+      success: true,
+      data: WORKSPACE,
+    } as Awaited<ReturnType<typeof getWorkspace>>);
+    vi.mocked(buildManualResolutionDiff).mockResolvedValueOnce({
+      success: true,
+      data: { diff: "", baseSha: "evaluated-base-sha" },
+    });
+    vi.mocked(resolveConflict).mockResolvedValue({
+      success: true,
+      data: { commitSha: "resolved-sha" },
+    });
+
+    const db = makeDb();
+    const res = await app.fetch(
+      new Request("http://localhost/api/projects/conflicts/conflict-abc/resolve", {
+        method: "POST",
+        headers: { ...AUTH_HEADER, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategy: "manual",
+          resolutions: [{ file: "src/foo.ts", content: "export const x = 1;" }],
+        }),
+      }),
+      { STATE: kv, DB: db },
+    );
+
+    expect(res.status).toBe(200);
+    const opts = vi.mocked(resolveConflict).mock.calls[0]?.[0];
+    expect(opts?.expectedBaseSha).toBe("evaluated-base-sha");
+
+    // The pinned value and the audited value are the same string, which is the
+    // property that makes `evaluatedBaseSha` a true statement about the commit's
+    // parent rather than a note about what some earlier clone happened to see.
+    const prepareMock = vi.mocked(db.prepare).mock;
+    const auditCallIndex = prepareMock.calls.findIndex(([sql]) =>
+      sql.includes("INSERT INTO audit_log"),
+    );
+    const stmt = prepareMock.results[auditCallIndex]?.value as {
+      bind: (...args: unknown[]) => unknown;
+    };
+    const detail = JSON.parse(vi.mocked(stmt.bind).mock.calls[0]?.[5] as string) as Record<
+      string,
+      unknown
+    >;
+    expect(detail.evaluatedBaseSha).toBe(opts?.expectedBaseSha);
+  });
+
+  it("#337: surfaces a moved project as 409, not 422", async () => {
+    const kv = makeKv();
+    vi.mocked(resolveConflict).mockClear();
+    vi.mocked(getProjectByPath).mockResolvedValue({
+      success: true,
+      data: { ...PROJECT, ownerId: "user_test" },
+    } as Awaited<ReturnType<typeof getProjectByPath>>);
+    vi.mocked(getWorkspace).mockResolvedValue({
+      success: true,
+      data: WORKSPACE,
+    } as Awaited<ReturnType<typeof getWorkspace>>);
+    vi.mocked(resolveConflict).mockResolvedValue({
+      success: false,
+      error: new AppError(
+        "Project changed since this resolution was evaluated: re-resolve against the current revision",
+        "STALE_PROJECT",
+        409,
+      ),
+    });
+
+    const db = makeDb();
+    const res = await app.fetch(
+      new Request("http://localhost/api/projects/conflicts/conflict-abc/resolve", {
+        method: "POST",
+        headers: { ...AUTH_HEADER, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategy: "manual",
+          resolutions: [{ file: "src/foo.ts", content: "export const x = 1;" }],
+        }),
+      }),
+      { STATE: kv, DB: db },
+    );
+
+    // 409 tells the caller to re-resolve; 422 would have read as "your payload
+    // is wrong", which it is not.
+    expect(res.status).toBe(409);
+    const body = await res.json<{ code: string }>();
+    expect(body.code).toBe("STALE_PROJECT");
+
+    // A refused resolution leaves the conflict open and writes no audit row:
+    // nothing was pushed, so there is no resolution to attest to.
+    expect(vi.mocked(kv.delete)).not.toHaveBeenCalled();
+    const wroteAudit = vi
+      .mocked(db.prepare)
+      .mock.calls.some(([sql]) => sql.includes("INSERT INTO audit_log"));
+    expect(wroteAudit).toBe(false);
+  });
+
+  it("#337: an unresolvable project tip surfaces as 500, not 422", async () => {
+    const kv = makeKv();
+    vi.mocked(resolveConflict).mockClear();
+    vi.mocked(getProjectByPath).mockResolvedValue({
+      success: true,
+      data: { ...PROJECT, ownerId: "user_test" },
+    } as Awaited<ReturnType<typeof getProjectByPath>>);
+    vi.mocked(getWorkspace).mockResolvedValue({
+      success: true,
+      data: WORKSPACE,
+    } as Awaited<ReturnType<typeof getWorkspace>>);
+    // What the base pin returns when it cannot read the clone's tip at all.
+    vi.mocked(resolveConflict).mockResolvedValue({
+      success: false,
+      error: new AppError(
+        "Failed to resolve the project's current revision to verify the evaluated base",
+        "GIT_ERROR",
+        500,
+      ),
+    });
+
+    const res = await app.fetch(
+      new Request("http://localhost/api/projects/conflicts/conflict-abc/resolve", {
+        method: "POST",
+        headers: { ...AUTH_HEADER, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategy: "manual",
+          resolutions: [{ file: "src/foo.ts", content: "export const x = 1;" }],
+        }),
+      }),
+      { STATE: kv, DB: makeDb() },
+    );
+
+    // An infrastructure failure is not malformed input; 422 would have told the
+    // caller to go fix a payload that is fine.
+    expect(res.status).toBe(500);
+    const body = await res.json<{ code: string }>();
+    expect(body.code).toBe("GIT_ERROR");
+  });
+
+  it("#337: accept-project passes no pin — it re-stages already-committed content", async () => {
+    const kv = makeKv();
+    vi.mocked(resolveConflict).mockClear();
+    vi.mocked(getProjectByPath).mockResolvedValue({
+      success: true,
+      data: { ...PROJECT, ownerId: "user_test" },
+    } as Awaited<ReturnType<typeof getProjectByPath>>);
+    vi.mocked(getWorkspace).mockResolvedValue({
+      success: true,
+      data: WORKSPACE,
+    } as Awaited<ReturnType<typeof getWorkspace>>);
+    vi.mocked(resolveConflict).mockResolvedValue({
+      success: true,
+      data: { commitSha: "resolved-sha" },
+    });
+
+    const res = await app.fetch(
+      new Request("http://localhost/api/projects/conflicts/conflict-abc/resolve", {
+        method: "POST",
+        headers: { ...AUTH_HEADER, "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy: "accept-project" }),
+      }),
+      { STATE: kv, DB: makeDb() },
+    );
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(resolveConflict).mock.calls[0]?.[0].expectedBaseSha).toBeUndefined();
   });
 
   it("conflict context stored by changes route contains no token fields", () => {
