@@ -55,17 +55,28 @@ export async function checkMergeProtection(
     // in-memory path. A policy may declare the same type more than once (two
     // webhook receivers, two diff evaluators), and last-write-wins let a
     // passing duplicate mask a failing sibling recorded moments earlier (#336).
+    //
+    // Rounds are identified by `roundId`, not by equal `ranAt`: two passes can
+    // share a millisecond, and reading them as one round would AND a superseded
+    // failure into a later pass that passed, blocking the change until someone
+    // re-evaluated again. `roundId` sorts chronologically as a string (it is
+    // timestamp-prefixed, see recordEvalRuns), so the newest round is a plain
+    // max. Rows predating migration 048 have none; they fall back to `ranAt`,
+    // which is what grouping meant before the column existed.
+    const roundKey = (run: { roundId?: string; ranAt: string }): string => run.roundId ?? run.ranAt;
+
     const latestRoundByType = new Map<string, string>();
     for (const run of runsResult.data) {
       const current = latestRoundByType.get(run.evaluatorType);
-      if (current === undefined || run.ranAt > current) {
-        latestRoundByType.set(run.evaluatorType, run.ranAt);
+      const key = roundKey(run);
+      if (current === undefined || key > current) {
+        latestRoundByType.set(run.evaluatorType, key);
       }
     }
 
     const latestByType = new Map<string, { passed: boolean }>();
     for (const run of runsResult.data) {
-      if (run.ranAt !== latestRoundByType.get(run.evaluatorType)) continue;
+      if (roundKey(run) !== latestRoundByType.get(run.evaluatorType)) continue;
       const current = latestByType.get(run.evaluatorType);
       latestByType.set(run.evaluatorType, { passed: (current?.passed ?? true) && run.passed });
     }

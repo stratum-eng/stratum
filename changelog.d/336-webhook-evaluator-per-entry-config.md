@@ -13,3 +13,11 @@
   had rejected could merge. Every run of a type in the newest evaluation round is now
   folded with AND, matching the rule the manual-conflict-resolution path already applied.
   A later passing re-evaluation still clears an earlier failure.
+- **An evaluation round is now identified rather than inferred from its timestamp.**
+  `eval_runs` rows carry a `round_id` (migration 048) shared by every run of one
+  evaluation pass. Round identity was previously "these rows share a `ran_at`", which
+  two passes can do — a change's initial evaluation and a re-evaluation, or two
+  concurrent `POST /changes/:id/evaluate` calls, since that route takes no lock — and
+  reading them as one round could AND a superseded failure into a later passing round,
+  leaving the change blocked until someone re-evaluated again. Rows written before the
+  migration keep the old timestamp grouping.

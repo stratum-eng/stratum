@@ -12,6 +12,14 @@ export interface EvalRun {
   reason: string;
   issues?: string[];
   ranAt: string;
+  /**
+   * Which evaluation pass wrote this row. Shared by every row from one
+   * `runEvaluation`, and sortable as a string (see {@link recordEvalRuns}).
+   *
+   * Absent on rows written before migration 048, where the merge gate falls
+   * back to grouping by `ranAt`.
+   */
+  roundId?: string;
 }
 
 interface EvalRunRow {
@@ -23,6 +31,7 @@ interface EvalRunRow {
   reason: string;
   issues: string | null;
   ran_at: string;
+  round_id: string | null;
 }
 
 function rowToEvalRun(row: EvalRunRow): EvalRun {
@@ -35,6 +44,7 @@ function rowToEvalRun(row: EvalRunRow): EvalRun {
     reason: row.reason,
     ranAt: row.ran_at,
   };
+  if (typeof row.round_id === "string") run.roundId = row.round_id;
   if (row.issues !== null) {
     try {
       const parsed = JSON.parse(row.issues);
@@ -58,18 +68,37 @@ export async function recordEvalRuns(
 
   try {
     const stmt = db.prepare(
-      "INSERT INTO eval_runs (id, change_id, evaluator_type, score, passed, reason, issues, ran_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO eval_runs (id, change_id, evaluator_type, score, passed, reason, issues, ran_at, round_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
 
     const runs: EvalRun[] = [];
     const statements: D1PreparedStatement[] = [];
 
     // One timestamp for the whole batch, not one per row: every run here came
-    // from a single `runEvaluation` pass, and `ran_at` is what identifies that
-    // round downstream. Stamping rows individually let a batch straddle a
-    // millisecond boundary, which `checkMergeProtection` would then read as two
-    // rounds, keeping only the later half of one evaluation (#336).
+    // from a single `runEvaluation` pass, and rows from one pass must agree on
+    // when it happened. Stamping rows individually let a batch straddle a
+    // millisecond boundary (#336).
     const ranAt = new Date().toISOString();
+
+    // What actually identifies the round, because equal timestamps do not: two
+    // passes can land in the same millisecond (an initial evaluation and a
+    // re-evaluation, or two concurrent POST /changes/:id/evaluate calls — that
+    // route takes no lock), and the merge gate folding them into one round can
+    // block a change on a verdict a later round already superseded.
+    //
+    // Timestamp-prefixed so it sorts chronologically as a plain string — the
+    // prefix is a fixed-width ISO 8601 UTC instant — which lets the gate pick
+    // the newest round without a second ordering column.
+    //
+    // The ordering between two rounds that share a millisecond is stable but
+    // arbitrary: the prefixes tie and the random suffix decides. That is a
+    // deliberate stopping point rather than an oversight. The gate then applies
+    // ONE round's verdict whole instead of mixing two, which is the property
+    // that matters; picking the truly later of two sub-millisecond passes would
+    // need a shared sequence no isolate can provide, and a pass takes orders of
+    // magnitude longer than a millisecond to produce, so the tie needs two
+    // concurrent re-evaluations to arise at all.
+    const roundId = `${ranAt}#${newId("evr")}`;
 
     for (const { evaluatorType, result } of results) {
       const id = newId("evl");
@@ -81,6 +110,7 @@ export async function recordEvalRuns(
         passed: result.passed,
         reason: result.reason,
         ranAt,
+        roundId,
       };
       if (result.issues !== undefined) run.issues = result.issues;
       runs.push(run);
@@ -95,6 +125,7 @@ export async function recordEvalRuns(
           result.reason,
           result.issues !== undefined ? JSON.stringify(result.issues) : null,
           ranAt,
+          roundId,
         ),
       );
     }
