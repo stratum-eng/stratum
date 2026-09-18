@@ -2238,11 +2238,96 @@ export interface ResolveConflictOpts {
   conflictingFiles?: string[];
   /** Default branch shared by the project repo and its workspace fork ("main" if omitted). */
   branch?: string;
+  /**
+   * The project commit the caller's decision was made against — for `manual`,
+   * the base `buildManualResolutionDiff` resolved and the evaluator suite ran
+   * on. When set, the clone this function takes must still be at that commit or
+   * the resolution is refused with STALE_PROJECT (409).
+   *
+   * Without it the two clones are independent (#337): the route evaluates the
+   * resolution against the tip it saw, and this function commits onto whatever
+   * tip its own, later clone sees. A push landing in between moved the base, and
+   * because the second clone's HEAD *is* the new tip, the resolution committed
+   * cleanly on top of content no evaluator had seen — while the audit record
+   * named the evaluated base as the parent. Nothing errored.
+   *
+   * This is the same pinning the merge path applies with
+   * {@link MergeWorkspaceOptions.expectedWorkspaceSha}, from the other side: there
+   * the workspace must not have moved, here the project must not have.
+   */
+  expectedBaseSha?: string;
+}
+
+/**
+ * Assert an already-cloned project repo is still at `expectedBaseSha` (#337).
+ *
+ * A no-op when the caller passed no expectation, so an unpinned call keeps its
+ * previous behavior rather than starting to fail. A tip that cannot be resolved
+ * is an error, never a pass: "we could not tell" must not read as "it matches".
+ */
+async function assertExpectedBase(
+  fs: NodeFS,
+  dir: string,
+  branch: string,
+  expectedBaseSha: string | undefined,
+  logger: Logger,
+  context: { projectRemote: string },
+): Promise<Result<void, AppError>> {
+  if (expectedBaseSha === undefined) return ok(undefined);
+
+  // Both refs, because they answer different halves of "the evaluated base is
+  // what this resolution builds on": `HEAD` is the parent `git.commit` will
+  // record, and `branch` is the ref `git.push` will advance. A `cloneRepo` with
+  // `ref: branch` leaves them equal, so under current behavior this is one
+  // assertion made twice — but it is the invariant the pin actually needs, and
+  // stating it here means a future change to how the clone checks out cannot
+  // quietly narrow the guarantee to the ref that happens to still match.
+  for (const ref of ["HEAD", branch]) {
+    const tipResult = await fromPromise(git.resolveRef({ fs, dir, ref }));
+    if (!tipResult.success) {
+      logger.error("Failed to resolve project tip for base pin", tipResult.error, {
+        ...context,
+        ref,
+      });
+      return err(
+        new AppError(
+          "Failed to resolve the project's current revision to verify the evaluated base",
+          "GIT_ERROR",
+          500,
+        ),
+      );
+    }
+
+    if (tipResult.data !== expectedBaseSha) {
+      logger.warn("Project moved since the resolution was evaluated; refusing to commit", {
+        ...context,
+        ref,
+        expected: expectedBaseSha,
+        actual: tipResult.data,
+      });
+      return err(
+        new AppError(
+          "Project changed since this resolution was evaluated: re-resolve against the current revision",
+          "STALE_PROJECT",
+          409,
+        ),
+      );
+    }
+  }
+
+  return ok(undefined);
 }
 
 /**
  * Resolve a merge conflict by applying a strategy and producing a new commit.
  * Returns { commitSha } on success, or a structured error — never throws.
+ *
+ * `manual` content is gated before it gets here (the route runs the evaluator
+ * suite and merge protection on it), so that strategy accepts
+ * {@link ResolveConflictOpts.expectedBaseSha} and fails closed when the project
+ * has moved past the evaluated base. The `accept-*` strategies re-stage content
+ * that is already committed on one side and are not evaluated, so they take no
+ * pin.
  */
 export async function resolveConflict(
   opts: ResolveConflictOpts,
@@ -2289,6 +2374,18 @@ export async function resolveConflict(
     if (!cloneResult.success) return err(cloneResult.error);
     const { fs, dir } = cloneResult.data;
 
+    // #337: refuse to commit onto a base the caller did not evaluate. Checked
+    // before anything else this clone is used for, so a moved project costs one
+    // clone rather than a full file-count read.
+    //
+    // This is the whole window: the commit below is parented on this clone's
+    // tip, so once it matches, a push that lands afterwards is rejected by the
+    // non-fast-forward push rather than silently reparented.
+    const pinResult = await assertExpectedBase(fs, dir, branch, opts.expectedBaseSha, logger, {
+      projectRemote,
+    });
+    if (!pinResult.success) return err(pinResult.error);
+
     // Guard: total file count
     const filesResult = await listFilesAtCommit(fs, branch, logger);
     if (!filesResult.success) return err(filesResult.error);
@@ -2318,7 +2415,13 @@ export async function resolveConflict(
       SYSTEM_AUTHOR,
       branch,
     );
-    if (!commitResult.success) return mapPushError(commitResult.error);
+    // The pin above proved the clone was at the evaluated base; this push is
+    // where a project that moved in between surfaces, since the commit's parent
+    // is that base and the remote will refuse a non-fast-forward. Reported as
+    // the same STALE_PROJECT the pin itself raises (#337).
+    if (!commitResult.success) {
+      return mapPushError(commitResult.error, opts.expectedBaseSha !== undefined);
+    }
     return ok({ commitSha: commitResult.data });
   }
 
@@ -2449,7 +2552,40 @@ export async function resolveConflict(
   return err(new AppError(`Unknown strategy: ${strategy}`, "INVALID_INPUT", 400));
 }
 
-function mapPushError(error: AppError): Result<never, AppError> {
+/**
+ * Whether a failed push was rejected because the remote ref had moved on —
+ * isomorphic-git's `PushRejectedError` with reason `not-fast-forward`, which
+ * `commitAndPush` wraps as an ExternalServiceError.
+ *
+ * Structured data only, never the message text. `git.push` raises that class for
+ * every real non-fast-forward, and `resolveConflict` runs in the same isolate as
+ * its caller, so the cause reaches here with its `code` and `data` intact —
+ * matching on wording would add no coverage and could misread an unrelated push
+ * failure whose text happens to mention fast-forwards, telling the caller to
+ * re-resolve over something a re-resolution cannot fix. Missing a rejection
+ * degrades to the 502 this would have returned anyway, which is the safe
+ * direction; a false STALE_PROJECT is not.
+ *
+ * `tag-exists`, the error's other reason, is deliberately not matched: it says
+ * nothing about the base.
+ */
+function isNonFastForwardRejection(error: AppError): boolean {
+  const cause = error instanceof ExternalServiceError ? error.cause : undefined;
+  if (cause === undefined || (cause as { code?: unknown }).code !== "PushRejectedError") {
+    return false;
+  }
+  return (cause as { data?: { reason?: unknown } }).data?.reason === "not-fast-forward";
+}
+
+/**
+ * @param pinned - Whether the caller pinned an expected base (#337). A push
+ * rejected as non-fast-forward then means the project moved between the pin
+ * check and the push — the same condition, and the same remedy, as a pin that
+ * failed outright, so it reports STALE_PROJECT (409) rather than a 502 that
+ * reads as "the remote is broken, try again". Without a pin there is no claim
+ * about what the base should have been, so the 502 stands.
+ */
+function mapPushError(error: AppError, pinned = false): Result<never, AppError> {
   const msg = error.message.toLowerCase();
   if (
     msg.includes("401") ||
@@ -2458,6 +2594,15 @@ function mapPushError(error: AppError): Result<never, AppError> {
     msg.includes("forbidden")
   ) {
     return err(new AppError("GitHub token expired or insufficient permissions", "AUTH_ERROR", 401));
+  }
+  if (pinned && isNonFastForwardRejection(error)) {
+    return err(
+      new AppError(
+        "Project changed since this resolution was evaluated: re-resolve against the current revision",
+        "STALE_PROJECT",
+        409,
+      ),
+    );
   }
   return err(error);
 }
