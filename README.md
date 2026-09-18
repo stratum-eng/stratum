@@ -4,9 +4,10 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Docs](https://img.shields.io/badge/docs-usestratum.dev-blue.svg)](https://docs.usestratum.dev)
 
-**The governance layer for AI-written code** — the control plane that decides what agent
-output is allowed to merge, wherever your code lives. Built on Cloudflare Workers with
-Artifacts, D1, KV, R2, Queues, and Durable Objects.
+**The open-source, agent-first code forge** — git hosting where every change, human or
+agent, proves itself before it merges. Start as a layer over GitHub, or make Stratum the
+source of truth. Built on Cloudflare Workers with Artifacts, D1, KV, R2, Queues, and
+Durable Objects.
 
 > [!NOTE]
 > **Project status: pre-1.0 and under active development.** The feature set below is
@@ -52,9 +53,10 @@ Humans and AI agents are both first-class citizens, with different powers by des
 - **Any agent, any editor** — REST API, CLI, and a remote MCP server at `/mcp`: Claude
   Code, Cursor, Copilot, or your own agents all speak to the same gate. Connecting one is
   a URL and a browser consent screen. No editor subscription required.
-- **Two ways to run it** — as a **layer over GitHub** (keep your repos and PRs; eval
-  verdicts land as PR comments and commit statuses) or as a **standalone forge** (Git
-  hosting on Cloudflare Artifacts, workspace forking, issues, orgs, server-rendered UI).
+- **Two ways to run it** — in **layer mode** over GitHub (keep your repos and PRs; eval
+  verdicts land as PR comments and commit statuses) or in **forge mode** as the standalone
+  source of truth (Git hosting on Cloudflare Artifacts, workspace forking, issues, orgs,
+  server-rendered UI). Same codebase, same change flow; layer mode is the on-ramp.
 
 ## Quick start
 

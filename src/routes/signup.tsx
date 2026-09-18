@@ -392,7 +392,8 @@ app.get("/", (c) => {
                 <div class="signup-header">
                   <h1 class="signup-title">Create your account</h1>
                   <p class="signup-subtitle">
-                    Join Stratum to start managing your projects with AI-powered workflows.
+                    The agent-first code forge: agents open changes, evaluations gate them, and you
+                    approve what merges.
                   </p>
                 </div>
 

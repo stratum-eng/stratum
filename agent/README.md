@@ -2,12 +2,17 @@
 
 Reference agent for Stratum: proves the platform end-to-end for agent workflows.
 
+Not yet published to npm: build it from a checkout of the repository first
+(`cd agent && npm install && npm run build && npm link`), which puts `stratum-agent`
+on your PATH. Once the package is published, `npx @stratum-eng/agent` will work in
+its place.
+
 ```bash
 export STRATUM_HOST=https://your-stratum-instance
 export STRATUM_API_KEY=stratum_user_…
 export ANTHROPIC_API_KEY=sk-ant-…
 
-npx @stratum-eng/agent \
+stratum-agent \
   --repo @user/my-api \
   --objective "Fix the N+1 query in the users endpoint" \
   --model claude-sonnet-4-6

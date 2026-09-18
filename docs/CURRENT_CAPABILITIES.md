@@ -163,7 +163,7 @@ environment (`wrangler.toml:75`), so it works out of the box.
 - Deployments have no build step, no preview environment and no rollback, and
   the deploy DLQ has no consumer.
 - Phase 4 operational items remain: load testing at 1000+ concurrent workspaces,
-  D1 hot/cold rotation, SSO/SAML, multi-tenancy/billing for Stratum Cloud.
+  D1 hot/cold rotation, SSO/SAML, multi-tenancy/billing for a managed offering.
 - Durability is covered: D1 and KV identity back up to R2 daily and on demand,
   along with the reachable history of a rotating slice of repos (coverage rotates
   across runs under a per-run cap), with a tested restore path
