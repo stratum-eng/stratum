@@ -57,7 +57,7 @@ already done when the call returns.
 | `diff` | Exceeded `maxFiles`/`maxLines`, or matched a `forbiddenPattern`. | Split the change, or remove the offending pattern (e.g. a stray `console.log(`). |
 | `webhook` | The project's external CI returned a failure. | Read the returned detail; fix the underlying build or test. |
 | `sandbox` | `command` (usually `npm test`) exited non-zero. | Fix the failing tests. This evaluator fails closed when the Sandboxes binding is absent. |
-| `llm` | The AI reviewer scored the diff below `threshold`. | Read the reviewer's rationale on the change and address it substantively. |
+| `llm` | The AI reviewer scored the diff below `threshold`. It can also fail closed with no review at all — an unusable provider configuration in the policy, or an exhausted allowance on an instance with entitlement enforcement enabled (a metered instance that is only observing admits instead). | Read the reviewer's rationale on the change and address it substantively. A fail-closed reason names its own cause; that one is not fixed by resubmitting. |
 
 ## 5. Merge
 

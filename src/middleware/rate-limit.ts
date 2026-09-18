@@ -1,4 +1,6 @@
 import type { MiddlewareHandler } from "hono";
+import { enforcementBinding } from "../billing/enforcement";
+import { RemoteEntitlements, UNLIMITED, entitlementsEnabled } from "../billing/entitlements";
 import { isGitHttpPath } from "../routes/git-http";
 import { isPostHogProxyPath, isPostHogSdkPath } from "../routes/posthog-proxy";
 import type { Env } from "../types";
@@ -75,10 +77,40 @@ export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<
     const isAuthenticated = Boolean(userId ?? agentId);
 
     const defaultLimit = isAuthenticated ? 1000 : 60;
+    // A plan's own request rate, when we hold one. Deliberately narrow:
+    //
+    // - **Users only.** Today's limiter keys on `userId ?? agentId ?? IP` while
+    //   entitlements key on a billing subject, and resolving an agent to its
+    //   owner needs a D1 hop inside this middleware. Folding a user's agents
+    //   into one bucket is also a user-visible TIGHTENING (a user plus five
+    //   agents get 6x1000 rpm today), so agents keep their own bucket at
+    //   today's numbers and that change gets its own CHANGELOG entry.
+    // - **Cached read only.** `forOwner` never fetches; the auth middleware's
+    //   warm is what makes it hit. A miss falls back to today's numbers rather
+    //   than blocking the request on a billing round trip.
+    // - **`-1` is not a number to enforce.** Unlimited is the FAIL-OPEN default
+    //   of the entitlements layer, so honouring it literally would let one
+    //   uncached miss (or one billing outage) uncap a user's request rate. The
+    //   default cap stands instead.
+    // - **Read only where it is used.** Analytics ingest and any route passing
+    //   its own `requestsPerMinute` (`POST /projects` sets 20) discard this
+    //   value, and paying a KV round trip on the request path for a number
+    //   thrown away is a cost with no decision behind it.
+    //
+    // Observe-only never tightens: with `ENTITLEMENTS_ENFORCE` off a plan may
+    // raise this ceiling but not lower it, so the month of measurement PRD §8
+    // asks for cannot start 429-ing anybody.
+    const subjectLimit = async (): Promise<number> => {
+      const planLimit = await entitledRequestsPerMinute(c.env, userId);
+      if (planLimit === null) return defaultLimit;
+      return enforcementBinding(c.env) ? planLimit : Math.max(planLimit, defaultLimit);
+    };
     // Far above what a real session produces and far below anything worth
     // relaying through someone else's Worker.
     const analyticsLimit = 600;
-    const limit = isAnalyticsIngest ? analyticsLimit : (opts?.requestsPerMinute ?? defaultLimit);
+    const limit = isAnalyticsIngest
+      ? analyticsLimit
+      : (opts?.requestsPerMinute ?? (await subjectLimit()));
 
     const identifier = userId ?? agentId ?? c.req.header("CF-Connecting-IP") ?? "anonymous";
     const minuteBucket = Math.floor(Date.now() / 60000);
@@ -142,6 +174,30 @@ export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<
 
     await next();
   };
+}
+
+/**
+ * The user's own `requests_per_minute`, or `null` when there is none to use.
+ *
+ * `null` covers every case the caller must fall back to today's numbers for: the
+ * billing service is unconfigured (every self-hoster), the caller is not a user,
+ * the cache is cold, or the plan says "unlimited" — which here means "we do not
+ * know", because unlimited is what this layer fails open to.
+ */
+async function entitledRequestsPerMinute(
+  env: Env,
+  userId: string | undefined,
+): Promise<number | null> {
+  if (!userId) return null;
+  if (!entitlementsEnabled(env)) return null;
+  const resolved = await new RemoteEntitlements(env, logger).forOwner(userId, "user");
+  if (!resolved.success) return null;
+  // "default" is a cache miss, not a plan. Only a value somebody actually sent
+  // us gets to move a limit.
+  if (resolved.data.source === "default") return null;
+  const limit = resolved.data.entitlements.rates.requests_per_minute;
+  if (!Number.isInteger(limit) || limit < 0 || limit === UNLIMITED) return null;
+  return limit;
 }
 
 /**

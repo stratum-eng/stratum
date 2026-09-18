@@ -329,10 +329,12 @@ To set expectations, Stratum has none of the following today:
 - Build artifacts (upload/download/retention)
 - Dependency/build caching
 - Scheduled jobs (cron workflows)
-- A secrets store *for evaluators*. Stratum does have an encrypted per-project
-  secret store, but it is **deploy-only**: the deploy runner is the sole reader,
-  and nothing interpolates it into a policy file. The webhook evaluator's
-  `secret` still lives literally in `.stratum/policy.yaml`.
+- A general secrets store *for evaluators*. Stratum does have an encrypted
+  per-project secret store, but only two things read it: the deploy runner, and
+  the `llm` evaluator when a policy names a provider to bring its own key to
+  ([Getting started](/guides/getting-started/#bringing-your-own-model-key)). Nothing
+  interpolates it into a policy file — the webhook evaluator's `secret` still
+  lives literally in `.stratum/policy.yaml`.
 - Deployment *environments* — no staging/production separation, no
   per-environment variables, no environment protection rules. What exists is a
   flat list of named deploys, each optionally gated by a single approval

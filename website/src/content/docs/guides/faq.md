@@ -61,9 +61,14 @@ running GitHub Actions on the promoted PRs. See
 [CI Integration](/guides/ci-integration/).
 
 Two things on that list have since arrived in a narrow form. Stratum now has an
-**encrypted per-project secret store** — but it is deploy-only: the deploy
-runner is its sole reader, and the webhook evaluator's `secret` still lives
-literally in the policy file. And it can **deploy the merged tree** to
+**encrypted per-project secret store**, read by the deploy runner and, since
+BYOK, by the `llm` evaluator for a project's own provider key. It is not a
+general-purpose store: nothing else reads it, and the webhook evaluator's
+`secret` is still taken literally from the policy file rather than by name from
+the store — so it sits in `.stratum/policy.yaml`, in git, and in every clone.
+Treat it as published to anyone who can read the repository, and prefer a
+receiver that verifies something other than a shared secret until that field
+resolves from storage the way `deploys:` already does. And it can **deploy the merged tree** to
 Cloudflare or Vercel from a `deploys:` block, with an optional approval gate
 and a retry. That is not deployment environments: there is no
 staging/production separation, no per-environment variables, no build step, no
@@ -128,13 +133,24 @@ The software is free software (see the licensing question below) and costs
 nothing; self-hosted, you pay only for the Cloudflare resources you use. The
 full binding list is in the [README](https://github.com/stratum-eng/stratum#prerequisites)
 — Workers, Artifacts, D1, KV, Queues, Durable Objects, R2 and Analytics Engine,
-plus Workers AI for the `llm` evaluator and Sandboxes for the `sandbox`
-evaluator **and** `merge.postMergeCommand`. Stratum meters estimated
+plus Workers AI for the `llm` evaluator (or an `LLM_PROVIDERS` allowlist, so
+projects can bring their own model key instead) and Sandboxes for the `sandbox`
+evaluator **and** `merge.postMergeCommand`. Pointing the `llm` evaluator at
+your own provider through `LLM_PROVIDERS` adds that provider's own charges,
+billed to you by them and not visible on your Cloudflare bill. Stratum meters
 resource usage per change — LLM tokens, sandbox execution milliseconds, and git
 operations — and shows it alongside the evaluation evidence, so you can see what
-each (agent) change cost you. The hosted instance has open signup and is free
-while billing and multi-tenancy for a managed offering ("Stratum Cloud") are
-planned but not built.
+each (agent) change cost you. LLM tokens are the counts the provider reported,
+falling back to a `~4 chars/token` estimate (marked as estimated) only when a response
+omits them. Those per-change records roll up into a monthly per-account total
+you can read at `/settings/usage`.
+
+Nothing in a self-hosted instance ever refuses you on the strength of those
+numbers. Allowances, and the enforcement that consults them, are switched on by
+pointing the instance at a billing service; unconfigured — the default — every
+allowance reads as unlimited. The hosted instance has open signup and is free:
+plan definitions, checkout and subscription state for a managed offering
+("Stratum Cloud") are still not built.
 
 ## What are the current limitations?
 
@@ -194,13 +210,14 @@ SSH transport is not supported (Workers have no raw TCP listener).
 
 Node.js 22.13+ and your own Cloudflare account with Workers, **Artifacts (which
 is in beta — you need access to it)**, D1, KV, Queues, and Durable Objects.
-Optional: the Workers AI binding for the LLM evaluator, R2 for backups, and
-Cloudflare Email for magic links. Sandboxes — for the `sandbox` evaluator and
-`merge.postMergeCommand` — is a gated beta whose `[[sandboxes]]` binding is
-commented out in `wrangler.toml`; uncomment it in every `[env.*]` block you
-deploy once your account has access, and until then keep both features out of
-your policy, since the evaluator fails closed (and a `requiredEvaluators` entry
-for it blocks all merges).
+Optional: the Workers AI binding for the LLM evaluator (or, instead, an
+`LLM_PROVIDERS` allowlist so projects can bring their own model key), R2 for
+backups, and Cloudflare Email for magic links. Sandboxes — for the `sandbox`
+evaluator and `merge.postMergeCommand` — is a gated beta whose `[[sandboxes]]`
+binding is commented out in `wrangler.toml`; uncomment it in every `[env.*]`
+block you deploy once your account has access, and until then keep both features
+out of your policy, since the evaluator fails closed (and a `requiredEvaluators`
+entry for it blocks all merges).
 The [README Quick Start](https://github.com/stratum-eng/stratum/blob/main/README.md#quick-start) covers secrets,
 migrations, and deployment; keep production and staging in separate
 Artifacts namespaces.

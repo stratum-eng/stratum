@@ -294,6 +294,101 @@ Your code management platform`;
   return { subject, text, html: wrapEmail({ title: subject, body }) };
 }
 
+export interface UsageThresholdEmailData {
+  /** The meter key, e.g. `llm_tokens_month`. */
+  meter: string;
+  used: number;
+  limit: number;
+  /** The threshold that was crossed, as a percentage. */
+  percent: number;
+  /** 'YYYY-MM' UTC. */
+  period: string;
+  /** ISO 8601 instant the period rolls over and the allowance refills. */
+  resetsAt: string;
+  /**
+   * Whether limits BIND on this instance (`enforcementBinding`), as opposed to
+   * merely existing. Through the observe-only month nothing is refused, and a
+   * mail saying evaluations "stop passing" would be describing a wall that is
+   * not there — so the consequence sentence is chosen from this, never assumed.
+   */
+  enforcing: boolean;
+}
+
+/** Human wording for a meter key. Falls back to the key so a new meter still sends. */
+function meterTitle(meter: string): string {
+  switch (meter) {
+    case "llm_tokens_month":
+      return "AI review tokens";
+    case "sandbox_ms_month":
+      return "sandbox time";
+    case "deploys_month":
+      return "deployments";
+    default:
+      return meter;
+  }
+}
+
+/**
+ * "You have used 80% of X" — sent once per (subject, period, meter, threshold,
+ * limit) when a usage meter crosses its warning threshold.
+ *
+ * Written as a heads-up rather than a warning, because it arrives while nothing
+ * is blocked yet: it names what is running out, when it refills, and the two
+ * ways to avoid meeting the wall. Sent only when the cloud entitlements service
+ * is configured — a self-hoster has no limits to be warned about — and what it
+ * promises will happen at 100% depends on {@link UsageThresholdEmailData.enforcing},
+ * because through the observe-only month the answer is "nothing".
+ */
+export function getUsageThresholdEmail(data: UsageThresholdEmailData): {
+  subject: string;
+  text: string;
+  html: string;
+} {
+  const { used, limit, percent, period, resetsAt, enforcing } = data;
+  const title = meterTitle(data.meter);
+  const subject = `You've used ${percent}% of your Stratum ${title}`;
+  // Two true sentences rather than one convenient one; see `enforcing`.
+  const consequence = enforcing
+    ? "Nothing is blocked yet. When the allowance runs out, evaluations that need it stop\npassing until it refills."
+    : "Nothing is refused: this account's allowances are being measured, not enforced,\nand you will be told before that changes.";
+
+  const text = `Heads up — this month's ${title} on your Stratum account is ${percent}% used.
+
+Used: ${used.toLocaleString("en-US")} of ${limit.toLocaleString("en-US")} (${period})
+Refills: ${resetsAt}
+
+${consequence} If you expect to need more this month you can either
+raise your plan limits or point the llm evaluator at your own provider key with
+\`provider:\` in .stratum/policy.yaml.
+
+--
+Stratum
+Your code management platform`;
+
+  const body = `
+    <div class="text-primary" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 20px; font-weight: 600; color: #e5e5e5; padding-bottom: 16px;">
+      ${escapeHtml(String(percent))}% of your ${escapeHtml(title)} is used
+    </div>
+    <div class="text-secondary" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 16px; line-height: 1.6; color: #a0a0a0; padding-bottom: 16px;">
+      You've used <strong style="color: #e5e5e5;">${escapeHtml(used.toLocaleString("en-US"))}</strong>
+      of <strong style="color: #e5e5e5;">${escapeHtml(limit.toLocaleString("en-US"))}</strong>
+      for ${escapeHtml(period)}. The allowance refills at ${escapeHtml(resetsAt)}.
+    </div>
+    <div class="text-secondary" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 16px; line-height: 1.6; color: #a0a0a0;">
+      ${
+        enforcing
+          ? "Nothing is blocked yet. When the allowance runs out, evaluations that need it stop passing until it refills."
+          : "Nothing is refused: this account's allowances are being measured, not enforced, and you will be told before that changes."
+      }
+      If you expect to need more this month, raise your plan
+      limits, or point the <code style="color:#e5e5e5;">llm</code> evaluator at your own
+      provider key with <code style="color:#e5e5e5;">provider:</code> in
+      <code style="color:#e5e5e5;">.stratum/policy.yaml</code>.
+    </div>`;
+
+  return { subject, text, html: wrapEmail({ title: subject, body }) };
+}
+
 /**
  * Generic email template wrapper with Stratum branding
  * TODO: Use this for future email templates (notifications, invites, etc.)

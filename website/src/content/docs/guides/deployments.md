@@ -382,8 +382,9 @@ happens to be stored beside your credentials, not as a credential.
 
 Secrets are per project, encrypted at rest (AES-GCM, with the project id and
 secret name bound as additional authenticated data), and there is **no read
-path** — no API, UI or CLI surface returns a stored value. Only the deploy
-runner decrypts them.
+path** — no API, UI or CLI surface returns a stored value. Two things decrypt
+them: the deploy runner, and the `llm` evaluator when a project brings its own
+model key ([Getting started](/guides/getting-started/#bringing-your-own-model-key)).
 
 - **In the UI:** *Project → Settings → Deploy secrets*. Add by name and value;
   delete by name. Values are never rendered back.
@@ -525,7 +526,10 @@ Self-hosters need three things beyond the default deployment:
 
    **Rotating it makes every stored secret undecryptable.** There is no
    re-encryption path: after a rotation, deploys fail with `Could not decrypt
-   project secret…` and every project must re-enter its values.
+   project secret…` and every project must re-enter its values. That now reaches
+   further than deploys — a project whose policy names an LLM provider reads its
+   provider key from the same store, so a rotation blocks the **merge gate** on
+   those projects until the key is re-entered, not just their deployments.
 
 2. **The queues must exist**, and the `DEPLOY_QUEUE` binding must be
    configured. Without the binding, merges simply never enqueue a deploy, and

@@ -25,6 +25,7 @@
   ],
   "tools": [
     "stratum_whoami",
+    "stratum_get_usage",
     "stratum_list_projects",
     "stratum_get_project",
     "stratum_list_files",

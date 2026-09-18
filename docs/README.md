@@ -52,10 +52,12 @@ docs/
 │   ├── 004-high-frequency-agent-commits.md
 │   ├── 005-git-smart-http-proxy.md
 │   ├── 006-ssh-transport.md
-│   └── 007-sandbox-evaluator-threat-model.md
+│   ├── 007-sandbox-evaluator-threat-model.md
+│   └── 008-llm-provider-byok-threat-model.md
 ├── research/                           # Research notes
 │   ├── github-alternatives-pain-points.md
 │   ├── master-plan-alignment.md
+│   ├── monetization-and-byok.md
 │   └── option-b-warm-repo-do-spike.md
 ├── runbooks/                           # Operational runbooks
 │   ├── artifacts-scaling.md
@@ -129,6 +131,7 @@ docs/
 - [ADR 005: Native `git push` via a Smart-HTTP Proxy](adr/005-git-smart-http-proxy.md)
 - [ADR 006: SSH Transport for Git](adr/006-ssh-transport.md)
 - [ADR 007: Sandbox Evaluator Threat Model and Time Budget](adr/007-sandbox-evaluator-threat-model.md)
+- [ADR 008: LLM Provider Seam and BYOK Threat Model](adr/008-llm-provider-byok-threat-model.md)
 
 **Historical Reference:**
 - [Archived Documents](archive/README.md) - Code reviews, audits, etc.
@@ -167,7 +170,7 @@ short stub that needs to be fleshed out.
 | Developer - Database | 🚧 Outline | High | 2026-08-25 |
 | Developer - Queues | 🚧 Outline | Medium | 2026-08-25 |
 | Developer - Testing | 🚧 Outline | Medium | 2026-08-25 |
-| ADRs (001-007) | ✅ Complete | Low | 2026-08-31 |
+| ADRs (001-008) | ✅ Complete | Low | 2026-09-06 |
 
 **Legend:** ✅ Complete | 🚧 Outline / In Progress | 📋 Planned
 

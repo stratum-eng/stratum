@@ -8,15 +8,16 @@ the Git LFS and submodule limitations recorded below.
 > **Read the caveats, not just the bullets.** Two capabilities below exist in
 > code but cannot be used on a stock instance, because the Cloudflare Sandboxes
 > binding they need is a gated beta and is **commented out in `wrangler.toml`**
-> (`# [[sandboxes]]`, `wrangler.toml:156` — the only occurrence in the file, and
+> (`# [[sandboxes]]`, `wrangler.toml:170` — the only occurrence in the file, and
 > named environments do not inherit top-level bindings). See
 > [Sandbox-dependent features](#sandbox-dependent-features-unavailable-by-default).
 
 ## Core platform
 
 - Cloudflare Worker (Hono) on Artifacts, KV, D1, Queues, R2 (backups), Workers
-  AI, Analytics Engine, Email, and three Durable Objects — `MergeQueue`,
-  `RepoDO` and `MagicLinkRateLimiter` (`src/index.ts:52`, `wrangler.toml:78`).
+  AI, Analytics Engine, Email, and four Durable Objects — `MergeQueue`,
+  `RepoDO`, `MagicLinkRateLimiter` and `UsageMeter` (`src/index.ts:58-61`,
+  `wrangler.toml:87-105`).
 - Project create/import (GitHub/GitLab/Bitbucket), workspace fork/commit/delete,
   change creation with synchronous evaluation, evaluation-gated merge, provenance
   (records the agent, the model and prompt hash snapshotted at change creation, and
@@ -28,10 +29,15 @@ the Git LFS and submodule limitations recorded below.
 
 ## Evaluation & merge pipeline
 
-- Evaluators: secret scan (always on, blocking), diff, webhook, LLM (AI binding),
-  sandbox (Sandboxes binding — **unavailable by default**, see below). Per-change
-  evaluator evidence and estimated resource costs (LLM tokens, sandbox time, git
-  ops).
+- Evaluators: secret scan (always on, blocking), diff, webhook, LLM, sandbox
+  (Sandboxes binding — **unavailable by default**, see below; fails closed when
+  absent). The LLM evaluator runs on the Workers AI binding by default, or on the
+  project's own credential against an operator-configured provider (`anthropic`
+  or an OpenAI-compatible endpoint) — see BYOK below. Per-change evaluator
+  evidence and resource costs (LLM tokens, sandbox time, git ops); token counts
+  are the ones the provider reported, and fall back to a `~4 chars/token`
+  estimate — marked `estimated` on the cost record — only for a response that
+  omits them.
 - Branch protection in `.stratum/policy.yaml` (`merge:`): required evaluators
   (latest run per type), required human approvals, force-merge control
   (**deny-by-default** — force is only allowed when the policy sets
@@ -64,28 +70,57 @@ the Git LFS and submodule limitations recorded below.
 ### Sandbox-dependent features (unavailable by default)
 
 `[[sandboxes]]` is a gated Cloudflare beta and is commented out in
-`wrangler.toml` (`wrangler.toml:155-157`; it appears nowhere else, and named
+`wrangler.toml` (`wrangler.toml:169-171`; it appears nowhere else, and named
 environments do not inherit top-level bindings). Unless an operator has
 Sandboxes access and uncomments it, `env.SANDBOX` is absent on **every**
 environment, including the maintainer's hosted instance, with two consequences:
 
 - **The `sandbox` evaluator is not skipped — it fails closed.**
   `buildEvaluators` substitutes an `UnavailableEvaluator` that returns score 0
-  / failed (`src/services/change-flow.ts:137-152`), so naming `sandbox` in
+  / failed (`src/services/change-flow.ts:242-256`), so naming `sandbox` in
   `merge.requiredEvaluators` **blocks every merge in that project** until the
   binding is enabled or the evaluator is removed from the policy.
 - **`merge.postMergeCommand` is skipped with a warning**: `post-merge.ts`
   logs `Post-merge command configured but SANDBOX binding is absent` and returns
   `{ status: "skipped", reason: "Sandbox binding is not configured" }`
-  (`src/merge/post-merge.ts:39-43`). Nothing runs and nothing is reverted, but
+  (`src/merge/post-merge.ts:39-44`). Nothing runs and nothing is reverted, but
   the skip is reported — it is in the logs and in the merge's post-merge status,
   not swallowed.
 
 This repo's own `.stratum/policy.yaml` uses only `diff` and `llm` and sets no
 `postMergeCommand`, so it avoids both. The `llm` evaluator has the same
 fail-closed shape when the AI binding is absent
-(`src/services/change-flow.ts:129-136`), but `[ai]` **is** bound in every
-environment (`wrangler.toml:75`), so it works out of the box.
+(`src/services/change-flow.ts:235-241`), but `[ai]` **is** bound in every
+environment (`wrangler.toml:84-85`), so it works out of the box.
+
+## Usage metering, entitlements, and BYOK
+
+- Every cost record names who pays for it (`owner_id`, `owner_type`) and whether
+  it was `platform` or `byok` spend, and rolls up into `usage_periods`, an
+  owner-scoped monthly aggregate keyed `(owner_id, period, meter, source)`.
+  Metering is **always on**, including self-hosted: it is a ledger, not a
+  paywall.
+- BYOK for the `llm` evaluator: an operator allowlist (`LLM_PROVIDERS`) of named
+  providers (`anthropic`, `openai-compatible`), selected by name from
+  `.stratum/policy.yaml`, with the project's own credential read from
+  `project_secrets`. A policy can never supply a `baseUrl`. Every failure path
+  fails the gate closed and none falls back to the operator's `AI` binding.
+  See `adr/008-llm-provider-byok-threat-model.md`.
+- A `UsageMeter` Durable Object holds the monthly reserve/settle counters and a
+  bucketed sliding `evaluations_per_hour` window (a rate ceiling BYOK does not
+  lift).
+- An entitlements seam (`BILLING_SERVICE_URL` + `BILLING_SERVICE_SECRET`) that
+  is **inert when unset** — every allowance reads as unlimited, no meter binding
+  is touched, and nothing can be refused. Plan definitions and payment live
+  outside this repository. Enforcement is additionally observe-only unless
+  `ENTITLEMENTS_ENFORCE=1`: a decision is evaluated and recorded, and admits.
+- Limits are checked against the **acting user** (an agent resolves to its
+  owner), not the project's owner, so an allowance follows the person; recording
+  still names the true owner, so the ledger is unaffected.
+- Visibility: `/settings/usage`, an 80%-of-a-meter banner and one email per
+  crossing, `stratum_get_usage` over MCP, and `GET /api/users/me/usage`. The
+  billing surface is read-only everywhere — no tool or endpoint can raise a
+  limit, buy capacity, or set a provider key.
 
 ## Events & integrations
 
@@ -132,8 +167,9 @@ environment (`wrangler.toml:75`), so it works out of the box.
   syntax-highlighted file viewer (dependency-free lexer), commit log, changes with
   diff viewer + evaluator evidence + costs + reviews + comments, issues, activity,
   webhooks management, deployments (history, log tail for writers, Approve and
-  Retry buttons), deploy-secret management in project settings, settings. Open
-  changes poll via meta refresh.
+  Retry buttons), deploy-secret management in project settings, settings, and a
+  per-account usage page (`/settings/usage`). Open changes poll via meta
+  refresh.
 
 ## Tooling
 
@@ -163,7 +199,11 @@ environment (`wrangler.toml:75`), so it works out of the box.
 - Deployments have no build step, no preview environment and no rollback, and
   the deploy DLQ has no consumer.
 - Phase 4 operational items remain: load testing at 1000+ concurrent workspaces,
-  D1 hot/cold rotation, SSO/SAML, multi-tenancy/billing for Stratum Cloud.
+  D1 hot/cold rotation, SSO/SAML, and the rest of multi-tenancy/billing for
+  Stratum Cloud — the metering, entitlement and enforcement machinery above is
+  in the tree, but plan definitions, checkout and subscription state are not,
+  and there is no org billing UI, no seat model, and no retention or storage
+  limit.
 - Durability is covered: D1 and KV identity back up to R2 daily and on demand,
   along with the reachable history of a rotating slice of repos (coverage rotates
   across runs under a per-run cap), with a tested restore path

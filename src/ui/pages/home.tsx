@@ -1,4 +1,5 @@
 import type { FC } from "hono/jsx";
+import type { UsageBannerNotice } from "../../billing/usage-banner";
 import { Layout } from "../layout";
 
 interface HomeProps {
@@ -11,11 +12,13 @@ interface HomeProps {
     visibility?: string;
   }>;
   user?: { id: string; email: string; username: string } | null;
+  /** The 80% warning, when this account has one. See `Layout`. */
+  usageNotice?: UsageBannerNotice | null;
 }
 
-export const HomePage: FC<HomeProps> = ({ projects, user }) => {
+export const HomePage: FC<HomeProps> = ({ projects, user, usageNotice }) => {
   return (
-    <Layout title="Dashboard" user={user}>
+    <Layout title="Dashboard" user={user} usageNotice={usageNotice}>
       <div class="page-header">
         <h1>Dashboard</h1>
         {user && (

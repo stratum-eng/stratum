@@ -1,5 +1,6 @@
 import type { FC } from "hono/jsx";
 import type { InviteCodesResult } from "../../beta/gate";
+import type { UsageBannerNotice } from "../../billing/usage-banner";
 import {
   type ApiTokenSummary,
   MAX_ACTIVE_TOKENS_PER_USER,
@@ -80,6 +81,8 @@ interface SettingsPageProps {
   nonce?: string;
   /** True when the user has opted out of product analytics (#257). */
   telemetryOptOut: boolean;
+  /** The 80% warning, when this account has one. See `Layout`. */
+  usageNotice?: UsageBannerNotice | null;
 }
 
 const SCOPE_LABEL: Record<ApiTokenScope, string> = {
@@ -305,6 +308,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({
   notice,
   nonce,
   telemetryOptOut,
+  usageNotice,
 }) => {
   const now = Date.now();
   // Mirrors the server-side cap in `createApiToken`: an expired row occupies no
@@ -314,9 +318,14 @@ export const SettingsPage: FC<SettingsPageProps> = ({
     (token) => token.revokedAt === undefined && !isExpired(token.expiresAt ?? null),
   ).length;
   return (
-    <Layout title="Settings" user={user} active="settings">
+    <Layout title="Settings" user={user} active="settings" usageNotice={usageNotice}>
       <div class="page-header">
         <h1>Settings</h1>
+        <div class="header-actions">
+          <a class="btn" href="/settings/usage">
+            Usage
+          </a>
+        </div>
       </div>
       <nav class="section-nav" aria-label="Settings sections">
         {SECTIONS.map(([id, label]) => (

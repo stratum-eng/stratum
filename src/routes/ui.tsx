@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { fetchInviteCodes, referralServiceConfigured } from "../beta/gate";
+import { type UsageBannerNotice, loadUsageBanner } from "../billing/usage-banner";
+import { buildUsageReport } from "../billing/usage-report";
 import { cannotMintLegacyCredential } from "../middleware/auth";
 import { NO_ANALYTICS_HEADER } from "../middleware/web-analytics";
 import { createAgent, deleteAgent, getAgent, listAgents } from "../storage/agents";
@@ -48,6 +50,7 @@ import {
   listWorkspaces,
 } from "../storage/state";
 import { getProjectSourceUrl, getSyncStatus } from "../storage/sync";
+import { usagePeriod } from "../storage/usage";
 import {
   disableLegacyToken,
   getUser,
@@ -81,6 +84,7 @@ import {
 } from "../ui/pages/settings";
 import { SyncPage } from "../ui/pages/sync";
 import { TagsPage } from "../ui/pages/tags";
+import { UsagePage } from "../ui/pages/usage";
 import { WebhooksPage } from "../ui/pages/webhooks";
 import { WorkspacesPage } from "../ui/pages/workspaces";
 import { canReadProject, canWriteProject, filterMemberProjects } from "../utils/authz";
@@ -143,6 +147,23 @@ async function getCurrentUser(
     username: user.username,
     ...(user.displayName !== undefined ? { displayName: user.displayName } : {}),
   };
+}
+
+/**
+ * The 80% usage warning for the signed-in browser user, or `null`.
+ *
+ * Threaded into the pages a user actually visits — dashboard, settings, the
+ * changes list and a change's detail — rather than only onto `/settings/usage`,
+ * because a page nobody opens warns nobody (PRD §8). It costs **one KV read**
+ * and no D1: the crossing was already detected and stored by
+ * `usage-notifications.ts` at the moment the usage was written. Signed-out
+ * visitors and self-hosted instances take no read at all.
+ */
+async function usageBannerFor(
+  c: Context<{ Bindings: Env }>,
+  logger: ReturnType<typeof createLogger>,
+): Promise<UsageBannerNotice | null> {
+  return loadUsageBanner(c.env, logger, c.get("userId"), usagePeriod());
 }
 
 /**
@@ -215,7 +236,9 @@ app.get("/", async (c) => {
   }));
 
   logger.debug("Rendering home page", { projectCount: view.length });
-  return c.html(<HomePage projects={view} user={user} />);
+  return c.html(
+    <HomePage projects={view} user={user} usageNotice={await usageBannerFor(c, logger)} />,
+  );
 });
 
 // GET /new — New project form
@@ -409,7 +432,7 @@ async function renderSettings(
   logger: ReturnType<typeof createLogger>,
   extras: { freshToken?: FreshCredential; notice?: SettingsNotice } = {},
 ) {
-  const [agents, tokens, grants, usernameChange, invites] = await Promise.all([
+  const [agents, tokens, grants, usernameChange, invites, usageNotice] = await Promise.all([
     loadAgentSummaries(c.env.DB, user.id, logger),
     loadApiTokens(c.env.DB, user.id, logger),
     loadOAuthGrants(c.env.DB, user.id, logger),
@@ -420,6 +443,7 @@ async function renderSettings(
     referralServiceConfigured(c.env)
       ? fetchInviteCodes(c.env, user.id, logger)
       : Promise.resolve(undefined),
+    usageBannerFor(c, logger),
   ]);
   // A notice about the action just taken outranks a listing's own failure —
   // the caller needs to know what their POST did first.
@@ -439,6 +463,7 @@ async function renderSettings(
       // is what keeps them from rendering identically — see `loadOAuthGrants`.
       oauthGrantsUnavailable={grants.notice !== undefined}
       telemetryOptOut={telemetryOptOut}
+      usageNotice={usageNotice}
       // Threaded here rather than at each call site: this helper is the single
       // render path for the settings page, so the CSP nonce main added cannot
       // be forgotten by a future caller.
@@ -495,6 +520,39 @@ app.get("/settings", async (c) => {
     ...(notice !== undefined ? { notice } : {}),
   });
   return c.html(page);
+});
+
+/**
+ * GET /settings/usage — this account's consumption against its allowances.
+ *
+ * A page of its own, not a section of `/settings`: that route renders one
+ * hash-anchored document (which `/profile` redirects into), and usage is a
+ * different question with a different read behind it.
+ *
+ * Users only, and a browser session only, like every other account page. There
+ * is deliberately no organization view — this application has no org UI, and
+ * under PRD §4a an allowance is checked against the person anyway, so what is
+ * shown here is exactly what every limit is compared to.
+ */
+app.get("/settings/usage", async (c) => {
+  const logger = createLogger({ path: c.req.path, userId: c.get("userId") });
+  const access = await requireAccountSession(c, logger);
+  if ("response" in access) return access.response;
+
+  const [report, usageNotice] = await Promise.all([
+    buildUsageReport(c.env, logger, { actorUserId: access.user.id, includeByok: true }),
+    usageBannerFor(c, logger),
+  ]);
+  if (!report.success) {
+    // The allowances are still worth showing when only the totals failed to
+    // read, but this build cannot tell those apart, so the page says plainly
+    // that the figures are incomplete rather than rendering zeroes as fact.
+    logger.error("Failed to build usage report", report.error);
+    const message = "Your usage could not be loaded. Please try again.";
+    return c.html(errorPage(500, message, access.user), 500);
+  }
+
+  return c.html(<UsagePage user={access.user} report={report.data} usageNotice={usageNotice} />);
 });
 
 // POST /settings/account — Set or clear the display name
@@ -1218,6 +1276,7 @@ app.get("/p/:name/changes", async (c) => {
       changes={view}
       canWrite={canWrite}
       user={userResult}
+      usageNotice={await usageBannerFor(c, logger)}
     />,
   );
 });
@@ -1344,6 +1403,7 @@ app.get("/changes/:id", async (c) => {
       canReview={canReview}
       projectRef={projectRef(projectResult.data)}
       user={userResult}
+      usageNotice={await usageBannerFor(c, logger)}
     />,
   );
 });
@@ -1449,6 +1509,7 @@ app.get("/:namespace/:slug/changes", async (c) => {
       changes={changes}
       canWrite={canWrite}
       user={userResult}
+      usageNotice={await usageBannerFor(c, logger)}
     />,
   );
 });

@@ -2,6 +2,7 @@
 // runner's message union cannot create a runtime import cycle.
 import type { DeployQueueMessage } from "./deploy/runner";
 import type { MagicLinkRateLimiter } from "./queue/magic-link-limiter";
+import type { UsageMeter } from "./queue/usage-meter";
 import type { LoggerContext } from "./utils/logger";
 export type { LoggerContext };
 
@@ -72,7 +73,23 @@ export interface AiBinding {
       messages?: Array<{ role: string; content: string }>;
       prompt?: string;
     },
-  ): Promise<{ response?: string } | ReadableStream>;
+  ): Promise<
+    | {
+        response?: string;
+        /**
+         * Token counts Workers AI actually reported. Declared because it is
+         * genuinely there and this repo was throwing it away: Cloudflare's
+         * generated types give a text-generation output as `response`,
+         * `tool_calls` and `usage`, with the counts named `prompt_tokens` /
+         * `completion_tokens` (`AiTextGenerationOutput` and `UsageTags` in
+         * `@cloudflare/workers-types`). Optional field by field, unlike those
+         * types, because a binding that omits them must be a cost sample marked
+         * `estimated`, not a type error — `usageOrNothing` decides which.
+         */
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      }
+    | ReadableStream
+  >;
 }
 
 export interface SandboxBinding {
@@ -154,6 +171,28 @@ export interface Env {
   BETA_GATE?: string;
   REFERRAL_SERVICE_URL?: string;
   REFERRAL_SERVICE_SECRET?: string;
+  /** Plan/entitlements service (Stratum Cloud only; OSS self-hosters leave these
+   * unset -> every owner resolves to `UnlimitedEntitlements` and nothing is
+   * fetched). BOTH are required for the hook to be live — see
+   * `entitlementsEnabled` in src/billing/entitlements.ts. */
+  BILLING_SERVICE_URL?: string;
+  BILLING_SERVICE_SECRET?: string;
+  /** "1" makes entitlement decisions REFUSE rather than only record. Off by
+   * default: the limits are measured for a period before they gate anything.
+   * Setting it without BILLING_SERVICE_URL is enforcement that looks on and does
+   * nothing — `entitlementsConfigError` flags exactly that. */
+  ENTITLEMENTS_ENFORCE?: string;
+  /** JSON array of the operator's LLM providers, e.g.
+   * `[{"name":"anthropic","kind":"anthropic","baseUrl":"https://api.anthropic.com/v1"}]`.
+   * The ONLY place a provider endpoint may be named: a project's policy file
+   * selects one of these by name and can never supply a `baseUrl`. Unset (the
+   * default) means Workers AI only. Credentials are NOT here — they live per
+   * project in `project_secrets`. Parsed by `parseLlmProviders`, which rejects
+   * a non-https, credential-bearing, loopback, link-local or private-range
+   * `baseUrl` at parse time and stores it normalized. Include the API version
+   * path: the provider appends `/messages` or `/chat/completions` to whatever
+   * this names, so a `baseUrl` missing the `/v1` 404s on every call. */
+  LLM_PROVIDERS?: string;
   ANALYTICS?: AnalyticsEngineDataset;
   SANDBOX?: SandboxBinding;
   AI?: AiBinding;
@@ -168,6 +207,19 @@ export interface Env {
    * is type-only, so the cycle with magic-link-limiter.ts (which imports `Env`
    * from here) is erased. */
   MAGIC_LINK_LIMITER?: DurableObjectNamespace<MagicLinkRateLimiter>;
+  /** Serialized usage counters, one instance per ENFORCEMENT subject (PRD §4a:
+   * the acting user, or an org positively known to be paid — NOT the recorded
+   * billing subject, which is resettable by creating an org). Optional only so
+   * tests and minimal deployments can omit it; every deploy from this repo's
+   * wrangler.toml binds it, and nothing here enforces anything until the
+   * enforcement call sites exist.
+   *
+   * Parameterised by the class for the same reason as the limiter above: the
+   * `.get()` stub is typed, so a change to `reserve`/`settle`/`setFloor` is a
+   * compile error at the call site rather than something a cast absorbs. The
+   * import is type-only, so the cycle with usage-meter.ts (which imports `Env`
+   * from here) is erased. */
+  USAGE_METER?: DurableObjectNamespace<UsageMeter>;
   /** Content-addressed git object plane (ADR 004 Phase 2). */
   REPO_OBJECTS?: R2Bucket;
   /** Durable backup store (D1 dumps, KV identity, repo packs). Optional: when
@@ -327,6 +379,25 @@ export function projectDefaultBranch(project: {
   githubDefaultBranch?: string;
 }): string {
   return project.sourceDefaultBranch || project.githubDefaultBranch || "main";
+}
+
+/**
+ * A project's `@namespace/slug` label, falling back to its bare name.
+ *
+ * The fallback is the point. A legacy entry can carry no namespace — KV records
+ * are cast without shape validation, and this file's own `projectDefaultBranch`
+ * exists for the same class of drift — so interpolating the pair unguarded
+ * yields the string `"undefined/my-repo"`. That is merely ugly in a log line
+ * and actively wrong in `cost_records.project`, where it becomes a persisted
+ * identifier that matches no project during the deletion cascade's name-form
+ * lookup.
+ */
+export function projectDisplayName(project: {
+  namespace?: string;
+  slug?: string;
+  name: string;
+}): string {
+  return project.namespace && project.slug ? `${project.namespace}/${project.slug}` : project.name;
 }
 
 export interface WorkspaceEntry {

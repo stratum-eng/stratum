@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { LLMEvaluator } from "../src/evaluation/llm-evaluator";
+import { WorkersAiProvider } from "../src/evaluation/llm-provider";
 import { SandboxEvaluator } from "../src/evaluation/sandbox-evaluator";
 import type { EvalPolicy } from "../src/evaluation/types";
 import { getChangeCostSummary, recordCosts } from "../src/storage/costs";
@@ -131,7 +132,11 @@ describe("evaluator cost reporting", () => {
     };
     const policy: EvalPolicy = { evaluators: [{ type: "llm" }] };
 
-    const result = await new LLMEvaluator(ai).evaluate("diff content", policy, mockLogger);
+    const result = await new LLMEvaluator(new WorkersAiProvider(ai)).evaluate(
+      "diff content",
+      policy,
+      mockLogger,
+    );
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.costs).toHaveLength(1);
@@ -147,7 +152,11 @@ describe("evaluator cost reporting", () => {
     };
     const policy: EvalPolicy = { evaluators: [{ type: "llm" }] };
 
-    const result = await new LLMEvaluator(ai).evaluate("diff", policy, mockLogger);
+    const result = await new LLMEvaluator(new WorkersAiProvider(ai)).evaluate(
+      "diff",
+      policy,
+      mockLogger,
+    );
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.costs?.[0]?.kind).toBe("llm_tokens");

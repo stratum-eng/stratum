@@ -1,3 +1,4 @@
+import { usageMeterName } from "../queue/usage-meter";
 import type { Env, ProjectEntry, WorkspaceEntry } from "../types";
 import { type AppError, toAppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
@@ -382,9 +383,17 @@ async function deleteArtifactsRepo(env: Env, name: string, logger: Logger): Prom
   return false;
 }
 
-/** Purge a Durable Object's storage via its `purge()` RPC; false on failure. */
-async function purgeDurableObject(
-  namespace: DurableObjectNamespace | undefined,
+/**
+ * Purge a Durable Object's storage via its `purge()` RPC; false on failure.
+ *
+ * Generic over the namespace's class because the bindings differ: MERGE_QUEUE
+ * and REPO_DO are untyped namespaces while USAGE_METER is parameterised by its
+ * class (`src/types.ts`), and the two are not assignable to one another. The
+ * `purge()` call is asserted below either way, since a typed stub is not enough
+ * to prove the method exists on an untyped one.
+ */
+async function purgeDurableObject<T extends Rpc.DurableObjectBranded | undefined>(
+  namespace: DurableObjectNamespace<T> | undefined,
   key: string,
   label: string,
   logger: Logger,
@@ -497,6 +506,13 @@ export async function deleteProjectCascade(
         residuals.push(`do:MergeQueue:${key}`);
       }
     }
+    // USAGE_METER is deliberately absent from this cascade, and its absence is
+    // the point of the aggregate it counts against: the meter is keyed on an
+    // ENFORCEMENT subject (a user, or a paid org) and never on a project, so a
+    // project deletion must not touch it. Purging it here would refund the
+    // month by deleting a project — exactly what keeping `usage_periods` out of
+    // PROJECT_SCOPED_TABLES prevents (migration 049). The ACCOUNT cascade
+    // erases it, and nothing else does.
 
     // 5) KV last, project entry very last: as long as the entry exists, the
     // project is still resolvable and a re-drive can recapture everything.
@@ -673,6 +689,24 @@ const IDENTITY_COLUMNS: readonly [table: string, column: string][] = [
   // agent's id under requested_by_type = 'agent' and is left alone.
   ["deployments", "requested_by_id"],
   ["deployments", "approved_by"],
+  // Cost rows outlive an erasure by two routes: the project is org-owned, or it
+  // is agent-owned and so never cascaded at all (only `ownerType === "user"`
+  // projects are). In the agent case the row was stamped with the *user* id by
+  // `resolveBillingSubject`'s agent walk, and step 3 of the cascade then deletes
+  // the agent — destroying the only link that could re-derive the attribution
+  // and leaving a bare, unresolvable account id behind. `cost_records` has no
+  // foreign key to `users`, so nothing else catches it. Only `owner_id` is
+  // rewritten: `quantity` and `kind` are what the spend was, not who incurred
+  // it, and the row must stay readable as spend that happened.
+  ["cost_records", "owner_id"],
+  // `usage_periods.owner_id` is deliberately NOT here, and its absence is a
+  // decision rather than an oversight. Rewriting it to the shared sentinel
+  // would collide two erased users' rows on PRIMARY KEY (owner_id, period,
+  // meter) and throw mid-erasure; and there is nothing worth preserving. A cost
+  // row is evidence that spend happened and reads perfectly well with the payer
+  // anonymized, whereas an aggregate exists only to be compared against a limit
+  // for a subject that no longer exists. `deleteAccountCascade` below deletes
+  // those rows outright instead.
 ];
 
 /**
@@ -775,6 +809,32 @@ async function resolveOrgOwnership(
     .bind(org.id)
     .run();
   await db.prepare("DELETE FROM teams WHERE org_id = ?").bind(org.id).run();
+  // The org's usage aggregate goes with the org, and ONLY on this branch: where
+  // a successor was promoted above, the org survives and so must its
+  // consumption — a change of owner is not a fresh monthly allowance.
+  await db.prepare("DELETE FROM usage_periods WHERE owner_id = ?").bind(org.id).run();
+  // ...and so does the org's enforcement counter, on this branch alone. The DO
+  // is named `org:<id>`, never a bare id, so deleting one org can only reach
+  // that org's own counter: a person who spent inside it was charged against
+  // `user:<id>` (PRD §4a — the enforcement subject is the actor unless the org
+  // is positively known to be paid), which is a different object this cannot
+  // name. Purging a shared counter here would erase a stranger's allowance.
+  const meterName = usageMeterName("org", org.id);
+  if (!(await purgeDurableObject(env.USAGE_METER, meterName, "UsageMeter", logger))) {
+    // The orgs row is what a re-drive finds this org by (step 4 selects on
+    // `owner_id`), so dropping it now would strand the counter permanently:
+    // nothing would ever name `org:<id>` again, and the residual would name a
+    // purge no run can retry. Retained instead, exactly as the users row is —
+    // the org has no members and no projects left, and the residual keeps the
+    // erasure job out of `completed` until the purge lands.
+    residuals.push(`do:UsageMeter:${meterName}`);
+    residuals.push(`org:${org.id}:row-retained-pending-residuals`);
+    logger.warn("Org meter purge failed; retaining the org row for re-drive", {
+      orgId: org.id,
+      meterName,
+    });
+    return;
+  }
   await db.prepare("DELETE FROM orgs WHERE id = ?").bind(org.id).run();
 }
 
@@ -849,6 +909,23 @@ export async function deleteAccountCascade(
     // erasure request is itself a retention bug.
     await db.prepare("DELETE FROM agents WHERE owner_id = ?").bind(userId).run();
     await db.prepare("DELETE FROM api_tokens WHERE user_id = ?").bind(userId).run();
+    // The owner-scoped usage aggregate (migration 049). Erasing the account is
+    // the ONLY event that may clear it: `usage_periods` is deliberately outside
+    // `PROJECT_SCOPED_TABLES` because an allowance a user can reset by deleting
+    // the project that burned it is not an allowance. Here the subject itself is
+    // going, so there is nothing left to bill and nothing left to enforce.
+    await db.prepare("DELETE FROM usage_periods WHERE owner_id = ?").bind(userId).run();
+    // The same subject's live counters. The DO is keyed on the ENFORCEMENT
+    // subject (PRD §4a), which for a person is the person: everything this user
+    // ran — including inside orgs they are merely a member of — was checked
+    // against `user:<id>`, so erasing the account erases all of it while those
+    // orgs keep their own rows and their own counters. A failure becomes a
+    // residual, which retains the users row for a re-drive rather than
+    // stranding a counter under a deleted account.
+    const userMeterName = usageMeterName("user", userId);
+    if (!(await purgeDurableObject(env.USAGE_METER, userMeterName, "UsageMeter", logger))) {
+      residuals.push(`do:UsageMeter:${userMeterName}`);
+    }
     // Same reasoning, same trap: `oauth_tokens.user_id` and
     // `oauth_auth_codes.user_id` both REFERENCE users(id) (#349). An OAuth
     // grant is a live credential handed to an editor, so an erasure that left

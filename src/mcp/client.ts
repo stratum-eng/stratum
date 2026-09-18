@@ -260,4 +260,15 @@ export class StratumClient {
   async me() {
     return this.request<{ id: string; email: string }>("GET", "/api/users/me");
   }
+
+  /**
+   * The caller's metered usage against their plan limits.
+   *
+   * Read-only by design and by surface: there is no billing WRITE anywhere on
+   * this client, because an agent that can raise its own limit does not have
+   * one (PRD §4c).
+   */
+  async getUsage() {
+    return this.request<unknown>("GET", "/api/users/me/usage");
+  }
 }

@@ -297,6 +297,40 @@ describe("putSecret", () => {
     expect(result.success).toBe(false);
   });
 
+  it.each([
+    ["a carriage return", "sk-ant-real\rX-Injected: 1"],
+    ["a line feed", "sk-ant-real\nX-Injected: 1"],
+    ["a NUL", "sk-ant-real\u0000"],
+    ["a tab", "sk-ant-real\tmore"],
+  ])("rejects a value containing %s, without echoing it", async (_case, value) => {
+    // Not tidiness. A stored value goes into an outbound provider header, and
+    // `new Headers()` throws a TypeError that QUOTES the offending value — which
+    // would travel as an ExternalServiceError message into `EvalResult.reason`,
+    // be persisted on the change, and be rendered on a page that is
+    // world-readable for a public project. The store is the first of the two
+    // ends that close that path.
+    const result = await putSecret(db, logger, ENV, {
+      projectId: PROJECT,
+      name: "LEAKY",
+      value,
+      actorId: "usr_a",
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.code).toBe("VALIDATION_ERROR");
+    // The refusal must not become the leak it prevents.
+    expect(result.error.message).not.toContain("sk-ant-real");
+    expect(JSON.stringify(result.error.context ?? {})).not.toContain("sk-ant-real");
+
+    // …and nothing was written, so the value cannot be read back either.
+    const loaded = await loadSecretValues(db, logger, ENV, {
+      projectId: PROJECT,
+      names: ["LEAKY"],
+    });
+    expect(loaded.success && loaded.data.missing).toEqual(["LEAKY"]);
+  });
+
   it("accepts an empty value: there is deliberately no minimum length", async () => {
     const result = await putSecret(db, logger, ENV, {
       projectId: PROJECT,

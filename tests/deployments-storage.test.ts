@@ -481,6 +481,35 @@ describe("completeDeployment", () => {
     expect(readStatus(deployment.id).status).toBe("succeeded");
   });
 
+  it("with onlyIfUnclaimed, will not overwrite a row another delivery is running", async () => {
+    const deployment = await insert();
+    const claim = await claimDeployment(db, logger, {
+      projectId: PROJECT,
+      deploymentId: deployment.id,
+      now: T0,
+    });
+    expect(claim.success && claim.data.claimed).toBe(true);
+
+    // The refusal paths in the runner (a guard, an exhausted allowance, a
+    // superseded row) write terminal WITHOUT claiming first, and `running` is
+    // not terminal — so without this they would land on the live row and clear
+    // the lease of a deploy that is still going.
+    const refusal = await completeDeployment(db, logger, {
+      projectId: PROJECT,
+      deploymentId: deployment.id,
+      status: "failed",
+      reason: "deploy allowance exhausted",
+      completedAt: "2026-09-04T00:10:00.000Z",
+      onlyIfUnclaimed: true,
+    });
+
+    expect(refusal.success && refusal.data).toBe(false);
+    const row = readStatus(deployment.id);
+    expect(row.status).toBe("running");
+    // The lease survives, so the delivery that owns the row can still finish it.
+    expect(row.lease_expires_at).not.toBeNull();
+  });
+
   it("will not complete a deployment in another project", async () => {
     const deployment = await insert();
     const result = await completeDeployment(db, logger, {

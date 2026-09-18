@@ -21,10 +21,10 @@ export default defineConfig({
       // regressions without breaking on run-to-run noise. Raise these as
       // coverage improves; never lower them to make a red build pass.
       thresholds: {
-        statements: 38,
-        branches: 72,
-        functions: 50,
-        lines: 38,
+        statements: 75,
+        branches: 79,
+        functions: 85,
+        lines: 75,
       },
     },
   },

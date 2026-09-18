@@ -64,6 +64,7 @@ function makeEnv(parts: {
   artifacts?: Env["ARTIFACTS"];
   repoDo?: DurableObjectNamespace;
   mergeQueue?: DurableObjectNamespace;
+  usageMeter?: DurableObjectNamespace;
 }): Env {
   return {
     DB: parts.db,
@@ -71,6 +72,7 @@ function makeEnv(parts: {
     ARTIFACTS: parts.artifacts ?? makeArtifactsStub().artifacts,
     REPO_DO: parts.repoDo,
     MERGE_QUEUE: parts.mergeQueue,
+    USAGE_METER: parts.usageMeter,
   } as Env;
 }
 
@@ -325,6 +327,23 @@ describe("deleteProjectCascade", () => {
     expect(repoDo.purged).toEqual(["proj_1"]);
     // change.project historically holds the bare name OR the id.
     expect(mergeQueue.purged.sort()).toEqual(["api", "api-display", "proj_1"]);
+  });
+
+  it("never purges the UsageMeter, whose allowance must survive the project", async () => {
+    const { db } = makeRecordingD1();
+    const usageMeter = makeDoNamespaceStub();
+    const result = await deleteProjectCascade(
+      makeEnv({ db, kv: kvStub.kv, usageMeter: usageMeter.ns }),
+      makeTarget(),
+      mockLogger,
+    );
+
+    expect(result.success).toBe(true);
+    // The meter is keyed on an enforcement subject, never on a project. Purging
+    // it here would be the burn-then-delete refund that `usage_periods` was
+    // kept out of PROJECT_SCOPED_TABLES to prevent — with the counter reset
+    // even faster than the aggregate.
+    expect(usageMeter.purged).toEqual([]);
   });
 
   it("under a collision, purges only the project_id-keyed MergeQueue DO", async () => {
