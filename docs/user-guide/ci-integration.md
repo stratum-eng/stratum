@@ -38,7 +38,7 @@ fourth hands your code to a hosting provider that runs it:
 > - Under `requireAll: false` the aggregate is `some(passed)`, so another
 >   passing evaluator still carries it — *unless* `sandbox` is named in
 >   `merge.requiredEvaluators`, which is checked per evaluator
->   (`src/merge/protection.ts:59-65`) and blocks the merge on its own either way.
+>   (`src/merge/protection.ts:73-80`) and blocks the merge on its own either way.
 >
 > See [the sandbox evaluator](#1-the-sandbox-evaluator) for why it behaves that
 > way.
@@ -156,6 +156,13 @@ evaluators:
 merge:
   requiredEvaluators: ["secret_scan", "webhook"]
 ```
+
+You can declare more than one `webhook` entry. Each is contacted independently,
+with its own `url`, `secret` and `timeoutMs`, and each records its own eval run.
+Because every one of them records the type `webhook`, a `requiredEvaluators`
+entry for `webhook` means *every* receiver must pass — one receiver's rejection
+blocks the merge even if the others approved. Re-evaluating replaces the whole
+set, so a later passing round clears an earlier failure.
 
 > **`secret` is a literal in a committed file.** `EvaluatorConfig` types it as
 > `secret?: string` (`src/evaluation/types.ts`) and the policy loader performs
