@@ -4,8 +4,8 @@ This guide walks a new team from zero to a merged, evaluation-gated change. By t
 end you will have a project, a merge policy, a registered agent identity, and the
 CLI and MCP server connected to your tools.
 
-Stratum is a code collaboration platform where humans and AI agents are both
-first-class citizens. Every proposed change — human or agent — passes through the
+Stratum is the open-source, agent-first code forge, where humans and AI agents are
+both first-class citizens. Every proposed change — human or agent — passes through the
 same evaluation gates before it can merge, and every merged change carries a
 provenance record of who (or what model) produced it.
 
@@ -86,7 +86,7 @@ curl -X POST https://app.usestratum.dev/api/projects/@you/my-project/import \
   -d '{"url": "https://github.com/your-org/your-repo", "branch": "main"}'
 ```
 
-### Choose your level of buy-in: layer mode vs. alternative mode
+### Choose your level of buy-in: layer mode vs. forge mode
 
 You do not have to leave your current forge to use Stratum. The same codebase
 supports two modes:
@@ -98,7 +98,7 @@ supports two modes:
   is evaluated, the verdict is posted to the PR as a comment (edited in place on
   re-evaluation) and a `stratum/evaluation` commit status. Agents work through
   Stratum's gates; your team keeps reviewing in GitHub PRs.
-- **Alternative mode (full buy-in).** Stratum is the source of truth for repos,
+- **Forge mode (full buy-in).** Stratum is the source of truth for repos,
   workspaces, and changes. No GitHub required — email magic links mean no
   external accounts at all.
 

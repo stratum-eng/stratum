@@ -4,7 +4,7 @@
     "identifier": "urn:air:docs.usestratum.dev",
     "domain": "docs.usestratum.dev",
     "displayName": "Stratum",
-    "description": "The governance layer for AI-written code — evaluation-gated merges, provenance, and agent identities, built on Cloudflare Workers.",
+    "description": "The open-source, agent-first code forge — evaluation-gated merges, provenance, and agent identities, built on Cloudflare Workers.",
     "url": "https://docs.usestratum.dev/",
     "license": "AGPL-3.0-or-later",
     "repository": "https://github.com/stratum-eng/stratum"

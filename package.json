@@ -7,7 +7,7 @@
   },
   "private": true,
   "license": "AGPL-3.0-or-later",
-  "description": "A code collaboration platform for the AI engineering era, built on Cloudflare Workers.",
+  "description": "The open-source, agent-first code forge — evaluation-gated merges, provenance, and agent identities, built on Cloudflare Workers.",
   "repository": { "type": "git", "url": "https://github.com/stratum-eng/stratum.git" },
   "scripts": {
     "dev": "wrangler dev",

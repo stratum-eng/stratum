@@ -1,14 +1,14 @@
 # Stratum Architecture
 
 **Last Updated:** 2026-08-18  
-**Strategic Position:** Progressive buy-in platform supporting both GitHub layer mode and full alternative mode
+**Strategic Position:** The agent-first code forge, with progressive buy-in: GitHub layer mode or full forge mode
 
 ## Overview
 
-Stratum is an agent operations platform built on Cloudflare Workers. It supports two modes of operation:
+Stratum is the open-source, agent-first code forge, built on Cloudflare Workers. It supports two modes of operation:
 
 1. **Layer Mode (minimal buy-in):** Stratum sits between agents and GitHub. Developers use Stratum for agent workflows, team reviews in GitHub PRs.
-2. **Alternative Mode (full buy-in):** Stratum is the source of truth for repos, workspaces, and changes.
+2. **Forge Mode (full buy-in):** Stratum is the source of truth for repos, workspaces, and changes.
 
 The same codebase supports both modes. Users choose their level of adoption.
 

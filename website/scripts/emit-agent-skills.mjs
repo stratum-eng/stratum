@@ -51,7 +51,7 @@ export async function buildIndex(dir = SKILLS_DIR, site = SITE) {
     $schema: "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
     name: "Stratum",
     description:
-      "Skills for driving Stratum — the governance layer that decides what agent output is allowed to merge.",
+      "Skills for driving Stratum — the open-source, agent-first code forge.",
     homepage: `${site}/`,
     // Deliberately MIT, not the repository's AGPL: these skills exist to be
     // fetched and embedded in third-party agents, which is the one thing
