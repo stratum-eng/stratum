@@ -33,7 +33,7 @@ Post-merge deployments shipped on 2026-09-04 (`deploys:` in `.stratum/policy.yam
 targeting Cloudflare and Vercel). What that first version deliberately left out is tracked
 under [Deployments](#deployments).
 
-## Operational / scale (Stratum Cloud)
+## Operational / scale (hosted, multi-tenant service)
 
 - [ ] **Load testing** — validate 1000+ concurrent workspaces per repo; establish latency
       and error budgets before any public hosting.

@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "documentation": "https://docs.usestratum.dev/guides/mcp/",
   "repository": "https://github.com/stratum-eng/stratum",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "transport": {
     "type": "streamable-http",
     "url": "https://app.usestratum.dev/mcp"

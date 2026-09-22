@@ -30,8 +30,14 @@ Pages live in `src/content/docs/` as Markdown/MDX with Starlight frontmatter
 (`title`, `description`). The sidebar is configured in `astro.config.mjs`.
 
 - `guides/` — user-facing guides (getting started, importing, code review, issues,
-  CI integration, troubleshooting, FAQ)
+  CI integration, deployments, CLI, MCP server, troubleshooting, FAQ)
 - `reference/` — API reference (authentication, endpoints, errors, OpenAPI, agent discovery)
+
+**Do not hand-edit the guide and reference pages.** They are generated from the
+repository's `docs/` tree by `scripts/mirror-docs.mjs` (`npm run sync:guides`), and CI
+runs `npm run check:guides` to catch drift. Edit `docs/user-guide/*` or `docs/api/*` at the
+repository root, then regenerate. Only `index.mdx` and the pages `mirror-docs.mjs` lists as
+site-owned are authored here.
 
 Internal repo documentation (ADRs, runbooks, developer docs) intentionally stays
 in `docs/` as plain Markdown and is not published here.

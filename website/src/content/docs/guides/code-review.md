@@ -141,7 +141,7 @@ In layer mode, promoting a change to a GitHub PR moves the conversation to
 GitHub, and your team reviews there as usual. Stratum still posts the
 evaluation verdict to the PR as a comment (edited in place on re-evaluation)
 and as a `stratum/evaluation` commit status. See
-[Getting Started](/guides/getting-started/#choose-your-level-of-buy-in-layer-mode-vs-alternative-mode).
+[Getting Started](/guides/getting-started/#choose-your-level-of-buy-in-layer-mode-vs-forge-mode).
 
 ## Reference
 

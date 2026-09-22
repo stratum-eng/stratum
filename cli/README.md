@@ -1,6 +1,9 @@
 # @stratum-eng/cli
 
-CLI for Stratum — code hosting for the AI engineering era. Wraps the Stratum REST API.
+CLI for Stratum — the agent-first code forge. Wraps the Stratum REST API.
+
+Not yet published to npm: build it from a checkout of the repository first
+(`cd cli && npm install && npm run build && npm link`), which puts `stratum` on your PATH.
 
 ## Setup
 

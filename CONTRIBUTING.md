@@ -1,7 +1,7 @@
 # Contributing to Stratum
 
-Thanks for your interest in contributing! Stratum is a code-collaboration platform for the AI
-engineering era, where both humans and AI agents are first-class contributors. This guide covers
+Thanks for your interest in contributing! Stratum is the open-source, agent-first code
+forge, where both humans and AI agents are first-class contributors. This guide covers
 how to set up, make changes, and get them merged.
 
 > Working with an AI coding agent? Point it at [`AGENTS.md`](AGENTS.md) — it's the agent-facing

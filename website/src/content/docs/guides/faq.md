@@ -6,8 +6,8 @@ editUrl: "https://github.com/stratum-eng/stratum/edit/main/docs/user-guide/faq.m
 
 ## What is Stratum?
 
-A code collaboration platform where humans and AI agents are both first-class
-citizens. It hosts git repositories (on Cloudflare Artifacts), and every
+The open-source, agent-first code forge, where humans and AI agents are both
+first-class citizens. It hosts git repositories (on Cloudflare Artifacts), and every
 proposed change — whether a human or an agent wrote it — passes through
 policy-defined evaluation gates before it can merge. Merged changes carry
 provenance (which agent, which model, which prompt) and cost records.
@@ -77,7 +77,7 @@ bidirectional sync (inbound webhooks, outbound PR promotion), and agent work
 goes through Stratum's gates while your team keeps reviewing GitHub PRs —
 each evaluation of a change with a linked PR posts the verdict to the PR as a
 comment and a `stratum/evaluation` commit status. In
-**alternative mode**, Stratum is the source of truth and GitHub isn't involved
+**forge mode**, Stratum is the source of truth and GitHub isn't involved
 at all. You choose the level of buy-in, and you can start with layer mode.
 
 ## Do I need a GitHub account at all?

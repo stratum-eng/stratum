@@ -9,7 +9,7 @@ hardening items) is complete as of 2026-06-11. See
 limitations. This doc tracks everything that remains, with context on why each
 item is open and what it unblocks.
 
-## Phase 4: operational / scale (Stratum Cloud)
+## Phase 4: operational / scale (hosted, multi-tenant service)
 
 These are the items required to run Stratum as a hosted, multi-tenant service.
 None of them block current single-tenant usage.

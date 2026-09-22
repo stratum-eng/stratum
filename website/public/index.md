@@ -1,7 +1,6 @@
 # Stratum
 
-> The documentation for Stratum, the control plane that decides what agent output is
-> allowed to merge. For what Stratum is and who it is for, see https://usestratum.dev.
+> The documentation for Stratum, the open-source, agent-first code forge. For what Stratum is and who it is for, see https://usestratum.dev.
 
 ## Documentation
 
@@ -10,11 +9,14 @@
 - [Code review](https://docs.usestratum.dev/guides/code-review/)
 - [Issues](https://docs.usestratum.dev/guides/issues/)
 - [CI integration](https://docs.usestratum.dev/guides/ci-integration/)
+- [Deployments](https://docs.usestratum.dev/guides/deployments/)
 - [CLI](https://docs.usestratum.dev/guides/cli/)
 - [MCP server](https://docs.usestratum.dev/guides/mcp/)
 - [Troubleshooting](https://docs.usestratum.dev/guides/troubleshooting/)
 - [FAQ](https://docs.usestratum.dev/guides/faq/)
+- [Authentication](https://docs.usestratum.dev/reference/authentication/)
 - [API reference](https://docs.usestratum.dev/reference/endpoints/)
+- [Error codes](https://docs.usestratum.dev/reference/errors/)
 - [OpenAPI specification](https://docs.usestratum.dev/openapi.yml)
 - [Agent discovery](https://docs.usestratum.dev/reference/agent-discovery/)
 

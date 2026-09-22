@@ -2,7 +2,8 @@ openapi: 3.1.0
 info:
   title: Stratum API
   description: |
-    A code collaboration platform for the AI engineering era.
+    The open-source, agent-first code forge: git hosting where every change, human or
+    agent, proves itself through evaluation gates before it merges.
 
     This specification is generated from the route code (`src/index.ts` and
     `src/routes/*.ts`) and covers every `/api/*` route, the root health check,
@@ -41,7 +42,7 @@ info:
     Several form-friendly endpoints return a `302` redirect instead of JSON when
     the request body is form-encoded rather than `application/json`; this spec
     documents the JSON behaviour.
-  version: 1.0.0
+  version: 0.2.0
 
 servers:
   - url: https://your-instance.workers.dev

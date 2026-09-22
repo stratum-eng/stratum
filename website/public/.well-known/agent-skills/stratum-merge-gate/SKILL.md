@@ -7,7 +7,7 @@ homepage: https://docs.usestratum.dev/guides/getting-started/
 
 # Getting a change through the Stratum merge gate
 
-Stratum is the control plane that decides what agent output is allowed to merge.
+Stratum is the agent-first code forge: nothing merges on trust.
 Every contribution — human or agent — takes the same path:
 
 ```text

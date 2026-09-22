@@ -2,7 +2,8 @@
 /**
  * Reference agent: proves the Stratum platform end-to-end for agent workflows.
  *
- *   npx @stratum-eng/agent --repo @user/api --objective "Fix the N+1 query"
+ *   stratum-agent --repo @user/api --objective "Fix the N+1 query"
+ *   (npx @stratum-eng/agent once the package is published)
  *
  * Flow: create agent identity → fork workspace → read repo → ask Claude for
  * edits → commit with the agent token → open a Change (which runs evaluation).

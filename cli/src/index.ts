@@ -11,7 +11,7 @@ const program = new Command();
 
 program
   .name("stratum")
-  .description("CLI for Stratum — code hosting for the AI engineering era")
+  .description("CLI for Stratum — the agent-first code forge")
   .version("0.2.0");
 
 function prompt(question: string): Promise<string> {

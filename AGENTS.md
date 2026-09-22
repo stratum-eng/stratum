@@ -5,7 +5,7 @@ Stratum treats agents as first-class contributors — this file is the contract.
 
 ## What this project is
 
-Stratum is a code-collaboration platform for the AI engineering era, built on Cloudflare
+Stratum is the open-source, agent-first code forge, built on Cloudflare
 Workers (Hono), Durable Objects (SQLite), D1, KV, R2, Queues, and Cloudflare Artifacts for
 serverless Git. The web UI is **server-rendered JSX**: every page must work with JavaScript
 disabled. A few inline scripts exist purely as progressive enhancement — never add a
@@ -64,7 +64,9 @@ it is network-dependent and not part of the offline gate.
 ## Quality gates (must pass before a PR is mergeable)
 
 CI (`pr-checks.yml`) runs **lint, typecheck, unit tests, and the `cli/`/`agent/`
-package suites in parallel**, then integration tests, then a staging deploy + smoke test.
+package suites in parallel**, then integration tests. It deliberately deploys nothing —
+staging and production deploy only from `ci.yml` on `main`; PRs get an isolated per-PR
+preview Worker from `pr-preview.yml` instead.
 Mirror lint → typecheck → test locally before pushing.
 
 1. **Typecheck and tests must pass.** Never comment out, skip, or `.skip` a test to get green.
