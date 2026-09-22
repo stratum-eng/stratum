@@ -1,6 +1,6 @@
 # Stratum Architecture
 
-**Last Updated:** 2026-08-18  
+**Last Updated:** 2026-09-22  
 **Strategic Position:** The agent-first code forge, with progressive buy-in: GitHub layer mode or full forge mode
 
 ## Overview
