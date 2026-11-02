@@ -14,6 +14,7 @@ import {
   consumeOidcLoginState,
   createOidcLoginState,
   ensureScimMember,
+  getScimMember,
   getSsoConnectionById,
   getSsoConnectionByOrgSlug,
   getSsoConnectionByVerifiedDomain,
@@ -603,6 +604,10 @@ async function exchangeCodeForIdToken(
         client_secret: clientSecret,
         code_verifier: codeVerifier,
       }),
+      // Same policy as discovery: the endpoint passed validateOidcUrl, a
+      // redirect target did not — and a 307/308 would re-send client_secret
+      // and code_verifier to it.
+      redirect: "error",
       signal: AbortSignal.timeout(TOKEN_EXCHANGE_TIMEOUT_MS),
     });
   } catch {
@@ -679,9 +684,15 @@ async function resolveSsoUser(
     // DIFFERENT connection (one IdP issuer serving several orgs, each with
     // its own verified domains — extractClaims already enforced this org's),
     // this org's membership was never written: establish it now. The identity
-    // row keeps its original connection_id.
+    // row keeps its original connection_id, so the scim_members row — not the
+    // identity's connection — is what records "already established here":
+    // without that check, every later login would re-add a user an org admin
+    // had removed.
     if (identityLookup.data.connectionId !== connection.id) {
       const userId = userResult.data.id;
+      const managed = await getScimMember(db, logger, connection.id, userId);
+      if (!managed.success) return { kind: "server_error" };
+      if (managed.data !== null) return { userId };
       const memberResult = await ensureOrgMember(db, logger, connection.orgId, userId, "member");
       if (!memberResult.success) {
         logger.error("Failed to add SSO user to org", memberResult.error, { userId });

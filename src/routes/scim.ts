@@ -607,19 +607,28 @@ app.put("/Users/:id", async (c) => {
   if (typeof body.userName === "string" && body.userName.trim().toLowerCase() !== user.email) {
     return scimError(400, "userName cannot be changed", "mutability");
   }
+  // Every field is validated before anything is written, so a 400 neither
+  // adopts the user nor leaves a half-applied update (e.g. a new externalId
+  // already stored and audited when `active` turns out to be malformed).
+  if (
+    body.externalId !== undefined &&
+    typeof body.externalId !== "string" &&
+    body.externalId !== null
+  ) {
+    return scimError(400, "externalId must be a string", "invalidValue");
+  }
+  const desiredActive = body.active === undefined ? undefined : coerceActive(body.active);
+  if (body.active !== undefined && desiredActive === undefined) {
+    return scimError(400, "active must be a boolean", "invalidValue");
+  }
 
   // Any successful write verb adopts: after a 2xx the IdP believes it manages
   // this user, so even a no-op PUT must create the scim_members row —
   // otherwise the user could silently fall out of the connection's scope.
-  // Adoption runs AFTER body parsing and structural validation: a 400 must
-  // not adopt.
   const adoptResult = await ensureScimMember(c.env.DB, logger, connection.id, user.userId);
   if (!adoptResult.success) return scimError(500, "Failed to update user");
 
   if (body.externalId !== undefined) {
-    if (typeof body.externalId !== "string" && body.externalId !== null) {
-      return scimError(400, "externalId must be a string", "invalidValue");
-    }
     if (body.externalId !== user.externalId) {
       const failure = await applyExternalId(
         c.env.DB,
@@ -638,11 +647,7 @@ app.put("/Users/:id", async (c) => {
     }
   }
 
-  if (body.active !== undefined) {
-    const desiredActive = coerceActive(body.active);
-    if (desiredActive === undefined) {
-      return scimError(400, "active must be a boolean", "invalidValue");
-    }
+  if (desiredActive !== undefined) {
     const failure = await applyActiveTransition(
       c.env.DB,
       logger,

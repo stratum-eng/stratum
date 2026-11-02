@@ -13,7 +13,6 @@ import {
   findVerifiedDomainConflicts,
   getSsoConnectionByOrgId,
   normalizeEmailDomains,
-  reenableUsersForConnectionRemoval,
   rotateScimToken,
   setSsoConnectionEnabled,
   setSsoDomainsVerified,
@@ -228,14 +227,11 @@ app.delete("/:slug/sso", async (c) => {
   const connection = connectionResult.data;
 
   // Deleting a connection is a clean rollback, never a permanent lockout:
-  // users this connection deactivated via SCIM get their accounts back first.
-  // Set-based; the storage helper carries the cross-connection vote guard.
-  const reenableResult = await reenableUsersForConnectionRemoval(c.env.DB, logger, connection.id);
-  if (!reenableResult.success) return appError(reenableResult.error);
-  const reenabledUserIds = reenableResult.data;
-
+  // users this connection deactivated via SCIM get their accounts back, in the
+  // same transaction as the delete (see deleteSsoConnection).
   const deleteResult = await deleteSsoConnection(c.env.DB, logger, connection.id);
   if (!deleteResult.success) return appError(deleteResult.error);
+  const reenabledUserIds = deleteResult.data;
 
   await recordAudit(c.env.DB, logger, {
     action: "sso.connection.deleted",

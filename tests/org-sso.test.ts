@@ -35,7 +35,6 @@ vi.mock("../src/storage/sso", async (importOriginal) => {
     upsertSsoConnection: vi.fn(),
     getSsoConnectionByOrgId: vi.fn(),
     deleteSsoConnection: vi.fn(),
-    reenableUsersForConnectionRemoval: vi.fn(),
     findVerifiedDomainConflicts: vi.fn(),
     setSsoDomainsVerified: vi.fn(),
     setSsoConnectionEnabled: vi.fn(),
@@ -65,7 +64,6 @@ import {
   deleteSsoConnection,
   findVerifiedDomainConflicts,
   getSsoConnectionByOrgId,
-  reenableUsersForConnectionRemoval,
   rotateScimToken,
   setSsoConnectionEnabled,
   setSsoDomainsVerified,
@@ -456,11 +454,11 @@ describe("DELETE /api/orgs/:slug/sso", () => {
       success: true,
       data: mockConnection(),
     });
-    vi.mocked(deleteSsoConnection).mockResolvedValue({ success: true, data: undefined });
+    vi.mocked(deleteSsoConnection).mockResolvedValue({ success: true, data: [] });
   });
 
-  it("re-enables users the connection disabled, then deletes it", async () => {
-    vi.mocked(reenableUsersForConnectionRemoval).mockResolvedValue({
+  it("deletes the connection, re-enabling (atomically) the users it disabled", async () => {
+    vi.mocked(deleteSsoConnection).mockResolvedValue({
       success: true,
       data: ["usr_x", "usr_y"],
     });
@@ -473,11 +471,6 @@ describe("DELETE /api/orgs/:slug/sso", () => {
     const body = (await res.json()) as { deleted: boolean; reenabledUserIds: string[] };
     expect(body.deleted).toBe(true);
     expect(body.reenabledUserIds).toEqual(["usr_x", "usr_y"]);
-    expect(reenableUsersForConnectionRemoval).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      "ssoc_1",
-    );
     expect(deleteSsoConnection).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -494,7 +487,6 @@ describe("DELETE /api/orgs/:slug/sso", () => {
   });
 
   it("deletes cleanly when no user was disabled", async () => {
-    vi.mocked(reenableUsersForConnectionRemoval).mockResolvedValue({ success: true, data: [] });
     const res = await makeApp().fetch(
       request("DELETE", "/api/orgs/acme/sso", undefined, authHeader),
       makeEnv(),
@@ -504,18 +496,17 @@ describe("DELETE /api/orgs/:slug/sso", () => {
     expect(body.reenabledUserIds).toEqual([]);
   });
 
-  it("a failed re-enable returns the error and does NOT delete the connection", async () => {
+  it("a failed delete-and-re-enable returns the error and records no deletion", async () => {
     const { AppError } = await import("../src/utils/errors");
-    vi.mocked(reenableUsersForConnectionRemoval).mockResolvedValue({
+    vi.mocked(deleteSsoConnection).mockResolvedValue({
       success: false,
-      error: new AppError("Failed to re-enable SCIM-disabled users", "STORAGE_ERROR", 500),
+      error: new AppError("Failed to delete SSO connection", "STORAGE_ERROR", 500),
     });
     const res = await makeApp().fetch(
       request("DELETE", "/api/orgs/acme/sso", undefined, authHeader),
       makeEnv(),
     );
     expect(res.status).toBe(500);
-    expect(deleteSsoConnection).not.toHaveBeenCalled();
     expect(recordAudit).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),

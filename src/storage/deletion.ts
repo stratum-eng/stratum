@@ -806,19 +806,23 @@ async function resolveOrgOwnership(
     });
     if (!reenabled.success) {
       residuals.push(`org:${org.id}:scim-reenable-batch`);
-    } else {
-      await recordAudit(db, logger, {
-        action: "sso.connection.deleted",
-        actorType: "system",
-        subject: org.id,
-        detail: {
-          via: "org.deleted",
-          orgId: org.id,
-          connectionId: connectionRow.id,
-          reenabledUserIds: reenabled.data,
-        },
-      });
+      // Keep the connection, its active=0 votes, and the org row: deleting
+      // them now would leave the users this connection disabled locked out
+      // for good. The org survives, so a re-drive re-enters here and retries;
+      // every step above is an idempotent delete.
+      return;
     }
+    await recordAudit(db, logger, {
+      action: "sso.connection.deleted",
+      actorType: "system",
+      subject: org.id,
+      detail: {
+        via: "org.deleted",
+        orgId: org.id,
+        connectionId: connectionRow.id,
+        reenabledUserIds: reenabled.data,
+      },
+    });
   }
   await db
     .prepare(

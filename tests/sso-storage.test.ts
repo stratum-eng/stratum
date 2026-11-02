@@ -413,11 +413,74 @@ describe("deleteSsoConnection", () => {
       )
       .run(connection.id, "usr_b", 1, new Date().toISOString());
 
+    raw
+      .prepare("UPDATE users SET disabled_at = ? WHERE id = 'usr_a'")
+      .run("2026-02-01T00:00:00.000Z");
+
     const result = await deleteSsoConnection(db, mockLogger, connection.id);
     expect(result.success).toBe(true);
+    // The re-enable runs in the same batch, so its RETURNING ids come back.
+    if (result.success) expect(result.data).toEqual(["usr_a"]);
+    const usrA = raw.prepare("SELECT disabled_at FROM users WHERE id = 'usr_a'").get() as {
+      disabled_at: string | null;
+    };
+    expect(usrA.disabled_at).toBeNull();
 
     expect(raw.prepare("SELECT COUNT(*) AS n FROM scim_members").get()).toEqual({ n: 0 });
     expect(raw.prepare("SELECT COUNT(*) AS n FROM org_sso_connections").get()).toEqual({ n: 0 });
+  });
+
+  it("keeps a user another connection still deactivates disabled", async () => {
+    const { db, raw } = setup();
+    seedUser(raw, "usr_shared");
+    seedOrg(raw, "org_2", "globex", "usr_owner");
+    const first = await seedConnection(db, "org_1", ["corp.example.com"]);
+    const second = await seedConnection(db, "org_2", ["globex.example.com"]);
+    for (const connectionId of [first.id, second.id]) {
+      raw
+        .prepare(
+          "INSERT INTO scim_members (connection_id, user_id, active, created_at) VALUES (?, ?, 0, ?)",
+        )
+        .run(connectionId, "usr_shared", new Date().toISOString());
+    }
+    raw
+      .prepare("UPDATE users SET disabled_at = ? WHERE id = 'usr_shared'")
+      .run("2026-02-01T00:00:00.000Z");
+
+    const result = await deleteSsoConnection(db, mockLogger, first.id);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data).toEqual([]);
+    const row = raw.prepare("SELECT disabled_at FROM users WHERE id = 'usr_shared'").get() as {
+      disabled_at: string | null;
+    };
+    expect(row.disabled_at).not.toBeNull();
+  });
+
+  it("rolls the re-enable back when the delete fails, keeping every vote", async () => {
+    const { db, raw } = setup();
+    seedUser(raw, "usr_a");
+    const connection = await seedConnection(db, "org_1");
+    raw
+      .prepare(
+        "INSERT INTO scim_members (connection_id, user_id, active, created_at) VALUES (?, ?, 0, ?)",
+      )
+      .run(connection.id, "usr_a", new Date().toISOString());
+    raw
+      .prepare("UPDATE users SET disabled_at = ? WHERE id = 'usr_a'")
+      .run("2026-02-01T00:00:00.000Z");
+    raw.exec(
+      "CREATE TRIGGER fail_conn_delete BEFORE DELETE ON org_sso_connections " +
+        "BEGIN SELECT RAISE(ABORT, 'boom'); END",
+    );
+
+    const result = await deleteSsoConnection(db, mockLogger, connection.id);
+    expect(result.success).toBe(false);
+    // One transaction: neither the re-enable nor the scim_members delete stuck.
+    const row = raw.prepare("SELECT disabled_at FROM users WHERE id = 'usr_a'").get() as {
+      disabled_at: string | null;
+    };
+    expect(row.disabled_at).not.toBeNull();
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM scim_members").get()).toEqual({ n: 1 });
   });
 });
 

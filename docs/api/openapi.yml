@@ -4294,7 +4294,7 @@ paths:
       operationId: scimReplaceUser
       tags: [scim]
       summary: Replace a user
-      description: Only `active` and `externalId` are writable; `userName` cannot be changed (400 mutability). Deactivation (`active:false`) reversibly disables every credential the user holds and purges their sessions; reactivation restores the same credentials.
+      description: Only `active` and `externalId` are writable; `userName` cannot be changed (400 mutability). Deactivation (`active:false`) reversibly disables every credential the user holds and deletes their browser sessions; reactivation restores their tokens, agents, and OAuth grants (the user signs in again for a new session).
       security:
         - scimBearer: []
       requestBody:
@@ -4872,7 +4872,7 @@ components:
             updatedAt: { type: string, format: date-time }
         domainVerification:
           type: [object, "null"]
-          description: The DNS TXT records to publish; null once domains are verified
+          description: The DNS TXT records to publish (null only when the connection has no verification token). It may still be present after verification, so read `connection.domainsVerifiedAt` for verification status
           properties:
             token: { type: string }
             records:

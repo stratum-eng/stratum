@@ -205,6 +205,43 @@ describe("deleteAccountCascade — SSO/SCIM tables", () => {
     expect(detail.reenabledUserIds).toEqual(["usr_2"]);
   });
 
+  it("keeps the connection, its votes, and the org when the re-enable fails, so a re-drive can retry", async () => {
+    const { db, raw } = makeSqliteD1();
+    seedUser(raw, "usr_1");
+    seedUser(raw, "usr_2");
+    raw
+      .prepare("UPDATE users SET disabled_at = ? WHERE id = 'usr_2'")
+      .run("2026-02-01T00:00:00.000Z");
+    seedOrg(raw, "org_1", "usr_1", [["usr_1", "admin"]]);
+    seedConnection(raw, "conn_1", "org_1");
+    seedScimMember(raw, "conn_1", "usr_2", 0);
+    // Make the set-based re-enable UPDATE fail for real.
+    raw.exec(
+      "CREATE TRIGGER fail_reenable BEFORE UPDATE OF disabled_at ON users " +
+        "WHEN NEW.disabled_at IS NULL BEGIN SELECT RAISE(ABORT, 'boom'); END",
+    );
+
+    const result = await deleteAccountCascade(makeEnv(db), "usr_1", mockLogger);
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.residuals).toContain("org:org_1:scim-reenable-batch");
+
+    // Nothing that a retry needs is gone: usr_2 is still disabled, and the
+    // active=0 vote, the connection, and the org all survive for the re-drive.
+    expect(countWhere(raw, "scim_members", "connection_id", "conn_1")).toBe(1);
+    expect(countWhere(raw, "org_sso_connections", "org_id", "org_1")).toBe(1);
+    expect(countWhere(raw, "orgs", "id", "org_1")).toBe(1);
+
+    // Once the fault clears, the re-drive finishes the rollback.
+    raw.exec("DROP TRIGGER fail_reenable");
+    const retry = await deleteAccountCascade(makeEnv(db), "usr_1", mockLogger);
+    expect(retry.success && retry.data.residuals).toEqual([]);
+    const survivor = raw.prepare("SELECT disabled_at FROM users WHERE id = 'usr_2'").get() as {
+      disabled_at: string | null;
+    };
+    expect(survivor.disabled_at).toBeNull();
+    expect(countWhere(raw, "org_sso_connections", "org_id", "org_1")).toBe(0);
+  });
+
   it("keeps the connection when the org survives via successor promotion", async () => {
     const { db, raw } = makeSqliteD1();
     seedUser(raw, "usr_1");

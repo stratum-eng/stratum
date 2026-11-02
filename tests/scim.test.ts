@@ -644,6 +644,33 @@ describe("PUT /Users/:id", () => {
     // scim_members row may record it as managing this user.
     expect(scimRowOf(connectionId, userId)).toBeUndefined();
   });
+
+  it("a PUT with a malformed `active` neither adopts nor half-applies externalId", async () => {
+    const created = await createUser(db, `halfway@${DOMAIN}`, logger);
+    if (!created.success) throw new Error("seed failed");
+    const userId = created.data.user.id;
+    await addOrgMember(db, logger, "org_1", userId, "member");
+
+    const res = await scimFetch("PUT", `/scim/v2/Users/${userId}`, {
+      body: { schemas: [USER_SCHEMA], externalId: "ext-halfway", active: "maybe" },
+    });
+    expect(res.status).toBe(400);
+    // Validation precedes every write: no adoption row, so no stored externalId.
+    expect(scimRowOf(connectionId, userId)).toBeUndefined();
+  });
+
+  it("a PUT with a non-string externalId does NOT adopt the user", async () => {
+    const created = await createUser(db, `badext@${DOMAIN}`, logger);
+    if (!created.success) throw new Error("seed failed");
+    const userId = created.data.user.id;
+    await addOrgMember(db, logger, "org_1", userId, "member");
+
+    const res = await scimFetch("PUT", `/scim/v2/Users/${userId}`, {
+      body: { schemas: [USER_SCHEMA], externalId: 42 },
+    });
+    expect(res.status).toBe(400);
+    expect(scimRowOf(connectionId, userId)).toBeUndefined();
+  });
 });
 
 describe("PATCH /Users/:id", () => {

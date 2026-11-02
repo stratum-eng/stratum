@@ -771,6 +771,25 @@ export async function purgeExpiredOidcStates(
  * large connections. `excludeUserId` skips a user whose account is being
  * erased anyway. Returns the re-enabled user ids.
  */
+function reenableForRemovalStatement(
+  db: D1Database,
+  connectionId: string,
+  excludeUserId?: string,
+): D1PreparedStatement {
+  const excludeClause = excludeUserId === undefined ? "" : "AND id != ?";
+  const stmt = db.prepare(
+    `UPDATE users SET disabled_at = NULL
+     WHERE disabled_at IS NOT NULL
+       AND id IN (SELECT user_id FROM scim_members WHERE connection_id = ? AND active = 0)
+       AND id NOT IN (SELECT user_id FROM scim_members WHERE connection_id != ? AND active = 0)
+       ${excludeClause}
+     RETURNING id`,
+  );
+  return excludeUserId === undefined
+    ? stmt.bind(connectionId, connectionId)
+    : stmt.bind(connectionId, connectionId, excludeUserId);
+}
+
 export async function reenableUsersForConnectionRemoval(
   db: D1Database,
   logger: Logger,
@@ -778,20 +797,11 @@ export async function reenableUsersForConnectionRemoval(
   opts: { excludeUserId?: string } = {},
 ): Promise<Result<string[], AppError>> {
   try {
-    const excludeClause = opts.excludeUserId === undefined ? "" : "AND id != ?";
-    const stmt = db.prepare(
-      `UPDATE users SET disabled_at = NULL
-       WHERE disabled_at IS NOT NULL
-         AND id IN (SELECT user_id FROM scim_members WHERE connection_id = ? AND active = 0)
-         AND id NOT IN (SELECT user_id FROM scim_members WHERE connection_id != ? AND active = 0)
-         ${excludeClause}
-       RETURNING id`,
-    );
-    const bound =
-      opts.excludeUserId === undefined
-        ? stmt.bind(connectionId, connectionId)
-        : stmt.bind(connectionId, connectionId, opts.excludeUserId);
-    const { results } = await bound.all<{ id: string }>();
+    const { results } = await reenableForRemovalStatement(
+      db,
+      connectionId,
+      opts.excludeUserId,
+    ).all<{ id: string }>();
     const reenabledUserIds = results.map((row) => row.id);
     logger.info("Re-enabled SCIM-disabled users for connection removal", {
       connectionId,
@@ -809,22 +819,32 @@ export async function reenableUsersForConnectionRemoval(
 }
 
 /**
- * Delete the connection and its managed-membership rows atomically. Managed
- * users become ordinary org members; re-enabling the ones this connection
- * disabled is the caller's job (it needs per-user audit context).
+ * Delete the connection and its managed-membership rows, re-enabling the users
+ * this connection's SCIM deactivated (same set-based, cross-connection-guarded
+ * UPDATE as `reenableUsersForConnectionRemoval`) — all in ONE D1 batch, which
+ * runs as a single transaction. Done as separate round-trips, a SCIM
+ * deprovision that had already authenticated could land between the re-enable
+ * and the delete: its user would be disabled, and the active=0 vote that could
+ * undo it deleted, leaving the account locked out for good. Managed users
+ * become ordinary org members. Returns the re-enabled user ids.
  */
 export async function deleteSsoConnection(
   db: D1Database,
   logger: Logger,
   connectionId: string,
-): Promise<Result<void, AppError>> {
+): Promise<Result<string[], AppError>> {
   try {
-    await db.batch([
+    const [reenabled] = await db.batch<{ id: string }>([
+      reenableForRemovalStatement(db, connectionId),
       db.prepare("DELETE FROM scim_members WHERE connection_id = ?").bind(connectionId),
       db.prepare("DELETE FROM org_sso_connections WHERE id = ?").bind(connectionId),
     ]);
-    logger.info("SSO connection deleted", { connectionId });
-    return ok(undefined);
+    const reenabledUserIds = (reenabled?.results ?? []).map((row) => row.id);
+    logger.info("SSO connection deleted", {
+      connectionId,
+      reenabled: reenabledUserIds.length,
+    });
+    return ok(reenabledUserIds);
   } catch (error) {
     logger.error("Failed to delete SSO connection", error instanceof Error ? error : undefined, {
       connectionId,

@@ -41,7 +41,9 @@ For programmatic access:
 An account deactivated through SCIM is **disabled**, reversibly: every
 credential it holds — user tokens, agent tokens, OAuth grants, the session
 cookie, and git over HTTPS — is refused with `401` until the identity provider
-reactivates it, at which point the same credentials work again.
+reactivates it. Reactivation restores the account's tokens, agents, and OAuth
+grants as they were, but deactivation deleted its browser sessions, so the user
+signs in again.
 
 ```bash
 curl -H "Authorization: Bearer stratum_user_xxxxx" \

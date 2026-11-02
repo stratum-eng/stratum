@@ -9,8 +9,9 @@
 - **SCIM 2.0 user provisioning at `/scim/v2`.** Each SSO connection gets its own
   `stratum_scim_*` bearer token. Identity providers can create, adopt, update, and
   deactivate users. Deactivation is reversible: it disables every credential the
-  account holds and purges its sessions, and reactivation restores the same
-  credentials. SCIM Groups are not implemented.
+  account holds and deletes its browser sessions. Reactivation restores the
+  account's tokens, agents, and OAuth grants; the user signs in again for a new
+  session. SCIM Groups are not implemented.
 
 ### Security
 - **A disabled account cannot authenticate by any route.** Legacy and scoped API

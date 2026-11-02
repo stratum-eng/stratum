@@ -99,6 +99,7 @@ describe("OIDC SSO login", () => {
   /** What the stubbed token endpoint returns; tests set the id_token per flow. */
   let tokenResponse: () => Response;
   let tokenRequests: URLSearchParams[];
+  let tokenRedirectModes: (string | undefined)[];
 
   function setIdToken(idToken: string): void {
     tokenResponse = () =>
@@ -145,6 +146,7 @@ describe("OIDC SSO login", () => {
     if (!enabled.success) throw new Error("seed enable failed");
 
     tokenRequests = [];
+    tokenRedirectModes = [];
     tokenResponse = () => new Response("not configured by test", { status: 500 });
     vi.stubGlobal(
       "fetch",
@@ -157,6 +159,7 @@ describe("OIDC SSO login", () => {
         }
         if (url.startsWith(TOKEN_ENDPOINT)) {
           tokenRequests.push(new URLSearchParams(String(init?.body)));
+          tokenRedirectModes.push(init?.redirect);
           return tokenResponse();
         }
         throw new Error(`unexpected fetch: ${url}`);
@@ -434,6 +437,9 @@ describe("OIDC SSO login", () => {
       expect(tokenReq?.get("code")).toBe("authcode-1");
       expect(tokenReq?.get("redirect_uri")).toBe(`${BASE}/auth/sso/callback`);
       expect(tokenReq?.get("code_verifier")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      // A redirect from the admin-supplied endpoint would re-send the secret
+      // and verifier to a host that never passed validateOidcUrl.
+      expect(tokenRedirectModes[0]).toBe("error");
 
       // Email normalized to lowercase; username derived from the local part.
       const user = userRow(`alice@${EMAIL_DOMAIN}`);
@@ -583,6 +589,22 @@ describe("OIDC SSO login", () => {
         .prepare("SELECT connection_id FROM identities WHERE issuer = ? AND subject = ?")
         .get(ISSUER, "gina-sub") as { connection_id: string } | undefined;
       expect(identity?.connection_id).toBe(connectionId);
+
+      // Established once: an org admin removing the user from org B is not
+      // overridden by the user's next login through B's connection.
+      raw
+        .prepare("DELETE FROM org_members WHERE org_id = ? AND user_id = ?")
+        .run("org_beta", created.data.user.id);
+      const again = await startLogin("beta");
+      setIdToken(
+        await signIdToken({ nonce: again.nonce, sub: "gina-sub", email: `gina@${betaDomain}` }),
+      );
+      const second = await app.fetch(callbackRequest(again.state, again.cookie), env);
+      expect(second.headers.get("Location")).toBe("/");
+      const readded = raw
+        .prepare("SELECT role FROM org_members WHERE org_id = ? AND user_id = ?")
+        .get("org_beta", created.data.user.id);
+      expect(readded).toBeUndefined();
     });
 
     it("rejects a nonce mismatch", async () => {
