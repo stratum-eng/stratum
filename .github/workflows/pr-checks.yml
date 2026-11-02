@@ -238,6 +238,17 @@ jobs:
 
             const allPassed = Object.values(jobs).every(r => r === 'success');
             const status = allPassed ? '✅ All checks passed' : '❌ Some checks failed';
+            const summary = `Lint: ${jobs.lint}, Type Check: ${jobs.typecheck}, Tests: ${jobs.test}, Engines floor: ${jobs.enginesFloor}, Integration: ${jobs.integration}`;
+
+            // A fork PR's token is read-only whatever `permissions` asks for,
+            // so creating the check run would 403 and turn a green run red.
+            // Report through this job's own result instead.
+            const head = context.payload.pull_request.head.repo;
+            if (!head || head.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              core.info(`Fork PR: skipping the PR Requirements check run. ${summary}`);
+              if (!allPassed) core.setFailed(`${status}: ${summary}`);
+              return;
+            }
 
             // Create check run for merge requirements
             await github.rest.checks.create({
@@ -249,7 +260,7 @@ jobs:
               conclusion: allPassed ? 'success' : 'failure',
               output: {
                 title: status,
-                summary: `Lint: ${jobs.lint}, Type Check: ${jobs.typecheck}, Tests: ${jobs.test}, Engines floor: ${jobs.enginesFloor}, Integration: ${jobs.integration}`
+                summary
               }
             });
 
