@@ -469,6 +469,17 @@ export class UsageMeter extends DurableObject<Env> {
       return { admitted: true, counted: false, count: 0 };
     }
     const record = await this.ctx.storage.get<PeriodRecord>(PERIOD_KEY);
+    // A reservation for a closed period (clock skew at the month boundary, or
+    // a lagging caller-supplied clock) must not overwrite the live month's
+    // counts. Admit without counting, as every other unusable input does.
+    if (record && record.period > period) {
+      warn("Usage meter reserve admitted: period is older than the live period", {
+        meter,
+        period,
+        livePeriod: record.period,
+      });
+      return { admitted: true, counted: false, count: 0 };
+    }
     // A record from an earlier month reads as zero rather than being deleted:
     // the `put` below overwrites it, so the stale record costs nothing.
     const counts = record?.period === period ? record.counts : {};

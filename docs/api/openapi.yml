@@ -3340,10 +3340,10 @@ paths:
                           type: string
                           enum: [llm_tokens_month, sandbox_ms_month, deploys_month]
                         used:
-                          type: integer
+                          type: number
                           description: Platform-billed consumption — the only kind a limit binds.
                         byok:
-                          type: integer
+                          type: number
                           description: Spend on a project's own provider key; never counted against the limit.
                         limit: { type: integer, description: "`-1` unlimited, `0` a hard block." }
                         unlimited: { type: boolean }
@@ -3353,7 +3353,7 @@ paths:
                           nullable: true
                           description: Null when there is no finite limit.
                         remaining:
-                          type: integer
+                          type: number
                           nullable: true
                           description: Floored at zero; null when unlimited.
                   rates:

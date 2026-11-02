@@ -271,6 +271,21 @@ describe("UsageMeter period rollover", () => {
     expect((await stub.read(PERIOD)).counts).toEqual({});
   });
 
+  it("admits a reservation for a closed period without touching the live one", async () => {
+    const { stub } = meter();
+    const later = NOW + 31 * 24 * HOUR_MS;
+
+    await stub.reserve("llm_tokens_month", 100, 1000, NEXT_PERIOD, later);
+    // A late arrival stamped with last month: a skewed clock near midnight UTC.
+    const stale = await stub.reserve("llm_tokens_month", 500, 1000, PERIOD, later);
+
+    expect(stale).toEqual({ admitted: true, counted: false, count: 0 });
+    expect((await stub.read(NEXT_PERIOD)).counts.llm_tokens_month).toBe(100);
+    // The live month's settles still land, because the record still holds it.
+    await stub.settle("llm_tokens_month", -40, NEXT_PERIOD, later);
+    expect((await stub.read(NEXT_PERIOD)).counts.llm_tokens_month).toBe(60);
+  });
+
   it("reads a period it holds nothing for as empty, not as the live one", async () => {
     const { stub } = meter();
 
