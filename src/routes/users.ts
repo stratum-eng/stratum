@@ -11,6 +11,7 @@ import {
 } from "../storage/api-tokens";
 import { recordAudit } from "../storage/audit";
 import { createDeletionJob } from "../storage/deletion-jobs";
+import { usernameNamespaceTaken } from "../storage/project-namespace";
 import {
   disableLegacyToken,
   getUser,
@@ -467,6 +468,19 @@ app.get("/check-username", async (c) => {
     const existingUser = await getUserByUsername(c.env.DB, normalizedUsername, logger);
 
     if (existingUser.success) {
+      return c.json({
+        available: false,
+        message: "This username is already taken",
+      });
+    }
+
+    // Users and orgs share the `@name` namespace; a namespace holding projects
+    // from an account that has since moved off it is not free either.
+    const namespaceTaken = await usernameNamespaceTaken(c.env, normalizedUsername, logger);
+    if (!namespaceTaken.success) {
+      return c.json({ available: false, message: "Could not check availability" }, 500);
+    }
+    if (namespaceTaken.data) {
       return c.json({
         available: false,
         message: "This username is already taken",

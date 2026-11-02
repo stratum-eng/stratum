@@ -3150,6 +3150,96 @@ export async function getCommitLog(
   return ok(commits);
 }
 
+/** Everything the repo overview page renders, read from one clone. */
+export type RepoView = {
+  /** The commit the clone actually checked out — what this view describes. */
+  headSha: string;
+  /** `null` when the tree walk failed, as opposed to an empty repository. */
+  files: string[] | null;
+  commits: CommitLogEntry[];
+  readme: string | null;
+  /**
+   * Whether every part of the view was read. False when the walk, the log, or
+   * an existing README failed to read — the page still renders what it got, but
+   * such a view must not be cached against its commit, or a transient failure
+   * would stick for as long as that commit is the tip. A repo that simply has
+   * no README is complete.
+   */
+  complete: boolean;
+};
+
+/**
+ * Reads the repo overview (file list, recent commits, README) from a single clone.
+ *
+ * Exists because composing {@link listFilesInRepo}, {@link getCommitLog} and
+ * {@link readFileFromRepo} clones the repository once per call. Each clone
+ * unpacks the packfile in JavaScript, and three of them for one page view cost
+ * ~24s of CPU on a modest repo in production — close to the Workers CPU limit.
+ *
+ * Only a failed clone is an error. A failed walk, log, or README read degrades
+ * that one part of the view, so the page shows what it could read.
+ *
+ * @param commitDepth - How many commits of history to return.
+ */
+export async function loadRepoView(
+  remote: string,
+  token: string,
+  logger: Logger,
+  branch = "main",
+  commitDepth = 20,
+): Promise<Result<RepoView, AppError>> {
+  const cloneResult = await cloneRepo(remote, token, logger, { ref: branch });
+  if (!cloneResult.success) return err(cloneResult.error);
+  const { fs, dir } = cloneResult.data;
+
+  const headResult = await fromPromise(git.resolveRef({ fs, dir, ref: "HEAD" }));
+  if (!headResult.success) {
+    logger.error("Failed to resolve HEAD of cloned repo", headResult.error, { remote, branch });
+    return err(new ExternalServiceError("Git", "Failed to resolve HEAD", headResult.error));
+  }
+
+  const walkResult = await walkDir(fs, dir, "", logger);
+  const files = walkResult.success ? walkResult.data : null;
+  let complete = files !== null;
+
+  let commits: CommitLogEntry[] = [];
+  const logResult = await fromPromise(git.log({ fs, dir, depth: commitDepth }));
+  if (logResult.success) {
+    commits = logResult.data.map((c) => ({
+      sha: c.oid,
+      message: c.commit.message.trim(),
+      author: `${c.commit.author.name} <${c.commit.author.email}>`,
+      timestamp: c.commit.author.timestamp,
+    }));
+  } else {
+    complete = false;
+    logger.warn("Failed to get commit log for repo view", { remote, branch });
+  }
+
+  let readme: string | null = null;
+  const readmePath = files?.find((f) => f.toLowerCase() === "readme.md");
+  if (readmePath) {
+    const readResult = await fromPromise(
+      fs.promises.readFile(`/${readmePath}`, { encoding: "utf8" }),
+    );
+    if (readResult.success) {
+      const content = readResult.data;
+      readme = typeof content === "string" ? content : new TextDecoder().decode(content);
+    } else {
+      complete = false;
+      logger.warn("Failed to read README for repo view", { remote, path: readmePath });
+    }
+  }
+
+  logger.info("Loaded repo view", {
+    remote,
+    branch,
+    fileCount: files?.length ?? 0,
+    commitCount: commits.length,
+  });
+  return ok({ headSha: headResult.data, files, commits, readme, complete });
+}
+
 export async function importFromGitHub(
   artifacts: ArtifactsNamespace,
   name: string,

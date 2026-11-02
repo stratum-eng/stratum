@@ -8,6 +8,7 @@ import {
   listOrgsForUser,
   removeOrgMember,
 } from "../storage/orgs";
+import { usernameNamespaceTaken } from "../storage/project-namespace";
 import {
   addTeamMember,
   createTeam,
@@ -18,6 +19,7 @@ import {
 } from "../storage/teams";
 import { getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
+import { AppError } from "../utils/errors";
 import { createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 import { badRequest, created, notFound, ok } from "../utils/response";
@@ -59,9 +61,26 @@ app.post("/", async (c) => {
   if (existingUser.success) {
     return badRequest("slug is already taken by a user namespace");
   }
+  // The same `@name` space can still hold another account's projects or a live
+  // claim after that account moved off the name; an org landing there would
+  // own a namespace full of someone else's work.
+  const namespaceTaken = await usernameNamespaceTaken(c.env, body.slug, logger);
+  if (!namespaceTaken.success) {
+    logger.error("Could not check the org slug's namespace", namespaceTaken.error);
+    return c.json({ error: "Failed to create organization" }, 500);
+  }
+  if (namespaceTaken.data) {
+    return badRequest("slug is already taken");
+  }
 
   const orgResult = await createOrg(c.env.DB, logger, userId, body.name, body.slug);
   if (!orgResult.success) {
+    // 409 from createOrg: a user took the name between the checks above and
+    // the INSERT. A UNIQUE failure: another org did.
+    const lost =
+      (orgResult.error instanceof AppError && orgResult.error.statusCode === 409) ||
+      /UNIQUE|constraint/i.test(orgResult.error.message);
+    if (lost) return badRequest("slug is already taken");
     logger.error("Failed to create org", orgResult.error, { name: body.name, slug: body.slug });
     return c.json({ error: "Failed to create organization" }, 500);
   }

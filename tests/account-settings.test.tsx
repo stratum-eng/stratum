@@ -47,11 +47,12 @@ vi.mock("../src/storage/audit", () => ({
 vi.mock("../src/storage/project-namespace", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/storage/project-namespace")>()),
   ownerHasClaims: vi.fn(),
+  usernameNamespaceTaken: vi.fn(async () => ({ success: true, data: false })),
 }));
 
 import { uiRouter } from "../src/routes/ui";
 import { recordAudit } from "../src/storage/audit";
-import { ownerHasClaims } from "../src/storage/project-namespace";
+import { ownerHasClaims, usernameNamespaceTaken } from "../src/storage/project-namespace";
 import { listProjectsByNamespace } from "../src/storage/state";
 import { getUser, renameUser, setUserDisplayName } from "../src/storage/users";
 
@@ -115,6 +116,7 @@ beforeEach(() => {
   vi.restoreAllMocks();
   vi.mocked(getUser).mockResolvedValue({ success: true, data: liveUser });
   vi.mocked(ownerHasClaims).mockResolvedValue(noClaims);
+  vi.mocked(usernameNamespaceTaken).mockResolvedValue(noClaims);
   vi.mocked(listProjectsByNamespace).mockResolvedValue(noProjects);
 });
 
@@ -333,6 +335,32 @@ describe("POST /settings/account (display name)", () => {
 });
 
 describe("POST /settings/username", () => {
+  // `@name` is shared with org slugs, and a namespace can still hold another
+  // account's projects: renaming onto either would hand this account a
+  // namespace it does not own.
+  it("refuses a name whose namespace is held by an org or someone else's projects", async () => {
+    vi.mocked(usernameNamespaceTaken).mockResolvedValue(hasClaims);
+    const res = await makeApp().fetch(post("/settings/username", { username: "acme" }), makeEnv());
+    expect(res.status).toBe(409);
+    expect(await res.text()).toContain("That username is already taken.");
+    expect(usernameNamespaceTaken).toHaveBeenCalledWith(
+      expect.anything(),
+      "acme",
+      expect.anything(),
+    );
+    expect(renameUser).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the requested namespace cannot be checked", async () => {
+    vi.mocked(usernameNamespaceTaken).mockResolvedValue({
+      success: false,
+      error: new Error("d1") as never,
+    });
+    const res = await makeApp().fetch(post("/settings/username", { username: "acme" }), makeEnv());
+    expect(res.status).toBe(500);
+    expect(renameUser).not.toHaveBeenCalled();
+  });
+
   it("renames when the account owns no projects and records old and new names", async () => {
     vi.mocked(renameUser).mockResolvedValue({ success: true, data: "alice-two" });
     const res = await makeApp().fetch(

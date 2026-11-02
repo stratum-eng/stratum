@@ -5,7 +5,7 @@ import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 import { type DeletionTarget, captureDeletionTarget } from "./deletion";
 import { createDeletionJob } from "./deletion-jobs";
-import { deleteProject, getProjectByPath } from "./state";
+import { deleteProject, getProjectByPath, namespaceHasProjects } from "./state";
 import { getUser } from "./users";
 
 /*
@@ -134,6 +134,60 @@ export async function ownerHasClaims(
     if (!dropped.success) return dropped;
   }
   return ok(false);
+}
+
+/**
+ * Whether a username is unavailable because its `@name` namespace is already
+ * held by something other than a user row: an org (orgs share the `@slug`
+ * namespace space with users), a live project claim, or a project in KV — a
+ * leftover of an account that no longer has that name. Taking such a name
+ * would put the new owner's namespace over someone else's projects, and the
+ * routes that authorize by `namespace === getUserNamespace(username)` (imports,
+ * import retries) would then treat that namespace as theirs.
+ *
+ * Callers still check `users.username` themselves; this covers what that
+ * misses. Fails closed: anything unreadable is an error, not a "free".
+ * `now` is injectable for tests.
+ */
+export async function usernameNamespaceTaken(
+  env: Pick<Env, "DB" | "STATE">,
+  username: string,
+  logger: Logger,
+  now = Date.now(),
+): Promise<Result<boolean, AppError>> {
+  const namespace = getUserNamespace(username);
+  let orgRow: unknown;
+  let claims: ClaimRow[];
+  try {
+    orgRow = await env.DB.prepare("SELECT id FROM orgs WHERE slug = ?").bind(username).first();
+    const result = await env.DB.prepare(
+      "SELECT namespace, slug, created_at FROM namespace_claims WHERE namespace = ?",
+    )
+      .bind(namespace)
+      .all<ClaimRow>();
+    claims = result.results ?? [];
+  } catch (error) {
+    logger.error(
+      "Failed to check a username's namespace",
+      error instanceof Error ? error : undefined,
+      { namespace },
+    );
+    return err(
+      new AppError("Failed to check username availability", "STORAGE_ERROR", 500, { namespace }),
+    );
+  }
+  if (orgRow) return ok(true);
+  for (const claim of claims) {
+    // Same rule as ownerHasClaims: a young claim counts as it stands, an older
+    // one only if its project exists. Someone else's stale claim is left for
+    // their own rename to clean up.
+    const age = now - Date.parse(claim.created_at);
+    if (!(age >= CLAIM_GRACE_MS)) return ok(true);
+    const present = await projectExists(env.STATE, claim.namespace, claim.slug, logger);
+    if (!present.success) return present;
+    if (present.data) return ok(true);
+  }
+  return namespaceHasProjects(env.STATE, namespace, logger);
 }
 
 /** Whether KV holds the project: a 404 is a clean "no"; any other failure, a thrown read included, is unknown. */

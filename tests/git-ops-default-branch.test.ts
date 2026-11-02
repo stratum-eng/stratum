@@ -117,6 +117,7 @@ import {
   getCommitParent,
   getDiffBetweenRepos,
   listFilesInRepo,
+  loadRepoView,
   mergeWorkspaceIntoProject,
   pushMain,
   readFileFromRepo,
@@ -254,6 +255,118 @@ describe("read helpers honor the branch parameter", () => {
     const [c1, c2] = await precomputeShas(h.servers.get(remote) as never);
     const result = await getCommitParent(remote, "tok", c2 as string, logger, "master");
     expect(result.success && result.data).toBe(c1);
+  });
+});
+
+describe("loadRepoView", () => {
+  const remote = "https://r/view.git";
+  const server: { branch: string; commits: Record<string, string>[] } = {
+    branch: "master",
+    commits: [{ "a.txt": "v1\n" }, { "README.md": "# Title\n", "src/b.txt": "b\n" }],
+  };
+  beforeEach(() => {
+    h.servers.set(remote, server);
+  });
+
+  it("reads files, log, README and the head sha from a single clone", async () => {
+    const [, tip] = await precomputeShas(server);
+    const result = await loadRepoView(remote, "tok", logger, "master");
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.headSha).toBe(tip);
+    expect(result.data.files?.sort()).toEqual(["README.md", "a.txt", "src/b.txt"]);
+    expect(result.data.commits.map((c) => c.message)).toEqual(["seed 1", "seed 0"]);
+    expect(result.data.commits[0]?.sha).toBe(tip);
+    expect(result.data.readme).toBe("# Title\n");
+    expect(result.data.complete).toBe(true);
+    // The whole point: one clone per page view, not one per piece of the view.
+    expect(h.calls.clone).toHaveLength(1);
+    expect(h.calls.clone[0]).toMatchObject({ ref: "master" });
+  });
+
+  it("caps the log at the requested depth", async () => {
+    const result = await loadRepoView(remote, "tok", logger, "master", 1);
+    expect(result.success && result.data.commits).toHaveLength(1);
+  });
+
+  it("has no README when the repo has none", async () => {
+    h.servers.set(remote, { branch: "master", commits: [{ "a.txt": "v1\n" }] });
+    const result = await loadRepoView(remote, "tok", logger, "master");
+    expect(result.success && result.data.readme).toBeNull();
+    // An absent README is not a failed read: the view is still cacheable.
+    expect(result.success && result.data.complete).toBe(true);
+  });
+
+  it("errs when the clone fails", async () => {
+    const result = await loadRepoView(remote, "tok", logger, "main");
+    expect(result.success).toBe(false);
+  });
+
+  it("errs when the cloned HEAD cannot be resolved", async () => {
+    // Without the commit it read, a view cannot be keyed to a commit at all.
+    vi.spyOn(git, "resolveRef").mockRejectedValueOnce(new Error("corrupt HEAD"));
+    const result = await loadRepoView(remote, "tok", logger, "master");
+    expect(result.success).toBe(false);
+  });
+
+  /**
+   * Makes one fs call on the next clone's filesystem fail — but only once the
+   * clone has finished seeding it, so the failure lands on loadRepoView's own
+   * read rather than on the fake remote writing the repo.
+   */
+  function failAfterClone(method: "readdir" | "readFile", path: string): void {
+    let cloned = false;
+    const clone = git.clone;
+    vi.spyOn(git, "clone").mockImplementationOnce(async (args) => {
+      await clone(args);
+      cloned = true;
+    });
+    const fails = (target: string) => cloned && target === path;
+    const toNodeFS = MemoryFS.prototype.toNodeFS;
+    vi.spyOn(MemoryFS.prototype, "toNodeFS").mockImplementationOnce(function (this: MemoryFS) {
+      const nodeFs = toNodeFS.call(this);
+      const promises = nodeFs.promises;
+      if (method === "readdir") {
+        const readdir = promises.readdir;
+        promises.readdir = (target) =>
+          fails(target) ? Promise.reject(new Error(`EIO: ${target}`)) : readdir(target);
+      } else {
+        const readFile = promises.readFile;
+        promises.readFile = (target, options) =>
+          fails(target) ? Promise.reject(new Error(`EIO: ${target}`)) : readFile(target, options);
+      }
+      return nodeFs;
+    });
+  }
+
+  it("is incomplete when the tree walk fails", async () => {
+    failAfterClone("readdir", "/");
+    const result = await loadRepoView(remote, "tok", logger, "master");
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.files).toBeNull();
+    expect(result.data.complete).toBe(false);
+  });
+
+  it("is incomplete when the log read fails, but still lists files", async () => {
+    vi.spyOn(git, "log").mockRejectedValueOnce(new Error("corrupt pack"));
+    const result = await loadRepoView(remote, "tok", logger, "master");
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.files).not.toBeNull();
+    expect(result.data.commits).toEqual([]);
+    expect(result.data.complete).toBe(false);
+  });
+
+  it("is incomplete when an existing README fails to read", async () => {
+    failAfterClone("readFile", "/README.md");
+    const result = await loadRepoView(remote, "tok", logger, "master");
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.files).toContain("README.md");
+    expect(result.data.readme).toBeNull();
+    expect(result.data.complete).toBe(false);
   });
 });
 

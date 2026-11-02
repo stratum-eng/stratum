@@ -24,12 +24,10 @@ import { listProjectEvents } from "../storage/events";
 import type { RefResolutionFailure } from "../storage/git-ops";
 import {
   freshRepoToken,
-  getCommitLog,
   getDiffBetweenRepos,
-  listFilesInRepo,
   listRepoBranches,
   listRepoTags,
-  readFileFromRepo,
+  loadRepoView,
   resolveBranchRef,
 } from "../storage/git-ops";
 import { getImportProgress } from "../storage/imports";
@@ -37,10 +35,11 @@ import { listIssueComments } from "../storage/issue-comments";
 import { getLabelsForIssues, listIssueLabels } from "../storage/issue-labels";
 import { getIssueByNumber, listIssues } from "../storage/issues";
 import { type OAuthGrantSummary, listGrantsForUser, revokeGrantForUser } from "../storage/oauth";
-import { ownerHasClaims } from "../storage/project-namespace";
+import { ownerHasClaims, usernameNamespaceTaken } from "../storage/project-namespace";
 import { listSecretNames } from "../storage/project-secrets";
 import { getProvenance } from "../storage/provenance";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
+import { readRepoViewCache, writeRepoViewCache } from "../storage/repo-view-cache";
 import {
   getProject,
   getProjectByPath,
@@ -60,7 +59,7 @@ import {
   setUserTelemetryOptOut,
 } from "../storage/users";
 import { listDeliveries, listWebhooks } from "../storage/webhooks";
-import type { ApiTokenScope, Env, ProjectEntry } from "../types";
+import type { ApiTokenScope, CommitLogEntry, Env, ProjectEntry } from "../types";
 import { getUserNamespace, projectDefaultBranch } from "../types";
 import { parseUnifiedDiff } from "../ui/components/diff-view";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
@@ -90,6 +89,7 @@ import { WorkspacesPage } from "../ui/pages/workspaces";
 import { canReadProject, canWriteProject, filterMemberProjects } from "../utils/authz";
 import { MAX_DISPLAY_NAME_LENGTH, normalizeDisplayName } from "../utils/display-name";
 import type { AppError } from "../utils/errors";
+import { getWaitUntil } from "../utils/execution-ctx";
 import type { Logger } from "../utils/logger";
 import { createLogger } from "../utils/logger";
 import { isValidNamespace, isValidSlug } from "../utils/validation";
@@ -656,6 +656,21 @@ app.post("/settings/username", async (c) => {
     );
   }
 
+  // The checks above are about the name being given up; this one is about the
+  // name being taken. `@name` is shared with org slugs, and a namespace can
+  // still hold projects (or a live claim) from an account that has since moved
+  // off it — renaming onto either would hand this account a namespace it does
+  // not own. A user row with the name is left to renameUser's UNIQUE index.
+  const target = await usernameNamespaceTaken(c.env, requested, logger);
+  if (!target.success) {
+    logger.error("Could not check the requested namespace before a rename", target.error);
+    return c.html(issuePageError(500, user), 500);
+  }
+  if (target.data) {
+    logger.warn("Rename refused - requested namespace is held by an org or projects", {});
+    return refuse("That username is already taken.", 409);
+  }
+
   const renamed = await renameUser(c.env.DB, user.id, requested, logger);
   if (!renamed.success) {
     // 403: a claim landed between the check above and the UPDATE — the race
@@ -996,9 +1011,9 @@ app.post("/settings/rotate-token", async (c) => {
 // Behind `requireAccountSession` for the same reason as `/settings/tokens`: an
 // agent token is a long-lived credential that outlives the credential that
 // minted it, so letting a scoped `read_write` token mint one would leave
-// "revoke the lost laptop" incomplete. Note this closes the browser form only —
-// `POST /api/agents` still accepts any authenticated caller, so the capability
-// is not gone, just no longer reachable by two doors with different rules.
+// "revoke the lost laptop" incomplete. `POST /api/agents` refuses delegated
+// credentials too (via `cannotMintLegacyCredential`, so the legacy key still
+// works there for existing automation).
 app.post("/settings/agents", async (c) => {
   const logger = createLogger({ path: c.req.path, userId: c.get("userId") });
   const access = await requireAccountSession(c, logger);
@@ -1144,50 +1159,28 @@ app.get("/p/:name", async (c) => {
     log = snapshotResult.data.commits;
     readme = snapshotResult.data.readme;
   } else {
-    // Cache miss or corrupt entry — fall back to git clone
-    try {
-      const tokenResult = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
-      if (!tokenResult.success) throw tokenResult.error;
-      const readToken = tokenResult.data;
-      const branch = projectDefaultBranch(project);
-      const [filesResult, logResult] = await Promise.all([
-        listFilesInRepo(project.remote, readToken, logger, branch),
-        getCommitLog(project.remote, readToken, logger, 20, branch),
-      ]);
-
-      if (filesResult.success) {
-        files = filesResult.data;
-      } else {
-        filesUnavailable = true;
-        logger.warn("Failed to list files in repo", { error: filesResult.error });
-      }
-
-      if (logResult.success) {
-        log = logResult.data;
-      } else {
-        logger.warn("Failed to get commit log", { error: logResult.error });
-      }
-
-      // Try to read README.md if it exists
-      const readmePath = files.find((f) => f.toLowerCase() === "readme.md");
-      if (readmePath) {
-        const readmeResult = await readFileFromRepo(
-          project.remote,
-          readToken,
-          readmePath,
-          logger,
-          branch,
-        );
-        if (readmeResult.success) {
-          readme = readmeResult.data;
-        }
-      }
-    } catch (error) {
-      // Repo may be empty or unreachable — render with empty data
+    // Cache miss or corrupt entry — fall back to git clone. This deprecated
+    // route makes no ref advertisement, so it has no live tip to validate the
+    // view cache against and always clones (once).
+    const tokenResult = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
+    if (tokenResult.success) {
+      const data = await loadRepoPageData(
+        c.env.STATE,
+        project,
+        tokenResult.data,
+        projectDefaultBranch(project),
+        undefined,
+        undefined,
+        logger,
+      );
+      files = data.files;
+      filesUnavailable = data.filesUnavailable;
+      log = data.log;
+      readme = data.readme;
+    } else {
+      // Repo unreachable — render with empty data
       filesUnavailable = true;
-      logger.warn("Error loading repo data", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      logger.warn("Error loading repo data", { error: tokenResult.error.message });
     }
   }
 
@@ -1655,7 +1648,14 @@ function refFailureAnswer(failure: RefResolutionFailure): {
 }
 
 type UiRefResolution =
-  | { resolved: true; branch: string }
+  /**
+   * `oid` is the branch tip from the full (untruncated) ref advertisement, set
+   * only when a ref was requested. The switcher's listing is capped, so a
+   * requested branch past the cut would otherwise have no tip to validate the
+   * view cache against and would clone on every view. It is the fallback only:
+   * the switcher advertises later in the same request, so its tip is newer.
+   */
+  | { resolved: true; branch: string; oid?: string }
   | { resolved: false; message: string; status: 400 | 404 | 409 | 500 };
 
 /**
@@ -1684,7 +1684,9 @@ async function resolveUiRef(
   if (readToken === null) return { resolved: false, message: REF_LOAD_ERROR, status: 500 };
 
   const resolved = await resolveBranchRef(remote, readToken, logger, requestedRef);
-  if (resolved.success) return { resolved: true, branch: resolved.data.name };
+  if (resolved.success) {
+    return { resolved: true, branch: resolved.data.name, oid: resolved.data.oid };
+  }
   if (isRefResolutionFailure(resolved.error)) {
     return { resolved: false, ...refFailureAnswer(resolved.error) };
   }
@@ -1705,13 +1707,91 @@ async function loadSwitcherBranchNames(
   defaultBranch: string,
   logger: Logger,
 ): Promise<string[]> {
+  const branches = await loadSwitcherBranches(remote, readToken, defaultBranch, logger);
+  return branches.map((branch) => branch.name);
+}
+
+/** {@link loadSwitcherBranchNames}, keeping each branch's tip oid. */
+async function loadSwitcherBranches(
+  remote: string,
+  readToken: string | null,
+  defaultBranch: string,
+  logger: Logger,
+): Promise<Array<{ name: string; oid: string }>> {
   if (readToken === null) return [];
   const result = await listRepoBranches(remote, readToken, logger, defaultBranch);
   if (!result.success) {
     logger.warn("Failed to list branches for the switcher", { error: result.error });
     return [];
   }
-  return result.data.branches.map((branch) => branch.name);
+  return result.data.branches;
+}
+
+type RepoPageData = {
+  files: string[];
+  filesUnavailable: boolean;
+  log: CommitLogEntry[];
+  readme: string | null;
+};
+
+/**
+ * The repo overview's files, log and README when the KV snapshot can't serve them.
+ *
+ * With `liveHead` (the branch tip from a ref advertisement the caller already
+ * made), a view cached at that exact commit is served without touching git;
+ * otherwise the repository is cloned once and the result cached for the next
+ * reader. Without it, the clone always runs and nothing is cached — an entry
+ * can only be trusted when checked against the live tip.
+ *
+ * Never fails: an unreachable or empty repository renders as an empty page.
+ */
+async function loadRepoPageData(
+  kv: Env["STATE"],
+  project: ProjectEntry,
+  readToken: string,
+  branch: string,
+  liveHead: string | undefined,
+  waitUntil: ((promise: Promise<unknown>) => void) | undefined,
+  logger: Logger,
+): Promise<RepoPageData> {
+  const cacheable = liveHead !== undefined && !!project.namespace && !!project.slug;
+  const cacheProject = { namespace: project.namespace ?? "", slug: project.slug ?? "" };
+
+  if (cacheable) {
+    const cached = await readRepoViewCache(kv, cacheProject, branch, liveHead, logger);
+    if (cached) {
+      return {
+        files: cached.files,
+        filesUnavailable: false,
+        log: cached.commits,
+        readme: cached.readme,
+      };
+    }
+  }
+
+  const viewResult = await loadRepoView(project.remote, readToken, logger, branch);
+  if (!viewResult.success) {
+    // Repo may be empty or unreachable — render with empty data
+    logger.warn("Error loading repo data", { error: viewResult.error.message });
+    return { files: [], filesUnavailable: true, log: [], readme: null };
+  }
+  const view = viewResult.data;
+  if (view.files === null) logger.warn("Failed to list files in repo", { branch });
+
+  // The entry records the commit the clone actually read, not `liveHead`, so it
+  // stays correct even if the branch moved between the advertisement and the clone.
+  if (cacheable) {
+    const write = writeRepoViewCache(kv, cacheProject, branch, view, logger);
+    if (waitUntil) waitUntil(write);
+    else await write;
+  }
+
+  return {
+    files: view.files ?? [],
+    filesUnavailable: view.files === null,
+    log: view.commits,
+    readme: view.readme,
+  };
 }
 
 // GET /:namespace/:slug/branches — Branch listing (registered before the
@@ -2521,50 +2601,6 @@ app.get("/:namespace/:slug", async (c) => {
     files = snapshotResult2.data.files;
     log = snapshotResult2.data.commits;
     readme = snapshotResult2.data.readme;
-  } else if (cloneToken !== null) {
-    // Cache miss, corrupt entry, or a non-default ref — fall back to git clone.
-    // A token that could not be minted was already warned about above and leaves
-    // the page rendering empty, exactly as it did before.
-    try {
-      const [filesResult, logResult] = await Promise.all([
-        listFilesInRepo(project.remote, cloneToken, logger, branch),
-        getCommitLog(project.remote, cloneToken, logger, 20, branch),
-      ]);
-
-      if (filesResult.success) {
-        files = filesResult.data;
-      } else {
-        filesUnavailable = true;
-        logger.warn("Failed to list files in repo", { error: filesResult.error });
-      }
-
-      if (logResult.success) {
-        log = logResult.data;
-      } else {
-        logger.warn("Failed to get commit log", { error: logResult.error });
-      }
-
-      // Try to read README.md if it exists
-      const readmePath = files.find((f) => f.toLowerCase() === "readme.md");
-      if (readmePath) {
-        const readmeResult = await readFileFromRepo(
-          project.remote,
-          cloneToken,
-          readmePath,
-          logger,
-          branch,
-        );
-        if (readmeResult.success) {
-          readme = readmeResult.data;
-        }
-      }
-    } catch (error) {
-      // Repo may be empty or unreachable — render with empty data
-      filesUnavailable = true;
-      logger.warn("Error loading repo data", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
   }
 
   // The switcher is a convenience, not the page. When the view was served from
@@ -2572,9 +2608,35 @@ app.get("/:namespace/:slug", async (c) => {
   // times — so it offers just the branch being shown rather than spending a ref
   // advertisement (two subrequests) on the product's busiest page. A reader who
   // wants the full list is one click away on /branches.
-  const branchNames = readTokenLoaded
-    ? await loadSwitcherBranchNames(project.remote, readToken, defaultBranch, logger)
-    : [defaultBranch];
+  const switcherBranches = readTokenLoaded
+    ? await loadSwitcherBranches(project.remote, readToken, defaultBranch, logger)
+    : null;
+  const branchNames = switcherBranches?.map((b) => b.name) ?? [defaultBranch];
+
+  if (!snapshotServedThePage && cloneToken !== null) {
+    // Cache miss, corrupt entry, or a non-default ref. The advertisement the
+    // switcher just made also gives the branch's live tip, which is what lets
+    // the per-commit view cache be trusted. A token that could not be minted
+    // was already warned about above and leaves the page rendering empty.
+    // Prefer the switcher's tip: it was advertised after resolveUiRef's, so if
+    // the branch moved in between it is the newer one. resolveUiRef's tip (from
+    // the full, untruncated advertisement) covers a branch the capped listing
+    // left out.
+    const liveHead = switcherBranches?.find((b) => b.name === branch)?.oid ?? refResolution.oid;
+    const data = await loadRepoPageData(
+      c.env.STATE,
+      project,
+      cloneToken,
+      branch,
+      liveHead,
+      getWaitUntil(c),
+      logger,
+    );
+    files = data.files;
+    filesUnavailable = data.filesUnavailable;
+    log = data.log;
+    readme = data.readme;
+  }
 
   logger.debug("Rendering project page", {
     namespace,
