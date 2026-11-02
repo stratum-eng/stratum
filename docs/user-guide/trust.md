@@ -10,7 +10,7 @@ done yet, it says so.
 Two deployments are described, and they are not the same thing:
 
 - **The hosted instance** at `app.usestratum.dev`, run by the maintainers from
-  the `[env.production]` block of [`wrangler.toml`](../../wrangler.toml).
+  the `[env.production]` block of [`wrangler.toml`](https://github.com/stratum-eng/stratum/blob/main/wrangler.toml).
 - **A self-hosted instance**, which you run in your own Cloudflare account from
   the same code. You choose its storage locations, its subprocessors (most are
   off unless you configure them), and its secrets.
@@ -66,7 +66,7 @@ project owner, not the operator, decides to send data there.
 | Recipient | Purpose | What it receives | Hosted instance | Off switch |
 |-----------|---------|------------------|-----------------|------------|
 | **Cloudflare** | Hosting, storage, queues, email delivery, inference, logs | Everything above: repositories, database rows, email addresses (to deliver mail), diffs sent to Workers AI, application logs | Yes — it is the platform | None; Stratum only runs on Cloudflare |
-| **PostHog** (server-side) | Product analytics | Pseudonymous events: route patterns, status codes, latencies, enums, scores; `distinct_id` is the internal user id (or an owner's id for agent traffic). Never names, emails, paths, URLs, diffs, or file contents. The exhaustive list is in the [FAQ](faq.md#what-exactly-is-sent) | Sends to `https://app.posthog.com` when the `POSTHOG_API_KEY` secret is set | Per account: **Settings → Privacy**. Per instance: `STRATUM_TELEMETRY_DISABLED = "true"` in each env's `[vars]`, or leave `POSTHOG_API_KEY` unset |
+| **PostHog** (server-side) | Product analytics | Pseudonymous events: route patterns, status codes, latencies, enums, scores; `distinct_id` is the internal user id (or an owner's id for agent traffic). Stratum never puts its own records into events — no account names, emails, repository paths or URLs, diffs, or file contents. **One exception:** `mcp_request` events for an MCP `initialize` carry `client_name` and `client_version`, copied from the connecting client's self-reported `clientInfo` and truncated to 64 characters each (`src/mcp/outcome.ts`). They are free text chosen by the client, so they can contain anything a client puts there, including a name, email, path, or URL. The same off switches suppress them. The exhaustive list is in the [FAQ](faq.md#what-exactly-is-sent) | Sends to `https://app.posthog.com` when the `POSTHOG_API_KEY` secret is set | Per account: **Settings → Privacy**. Per instance: `STRATUM_TELEMETRY_DISABLED = "true"` in each env's `[vars]`, or leave `POSTHOG_API_KEY` unset |
 | **PostHog** (browser SDK) | Browser analytics | Page views, autocapture, identify — produced by PostHog's SDK | Off: `POSTHOG_PUBLIC_KEY` is commented out in `[env.production.vars]` | Leave `POSTHOG_PUBLIC_KEY` unset (the default) |
 | **GitHub** | Sign-in with GitHub (OAuth) | The OAuth exchange; Stratum reads your GitHub profile and email addresses at sign-in. The GitHub access token is used for that request and is **not stored** | Yes | Don't use GitHub sign-in; self-hosters can leave `GITHUB_CLIENT_ID` unset |
 | **Google** | Sign-in with Google (OAuth) | The OAuth exchange; Stratum reads your profile from `userinfo` at sign-in | Yes | Same, with `GOOGLE_CLIENT_ID` |
@@ -152,12 +152,42 @@ the `BACKUPS` R2 bucket:
 - **When:** daily from its own cron, `0 4 * * *` (UTC), in production, plus on
   demand through an admin endpoint. Staging has no backup cron.
 - **What:** one NDJSON dump per D1 table, the project and workspace registry
-  from KV, and a Git pack of the full reachable history of each repository —
-  at most `MAX_REPOS_PER_RUN` (default 25) repositories per run, oldest-backed-up
-  first, so every repository is covered within `ceil(repos / 25)` days. A
-  repository over `MAX_BACKUP_BYTES` (default 128 MiB) is skipped, not failed.
+  records from KV, and a Git pack of the reachable history of **project**
+  repositories. Each run snapshots at most `MAX_REPOS_PER_RUN` (default 25)
+  projects, taking the projects least recently attempted first. A repository
+  over `MAX_BACKUP_BYTES` (default 128 MiB) is skipped. A skipped or failed
+  repository still counts as attempted and moves to the back of the rotation.
+- **Not backed up: workspace repositories.** The repo pass iterates projects
+  only (`listProjects` in `src/backup/run-backup.ts`). Workspace forks, which
+  hold unmerged work, are not snapshotted. Their KV registry records are backed
+  up, but their Git contents are not. Commits that have not been merged into the
+  project are not in any backup.
 - **Retention:** the newest `BACKUP_RETENTION` complete runs (default **14**)
-  are kept; older runs are pruned by the backup job itself.
+  are kept, and older runs are pruned by the backup job itself. On-demand runs
+  count toward this number the same way scheduled runs do.
+
+**Retention has to cover the rotation, or some repositories have no backup.**
+Each run stores packs only for the projects in that run's slice. With `P`
+projects, a project's most recent pack is up to `ceil(P / MAX_REPOS_PER_RUN)`
+runs old, and only the last `BACKUP_RETENTION` runs survive pruning. With the
+defaults (25 per run, 14 runs), the retained runs hold at most 14 × 25 = **350**
+distinct projects:
+
+- **Up to 350 projects:** every project that snapshotted successfully has at
+  least one retained pack. That pack can be up to `ceil(P / 25)` daily runs old,
+  so a repository restore can lose up to that many days of merged history.
+  Example: 300 projects give a 12-run rotation, so the worst case is about 12
+  days.
+- **Over 350 projects:** some projects have no Git pack in any retained run at
+  any given time. Their pack was pruned before the rotation came back around to
+  them.
+
+Operators should keep `BACKUP_RETENTION ≥ ceil(P / MAX_REPOS_PER_RUN)`, with
+margin for growth and for skipped or failed repositories, which never produce a
+pack. Two settings can change: raise `MAX_REPOS_PER_RUN`, which shortens the
+rotation and the restore-point age but is bounded by the backup invocation's
+roughly 15-minute budget, or raise `BACKUP_RETENTION`, which costs R2 storage.
+The code does not check this inequality or warn when it fails.
 - **Not in any backup:** `DEPLOY_SECRET_KEY` and the other Wrangler secrets. The
   `project_secrets` rows are backed up as ciphertext only.
 - **Restore** has a documented, tested path in the runbook.
@@ -201,8 +231,8 @@ reported by the Cloudflare API on 2026-11-02:
 
 So the honest summary is: **durable data for the hosted instance is
 predominantly in Eastern North America, but nothing guarantees that**, and
-request processing, KV caching, and Durable Object placement follow traffic
-globally. An EU-only (or US-only) hosted offering does not exist today.
+request processing, background jobs (queues and crons), KV caching, and Durable
+Object placement are not tied to any region. An EU-only (or US-only) hosted offering does not exist today.
 
 ### What Cloudflare's primitives can and cannot guarantee
 
@@ -216,7 +246,7 @@ current status, because these features change:
 | Artifacts | [Namespace jurisdiction](https://developers.cloudflare.com/artifacts/guides/data-localization/) `eu`, `us` | — | Set at namespace creation; applies to every repo in it |
 | Durable Objects | [Jurisdiction](https://developers.cloudflare.com/durable-objects/reference/data-location/) `eu`, `us`, `fedramp` via `namespace.jurisdiction()` | Location hints | A code change in Stratum, not configuration; object ids are still logged outside the jurisdiction |
 | Workers KV | [Jurisdiction](https://developers.cloudflare.com/kv/reference/data-location/) controls where data is *durably stored* | — | Values can still be cached outside the jurisdiction |
-| Worker execution, TLS termination | Only through Cloudflare's [Data Localization Suite](https://developers.cloudflare.com/data-localization/) (Regional Services, Customer Metadata Boundary) | — | Enterprise products; a jurisdiction on storage does not restrict where requests are processed |
+| Worker execution, TLS termination | [Regional Services](https://developers.cloudflare.com/data-localization/how-to/workers/), part of the Data Localization Suite (Enterprise). It applies **only to HTTP requests on the Worker's custom domain** | — | It does not cover the `*.workers.dev` hostname, Queue consumers, Cron Triggers, or outgoing subrequests, and Worker code and secrets are still deployed globally. See the next section |
 
 ### What an EU-only self-hosted deployment would take
 
@@ -231,8 +261,36 @@ None of this is done or tested; it is the list of what would have to be true.
 4. Disable or relocate everything outside Cloudflare: leave PostHog unset (or
    point `POSTHOG_HOST` at PostHog's EU cloud), keep `LLM_PROVIDERS` to
    providers with suitable terms, and decide about Google Fonts.
-5. If request processing must also stay in-region, add Cloudflare Regional
-   Services, which is an Enterprise feature.
+5. If request processing must also stay in-region, the storage steps above
+   are not enough. See the next section: Regional Services covers only part of
+   Stratum's execution.
+
+### Why Regional Services alone does not make processing EU-only
+
+According to [Cloudflare's Workers data-localization page](https://developers.cloudflare.com/data-localization/how-to/workers/),
+Regional Services applies to the custom domain configured for a Worker. It
+**does not apply to Queues or Cron Triggers**, it does not extend to outgoing
+subrequests, and Worker code and secrets are deployed to every data center even
+when execution is regionalized. Stratum's production configuration has
+execution paths in every one of those categories:
+
+| Execution path | In production `wrangler.toml` | Covered by Regional Services on the custom domain? | What EU-only processing would need |
+|----------------|-------------------------------|----------------------------------------------------|------------------------------------|
+| HTTP on `app.usestratum.dev` | `routes = [{ pattern = "app.usestratum.dev", custom_domain = true }]` | Yes, if configured for that hostname | Regional Services set to an EU region on the hostname |
+| HTTP on `*.workers.dev` | `workers_dev = true` (kept for deploy smoke tests) | **No** | `workers_dev = false`, with the smoke tests moved to the custom domain. Otherwise the same API is reachable unregionalized |
+| Queue consumers | `stratum-events`, `stratum-imports`, `stratum-deploys`, which handle event delivery, imports and syncs, and post-merge deploys | **No** | Cloudflare documents no regional control for consumer execution. The data these consumers touch must be protected by storage jurisdictions, and the consumers themselves should be treated as running anywhere |
+| Cron Triggers | `0 4 * * *` (backup), `0 6 * * *` (housekeeping, sync), `*/5 * * * *` (outbox and import sweeps) | **No** | Same as Queues: no documented regional control. The backup cron reads every D1 table and every project repository, so it processes the full dataset wherever it runs |
+| Durable Objects | Four classes, no jurisdiction | Not by Regional Services | `namespace.jurisdiction("eu")` at every call site, which is a code change |
+| Outbound subrequests | OAuth, PostHog, BYOK LLM providers, deploy targets, webhooks, Git hosts | **No** | Choose EU-hosted endpoints, or disable each one |
+| Workers AI | `[ai]` binding for the `llm` evaluator | Not documented as covered | Unverified. Treat inference as running outside the region, or do not use the `llm` evaluator |
+
+So a deployment can keep its **stored** data in the EU with jurisdictions,
+and keep its **custom-domain request handling** in the EU with Regional
+Services. With today's Cloudflare features and Stratum's design, it cannot
+guarantee that **every computation** over that data happens in the EU, because
+background work runs on queues and crons. Anyone making an EU-only processing
+claim would need Cloudflare to confirm regional execution for those triggers,
+or would need Stratum to move that work onto primitives that support it.
 
 ## Compliance status
 
