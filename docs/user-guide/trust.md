@@ -170,8 +170,12 @@ the `BACKUPS` R2 bucket:
   failed still writes its manifest with `healthy: false` and still takes a
   slot, so a stretch of failed runs can prune the last good one (#401). Before
   relying on a run, check `healthy` in its manifest or the `backup.run` audit
-  entry, or check the restore plan's `restorable` result, and alert on
-  unhealthy runs.
+  entry, and alert on unhealthy runs. Neither that nor the restore plan's
+  `restorable` result proves that a given repository has a pack: `healthy`
+  ignores repositories skipped for exceeding `MAX_BACKUP_BYTES` (they are
+  listed under `repos.skipped` in the run manifest), and `restorable` is
+  computed for the whole run and checks only repositories that wrote a
+  manifest. To confirm one repository, look for its pack in a retained run.
 
 **Retention has to cover the rotation, or some repositories have no backup.**
 Each run stores packs only for the projects in that run's slice. With `P`
