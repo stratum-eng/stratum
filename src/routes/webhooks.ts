@@ -388,6 +388,7 @@ app.post("/:namespace/:slug/webhooks/:id/regenerate-secret", async (c) => {
     actorType: "user",
     actorId: c.get("userId"),
     subject: id,
+    project,
     detail: { project: project.name },
   });
 
