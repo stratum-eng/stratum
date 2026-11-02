@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { stagedTreeGcHandler } from "../src/queue/event-consumer";
+import { processEvent } from "../src/queue/event-consumer";
 import { deletePinnedStagedTreeForChange } from "../src/storage/staged-tree-gc";
 import type { Change, Env } from "../src/types";
 import type { Logger } from "../src/utils/logger";
@@ -33,6 +33,7 @@ function changeDb(row: Record<string, unknown>): D1Database {
     prepare: vi.fn(() => ({
       bind: vi.fn(() => ({
         first: vi.fn(async () => row),
+        run: vi.fn(async () => ({ success: true })),
       })),
     })),
   } as unknown as D1Database;
@@ -115,7 +116,10 @@ describe("staged-tree GC", () => {
       promoted_by: null,
     });
 
-    await stagedTreeGcHandler.handle(
+    // Dispatched through the registry, not the handler, so dropping the GC
+    // handler from it fails this test. The handlers ahead of it are marked
+    // done, so only the GC handler runs against this minimal env.
+    await processEvent(
       { DB: db, REPO_OBJECTS: bucket } as unknown as Env,
       {
         id: "evt_1",
@@ -127,6 +131,7 @@ describe("staged-tree GC", () => {
         status: "pending",
         attempts: 0,
         createdAt: "2026-08-24T00:00:00.000Z",
+        completedHandlers: ["analytics", "issue-autoclose", "webhooks"],
       },
       logger,
     );
