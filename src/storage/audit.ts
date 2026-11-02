@@ -24,6 +24,7 @@ export type AuditAction =
   | "webhook.created"
   | "webhook.toggled"
   | "webhook.deleted"
+  | "webhook.secret_rotated"
   | "merge.forced"
   | "conflict.resolved_manually"
   | "review.approvals_dismissed"

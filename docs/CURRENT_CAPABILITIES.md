@@ -131,7 +131,7 @@ environment (`wrangler.toml:84-85`), so it works out of the box.
   sweep cron re-enqueues stale events. At-least-once processing.
 - Per-project activity feed (UI + API) over the event stream.
 - Per-project webhooks with HMAC-SHA256-signed deliveries, event filters,
-  delivery log, SSRF-guarded URLs.
+  delivery log, SSRF-guarded URLs, and in-place signing-secret regeneration.
 - Issue tracker with per-project numbering and auto-close when a linked change
   merges. Bidirectional GitHub sync (inbound webhooks, outbound PR promotion).
 - Remote **MCP server** at `/mcp` (a protected resource of the OAuth server
