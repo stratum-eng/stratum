@@ -44,7 +44,7 @@ async function requireUser(
     return {
       response: c.html(
         <ErrorPage
-          status={400}
+          status={403}
           message="Account pages require a signed-in browser session, not an API token."
           user={null}
         />,

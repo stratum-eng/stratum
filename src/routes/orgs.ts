@@ -227,7 +227,16 @@ app.delete("/:slug/members/:uid", async (c) => {
       409,
     );
   }
-  if (!isSelf) {
+  if (isSelf) {
+    // A non-member "leaving" must not get a success, and must not learn the
+    // org exists: answered like every other non-member org request (404). A
+    // lookup failure fails closed the same way.
+    const memberResult = await isOrgMember(c.env.DB, logger, org.id, userId);
+    if (!memberResult.success || !memberResult.data) {
+      logger.debug("Self-removal by a non-member", { orgId: org.id });
+      return notFound("Org", slug);
+    }
+  } else {
     const adminResult = await isOrgAdmin(c.env.DB, logger, org.id, userId);
     if (!adminResult.success || !adminResult.data) {
       logger.warn("User not authorized to remove org member", { orgId: org.id, userId });

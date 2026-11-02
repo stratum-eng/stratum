@@ -108,6 +108,13 @@ Your personal projects, other organizations, account settings, and sign-out are
 never affected. An organization can add you as a member without your consent,
 so its policy cannot restrict anything it did not give you.
 
+The policy limits the access that **membership** grants. It does not hide
+anything that is already public. A **public** project of the org stays readable
+to everyone, including a member whose session has not passed a second factor
+and visitors who are not signed in. Only the access that membership adds is
+withheld: private projects, write access, and the org's own endpoints. Make a
+project private if the second factor should protect its content.
+
 If your session has not passed a second factor, requests for the org's
 resources return `403` with code `SECOND_FACTOR_REQUIRED` and a link to
 `/settings/security`. Browser pages show the same explanation.

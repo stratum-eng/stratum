@@ -5887,13 +5887,18 @@ components:
 
     Org:
       type: object
-      required: [id, name, slug, ownerId, createdAt]
+      required: [id, name, slug, ownerId, createdAt, requireSecondFactor]
       properties:
         id: { type: string }
         name: { type: string }
         slug: { type: string }
         ownerId: { type: string }
         createdAt: { type: string, format: date-time }
+        requireSecondFactor:
+          type: boolean
+          description: >
+            Members must pass a second factor (passkey, or this org's SSO) to
+            use the access the org grants. See `PUT /api/orgs/{slug}/security`.
 
     Team:
       type: object

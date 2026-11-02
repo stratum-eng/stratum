@@ -124,7 +124,7 @@ describe("passkeys as a second factor", () => {
         ownerType: c.req.param("type") as "user" | "org",
         remote: "",
         createdAt: "",
-        visibility: "private",
+        visibility: c.req.query("public") ? "public" : "private",
       } as ProjectEntry;
       return (await canReadProject(c.env.DB, project, c.get("userId"), c.get("agentOwnerId")))
         ? c.json({ ok: true })
@@ -336,6 +336,19 @@ describe("passkeys as a second factor", () => {
         cookie: other,
       });
       expect(res.status).toBe(403);
+    });
+
+    it("answers a token caller on the settings page with a 403 page", async () => {
+      const res = await app.fetch(
+        new Request(`${BASE}/settings/security`, {
+          headers: { Authorization: `Bearer ${LEGACY_TOKEN}` },
+        }),
+        env,
+      );
+      expect(res.status).toBe(403);
+      const html = await res.text();
+      expect(html).toContain("Forbidden");
+      expect(html).not.toContain("Bad request");
     });
 
     it("is unreachable with an API token", async () => {
@@ -814,6 +827,26 @@ describe("passkeys as a second factor", () => {
       // Removing someone else still needs admin.
       const other = await req("/api/orgs/acme/members/usr_bob", { method: "DELETE", cookie });
       expect(other.status).not.toBe(200);
+    });
+
+    it("answers a non-member's self-removal like any non-member org request", async () => {
+      raw
+        .prepare("INSERT INTO users (id, email, username, token_hash) VALUES (?, ?, ?, ?)")
+        .run("usr_carol", "carol@example.com", "carol", "hash_carol");
+      const cookie = await freshSession("usr_carol");
+      const res = await req("/api/orgs/acme/members/usr_carol", { method: "DELETE", cookie });
+      expect(res.status).toBe(404);
+      // Same answer as for an org that does not exist.
+      const missing = await req("/api/orgs/nope/members/usr_carol", { method: "DELETE", cookie });
+      expect(missing.status).toBe(404);
+    });
+
+    it("leaves public org projects readable; only membership-granted access is withheld", async () => {
+      requirePolicy();
+      const cookie = await freshSession(USER);
+      expect((await req("/test/project/org/org_1?public=1", { cookie })).status).toBe(200);
+      expect((await req("/test/project/org/org_1?public=1")).status).toBe(200);
+      expect((await req("/test/project/org/org_1", { cookie })).status).toBe(403);
     });
 
     it("lets a member without a policy leave, but not the owner", async () => {
