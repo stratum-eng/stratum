@@ -472,4 +472,51 @@ describe("single-purpose native readers", () => {
     expect(result).toEqual({ success: true, data: ["a.txt"] });
     expect(vi.mocked(listFilesInRepo)).not.toHaveBeenCalled();
   });
+
+  // Every reader opens its repo through withArtifactsRepo, so every one must
+  // refuse a same-named repo from another namespace — never serve its content.
+  const OTHER_NAMESPACE =
+    "https://acct.artifacts.cloudflare.net/git/stratum-staging/owner__repo.git";
+  const mismatched = () => {
+    const fake = fakeArtifacts({ [ROOT]: [entry("README.md", "blob")] });
+    fake.repo.info.mockResolvedValue({
+      name: "owner__repo",
+      remote: OTHER_NAMESPACE,
+      defaultBranch: "main",
+    });
+    return fake;
+  };
+
+  it("does not serve a file from a same-named repo in another namespace", async () => {
+    vi.mocked(readFileFromRepo).mockResolvedValue({ success: true, data: "from the clone" });
+
+    const result = await readFileFromRepoPreferNative(
+      mismatched().artifacts,
+      REMOTE,
+      "tok",
+      "README.md",
+      logger,
+    );
+
+    expect(result).toEqual({ success: true, data: "from the clone" });
+    expect(vi.mocked(readFileFromRepo)).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not serve a commit log from a same-named repo in another namespace", async () => {
+    vi.mocked(getCommitLog).mockResolvedValue({ success: true, data: [] });
+
+    const result = await getCommitLogPreferNative(mismatched().artifacts, REMOTE, "tok", logger);
+
+    expect(result).toEqual({ success: true, data: [] });
+    expect(vi.mocked(getCommitLog)).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not serve a file listing from a same-named repo in another namespace", async () => {
+    vi.mocked(listFilesInRepo).mockResolvedValue({ success: true, data: [] });
+
+    const result = await listFilesInRepoPreferNative(mismatched().artifacts, REMOTE, "tok", logger);
+
+    expect(result).toEqual({ success: true, data: [] });
+    expect(vi.mocked(listFilesInRepo)).toHaveBeenCalledTimes(1);
+  });
 });
