@@ -377,6 +377,7 @@ app.post("/:namespace/:slug/webhooks/:id/regenerate-secret", async (c) => {
 
   const secretResult = await regenerateWebhookSecret(c.env.DB, logger, id);
   if (!secretResult.success) {
+    if (secretResult.error.code === "NOT_FOUND") return notFound("Webhook", id);
     return internalError(secretResult.error.message);
   }
 

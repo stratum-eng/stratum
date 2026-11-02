@@ -66,6 +66,7 @@ export function makeWebhooksD1(): {
         } else if (upper.startsWith("UPDATE WEBHOOKS SET SECRET")) {
           const row = webhooks.find((w) => w.id === bindings[1]);
           if (row) row.secret = bindings[0] as string;
+          return { success: true, meta: { changes: row ? 1 : 0 } };
         } else if (upper.startsWith("DELETE FROM WEBHOOK_DELIVERIES")) {
           for (let i = deliveries.length - 1; i >= 0; i--) {
             if (deliveries[i]?.webhook_id === bindings[0]) deliveries.splice(i, 1);

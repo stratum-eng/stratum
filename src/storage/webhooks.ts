@@ -281,10 +281,15 @@ export async function regenerateWebhookSecret(
   db: D1Database,
   logger: Logger,
   id: string,
-): Promise<Result<string, AppError>> {
+): Promise<Result<string, NotFoundError | AppError>> {
   const secret = await generateApiKey("stm_whsec");
   try {
-    await db.prepare("UPDATE webhooks SET secret = ? WHERE id = ?").bind(secret, id).run();
+    const result = await db
+      .prepare("UPDATE webhooks SET secret = ? WHERE id = ?")
+      .bind(secret, id)
+      .run();
+    // Deleted since the caller looked it up: there is no secret to reveal.
+    if ((result.meta?.changes ?? 0) === 0) return err(new NotFoundError("Webhook", id));
     logger.info("Webhook secret regenerated", { webhookId: id });
     return ok(secret);
   } catch (error) {

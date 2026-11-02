@@ -272,6 +272,18 @@ describe("deliverEventToWebhooks", () => {
     expect(signature).not.toBe(await signPayload(oldSecret, init.body as string));
   });
 
+  it("reports NOT_FOUND, not a fresh secret, when the webhook is already gone", async () => {
+    // Deleted between the route's lookup and the UPDATE: revealing a "new"
+    // secret for a webhook that no longer exists would be a lie.
+    const { db } = makeWebhooksD1();
+
+    const rotated = await regenerateWebhookSecret(db, mockLogger, "wh_missing");
+
+    expect(rotated.success).toBe(false);
+    if (rotated.success) return;
+    expect(rotated.error.code).toBe("NOT_FOUND");
+  });
+
   it("records failure on non-2xx responses and network errors without throwing", async () => {
     const { env, deliveries } = await setup();
     fetchMock.mockResolvedValueOnce(new Response("nope", { status: 500 }));
