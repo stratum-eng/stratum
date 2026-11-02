@@ -274,7 +274,7 @@ const README_PATH = "README.md";
  * `loadRepoView`, so the two are interchangeable.
  *
  * A branch with no commits (an empty repository, or a ref that does not
- * resolve) is an empty, incomplete view — rendered empty, never cached. A tree
+ * resolve) is an error, as it is for the clone path. A tree
  * past {@link MAX_TREE_READS} uncached directories is an error with code
  * {@link TREE_TOO_LARGE}, so the caller clones instead.
  */
@@ -289,16 +289,11 @@ export async function readRepoViewNative(
   const result = await withArtifactsRepo(artifacts, remote, logger, async (repo) => {
     const log = await repo.log({ ref: branch, limit: options.commitDepth ?? 20 });
     const head = log[0];
-    if (!head) {
-      const empty: RepoView = {
-        headSha: "",
-        files: [],
-        commits: [],
-        readme: null,
-        complete: false,
-      };
-      return empty;
-    }
+    // No commits: an empty repository or a branch that does not resolve. The
+    // clone path fails here, and the page relies on that — a failed read shows
+    // Sync Now, an empty listing does not — so fail too and let the caller fall
+    // back to it rather than inventing an empty view.
+    if (!head) throw new Error(`no commits on ${branch}`);
 
     const commits: CommitLogEntry[] = log.map((c) => ({
       sha: c.hash,
@@ -314,7 +309,16 @@ export async function readRepoViewNative(
     const speculativeReadme = repo
       .readFile({ ref: head.hash, path: README_PATH })
       .then((blob) => (blob ? blob.text() : null))
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        // `readFile` resolves null for a missing file, so a rejection is an
+        // unexpected failure — worth a log line, as the clone path gives it.
+        logger.warn("Failed to read README for native repo view", {
+          remote,
+          path: README_PATH,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return undefined;
+      });
     const files = await listTreeFiles(repo, head.treeHash, options.treeCache, writes);
 
     const readmePath = files.find((f) => !f.includes("/") && f.toLowerCase() === "readme.md");
@@ -399,6 +403,13 @@ export async function readFileFromRepoPreferNative(
   return readFileFromRepo(remote, token, path, logger, branch);
 }
 
+/**
+ * The most history a native log read returns. The clone path it replaces
+ * fetched at most this many commits (its shallow clone depth), so a larger
+ * request never returned more; the native API would allow up to 1000.
+ */
+export const MAX_NATIVE_LOG_DEPTH = 50;
+
 /** The last `depth` commits of `branch`, natively, falling back to `getCommitLog`'s clone. */
 export async function getCommitLogPreferNative(
   artifacts: ArtifactsNamespace,
@@ -409,7 +420,7 @@ export async function getCommitLogPreferNative(
   branch = "main",
 ): Promise<Result<CommitLogEntry[], AppError>> {
   const native = await withArtifactsRepo(artifacts, remote, logger, async (repo) => {
-    const log = await repo.log({ ref: branch, limit: depth });
+    const log = await repo.log({ ref: branch, limit: Math.min(depth, MAX_NATIVE_LOG_DEPTH) });
     return log.map((c) => ({
       sha: c.hash,
       message: c.message.trim(),

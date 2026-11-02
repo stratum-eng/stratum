@@ -156,6 +156,20 @@ describe("readRepoViewNative", () => {
     expect(result.success && result.data).toMatchObject({ readme: null, complete: true });
   });
 
+  it("logs a README read that fails, rather than dropping it silently", async () => {
+    const warn = vi.fn();
+    const { artifacts, repo } = fakeArtifacts({ [ROOT]: [entry("README.md", "blob")] });
+    repo.readFile.mockRejectedValue(new Error("INTERNAL_ERROR"));
+
+    const result = await readRepoViewNative(artifacts, REMOTE, { ...logger, warn } as Logger);
+
+    expect(result.success && result.data).toMatchObject({ readme: null, complete: false });
+    expect(warn).toHaveBeenCalledWith(
+      "Failed to read README for native repo view",
+      expect.objectContaining({ error: "INTERNAL_ERROR" }),
+    );
+  });
+
   it("marks the view incomplete when an existing README does not read", async () => {
     const { artifacts } = fakeArtifacts({ [ROOT]: [entry("readme.md", "blob")] }, { readme: null });
 
@@ -164,18 +178,14 @@ describe("readRepoViewNative", () => {
     expect(result.success && result.data).toMatchObject({ readme: null, complete: false });
   });
 
-  it("returns an empty, uncacheable view for a branch with no commits", async () => {
+  it("fails for a branch with no commits, as the clone path does", async () => {
+    // The page shows Sync Now for a failed read but not for an empty repo, so
+    // an unresolvable branch must not come back as a successful empty view.
     const { artifacts, repo } = fakeArtifacts({}, { log: [] });
 
     const result = await readRepoViewNative(artifacts, REMOTE, logger, "gone");
 
-    expect(result.success && result.data).toEqual({
-      headSha: "",
-      files: [],
-      commits: [],
-      readme: null,
-      complete: false,
-    });
+    expect(result.success).toBe(false);
     expect(repo.readTree).not.toHaveBeenCalled();
   });
 
@@ -443,6 +453,14 @@ describe("single-purpose native readers", () => {
 
     expect(result).toEqual({ success: true, data: "cloned" });
     expect(vi.mocked(readFileFromRepo)).toHaveBeenCalledWith(REMOTE, "tok", "a.ts", logger, "dev");
+  });
+
+  it("never reads more history than the 50 commits the clone path returned", async () => {
+    const { artifacts, repo } = fakeArtifacts({});
+
+    await getCommitLogPreferNative(artifacts, REMOTE, "tok", logger, 1000, "main");
+
+    expect(repo.log).toHaveBeenCalledWith({ ref: "main", limit: 50 });
   });
 
   it("reads the commit log natively", async () => {

@@ -9,6 +9,7 @@ import {
 import { emitEvent } from "../queue/events";
 import { syncOrImportProject } from "../services/project-sync";
 import {
+  MAX_NATIVE_LOG_DEPTH,
   getCommitLogPreferNative,
   kvTreeListingCache,
   listFilesInRepoPreferNative,
@@ -1169,7 +1170,13 @@ app.get("/:namespace/:slug/log", async (c) => {
   if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
-  const depth = Number(c.req.query("depth") ?? 20);
+  // A positive integer, at most the 50 commits the log has ever returned; any
+  // other value (non-numeric, zero, negative) means the default.
+  const requestedDepth = Number(c.req.query("depth") ?? 20);
+  const depth =
+    Number.isInteger(requestedDepth) && requestedDepth > 0
+      ? Math.min(requestedDepth, MAX_NATIVE_LOG_DEPTH)
+      : 20;
   const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
   if (!readToken.success) return internalError(readToken.error.message);
 
