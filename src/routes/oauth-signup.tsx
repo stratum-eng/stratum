@@ -1,3 +1,16 @@
+import type { Context } from "hono";
+import { Hono } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { captureAuthCompleted } from "../analytics/auth";
+import type { AuthKind } from "../analytics/events";
+import { admitAndDeliverCodes, betaGateEnabled, validateInviteCode } from "../beta/gate";
+import { enforceSameOrigin } from "../middleware/csrf";
+import { recordAudit } from "../storage/audit";
+import { usernameNamespaceTaken } from "../storage/project-namespace";
+import { createSession, getSession } from "../storage/sessions";
+import { createUser, getUserByEmail, getUserByUsername, linkGitHub } from "../storage/users";
+import type { Env } from "../types";
+import { SourceFooter } from "../ui/components/source-footer";
 /**
  * The "choose your username" step of a GitHub or Google signup.
  *
@@ -15,19 +28,7 @@
  * on). Nothing is written to D1 until the form comes back. Sign-in for an
  * existing account is untouched: the callbacks still finish those themselves.
  */
-import type { Context } from "hono";
-import { Hono } from "hono";
-import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { captureAuthCompleted } from "../analytics/auth";
-import type { AuthKind } from "../analytics/events";
-import { admitAndDeliverCodes, betaGateEnabled, validateInviteCode } from "../beta/gate";
-import { enforceSameOrigin } from "../middleware/csrf";
-import { recordAudit } from "../storage/audit";
-import { usernameNamespaceTaken } from "../storage/project-namespace";
-import { createSession, getSession } from "../storage/sessions";
-import { createUser, getUserByEmail, getUserByUsername, linkGitHub } from "../storage/users";
-import type { Env } from "../types";
-import { SourceFooter } from "../ui/components/source-footer";
+import { StylesheetLinks } from "../ui/stylesheet";
 import { getWaitUntil } from "../utils/execution-ctx";
 import { type Logger, createLogger } from "../utils/logger";
 import { consumePostLoginRedirect } from "../utils/post-login-redirect";
@@ -242,7 +243,7 @@ app.get("/", async (c) => {
           rel="icon"
           href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230d0d0d'/%3E%3Ctext%20x='16'%20y='23'%20font-family='monospace'%20font-size='20'%20font-weight='700'%20fill='%237ca9f7'%20text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E"
         />
-        <link rel="stylesheet" href="/ui.css" />
+        <StylesheetLinks />
         <style>{SIGNUP_PAGE_CSS}</style>
       </head>
       <body>

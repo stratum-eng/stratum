@@ -63,6 +63,31 @@ namespace = "stratum"
 binding = "STATE"
 id = "0000000000000000000000000000000a"  # replace: wrangler kv namespace create STATE
 
+# Request rate limits (src/middleware/rate-limit.ts). Counted per Cloudflare
+# location, in memory: a check costs no KV round trip, which the KV counter it
+# replaced paid twice on every request. A limit with no binding here (a plan's
+# own rate, or a self-host that omits these) falls back to the KV counter.
+# namespace_id is account-wide, so every environment has its own range.
+[[ratelimits]]
+name = "RATE_LIMIT_ANON"  # signed-out requests
+namespace_id = "3031"
+simple = { limit = 60, period = 60 }
+
+[[ratelimits]]
+name = "RATE_LIMIT_AUTH"  # signed-in users and agents
+namespace_id = "3032"
+simple = { limit = 1000, period = 60 }
+
+[[ratelimits]]
+name = "RATE_LIMIT_ANALYTICS"  # analytics ingest
+namespace_id = "3033"
+simple = { limit = 600, period = 60 }
+
+[[ratelimits]]
+name = "RATE_LIMIT_STRICT"  # routes that pass requestsPerMinute: 20 (POST /projects)
+namespace_id = "3034"
+simple = { limit = 20, period = 60 }
+
 [[d1_databases]]
 binding = "DB"
 database_name = "stratum"
@@ -313,6 +338,26 @@ namespace = "stratum-prod"
 binding = "STATE"
 id = "2285977f426647cf9e3db347cbc0f03b"
 
+[[env.production.ratelimits]]
+name = "RATE_LIMIT_ANON"  # signed-out requests
+namespace_id = "3001"
+simple = { limit = 60, period = 60 }
+
+[[env.production.ratelimits]]
+name = "RATE_LIMIT_AUTH"  # signed-in users and agents
+namespace_id = "3002"
+simple = { limit = 1000, period = 60 }
+
+[[env.production.ratelimits]]
+name = "RATE_LIMIT_ANALYTICS"  # analytics ingest
+namespace_id = "3003"
+simple = { limit = 600, period = 60 }
+
+[[env.production.ratelimits]]
+name = "RATE_LIMIT_STRICT"  # routes that pass requestsPerMinute: 20 (POST /projects)
+namespace_id = "3004"
+simple = { limit = 20, period = 60 }
+
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "stratum"
@@ -484,6 +529,26 @@ namespace = "stratum-staging"
 [[env.staging.kv_namespaces]]
 binding = "STATE"
 id = "18a609aeddac442087de919a12677856"
+
+[[env.staging.ratelimits]]
+name = "RATE_LIMIT_ANON"  # signed-out requests
+namespace_id = "3011"
+simple = { limit = 60, period = 60 }
+
+[[env.staging.ratelimits]]
+name = "RATE_LIMIT_AUTH"  # signed-in users and agents
+namespace_id = "3012"
+simple = { limit = 1000, period = 60 }
+
+[[env.staging.ratelimits]]
+name = "RATE_LIMIT_ANALYTICS"  # analytics ingest
+namespace_id = "3013"
+simple = { limit = 600, period = 60 }
+
+[[env.staging.ratelimits]]
+name = "RATE_LIMIT_STRICT"  # routes that pass requestsPerMinute: 20 (POST /projects)
+namespace_id = "3014"
+simple = { limit = 20, period = 60 }
 
 [[env.staging.d1_databases]]
 binding = "DB"
