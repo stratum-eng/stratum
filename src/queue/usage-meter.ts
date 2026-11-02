@@ -37,6 +37,9 @@ const GAUGE_KEY = "gauge";
  * The same window, for the same reason, as `GAUGE_CHARGE_GRACE_MS` in
  * `src/storage/gauge-index.ts`: a charge younger than that counts with no
  * project behind it, and a hold is the same promise made one step earlier.
+ *
+ * This is the default and the ceiling. Bulk import uses it, because its repos
+ * land in the background; a single creation passes a shorter `ttlMs`.
  */
 export const GAUGE_HOLD_TTL_MS = 15 * 60 * 1000;
 
@@ -501,6 +504,10 @@ export class UsageMeter extends DurableObject<Env> {
    * @param counted - The paths that count includes, so their holds are not counted twice
    * @param limit - `-1` unlimited, `0` a hard block, otherwise a ceiling
    * @param opts.countRefused - Hold the paths even when the limit refuses them
+   * @param opts.ttlMs - How long the hold stands unreleased. Shorter than the
+   *   default for a creation that finishes inside its own request, so a hold
+   *   whose release was lost frees up sooner; never longer than
+   *   {@link GAUGE_HOLD_TTL_MS}, so no caller can pin a slot past it.
    * @returns The decision, whether anything is now held, and the pending total
    */
   async reserveGauge(
@@ -510,7 +517,7 @@ export class UsageMeter extends DurableObject<Env> {
     current: number,
     counted: string[],
     limit: number,
-    opts: { countRefused?: boolean } = {},
+    opts: { countRefused?: boolean; ttlMs?: number } = {},
   ): Promise<GaugeReserveOutcome> {
     const unique = [...new Set(Array.isArray(paths) ? paths : [])].filter(
       (path) => typeof path === "string" && path !== "",
@@ -551,7 +558,7 @@ export class UsageMeter extends DurableObject<Env> {
       });
       return { admitted: decision.admitted, held: false, pending };
     }
-    const expiresAt = nowMs + GAUGE_HOLD_TTL_MS;
+    const expiresAt = nowMs + holdTtl(opts.ttlMs, gauge);
     const added = unique.map((path): GaugeHold => ({ gauge, token, path, expiresAt }));
     await this.ctx.storage.put<GaugeRecord>(GAUGE_KEY, { holds: [...live, ...added] });
     await this.armCleanup(expiresAt);
@@ -946,6 +953,23 @@ function sum(buckets: RateBuckets): number {
   let total = 0;
   for (const quantity of Object.values(buckets)) total += quantity;
   return total;
+}
+
+/**
+ * The TTL a hold is given: the caller's, when it is a usable duration, capped
+ * at {@link GAUGE_HOLD_TTL_MS}. A malformed one falls back to the default
+ * rather than holding nothing, since the hold is what closes the race.
+ */
+function holdTtl(ttlMs: number | undefined, gauge: CountKey): number {
+  if (ttlMs === undefined) return GAUGE_HOLD_TTL_MS;
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+    warn("Usage meter gauge hold TTL is not usable; using the default", {
+      gauge,
+      ttlMs: String(ttlMs),
+    });
+    return GAUGE_HOLD_TTL_MS;
+  }
+  return Math.min(ttlMs, GAUGE_HOLD_TTL_MS);
 }
 
 /**

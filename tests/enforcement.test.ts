@@ -23,7 +23,12 @@ import {
   settleMeter,
 } from "../src/billing/enforcement";
 import { type Entitlements, UNLIMITED, UnlimitedEntitlements } from "../src/billing/entitlements";
-import { MAX_GAUGE_CHARGES, checkPrivateProjectGauge } from "../src/billing/private-project-gauge";
+import {
+  MAX_GAUGE_CHARGES,
+  SINGLE_CREATION_HOLD_TTL_MS,
+  checkPrivateProjectGauge,
+  releaseWhenSettled,
+} from "../src/billing/private-project-gauge";
 import { runDeployMessage } from "../src/deploy/runner";
 import { LLMEvaluator } from "../src/evaluation/llm-evaluator";
 import type { LlmProvider } from "../src/evaluation/llm-provider";
@@ -1335,8 +1340,10 @@ describe("the private project gauge holds what it admits (#384)", () => {
   }
 
   /** The holds standing on `userId`'s meter. */
-  async function holdsFor(userId: string): Promise<unknown[]> {
-    const record = await meters.storages.get(`user:${userId}`)?.get<{ holds: unknown[] }>("gauge");
+  async function holdsFor(userId: string): Promise<Array<{ path: string; expiresAt: number }>> {
+    const record = await meters.storages
+      .get(`user:${userId}`)
+      ?.get<{ holds: Array<{ path: string; expiresAt: number }> }>("gauge");
     return record?.holds ?? [];
   }
 
@@ -1400,7 +1407,11 @@ describe("the private project gauge holds what it admits (#384)", () => {
     expect(first.status).toBe(201);
     expect(second.status).toBe(403);
     expect(await second.text()).toContain("Creating 2 more private projects");
-    expect(await holdsFor(userId)).toHaveLength(2);
+    // A bulk batch lands in the background, so it keeps the long TTL.
+    expect((await holdsFor(userId)).map((h) => h.expiresAt)).toEqual([
+      NOW + GAUGE_HOLD_TTL_MS,
+      NOW + GAUGE_HOLD_TTL_MS,
+    ]);
 
     // Each repo of the first batch fails, and gives its own slot back.
     open();
@@ -1533,6 +1544,116 @@ describe("the private project gauge holds what it admits (#384)", () => {
     open();
     expect((await Promise.all([a, b])).map((r) => r.status)).toEqual([500, 500]);
     expect(await holdsFor(userId)).toEqual([]);
+  });
+
+  it("holds a single creation on the shorter TTL", async () => {
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 3 } }));
+    const { artifacts, create, open } = blockedArtifacts();
+    const post = app(userId, "alice", { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: artifacts });
+
+    const created = post("/projects", { name: "one", visibility: "private" });
+    const imported = post("/projects/@alice/two/import", {
+      url: "https://github.com/octo/widget",
+      branch: "main",
+    });
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+
+    expect(SINGLE_CREATION_HOLD_TTL_MS).toBeLessThan(GAUGE_HOLD_TTL_MS);
+    // `vi.waitFor` steps the faked clock while polling, so allow its slack.
+    const ttls = (await holdsFor(userId)).map((h) => h.expiresAt - NOW);
+    expect(ttls).toHaveLength(2);
+    for (const ttl of ttls) {
+      expect(ttl).toBeGreaterThanOrEqual(SINGLE_CREATION_HOLD_TTL_MS);
+      expect(ttl).toBeLessThan(SINGLE_CREATION_HOLD_TTL_MS + 60_000);
+    }
+    open();
+    await Promise.all([created, imported]);
+  });
+
+  it("releases through waitUntil a creation whose client walked away", async () => {
+    // The response is never awaited — the client disconnected. What the
+    // runtime keeps alive is what was handed to `waitUntil`, so that alone
+    // has to carry the creation to its release.
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 1 } }));
+    const { artifacts, create, open } = blockedArtifacts();
+    const post = app(userId, "alice", { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: artifacts });
+
+    void post("/projects", { name: "one", visibility: "private" });
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(await holdsFor(userId)).toHaveLength(1);
+    expect(scheduled).toHaveLength(1);
+
+    open();
+    await Promise.all(scheduled);
+    expect(await holdsFor(userId)).toEqual([]);
+  });
+
+  it("runs the waitUntil release even when the handler's own never does", async () => {
+    // The cancelled-handler case, isolated: the in-request `finally` never
+    // runs, and the backstop registered with `waitUntil` still releases.
+    let settle!: () => void;
+    const work = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const release = vi.fn(async () => {});
+    const registered: Array<Promise<unknown>> = [];
+
+    releaseWhenSettled(work, release, (promise) => {
+      registered.push(promise);
+    });
+    expect(release).not.toHaveBeenCalled();
+
+    settle();
+    await Promise.all(registered);
+    expect(release).toHaveBeenCalledTimes(1);
+
+    // A creation that throws is released too.
+    const failed = vi.fn(async () => {});
+    const later: Array<Promise<unknown>> = [];
+    releaseWhenSettled(Promise.reject(new Error("boom")), failed, (promise) => {
+      later.push(promise);
+    });
+    await Promise.all(later);
+    expect(failed).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends each release once, however many times it is called", async () => {
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 5 } }));
+    const env = makeEnv({ ENTITLEMENTS_ENFORCE: "1" } as Partial<Env>);
+    const rpc = vi.spyOn(UsageMeter.prototype, "releaseGauge");
+    const check = (paths: string[]) =>
+      checkPrivateProjectGauge(env, logger, {
+        actorUserId: userId,
+        username: "alice",
+        owner: { id: userId, type: "user" },
+        targetNamespace: "@alice",
+        paths,
+      });
+
+    const single = await check(["@alice/one"]);
+    if (!single.admitted) throw new Error("expected admission");
+    await single.release();
+    await single.release();
+    expect(rpc).toHaveBeenCalledTimes(1);
+
+    const batch = await check(["@alice/a", "@alice/b"]);
+    if (!batch.admitted) throw new Error("expected admission");
+    await batch.release(["@alice/a"]);
+    await batch.release(["@alice/a"]);
+    await batch.release(["@alice/a", "@alice/b"]);
+    await batch.release();
+    await batch.release();
+    // a; then only b; then the whole admission once.
+    expect(rpc.mock.calls.slice(1).map((call) => call[2])).toEqual([
+      ["@alice/a"],
+      ["@alice/b"],
+      undefined,
+    ]);
+    expect(await holdsFor(userId)).toEqual([]);
+    rpc.mockRestore();
   });
 
   it("makes no meter call at all for a self-hoster", async () => {

@@ -506,6 +506,8 @@ export interface GaugeHoldRequest {
   paths: string[];
   /** The paths `current` already includes, so a landed hold is not counted twice. */
   counted: string[];
+  /** How long the hold stands unreleased; the meter's default (and ceiling) when omitted. */
+  ttlMs?: number;
 }
 
 /**
@@ -602,7 +604,7 @@ async function holdGauge(
       opts.current,
       hold.counted,
       limit,
-      { countRefused: !enforcing },
+      { countRefused: !enforcing, ...(hold.ttlMs !== undefined ? { ttlMs: hold.ttlMs } : {}) },
     );
   } catch (error) {
     logger.warn("Usage meter unreachable; gauge decided on the count alone", {

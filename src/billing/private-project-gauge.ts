@@ -22,6 +22,21 @@ import { entitlementsEnabled } from "./entitlements";
 export const MAX_GAUGE_CHARGES = 100;
 
 /**
+ * The hold TTL for a creation that lands inside its own request — `POST
+ * /api/projects` and the single import route — where bulk import keeps the
+ * meter's longer default because its repos land in the background.
+ *
+ * The slowest thing such a request does while holding is `initAndPush`, whose
+ * push is bounded at 30s (`PUSH_TIMEOUT_MS`), plus an Artifacts create (and at
+ * worst a delete and re-create) and a few KV and D1 writes: under a minute
+ * even when everything is slow. Three minutes is comfortably above that. It
+ * matters only when the release is lost — the request is cancelled longer than
+ * `waitUntil`'s 30s after a client disconnect, or the release RPC fails — and
+ * it is how long such a slot stays taken.
+ */
+export const SINGLE_CREATION_HOLD_TTL_MS = 3 * 60 * 1000;
+
+/**
  * The key a creation is held and counted under: `namespace/slug`. One function
  * so the hold a route takes and the path the count reports cannot drift apart —
  * if they did, a landed project would be counted AND held.
@@ -116,10 +131,70 @@ export async function countGaugedPrivateProjects(
 /**
  * Ends the gauge holds one admission took: for `paths` only, or for every path
  * it was admitted for. Never rejects, and is a no-op when nothing was held.
+ *
+ * Idempotent: a path already released — or everything, after a release with
+ * no `paths` — is not sent again. A route releases both in its own `finally`
+ * and from {@link releaseWhenSettled}'s `waitUntil` backstop, so the second
+ * call has to cost nothing.
  */
 export type GaugeRelease = (paths?: string[]) => Promise<void>;
 
 const NOTHING_HELD: GaugeRelease = async () => {};
+
+/**
+ * Keep a creation alive past a client disconnect, and release its gauge hold
+ * once it settles, however it settles.
+ *
+ * A `finally` in the handler is not enough on its own. When the client goes
+ * away the runtime may cancel whatever the request has not handed to
+ * `waitUntil`, and a creation cancelled mid-flight never reaches its
+ * `finally`, so the hold would stand for its whole TTL. In a pooled org, a
+ * member firing and abandoning creations could tie up everyone's slots that
+ * way. Handing the creation itself to `waitUntil` lets it run to the end — for
+ * up to 30s after the disconnect — and the release chained on it runs whether
+ * or not the handler's own one did.
+ *
+ * With no execution context (unit tests, some runtimes) this does nothing and
+ * the handler's own `finally` is the only release, as it was before.
+ *
+ * @param work - The creation, from the moment its hold may have been taken
+ * @param release - Reads the hold at call time, so a route can take the hold
+ *   inside `work` after this has been registered
+ * @param waitUntil - The request's `waitUntil`, from `getWaitUntil(c)`
+ */
+export function releaseWhenSettled(
+  work: Promise<unknown>,
+  release: () => Promise<void> | undefined,
+  waitUntil: ((promise: Promise<unknown>) => void) | undefined,
+): void {
+  if (!waitUntil) return;
+  waitUntil(
+    work.then(
+      () => release(),
+      () => release(),
+    ),
+  );
+}
+
+/**
+ * Wrap a release so each path is sent at most once. See {@link GaugeRelease}.
+ */
+function once(send: (paths?: string[]) => Promise<void>): GaugeRelease {
+  let all = false;
+  const sent = new Set<string>();
+  return async (paths) => {
+    if (all) return;
+    if (paths === undefined) {
+      all = true;
+      await send();
+      return;
+    }
+    const fresh = paths.filter((path) => !sent.has(path));
+    if (fresh.length === 0) return;
+    for (const path of fresh) sent.add(path);
+    await send(fresh);
+  };
+}
 
 /** What {@link checkPrivateProjectGauge} decided. */
 export type PrivateProjectGaugeResult =
@@ -164,9 +239,12 @@ export type PrivateProjectGaugeResult =
  * `UsageMeter` object, which serializes it and adds what was admitted but has
  * not landed (`checkGauge`'s `hold`). An admission's slots are held until the
  * caller's `release` — once a project's entry is written the count sees it, so
- * the hold has to go — or a fifteen-minute TTL for a release that never
- * arrives. A hold whose path the count already includes is not counted, so a
- * late or lost release cannot charge a landed project twice.
+ * the hold has to go — or a TTL for a release that never arrives: three
+ * minutes for an in-request creation ({@link SINGLE_CREATION_HOLD_TTL_MS}),
+ * fifteen for bulk import's background repos. Routes also hand the creation to
+ * `waitUntil` ({@link releaseWhenSettled}), so a client that disconnects does
+ * not strand its hold. A hold whose path the count already includes is not
+ * counted, so a late or lost release cannot charge a landed project twice.
  *
  * Residual limits, stated rather than claimed away. The listing is KV, so a
  * project written in another colo can stay invisible to a count for KV's
@@ -194,6 +272,8 @@ export async function checkPrivateProjectGauge(
     owner: { id: string; type: "user" | "org" };
     targetNamespace: string;
     paths: string[];
+    /** {@link SINGLE_CREATION_HOLD_TTL_MS} for an in-request creation; the meter's default otherwise. */
+    holdTtlMs?: number;
     waitUntil?: (promise: Promise<unknown>) => void;
   },
 ): Promise<PrivateProjectGaugeResult> {
@@ -220,19 +300,25 @@ export async function checkPrivateProjectGauge(
     current: counted.count,
     what:
       adding > 1 ? `Creating ${adding} more private projects` : "Creating another private project",
-    hold: { token, paths: opts.paths, counted: counted.paths },
+    hold: {
+      token,
+      paths: opts.paths,
+      counted: counted.paths,
+      ...(opts.holdTtlMs !== undefined ? { ttlMs: opts.holdTtlMs } : {}),
+    },
   });
   if (!decision.admitted) {
     return { admitted: false, reason: decision.reason ?? "Private project limit reached" };
   }
   const release: GaugeRelease = decision.reserved
-    ? (paths) =>
+    ? once((paths) =>
         releaseGauge(env, logger, {
           subject,
           count: "private_projects",
           token,
           ...(paths !== undefined ? { paths } : {}),
-        })
+        }),
+      )
     : NOTHING_HELD;
   return { admitted: true, gaugeSubjectId: subject.ownerId, release };
 }

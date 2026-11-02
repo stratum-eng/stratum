@@ -789,6 +789,57 @@ describe("UsageMeter gauge holds (#384)", () => {
     expect((await hold(stub, "t2", "@a/two", 1)).admitted).toBe(false);
   });
 
+  it("treats a second release of the same admission as a no-op", async () => {
+    // A route releases from its own `finally` AND from a `waitUntil`
+    // backstop, so the second call must not touch anyone else's hold.
+    const { stub } = meter();
+
+    await hold(stub, "t1", "@a/one", 2);
+    await hold(stub, "t2", "@a/two", 2);
+    await stub.releaseGauge("private_projects", "t1");
+    await stub.releaseGauge("private_projects", "t1");
+    await stub.releaseGauge("private_projects", "t1", ["@a/one"]);
+
+    const next = await hold(stub, "t3", "@a/three", 2);
+    expect(next).toEqual({ admitted: true, held: true, pending: 1 });
+  });
+
+  it("expires a hold on the caller's shorter TTL", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const { stub, storages } = meter();
+    const ttlMs = 3 * MINUTE_MS;
+
+    await stub.reserveGauge("private_projects", "t1", ["@a/one"], 0, [], 1, { ttlMs });
+    expect(await storages.get("user:usr_1")?.getAlarm()).toBe(NOW + ttlMs);
+
+    vi.setSystemTime(NOW + ttlMs + 1);
+    expect((await hold(stub, "t2", "@a/two", 1)).admitted).toBe(true);
+  });
+
+  it("never holds longer than the default, and ignores an unusable TTL", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const { stub, storages } = meter();
+
+    await stub.reserveGauge("private_projects", "t1", ["@a/one"], 0, [], 5, {
+      ttlMs: 10 * GAUGE_HOLD_TTL_MS,
+    });
+    await stub.reserveGauge("private_projects", "t2", ["@a/two"], 0, [], 5, {
+      ttlMs: Number.NaN,
+    });
+    await stub.reserveGauge("private_projects", "t3", ["@a/three"], 0, [], 5, { ttlMs: -1 });
+
+    const record = await storages
+      .get("user:usr_1")
+      ?.get<{ holds: Array<{ expiresAt: number }> }>("gauge");
+    expect(record?.holds.map((h) => h.expiresAt)).toEqual([
+      NOW + GAUGE_HOLD_TTL_MS,
+      NOW + GAUGE_HOLD_TTL_MS,
+      NOW + GAUGE_HOLD_TTL_MS,
+    ]);
+  });
+
   it("stops counting a hold nobody released once its TTL has passed", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW);
