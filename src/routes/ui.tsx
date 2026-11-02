@@ -1565,7 +1565,13 @@ function refFailureAnswer(failure: RefResolutionFailure): {
 }
 
 type UiRefResolution =
-  | { resolved: true; branch: string }
+  /**
+   * `oid` is the branch tip from the full (untruncated) ref advertisement, set
+   * only when a ref was requested. The switcher's listing is capped, so a
+   * requested branch past the cut would otherwise have no tip to validate the
+   * view cache against and would clone on every view.
+   */
+  | { resolved: true; branch: string; oid?: string }
   | { resolved: false; message: string; status: 400 | 404 | 409 | 500 };
 
 /**
@@ -1594,7 +1600,9 @@ async function resolveUiRef(
   if (readToken === null) return { resolved: false, message: REF_LOAD_ERROR, status: 500 };
 
   const resolved = await resolveBranchRef(remote, readToken, logger, requestedRef);
-  if (resolved.success) return { resolved: true, branch: resolved.data.name };
+  if (resolved.success) {
+    return { resolved: true, branch: resolved.data.name, oid: resolved.data.oid };
+  }
   if (isRefResolutionFailure(resolved.error)) {
     return { resolved: false, ...refFailureAnswer(resolved.error) };
   }
@@ -2526,7 +2534,7 @@ app.get("/:namespace/:slug", async (c) => {
     // switcher just made also gives the branch's live tip, which is what lets
     // the per-commit view cache be trusted. A token that could not be minted
     // was already warned about above and leaves the page rendering empty.
-    const liveHead = switcherBranches?.find((b) => b.name === branch)?.oid;
+    const liveHead = refResolution.oid ?? switcherBranches?.find((b) => b.name === branch)?.oid;
     const data = await loadRepoPageData(
       c.env.STATE,
       project,

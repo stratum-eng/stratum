@@ -303,6 +303,13 @@ describe("loadRepoView", () => {
     expect(result.success).toBe(false);
   });
 
+  it("errs when the cloned HEAD cannot be resolved", async () => {
+    // Without the commit it read, a view cannot be keyed to a commit at all.
+    vi.spyOn(git, "resolveRef").mockRejectedValueOnce(new Error("corrupt HEAD"));
+    const result = await loadRepoView(remote, "tok", logger, "master");
+    expect(result.success).toBe(false);
+  });
+
   /**
    * Makes one fs call on the next clone's filesystem fail — but only once the
    * clone has finished seeding it, so the failure lands on loadRepoView's own

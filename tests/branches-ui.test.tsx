@@ -636,6 +636,29 @@ describe("UI GET /:namespace/:slug — view cache on a snapshot miss", () => {
     expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
   });
 
+  it("caches a requested branch the truncated switcher listing left out", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    // The switcher keeps the default branch and caps the rest, so a requested
+    // branch past the cut is absent from it. Its tip still comes from the full
+    // advertisement resolveBranchRef read, and that is what the cache checks.
+    vi.mocked(listRepoBranches).mockResolvedValue({
+      success: true,
+      data: {
+        branches: [{ name: "main", oid: DEFAULT_TIP }],
+        truncated: true,
+        totalBranchCount: 500,
+      },
+    });
+    cloneReads(FEATURE_TIP, ["FEATURE_ONLY.md"]);
+
+    await app.fetch(req("/@owner/repo?ref=release/2.x"), env);
+    const again = await app.fetch(req("/@owner/repo?ref=release/2.x"), env);
+
+    expect(await again.text()).toContain("FEATURE_ONLY.md");
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(1);
+  });
+
   it("clones without caching when the advertisement failed and there is no tip to check", async () => {
     const env = makeEnv();
     await seedProject(env);
