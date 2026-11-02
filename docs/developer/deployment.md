@@ -288,11 +288,12 @@ npx wrangler secret put GITHUB_CLIENT_ID
 npx wrangler secret put GITHUB_CLIENT_SECRET
 
 # Google OAuth — a Web application client in Google Cloud console (APIs &
-# Services -> Credentials), with GOOGLE_REDIRECT_URI listed under "Authorized
-# redirect URIs". One client can serve every environment: unlike GitHub, Google
-# accepts multiple redirect URIs. The requested scopes are openid/email/profile
-# only, so the consent screen stays in the non-sensitive tier — but it must be
-# Published, since a client in Testing mode admits only listed test users.
+# Services -> Credentials), with this env's GOOGLE_REDIRECT_URI listed under
+# "Authorized redirect URIs". Google's OAuth policies ask for a separate Cloud
+# project per deployment tier, so give production, staging, and local each
+# their own client rather than sharing one. The requested scopes are
+# openid/email/profile only, which keeps the consent screen in the
+# non-sensitive tier.
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 
@@ -335,9 +336,10 @@ npx wrangler secret put GOOGLE_CLIENT_ID --env=staging
 npx wrangler secret put GOOGLE_CLIENT_SECRET --env=staging
 ```
 
-Each provider is independent: `/auth/github` and `/auth/google` answer `501
-{"error": "... is not configured"}` until *their own* pair of secrets and the
-matching redirect-URI var are present, and neither blocks magic-link sign-in.
+Each provider is independent, and neither blocks magic-link sign-in.
+`/auth/github` answers `501 {"error": "GitHub OAuth is not configured"}` until
+its pair of secrets is present; `/auth/google` answers the same until its pair
+of secrets *and* `GOOGLE_REDIRECT_URI` are present.
 
 A first-time GitHub or Google identity (one matching neither an existing GitHub
 id nor an account's email) creates nothing at the callback: it is sent to a

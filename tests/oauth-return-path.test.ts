@@ -122,9 +122,12 @@ const PROVIDERS = [
 ] as const;
 
 describe("isSafeRedirectTarget", () => {
-  it.each(["/settings", "/p/acme/web?tab=changes", "/p/demo#files"])("accepts %s", (target) => {
-    expect(isSafeRedirectTarget(target, "https://app.example.com/auth/github")).toBe(true);
-  });
+  it.each(["/", "/settings", "/p/acme/web?tab=changes", "/p/demo#files"])(
+    "accepts %s",
+    (target) => {
+      expect(isSafeRedirectTarget(target, "https://app.example.com/auth/github")).toBe(true);
+    },
+  );
 
   it.each(OFF_ORIGIN)("rejects %s", (target) => {
     expect(isSafeRedirectTarget(target, "https://app.example.com/auth/github")).toBe(false);

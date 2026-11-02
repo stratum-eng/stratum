@@ -41,7 +41,7 @@ const MAX_AGE_SECONDS = 600;
  * on the raw string and stay same-origin, yet normalize to `//evil.com`.
  */
 export function isSafeRedirectTarget(raw: string, requestUrl: string): boolean {
-  if (!/^\/[^/\\]/.test(raw)) return false;
+  if (!/^\/(?![/\\])/.test(raw)) return false;
   try {
     const origin = new URL(requestUrl).origin;
     const url = new URL(raw, origin);

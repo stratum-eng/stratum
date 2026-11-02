@@ -324,6 +324,44 @@ describe("OAuth signup: choosing a username", () => {
       expect(kvOf(env).store.get(`oauth_state:${state}`)).toBe("1");
     });
 
+    it("carries a `next` given to /auth/google through the username step, over the cookie", async () => {
+      const app = makeApp();
+      const env = makeEnv();
+      mockGoogle("jane@example.com");
+
+      const start = await app.fetch(
+        new Request("http://localhost/auth/google?next=%2Fp%2Fdemo%3Ftab%3D1"),
+        env,
+      );
+      const state = cookieValue(start, "stratum_oauth_state") ?? "";
+      expect(start.headers.get("Location")).not.toContain("next");
+
+      const parked = await app.fetch(
+        new Request(`http://localhost/auth/google/callback?code=ok&state=${state}`, {
+          headers: { Cookie: `stratum_oauth_state=${state}` },
+        }),
+        env,
+      );
+      expect(parked.headers.get("Location")).toBe(COMPLETE);
+      const token = cookieValue(parked, "stratum_pending_signup") ?? "";
+      expect(pendingRecord(env, token).next).toBe("/p/demo?tab=1");
+
+      const res = await post(
+        app,
+        env,
+        token,
+        { username: "jane" },
+        {
+          Origin: "http://localhost",
+          Cookie: `stratum_pending_signup=${token}; redirect_after_login=%2Foauth%2Fauthorize%3Fx%3D1`,
+        },
+      );
+
+      expect(res.headers.get("Location")).toBe("/p/demo?tab=1");
+      // The competing cookie lost, and is spent anyway.
+      expect(cookieLine(res, "redirect_after_login")).toContain("Max-Age=0");
+    });
+
     it("suggests nothing when the GitHub handle cannot become a username", async () => {
       const app = makeApp();
       const env = makeEnv();
