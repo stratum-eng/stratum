@@ -250,12 +250,34 @@ describe("webhook form errors", () => {
     renderToString(
       <WebhooksPage
         project={project}
-        webhooks={[]}
+        webhooks={[
+          {
+            webhook: {
+              id: "wh_1",
+              project: "api",
+              projectId: "proj_alice",
+              url: "https://alice.example.com/hook",
+              events: "*",
+              active: true,
+              createdBy: "usr_1",
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+            deliveries: [],
+          },
+        ]}
         subscribableEvents={["change.merged"]}
         formError={webhookFormError(code)}
         user={user}
+        nonce="test-nonce"
       />,
     );
+
+  it("keeps the regenerate-secret action and its confirm script beside an inline error", () => {
+    const html = render("url");
+    expect(html).toContain("Regenerate secret");
+    expect(html).toContain('<script nonce="test-nonce">');
+    expect(html).toContain('id="webhook-url-error"');
+  });
 
   it("renders a refused URL under the URL field", () => {
     const html = render("url");

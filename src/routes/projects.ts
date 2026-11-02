@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { checkPrivateProjectGauge } from "../billing/private-project-gauge";
 import {
   importRateLimitMiddleware,
@@ -40,7 +40,7 @@ import {
   recoverStalledImport,
   updateImportStatus,
 } from "../storage/imports";
-import { getOrgAccessLevel, getOrgBySlug } from "../storage/orgs";
+import { getOrg, getOrgAccessLevel, getOrgBySlug } from "../storage/orgs";
 import {
   claimNamespace,
   confirmOwnerNamespace,
@@ -48,7 +48,12 @@ import {
 } from "../storage/project-namespace";
 import { listProvenance } from "../storage/provenance";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
-import { getProjectByPath, listProjectsByNamespace, setProject } from "../storage/state";
+import {
+  getProjectById,
+  getProjectByPath,
+  listProjectsByNamespace,
+  setProject,
+} from "../storage/state";
 import {
   checkForSyncUpdates,
   getProjectProvider,
@@ -58,7 +63,13 @@ import {
   updateProjectAfterSync,
   updateProjectSyncError,
 } from "../storage/sync";
-import type { ArtifactsCreateResult, Env, ImportStatus, ProjectEntry } from "../types";
+import type {
+  ArtifactsCreateResult,
+  CredentialBinding,
+  Env,
+  ImportStatus,
+  ProjectEntry,
+} from "../types";
 import { getArtifactsRepoName, getUserNamespace, projectDefaultBranch } from "../types";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
 import {
@@ -69,11 +80,17 @@ import {
   newProjectErrorUrl,
 } from "../ui/pages/new-project";
 import {
+  type BindingContext,
+  bindingAllowsCreateIn,
+  bindingCoversProject,
   canReadProject,
   canWriteProject,
+  credentialBindingFrom,
   filterReadableProjects,
+  isBound,
   isDirectOwner,
 } from "../utils/authz";
+import type { AppError } from "../utils/errors";
 import { getWaitUntil } from "../utils/execution-ctx";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
@@ -88,6 +105,7 @@ import {
   ok,
   unauthorized,
 } from "../utils/response";
+import type { Result } from "../utils/result";
 import {
   DEFAULT_CLONE_DEPTH,
   isStringRecord,
@@ -186,6 +204,14 @@ app.post("/", async (c) => {
     }
     owner = { id: org.id, type: "org" };
     namespace = `@${org.slug}`;
+  }
+
+  // A bound token (#323) may create only inside its own org; a project-bound
+  // token names one existing project and may create none.
+  if (!bindingAllowsCreateIn(credentialBindingFrom(c), owner)) {
+    return forbidden(
+      "This token is limited to one project or organization and cannot create projects here",
+    );
   }
 
   // Validate namespace format
@@ -378,6 +404,37 @@ app.post("/", async (c) => {
   });
 });
 
+/**
+ * The projects `GET /api/projects` considers before the readability filter.
+ * Never the authorization decision itself — `filterReadableProjects` still runs
+ * over whatever this returns, binding included.
+ */
+async function listCandidateProjects(
+  env: Env,
+  binding: CredentialBinding,
+  username: string,
+  logger: Logger,
+): Promise<Result<ProjectEntry[], AppError>> {
+  switch (binding.kind) {
+    case "unbound":
+      return listProjectsByNamespace(env.STATE, getUserNamespace(username), logger);
+    case "project": {
+      const found = await getProjectById(env.STATE, binding.projectId, logger);
+      if (found.success) return { success: true, data: [found.data] };
+      // A bound project that is gone leaves the token inert, not erroring.
+      if (found.error.code === "NOT_FOUND") return { success: true, data: [] };
+      return found;
+    }
+    case "org": {
+      // `getOrg` reports every failure as not-found; an empty list is the
+      // fail-closed answer either way.
+      const org = await getOrg(env.DB, logger, binding.orgId);
+      if (!org.success) return { success: true, data: [] };
+      return listProjectsByNamespace(env.STATE, `@${org.data.slug}`, logger);
+    }
+  }
+}
+
 // GET /projects - List projects for the authenticated user
 app.get("/", async (c) => {
   const logger = createLogger({
@@ -395,8 +452,12 @@ app.get("/", async (c) => {
     return ok({ projects: [] });
   }
 
-  const namespace = getUserNamespace(username);
-  const projectsResult = await listProjectsByNamespace(c.env.STATE, namespace, logger);
+  // An unbound caller lists their own namespace, as always. A bound token
+  // (#323) lists what it is bound to instead — its personal namespace would
+  // otherwise be filtered to nothing for an org- or foreign-project binding,
+  // which tells the MCP `list_projects` tool "you have no projects".
+  const binding = credentialBindingFrom(c);
+  const projectsResult = await listCandidateProjects(c.env, binding, username, logger);
 
   if (!projectsResult.success) {
     logger.error("Failed to list projects", projectsResult.error);
@@ -406,6 +467,7 @@ app.get("/", async (c) => {
   const projects = await filterReadableProjects(
     c.env.DB,
     projectsResult.data,
+    binding,
     userId,
     agentOwnerId,
   );
@@ -448,7 +510,7 @@ app.get("/:namespace/:slug", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   logger.info("Project retrieved", { namespace, slug });
@@ -473,6 +535,8 @@ app.get("/:namespace/:slug", async (c) => {
 // Strict rate limiting: 1 import per minute per user, 1 concurrent import per project
 app.post(
   "/:namespace/:slug/import",
+  // Before the rate limiter: see `refuseBoundImport`.
+  refuseBoundImport(),
   importRateLimitMiddleware({
     importsPerWindow: 3,
     windowSeconds: 60,
@@ -1073,7 +1137,7 @@ app.get("/:namespace/:slug/files", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
@@ -1129,7 +1193,7 @@ app.get("/:namespace/:slug/content", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
@@ -1199,7 +1263,7 @@ app.get("/:namespace/:slug/log", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const depth = Number(c.req.query("depth") ?? 20);
@@ -1257,7 +1321,7 @@ app.get("/:namespace/:slug/tags", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
@@ -1322,6 +1386,68 @@ function branchNameFromPath(url: string, namespace: string, slug: string): strin
   return "";
 }
 
+/**
+ * For the import/sync routes authorized by "it is in your own namespace"
+ * rather than through authz: a bound token (#323) additionally needs the
+ * project to be inside its binding. Answered with the 404 those routes give a
+ * missing project, so a binding does not reveal what else the account owns.
+ * `null` means proceed.
+ */
+async function refuseOutsideBinding(
+  c: { env: Env } & BindingContext,
+  namespace: string,
+  slug: string,
+  logger: Logger,
+): Promise<Response | null> {
+  const binding = credentialBindingFrom(c);
+  if (!isBound(binding)) return null;
+  const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+  if (projectResult.success && bindingCoversProject(binding, projectResult.data)) return null;
+  return notFound("Project", `${namespace}/${slug}`);
+}
+
+/**
+ * Import creates (or re-triggers) a project in the caller's PERSONAL
+ * namespace, which no bound token (#323) may create in.
+ *
+ * A middleware, ordered BEFORE `importRateLimitMiddleware`, rather than a check
+ * in the handler: the limiter takes the per-project import lock and one of the
+ * caller's import slots on the way in, and a refusal returned after it would
+ * leave that lock held — so a bound token could block imports of projects it
+ * cannot even see. A function declaration so it is hoisted above the route
+ * registrations that use it.
+ */
+function refuseBoundImport(): MiddlewareHandler<{ Bindings: Env }> {
+  return async (c, next) => {
+    if (isBound(credentialBindingFrom(c))) {
+      return forbidden(
+        "This token is limited to one project or organization and cannot import projects",
+      );
+    }
+    await next();
+  };
+}
+
+/**
+ * {@link refuseOutsideBinding} for the import retry/delete/cancel routes, as a
+ * middleware ordered before their rate limiters for the reason given on
+ * {@link refuseBoundImport}: an out-of-binding call must not take the target
+ * project's import lock.
+ */
+function requireImportTargetInBinding(): MiddlewareHandler<{ Bindings: Env }> {
+  return async (c, next) => {
+    const logger = createLogger({ path: c.req.path, method: c.req.method });
+    const refusal = await refuseOutsideBinding(
+      c,
+      c.req.param("namespace") ?? "",
+      c.req.param("slug") ?? "",
+      logger,
+    );
+    if (refusal) return refusal;
+    await next();
+  };
+}
+
 /** Loads a project and confirms the caller may WRITE to it.
  *
  * Non-writers get 404, not 403 — the same choice the other project-scoped
@@ -1335,7 +1461,7 @@ async function requireProjectWriter(
     env: Env;
     get: (key: "userId" | "agentOwnerId") => string | undefined;
     req: { param: (key: string) => string };
-  },
+  } & BindingContext,
   logger: Logger,
 ): Promise<{ project: ProjectEntry } | { response: Response }> {
   const namespace = c.req.param("namespace");
@@ -1352,7 +1478,7 @@ async function requireProjectWriter(
 
   const userId = c.get("userId");
   const agentOwnerId = c.get("agentOwnerId");
-  if (!(await canWriteProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return { response: notFound("Project", `${project.namespace}/${project.slug}`) };
   }
   // An import still in flight is pushing refs of its own, so the advertisement
@@ -1507,7 +1633,7 @@ app.get("/:namespace/:slug/branches", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
@@ -1682,7 +1808,7 @@ app.get("/:namespace/:slug/provenance", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const limitParam = c.req.query("limit");
@@ -1734,7 +1860,7 @@ app.get("/:namespace/:slug/activity", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const limitParam = c.req.query("limit");
@@ -1782,7 +1908,15 @@ app.get("/:namespace/:slug/import/status", async (c) => {
     return notFound("Project", `${namespace}/${slug}`);
   }
 
-  if (!(await canReadProject(c.env.DB, projectResult.data, userId, agentOwnerId)))
+  if (
+    !(await canReadProject(
+      c.env.DB,
+      projectResult.data,
+      credentialBindingFrom(c),
+      userId,
+      agentOwnerId,
+    ))
+  )
     return notFound("Project", `${namespace}/${slug}`);
 
   const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
@@ -1854,7 +1988,15 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
 
   const userId = c.get("userId");
   const agentOwnerId = c.get("agentOwnerId");
-  if (!(await canReadProject(c.env.DB, projectResult.data, userId, agentOwnerId)))
+  if (
+    !(await canReadProject(
+      c.env.DB,
+      projectResult.data,
+      credentialBindingFrom(c),
+      userId,
+      agentOwnerId,
+    ))
+  )
     return notFound("Project", `${namespace}/${slug}`);
 
   // Set up SSE response
@@ -1936,6 +2078,8 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
 // Same rate limiting as initial import
 app.post(
   "/:namespace/:slug/import/retry",
+  // Before any limiter: see `requireImportTargetInBinding`.
+  requireImportTargetInBinding(),
   importRateLimitMiddleware({
     importsPerWindow: 3,
     windowSeconds: 60,
@@ -2076,6 +2220,8 @@ const DELETABLE_IMPORT_STATUSES: readonly ImportStatus[] = ["failed", "cancelled
 // so an abandoned failure stops rendering import chrome on the project page (#304).
 app.post(
   "/:namespace/:slug/import/delete",
+  // Before any limiter: see `requireImportTargetInBinding`.
+  requireImportTargetInBinding(),
   // A plain per-user limiter, NOT importRateLimitMiddleware: that one takes the
   // per-project import lock and only the import paths release it, so deleting a
   // dead job would 429 the user's next import for the lock's full duration —
@@ -2168,6 +2314,9 @@ app.post("/:namespace/:slug/sync", async (c) => {
   if (namespace !== userNamespace) {
     return forbidden("You can only sync projects in your own namespace");
   }
+
+  const bindingRefusal = await refuseOutsideBinding(c, namespace, slug, logger);
+  if (bindingRefusal) return bindingRefusal;
 
   const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
   if (!projectResult.success) {
@@ -2395,7 +2544,7 @@ app.get("/:namespace/:slug/sync/status", async (c) => {
 
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${namespace}/${slug}`);
 
   // Get detailed sync status
@@ -2591,6 +2740,8 @@ export async function processSyncJob(
 // More lenient rate limiting: 5 cancels per minute per user
 app.post(
   "/:namespace/:slug/import/cancel",
+  // Before any limiter: see `requireImportTargetInBinding`.
+  requireImportTargetInBinding(),
   importRateLimitMiddleware({
     importsPerWindow: 5,
     windowSeconds: 60,
@@ -2670,7 +2821,7 @@ async function handleProjectDelete(c: Context<{ Bindings: Env }>) {
 
   // Owner-only: mere write access (org member/team) is NOT enough — a 404 hides
   // the project's existence from non-owners.
-  if (!isDirectOwner(project, userId, agentOwnerId)) {
+  if (!isDirectOwner(project, credentialBindingFrom(c), userId, agentOwnerId)) {
     return notFound("Project", `${namespace}/${slug}`);
   }
 

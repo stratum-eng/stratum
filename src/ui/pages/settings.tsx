@@ -1,6 +1,7 @@
 import type { FC } from "hono/jsx";
 import type { InviteCodesResult } from "../../beta/gate";
 import type { UsageBannerNotice } from "../../billing/usage-banner";
+import { UNRESOLVED_BINDING_LABEL } from "../../services/token-binding";
 import {
   type ApiTokenSummary,
   MAX_ACTIVE_TOKENS_PER_USER,
@@ -117,6 +118,9 @@ interface SettingsPageProps {
   shareBaseUrl?: string;
   agents: AgentSummary[];
   apiTokens: ApiTokenSummary[];
+  /** What each bound token (#323) is limited to, keyed by token id. A token
+   * absent from the map is account-wide. */
+  tokenBindingLabels?: ReadonlyMap<string, string>;
   /** MCP clients the user has authorized over OAuth (#349). */
   oauthGrants: OAuthGrantSummary[];
   /** True when the listing could not be READ, as opposed to being empty.
@@ -225,8 +229,24 @@ const OAuthGrantRow: FC<{ grant: OAuthGrantSummary }> = ({ grant }) => (
   </tr>
 );
 
-/** One API token with its status, scope and expiry, and a revoke form while it is active. */
-const ApiTokenRow: FC<{ token: ApiTokenSummary; now: number }> = ({ token, now }) => {
+/**
+ * What a token can reach (#323). A bound token whose label could not be
+ * resolved still says it is limited — showing it as "All projects" would
+ * overstate what it can do in the direction that matters.
+ */
+function tokenAccessLabel(token: ApiTokenSummary, label: string | undefined): string {
+  if (token.binding === undefined) return "All projects";
+  if (label === UNRESOLVED_BINDING_LABEL) return `Limited (${UNRESOLVED_BINDING_LABEL})`;
+  const target = label ?? (token.binding.kind === "project" ? "one project" : "one organization");
+  return token.binding.kind === "project" ? `Only ${target}` : `Projects of ${target}`;
+}
+
+/** One API token with its status, scope, reach and expiry, and a revoke form while it is active. */
+const ApiTokenRow: FC<{ token: ApiTokenSummary; bindingLabel?: string; now: number }> = ({
+  token,
+  bindingLabel,
+  now,
+}) => {
   const status = tokenStatus(token, now);
   return (
     <tr>
@@ -235,6 +255,7 @@ const ApiTokenRow: FC<{ token: ApiTokenSummary; now: number }> = ({ token, now }
         <code>{token.tokenPrefix}…</code>
       </td>
       <td>{SCOPE_LABEL[token.scope]}</td>
+      <td>{tokenAccessLabel(token, bindingLabel)}</td>
       <td>{token.expiresAt === undefined ? "Never" : formatDate(token.expiresAt)}</td>
       <td>{token.lastUsedAt === undefined ? "Never used" : formatDate(token.lastUsedAt)}</td>
       <td>{status}</td>
@@ -361,6 +382,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({
   shareBaseUrl,
   agents,
   apiTokens,
+  tokenBindingLabels,
   oauthGrants,
   oauthGrantsUnavailable,
   freshToken,
@@ -491,7 +513,8 @@ export const SettingsPage: FC<SettingsPageProps> = ({
         <h2>API tokens</h2>
         <p class="settings-help">
           Named credentials for the API, the CLI, and git over HTTPS. A read-only token can read and
-          clone but never write, and each token is revoked on its own.{" "}
+          clone but never write, a token limited to a project or organization cannot reach anything
+          outside it, and each token is revoked on its own.{" "}
           <a href={`${DOCS}/api/authentication/`}>How tokens work</a>.
         </p>
         {apiTokens.length === 0 ? (
@@ -506,6 +529,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({
                   <th>Name</th>
                   <th>Token</th>
                   <th>Scope</th>
+                  <th>Access</th>
                   <th>Expires</th>
                   <th>Last used</th>
                   <th>Status</th>
@@ -514,7 +538,14 @@ export const SettingsPage: FC<SettingsPageProps> = ({
               </thead>
               <tbody>
                 {apiTokens.map((token) => (
-                  <ApiTokenRow key={token.id} token={token} now={now} />
+                  <ApiTokenRow
+                    key={token.id}
+                    token={token}
+                    {...(tokenBindingLabels?.get(token.id) !== undefined
+                      ? { bindingLabel: tokenBindingLabels.get(token.id) }
+                      : {})}
+                    now={now}
+                  />
                 ))}
               </tbody>
             </table>
@@ -546,6 +577,14 @@ export const SettingsPage: FC<SettingsPageProps> = ({
               </option>
               <option value="read_write">Read &amp; write — everything you can do</option>
             </select>
+          </label>
+          <label>
+            Limit to one project (optional)
+            <input type="text" name="project" maxlength={200} placeholder="@owner/repo" />
+          </label>
+          <label>
+            Or limit to one organization's projects (optional)
+            <input type="text" name="org" maxlength={100} placeholder="acme" />
           </label>
           <label>
             Expires in days (optional — blank never expires)

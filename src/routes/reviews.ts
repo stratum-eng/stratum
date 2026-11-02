@@ -15,19 +15,16 @@ import { getChange, updateChangeStatus } from "../storage/changes";
 import { isTargetDeleting } from "../storage/deletion";
 import { getProject } from "../storage/state";
 import type { Change, Env, ProjectEntry } from "../types";
-import { canReadProject, canWriteProject } from "../utils/authz";
+import {
+  canReadProject,
+  canWriteProject,
+  credentialBindingFrom,
+  refuseProjectAccess,
+} from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
-import {
-  badRequest,
-  created,
-  forbidden,
-  internalError,
-  notFound,
-  ok,
-  unauthorized,
-} from "../utils/response";
+import { badRequest, created, internalError, notFound, ok, unauthorized } from "../utils/response";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -181,7 +178,7 @@ app.post("/changes/:id/comments", async (c) => {
   if ("response" in loaded) return loaded.response;
   const { change, project } = loaded;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return notFound("Change", change.id);
   }
 
@@ -264,7 +261,7 @@ app.get("/changes/:id/comments", async (c) => {
   if ("response" in loaded) return loaded.response;
   const { change, project } = loaded;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return notFound("Change", change.id);
   }
 
@@ -300,7 +297,7 @@ async function handleResolveToggle(
   if ("response" in loaded) return loaded.response;
   const { change, project } = loaded;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return notFound("Change", change.id);
   }
 
@@ -319,8 +316,13 @@ async function handleResolveToggle(
   const isAuthor =
     (comment.authorType === "user" && userId !== undefined && comment.authorId === userId) ||
     (comment.authorType === "agent" && agentId !== undefined && comment.authorId === agentId);
-  if (!isAuthor && !(await canWriteProject(c.env.DB, project, userId, agentOwnerId))) {
-    return forbidden("Project access denied");
+  if (
+    !isAuthor &&
+    !(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))
+  ) {
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Change", change.id),
+    );
   }
 
   const updateResult = await setCommentResolved(c.env.DB, logger, comment.id, resolved);
@@ -356,8 +358,10 @@ app.post("/changes/:id/reviews", async (c) => {
   if ("response" in loaded) return loaded.response;
   const { change, project } = loaded;
 
-  if (!(await canWriteProject(c.env.DB, project, userId)))
-    return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Change", change.id),
+    );
 
   // Refuse a review verdict while the project is being deleted (it resurrects
   // change_reviews rows and wedges the cascade). Best-effort; verifier re-run backs it.
@@ -479,7 +483,7 @@ app.get("/changes/:id/reviews", async (c) => {
   if ("response" in loaded) return loaded.response;
   const { change, project } = loaded;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return notFound("Change", change.id);
   }
 

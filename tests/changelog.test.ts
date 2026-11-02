@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 // the real file rather than only fixtures. Imported raw (not via node:fs) to keep
 // this suite type-checking under the Workers tsconfig.
 import REAL_CHANGELOG from "../CHANGELOG.md?raw";
+import REAL_LOCKFILE from "../package-lock.json?raw";
+import REAL_MANIFEST from "../package.json?raw";
 import {
   compareVersions,
   cutRelease,
@@ -12,12 +14,14 @@ import {
   isCalendarDate,
   isSemver,
   latestRelease,
+  lockfileVersionProblems,
   mergeChangelogBodies,
   nextVersion,
   parseChangelog,
   previousRelease,
   releaseNotes,
   resolveBump,
+  setLockfileVersion,
   setPackageVersion,
   validateChangelog,
   validateFragments,
@@ -662,6 +666,108 @@ describe("setPackageVersion", () => {
 
   it("refuses when the rewrite would produce invalid JSON", () => {
     expect(setPackageVersion('{\n  "version": "0.2.0"', "0.3.0").success).toBe(false);
+  });
+});
+
+describe("setLockfileVersion / lockfileVersionProblems", () => {
+  const LOCKFILE = `${JSON.stringify(
+    {
+      name: "stratum",
+      version: "0.2.0",
+      lockfileVersion: 3,
+      requires: true,
+      packages: {
+        "": { name: "stratum", version: "0.2.0", dependencies: { hono: "^4.0.0" } },
+        "node_modules/hono": { version: "4.6.0", resolved: "https://example.test/hono.tgz" },
+      },
+    },
+    null,
+    2,
+  )}\n`;
+
+  it("updates both root versions and leaves dependency versions and formatting alone", () => {
+    const result = setLockfileVersion(LOCKFILE, "0.3.0");
+    expect(result).toEqual({
+      success: true,
+      data: LOCKFILE.replaceAll('"version": "0.2.0"', '"version": "0.3.0"'),
+    });
+    expect(result.success && result.data).toContain('"version": "4.6.0"');
+  });
+
+  it("produces a lockfile the drift check accepts", () => {
+    const result = setLockfileVersion(LOCKFILE, "0.3.0");
+    expect(result.success && lockfileVersionProblems(result.data, "0.3.0")).toEqual([]);
+  });
+
+  it("keeps the file's indentation and a missing trailing newline", () => {
+    const tabbed = JSON.stringify(JSON.parse(LOCKFILE), null, "\t");
+    const result = setLockfileVersion(tabbed, "0.3.0");
+    expect(result).toEqual({
+      success: true,
+      data: tabbed.replaceAll('"version": "0.2.0"', '"version": "0.3.0"'),
+    });
+  });
+
+  it("keeps CRLF line endings from a CRLF checkout", () => {
+    const crlf = LOCKFILE.replaceAll("\n", "\r\n");
+    const result = setLockfileVersion(crlf, "0.3.0");
+    expect(result).toEqual({
+      success: true,
+      data: crlf.replaceAll('"version": "0.2.0"', '"version": "0.3.0"'),
+    });
+  });
+
+  it('refuses a lockfile whose packages[""] is an array', () => {
+    // An array would take the `version` property silently and drop it again
+    // in JSON.stringify, so prepare would "succeed" and check would fail.
+    const lock = JSON.parse(LOCKFILE);
+    lock.packages[""] = [];
+    expect(setLockfileVersion(JSON.stringify(lock, null, 2), "0.3.0").success).toBe(false);
+  });
+
+  it('refuses a lockfile with no packages[""] entry', () => {
+    const v1 = '{\n  "name": "stratum",\n  "version": "0.2.0",\n  "lockfileVersion": 1\n}\n';
+    expect(setLockfileVersion(v1, "0.3.0").success).toBe(false);
+    expect(lockfileVersionProblems(v1, "0.2.0")).toHaveLength(1);
+  });
+
+  it("refuses a lockfile that is not JSON", () => {
+    expect(setLockfileVersion("{", "0.3.0").success).toBe(false);
+    expect(lockfileVersionProblems("{", "0.2.0")[0]).toContain("not valid JSON");
+  });
+
+  it("reports the top-level version drifting from package.json", () => {
+    const drifted = LOCKFILE.replace('"version": "0.2.0"', '"version": "0.1.0"');
+    expect(lockfileVersionProblems(drifted, "0.2.0")).toEqual([
+      'package-lock.json version is "0.1.0" but package.json is 0.2.0',
+    ]);
+  });
+
+  it('reports packages[""].version drifting from package.json', () => {
+    const lock = JSON.parse(LOCKFILE);
+    lock.packages[""].version = "0.1.0";
+    expect(lockfileVersionProblems(JSON.stringify(lock), "0.2.0")).toEqual([
+      'package-lock.json packages[""].version is "0.1.0" but package.json is 0.2.0',
+    ]);
+  });
+
+  it("reports both when the lockfile was never bumped", () => {
+    expect(lockfileVersionProblems(LOCKFILE, "0.3.0")).toHaveLength(2);
+  });
+});
+
+describe("the repository's own package-lock.json", () => {
+  it("agrees with package.json on the root version", () => {
+    const { version } = JSON.parse(REAL_MANIFEST) as { version: string };
+    expect(lockfileVersionProblems(REAL_LOCKFILE, version)).toEqual([]);
+  });
+
+  // `setLockfileVersion` re-serialises, so it is only a two-field edit for as
+  // long as npm writes the file in the same shape it does.
+  it("survives a version rewrite with only the two root versions changed", () => {
+    const { version } = JSON.parse(REAL_MANIFEST) as { version: string };
+    const result = setLockfileVersion(REAL_LOCKFILE, version);
+    expect(result).toEqual({ success: true, data: REAL_LOCKFILE });
   });
 });
 

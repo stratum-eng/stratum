@@ -15,7 +15,8 @@ vi.mock("../src/storage/changes", () => ({
 }));
 vi.mock("../src/storage/deletion", () => ({ isTargetDeleting: vi.fn() }));
 vi.mock("../src/storage/state", () => ({ getProject: vi.fn() }));
-vi.mock("../src/utils/authz", () => ({
+vi.mock("../src/utils/authz", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/authz")>()),
   canReadProject: vi.fn(),
   canWriteProject: vi.fn(),
 }));

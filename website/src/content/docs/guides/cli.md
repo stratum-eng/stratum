@@ -78,7 +78,10 @@ OAuth grant belongs to the server that issued it and is worthless — and unsafe
 anywhere else. Passing `--key` is also how you say "do not open a
 browser" on a machine that has one. Create the token from
 **Settings → API tokens**; token management deliberately requires a browser
-session, so a token can never mint another token.
+session, so a token can never mint another token. For CI, prefer a token
+limited to the one project (or organization) the job works on: it is refused
+on every other project, and on account-level commands such as `stratum account`
+([details](/reference/authentication/#project-and-organization-binding)).
 
 > **Changed:** `stratum login --host <url>` *without* `--key` now opens a
 > browser instead of prompting for a key. A script that piped a key into that
