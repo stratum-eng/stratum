@@ -708,6 +708,23 @@ describe("setLockfileVersion / lockfileVersionProblems", () => {
     });
   });
 
+  it("keeps CRLF line endings from a CRLF checkout", () => {
+    const crlf = LOCKFILE.replaceAll("\n", "\r\n");
+    const result = setLockfileVersion(crlf, "0.3.0");
+    expect(result).toEqual({
+      success: true,
+      data: crlf.replaceAll('"version": "0.2.0"', '"version": "0.3.0"'),
+    });
+  });
+
+  it('refuses a lockfile whose packages[""] is an array', () => {
+    // An array would take the `version` property silently and drop it again
+    // in JSON.stringify, so prepare would "succeed" and check would fail.
+    const lock = JSON.parse(LOCKFILE);
+    lock.packages[""] = [];
+    expect(setLockfileVersion(JSON.stringify(lock, null, 2), "0.3.0").success).toBe(false);
+  });
+
   it('refuses a lockfile with no packages[""] entry', () => {
     const v1 = '{\n  "name": "stratum",\n  "version": "0.2.0",\n  "lockfileVersion": 1\n}\n';
     expect(setLockfileVersion(v1, "0.3.0").success).toBe(false);

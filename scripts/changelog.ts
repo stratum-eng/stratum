@@ -139,7 +139,7 @@ function parseLockfile(raw: string): Result<LockfileShape> {
     return { success: false, error: "package-lock.json is not a JSON object" };
   }
   const root = (parsed as { packages?: { ""?: unknown } }).packages?.[""];
-  if (typeof root !== "object" || root === null) {
+  if (typeof root !== "object" || root === null || Array.isArray(root)) {
     return {
       success: false,
       error:
@@ -170,8 +170,12 @@ export function setLockfileVersion(raw: string, version: string): Result<string>
   lock.packages[""].version = version;
 
   const indent = /^\{\r?\n([ \t]+)"/.exec(raw)?.[1] ?? "  ";
-  const newline = raw.endsWith("\n") ? "\n" : "";
-  return { success: true, data: `${JSON.stringify(lock, null, indent)}${newline}` };
+  // A CRLF checkout (core.autocrlf) must round-trip as CRLF, or every line
+  // of the lockfile shows as changed.
+  const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+  const serialized = JSON.stringify(lock, null, indent).replaceAll("\n", eol);
+  const newline = raw.endsWith("\n") ? eol : "";
+  return { success: true, data: `${serialized}${newline}` };
 }
 
 /**
