@@ -4225,9 +4225,12 @@ paths:
       description: |
         `userName` must be an email within the connection's verified domains.
         If an account with that email already exists (and is not being
-        deleted), it is adopted into the connection's scope and answered with
-        200 instead of 201; otherwise a new account is created and added to
-        the org as a member.
+        deleted), it is adopted into the connection's scope; otherwise a new
+        account is created and added to the org as a member. Either way the
+        answer is 201 with a `Location` header (RFC 7644 §3.3). A retried POST
+        for a user this connection already manages converges on the requested
+        `externalId`/`active` instead of failing; only a different stored
+        `externalId` is a 409.
       security:
         - scimBearer: []
       requestBody:
@@ -4242,13 +4245,12 @@ paths:
                 externalId: { type: string }
                 active: { type: boolean, default: true }
       responses:
-        "200":
-          description: Existing account adopted
-          content:
-            application/scim+json:
-              schema: { $ref: "#/components/schemas/ScimUser" }
         "201":
-          description: User created
+          description: User created or existing account adopted
+          headers:
+            Location:
+              schema: { type: string }
+              description: Canonical URI of the user resource
           content:
             application/scim+json:
               schema: { $ref: "#/components/schemas/ScimUser" }
@@ -4329,7 +4331,7 @@ paths:
       operationId: scimPatchUser
       tags: [scim]
       summary: Patch a user
-      description: Accepts `replace` operations on `active` and `externalId` (with or without a path). Replaces of unstored attributes (displayName, name.*, enterprise extension paths, ...) are ignored rather than errored, matching Okta/Entra profile syncs; non-replace operations are rejected.
+      description: Accepts `replace` and `add` operations (equivalent for these single-valued attributes, RFC 7644 §3.5.2.1) on `active` and `externalId`, with or without a path. Operations of any type on unstored attributes (displayName, name.*, enterprise extension paths, ...) are ignored rather than errored, matching Okta/Entra profile syncs; any other operation on a stored attribute is rejected.
       security:
         - scimBearer: []
       requestBody:
@@ -4345,7 +4347,7 @@ paths:
                   items:
                     type: object
                     properties:
-                      op: { type: string, description: Only "replace" (case-insensitive) is supported }
+                      op: { type: string, description: '"replace" or "add" (case-insensitive) on stored attributes' }
                       path: { type: string }
                       value: {}
       responses:

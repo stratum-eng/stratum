@@ -1,7 +1,8 @@
 # Remaining Work
 
-Last updated: 2026-09-04 — records what post-merge deployments left out, now
-that they ship.
+Last updated: 2026-11-02 — records enterprise OIDC SSO + SCIM as shipped (#253)
+and narrows the SSO section to the remaining pieces; also records what
+post-merge deployments left out, now that they ship.
 
 The master-plan feature roadmap (Phases 0–3 plus the code-level Phase 4
 hardening items) is complete as of 2026-06-11. See
