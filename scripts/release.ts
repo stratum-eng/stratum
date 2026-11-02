@@ -3,12 +3,14 @@
  *
  * Run with: node --experimental-strip-types scripts/release.ts <command>
  *
- *   check                  Validate CHANGELOG.md, changelog.d/, and that package.json agrees
+ *   check                  Validate CHANGELOG.md, changelog.d/, and that package.json and
+ *                          package-lock.json agree
  *   latest                 Print the most recently released version (no `v` prefix)
  *   previous [version]     Print the release listed below `version` (default: latest);
  *                          prints nothing when there is none
  *   notes [version]        Print one release's changelog entries (default: latest)
  *   prepare [options]      Fold changelog.d/ into Unreleased, cut it, bump package.json
+ *                          and package-lock.json
  *
  * `prepare` options:
  *   --bump auto|major|minor|patch   Default: auto (derived from the `Unreleased` groups)
@@ -30,12 +32,14 @@ import {
   cutRelease,
   isSemver,
   latestRelease,
+  lockfileVersionProblems,
   mergeChangelogBodies,
   nextVersion,
   parseChangelog,
   previousRelease,
   releaseNotes,
   resolveBump,
+  setLockfileVersion,
   setPackageVersion,
   validateChangelog,
   validateFragments,
@@ -45,6 +49,7 @@ import {
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CHANGELOG_PATH = resolve(REPO_ROOT, "CHANGELOG.md");
 const PACKAGE_PATH = resolve(REPO_ROOT, "package.json");
+const LOCKFILE_PATH = resolve(REPO_ROOT, "package-lock.json");
 const CHANGELOGD_PATH = resolve(REPO_ROOT, "changelog.d");
 
 const BUMPS: BumpRequest[] = ["auto", "major", "minor", "patch"];
@@ -68,6 +73,15 @@ function readPackage(): { raw: string; version: string; repoUrl: string } {
   if (typeof parsed.version !== "string") fail("package.json has no version");
   if (typeof url !== "string") fail("package.json has no repository.url");
   return { raw, version: parsed.version, repoUrl: url.replace(/\.git$/, "").replace(/\/$/, "") };
+}
+
+/** The root lockfile's raw text; exits if it cannot be read. */
+function readLockfile(): string {
+  try {
+    return readFileSync(LOCKFILE_PATH, "utf8");
+  } catch (error) {
+    fail(`Could not read package-lock.json: ${error instanceof Error ? error.message : error}`);
+  }
 }
 
 /** The value following `flag`, or undefined when it is absent; exits if the value is missing. */
@@ -100,7 +114,11 @@ function readFragments(): Array<ChangelogFragment & { path: string }> {
     });
 }
 
-/** `check`: report every structural problem in CHANGELOG.md and changelog.d/, plus package.json drift. */
+/**
+ * `check`: report every structural problem in CHANGELOG.md and changelog.d/,
+ * plus package.json drift from the changelog and package-lock.json drift from
+ * package.json.
+ */
 function commandCheck(): void {
   const changelog = readChangelog();
   const problems = [...validateChangelog(changelog), ...validateFragments(readFragments())];
@@ -110,6 +128,7 @@ function commandCheck(): void {
   if (latest && latest !== pkg.version) {
     problems.push(`package.json is ${pkg.version} but the newest CHANGELOG release is ${latest}`);
   }
+  problems.push(...lockfileVersionProblems(readLockfile(), pkg.version));
 
   if (problems.length > 0) {
     for (const problem of problems) console.error(`  • ${problem}`);
@@ -149,8 +168,8 @@ function commandNotes(args: string[]): void {
 
 /**
  * `prepare`: fold changelog.d/ fragments into `Unreleased`, cut it into a
- * dated section, relink it, bump package.json, and delete the fragments that
- * were folded in.
+ * dated section, relink it, bump package.json and package-lock.json, and
+ * delete the fragments that were folded in.
  */
 function commandPrepare(args: string[]): void {
   const bump = (argValue(args, "--bump") ?? "auto") as BumpRequest;
@@ -198,10 +217,12 @@ function commandPrepare(args: string[]): void {
   const cut = cutRelease(merged.data, { version: next.data, date, repoUrl: pkg.repoUrl });
   if (!cut.success) fail(cut.error);
 
-  // Resolve both files before writing either: a manifest failure after the
+  // Resolve every file before writing any: a manifest failure after the
   // changelog was already rewritten would leave the release half-cut.
   const bumped = setPackageVersion(pkg.raw, next.data);
   if (!bumped.success) fail(`package.json: ${bumped.error}`);
+  const bumpedLock = setLockfileVersion(readLockfile(), next.data);
+  if (!bumpedLock.success) fail(bumpedLock.error);
 
   if (dryRun) {
     console.log(`${pkg.version} → ${next.data} (${resolved.data}, dry run — nothing written)`);
@@ -210,12 +231,16 @@ function commandPrepare(args: string[]): void {
 
   writeFileSync(CHANGELOG_PATH, cut.data);
   writeFileSync(PACKAGE_PATH, bumped.data);
+  writeFileSync(LOCKFILE_PATH, bumpedLock.data);
   for (const fragment of fragments) unlinkSync(fragment.path);
   console.log(`✓ Prepared v${next.data} (${resolved.data} from ${pkg.version}), dated ${date}`);
   if (fragments.length > 0) {
     console.log(`  Folded in and removed ${fragments.length} changelog.d/ fragment(s).`);
   }
-  console.log("  Review the diff, open a PR, and merge it; then run the Release workflow.");
+  console.log(
+    "  Review the diff (CHANGELOG.md, package.json, package-lock.json, removed fragments),",
+  );
+  console.log("  open a PR, and merge it; then run the Release workflow.");
 }
 
 /** Dispatch the subcommand named by the first argument. */
