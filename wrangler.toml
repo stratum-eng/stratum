@@ -522,6 +522,8 @@ name = "USAGE_METER"
 class_name = "UsageMeter"
 script_name = "stratum-staging"
 
+# Needs the `staged-sha/` lifecycle rule (docs/runbooks/staged-tree-retention.md),
+# or staged-tree copies for unmerged commits are never reclaimed (#262).
 [[env.staging.r2_buckets]]
 binding = "REPO_OBJECTS"
 bucket_name = "stratum-repo-objects-staging"

@@ -1709,7 +1709,7 @@ const TREE_OID_HEX_LEN = 40;
  * Stage a workspace's tip TREE to R2 (ADR 004 Task 3): one value =
  * `[40-byte tipTreeOid][packed tree objects]`. Recomputed on every commit. The
  * caller stores it under both the latest-tip key (overwritten per commit) and a
- * sha-keyed copy (`<key>/sha/<commitSha>`, #124) so the merge can consume the
+ * sha-keyed copy (`stagedTreeShaKey`, #124) so the merge can consume the
  * tree of the EVALUATED commit even if the workspace was re-pushed since.
  */
 export async function stageWorkspaceTree(
@@ -1771,11 +1771,22 @@ export function stagedTreeKey(projectId: string, workspace: string): string {
   return `repos/${projectId}/ws/${workspace}`;
 }
 
+/**
+ * R2 prefix every sha-keyed staged-tree copy lives under, and the only thing
+ * under it. A bucket lifecycle rule on this prefix expires the copies (#262;
+ * docs/runbooks/staged-tree-retention.md). R2 rules match a leading prefix, so
+ * the copies must not sit under `repos/`, beside objects that must never expire.
+ */
+export const STAGED_TREE_SHA_PREFIX = "staged-sha/";
+
 /** #124: sha-keyed staged-tree copy — immutable per workspace commit, so the
  * merge can read the EVALUATED commit's tree after a re-push overwrote the
- * latest-tip key. */
+ * latest-tip key. Disposable: a missing copy sends the merge down the git path,
+ * which merges the same pinned sha, so expiring one costs speed, not
+ * correctness. Merges delete their own copy; the lifecycle rule reclaims the
+ * rest (rejected changes, intermediate commits, abandoned workspaces). */
 export function stagedTreeShaKey(projectId: string, workspace: string, sha: string): string {
-  return `${stagedTreeKey(projectId, workspace)}/sha/${sha}`;
+  return `${STAGED_TREE_SHA_PREFIX}${projectId}/${workspace}/${sha}`;
 }
 
 /** Load a workspace's staged tip tree from R2 (see stageWorkspaceTree). */
