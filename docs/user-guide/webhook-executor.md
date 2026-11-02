@@ -25,9 +25,12 @@ Treat every part of an evaluation request as attacker-controlled:
   `.stratum/policy.yaml`, so anyone who can read the repository can compute a
   valid signature. A good signature tells you the sender knew the repository's
   contents, not that Stratum sent it. Without a `secret`, nothing is signed.
-- **`baseSha`** selects which commit to build. It can name any object, so it must
-  be resolved against a repository you trust, never fetched from anywhere the
-  payload suggests.
+- **`baseSha`** is meant to be the commit the diff was computed against, but it
+  is just a string in the body. Resolve it only in a repository you trust, never
+  by fetching from anywhere the payload suggests. Accept it only if it is a full
+  object id that exists locally **and is a commit**: check the object type, for
+  example with `git cat-file -t`. A tree, blob, or tag id must be rejected, not
+  peeled or guessed at.
 - **`policy`** is parsed from the repository. Any field your receiver reads from
   it — a command, a timeout — is chosen by people who can edit that file.
 
@@ -99,10 +102,15 @@ Every request gets its own state, and nothing survives it:
 - **A fresh `HOME`** — an empty, size-limited tmpfs, so tool configuration,
   caches, and credentials from a previous run (or from the host) are not
   inherited, and nothing a change writes there is seen by the next one.
-- **A fresh worktree** checked out from your mirror at `baseSha`. If the mirror
-  is shared between evaluations, mount it **read-only** into the executor or
-  copy from it; a writable shared object store lets one change plant objects or
-  refs that a later evaluation reads.
+- **A fresh worktree** materialized from your mirror at `baseSha`, **without
+  the mirror's `.git`**. Do not mount the mirror into the executor, even
+  read-only. Its repository-local config (`remote.*.url` with embedded
+  credentials, `http.extraHeader`, `credential.helper`, command-valued settings)
+  is readable there and can hand the executor whatever the receiver uses to
+  fetch. Export the tree on the trusted side, for example with `git archive` of
+  the commit. If the executor needs Git, initialize a new repository inside it
+  that has no remotes and no credentials. A writable shared object store would
+  also let one change plant objects or refs that a later evaluation reads.
 - **Unique names.** Create per-request directories with random names, not
   names derived from the request, so two concurrent evaluations cannot collide
   and a crafted request cannot point at another's directory.
@@ -124,8 +132,8 @@ correctness requirement as well as a safety one. The numbers on Stratum's side
 | Default `timeoutMs` | 10,000 ms |
 | Allowed `timeoutMs` | clamped to 1,000–120,000 ms |
 | When evaluation runs | synchronously, inside the request that triggered it — for example `POST /api/projects/:name/changes`, `POST /api/changes/:id/evaluate`, and a gated `git push` |
-| Ordering | evaluators run **one after another** in that request, so two webhook entries' timeouts add up, alongside any other evaluators |
-| On timeout | Stratum aborts the request; the evaluation errors (it is not recorded as your verdict) |
+| Ordering | every evaluator in the policy starts **concurrently** (`Promise.all` in `runEvaluation`, `src/services/change-flow.ts`), so the triggering request waits for the slowest one plus overhead. Several webhook entries' timeouts overlap and do not add up |
+| On timeout | Stratum aborts its fetch, and the evaluator returns an external-service error. `runEvaluation` records that as a **failed evaluation** (score 0, reason `Webhook error: <abort message>`) and it counts against the gate like any failing verdict. The recorded reason is Stratum's abort message, not anything your receiver said |
 | Retries | none — a re-run is an explicit re-evaluation |
 | Cap on the request body Stratum sends | **none** — size is bounded only indirectly (a workspace commit body is capped at 32 MiB, a `git push` request at 50 MiB, and a change can span several commits) |
 
@@ -136,9 +144,14 @@ What that means for the receiver:
   non-2xx is recorded as a failed evaluation, which is the right outcome.
 - **Set a wall-clock deadline below `timeoutMs`** — leave margin for TLS, the
   checkout, and the response — and when it fires, kill the executor and answer
-  `200` with `"passed": false` and a reason such as `"deadline exceeded"`. A
-  verdict you return is recorded and readable on the change; a request Stratum
-  had to abort is only an error.
+  `200` with a complete verdict:
+  `{"score": 0, "passed": false, "reason": "deadline exceeded"}`. Stratum
+  requires a finite numeric `score` and a boolean `passed`. A response missing
+  either is treated as unusable and fails closed with a generic reason. A
+  timeout on Stratum's side is also recorded as a failure, but its reason is
+  only Stratum's abort message. Answering first puts your reason on the change,
+  and it means you have stopped the executor rather than leaving it running
+  after Stratum has given up.
 - **Bound concurrency, and reject rather than queue.** Hold a fixed number of
   executor slots. When they are all busy, answer `503` immediately. A queued
   request would spend its window waiting and time out anyway; an immediate
@@ -175,16 +188,23 @@ Applying a diff and building the result involves Git in ways that can execute
 code from the repository:
 
 - **Apply the diff inside the executor**, as its unprivileged user, never in the
-  receiver. Use a current Git: `git apply` refuses paths inside `.git/`, and
-  current releases also refuse to write through a symbolic link the patch
-  itself introduces (CVE-2023-23946 was exactly that escape).
+  receiver. Require a Git release patched for
+  [CVE-2023-23946](https://github.com/git/git/security/advisories/GHSA-r87m-v37r-cwfh),
+  in which `git apply` could be made to write outside the working tree through a
+  symbolic link the patch itself introduces. That means 2.39.2 or later, a
+  maintenance release that carries the fix (listed in the advisory), or a
+  distribution package whose vendor confirms the backport. Then keep up with
+  later Git security releases. `git apply` also refuses paths inside `.git/`.
 - **`.gitattributes` filters and drivers.** A repository can declare
   `filter=<name>`, `diff=<name>`, or `merge=<name>` on any path. They run a
   command only if `filter.<name>.smudge`/`clean` (or the matching driver) is
   defined in Git config — and tools define them globally: `git lfs install`
-  writes an LFS filter into `~/.gitconfig`. Run Git in the executor with an
-  empty config: `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, and the
-  fresh `HOME` above.
+  writes an LFS filter into `~/.gitconfig`. In the executor, set
+  `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null` and use the fresh
+  `HOME` above. These variables disable only the system and global files. Git
+  still reads the repository's own `.git/config`, which is why that file must
+  be one the executor created and not the mirror's (see
+  [Filesystem isolation](#filesystem-isolation-per-evaluation)).
 - **Hooks and `core.hooksPath`.** A dependency's install step can point
   `core.hooksPath` at a directory in the repository (husky does exactly this in
   `prepare`), after which any `git commit` in that tree runs repository-controlled
@@ -247,8 +267,11 @@ that are destroyed after each job — and waits for the result.
 ### A rootless container per request, under a user-space kernel
 
 One container per evaluation, run by a rootless runtime with gVisor (`runsc`)
-as the OCI runtime, so a kernel exploit from the suite lands in gVisor's kernel
-rather than the host's. The properties to configure, each of which maps to a
+as the OCI runtime. gVisor puts a user-space kernel between the suite and the
+host kernel, which shrinks the host's exposed system-call surface. It is an
+additional boundary, **defense in depth**. It does not guarantee that an
+exploit stays contained, so the host hardening, unprivileged user, and resource
+limits below remain mandatory. The properties to configure, each of which maps to a
 flag in Docker or Podman:
 
 | Property | Setting |
@@ -301,24 +324,28 @@ Before pointing a policy's `webhook` evaluator at your executor:
       namespaces — not merely with a filtered environment.
 - [ ] Nothing the receiver holds (environment, files, sockets, `localhost`
       services) is reachable from the executor.
-- [ ] Each evaluation gets a fresh `HOME` and worktree; a shared mirror is
-      read-only to the executor.
+- [ ] Each evaluation gets a fresh `HOME` and worktree. The tree is exported
+      from the mirror without its `.git`, and the mirror is never mounted into
+      the executor.
 - [ ] Exactly one teardown path kills every executor process and deletes its
       state, on success, failure, and deadline.
 - [ ] The receiver caps the body size, enforces a deadline shorter than
       `timeoutMs`, returns a failing verdict when it fires, and rejects with
       `503` when at capacity instead of queueing.
 - [ ] The executor has memory, CPU, process-count, disk, and output limits.
-- [ ] No credentials are present in the executor, and cloud metadata endpoints
-      are unreachable from it.
+- [ ] No receiver-held credentials are present in the executor: no mirror,
+      registry, cloud, or reporting credentials, and no copy of the webhook
+      secret from the receiver's environment. Cloud metadata endpoints are
+      unreachable from it. The one known exception is the webhook `secret`
+      literal that the repository's own `.stratum/policy.yaml` already contains.
 - [ ] Git in the executor runs with no system or global config; nothing on the
       trusted side runs Git against a tree evaluated code has touched;
       `safe.directory` is not wildcarded; submodules are not fetched.
 - [ ] Egress is denied by default, with any exceptions limited to what the suite
       needs, and private ranges always blocked.
 - [ ] `baseSha` is resolved only in the mirror of the repository this receiver
-      URL is bound to, and requests whose `baseSha` is missing or unknown are
-      rejected.
+      URL is bound to and must be a commit. Requests whose `baseSha` is missing,
+      unknown, or not a commit are rejected.
 - [ ] The receiver is behind TLS you terminate, and runs with least privilege
       itself.
 
