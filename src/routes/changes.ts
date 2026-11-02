@@ -56,7 +56,12 @@ import { getProject, getWorkspace } from "../storage/state";
 import { getProjectSourceUrl } from "../storage/sync";
 import type { Change, Env, ProjectEntry } from "../types";
 import { projectDefaultBranch } from "../types";
-import { canReadProject, canWriteProject } from "../utils/authz";
+import {
+  canReadProject,
+  canWriteProject,
+  credentialBindingFrom,
+  refuseProjectAccess,
+} from "../utils/authz";
 import { getWaitUntil } from "../utils/execution-ctx";
 import { newId } from "../utils/ids";
 import { createLogger } from "../utils/logger";
@@ -66,7 +71,6 @@ import {
   appError,
   badRequest,
   created,
-  forbidden,
   internalError,
   notFound,
   ok,
@@ -256,8 +260,10 @@ app.post("/projects/:name/changes", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canWriteProject(c.env.DB, project, userId, agentOwnerId)))
-    return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Project", projectName),
+    );
 
   // Refuse writes while the project (or its owner) is being deleted — otherwise a
   // new change resurrects rows the cascade is removing and wedges the job as
@@ -340,7 +346,7 @@ app.get("/projects/:name/changes", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const statusParam = c.req.query("status");
@@ -411,7 +417,7 @@ app.get("/changes/:id", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const evalRunsResult = await listEvalRuns(c.env.DB, logger, id);
@@ -469,8 +475,8 @@ app.post("/changes/:id/merge", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canWriteProject(c.env.DB, project, userId)))
-    return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
+    return refuseProjectAccess(credentialBindingFrom(c), project, () => notFound("Change", id));
 
   // Branch protection: the policy's merge rules gate every merge path. Cached +
   // coalesced so a swarm of merges doesn't each clone the repo for the policy file.
@@ -923,8 +929,10 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
     return internalError(projectResult.error.message);
   }
   const project = projectResult.data;
-  if (!(await canWriteProject(c.env.DB, project, userId)))
-    return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Project", projectName),
+    );
 
   const body = await readJsonWithLimit<{ changeIds?: unknown; force?: unknown }>(
     c,
@@ -1300,8 +1308,8 @@ app.post("/changes/:id/reject", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canWriteProject(c.env.DB, project, userId)))
-    return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
+    return refuseProjectAccess(credentialBindingFrom(c), project, () => notFound("Change", id));
 
   if (change.status === "merged") {
     return badRequest("Cannot reject a merged change");
@@ -1363,8 +1371,8 @@ app.post("/changes/:id/evaluate", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canWriteProject(c.env.DB, project, userId)))
-    return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
+    return refuseProjectAccess(credentialBindingFrom(c), project, () => notFound("Change", id));
 
   if (change.status === "merged" || change.status === "rejected" || change.status === "promoted") {
     return badRequest(`Cannot re-evaluate a ${change.status} change`);
@@ -1704,10 +1712,6 @@ app.post("/changes/:id/github-pr", async (c) => {
   }
   const change = changeResult.data;
 
-  if (change.status !== "accepted" && change.status !== "promoted") {
-    return badRequest("Change must be accepted before promotion");
-  }
-
   const projectResult = await getProject(c.env.STATE, change.project, logger);
   if (!projectResult.success) {
     if (projectResult.error.code === "NOT_FOUND") {
@@ -1718,8 +1722,14 @@ app.post("/changes/:id/github-pr", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canWriteProject(c.env.DB, project, userId)))
-    return forbidden("Project access denied");
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
+    return refuseProjectAccess(credentialBindingFrom(c), project, () => notFound("Change", id));
+
+  // After authorization, not before: the change's state is not the caller's to
+  // learn until they may act on it.
+  if (change.status !== "accepted" && change.status !== "promoted") {
+    return badRequest("Change must be accepted before promotion");
+  }
 
   // Accept the generic sourceUrl or the legacy githubUrl — bulk-imported
   // projects only set sourceUrl (#189) — as long as it points at github.com.

@@ -510,10 +510,34 @@ export interface ApiError {
  * method and every git write is refused. `read_write` is the full account power
  * a token has always had, and is what the legacy `users.token_hash` resolves to.
  *
- * Deliberately coarse: per-project and per-org narrowing is a separate change,
- * and this is a TEXT column so that vocabulary can grow without a migration.
+ * Deliberately coarse: WHICH projects a token reaches is the separate
+ * {@link CredentialBinding} dimension (#323), and this is a TEXT column so that
+ * vocabulary can grow without a migration.
  */
 export type ApiTokenScope = "read" | "read_write";
+
+/**
+ * Which projects a credential may reach (#323) — the second scope dimension,
+ * orthogonal to {@link ApiTokenScope}'s read/write.
+ *
+ * - `unbound`: every project the principal can reach. Sessions, agents, OAuth
+ *   grants, the legacy key, and every scoped token minted without a binding.
+ * - `project`: exactly one project, by its stable id (survives renames).
+ * - `org`: every project currently OWNED by that org — not personal projects of
+ *   its members, and not other orgs' projects shared with the same user.
+ *
+ * A binding only ever NARROWS: the principal's own access is still required, so
+ * a token bound to a project its owner later loses access to stops working.
+ * One project or one org per token, deliberately not a set: a set is a list a
+ * reviewer has to audit per token, while "make another token" costs nothing.
+ */
+export type CredentialBinding =
+  | { readonly kind: "unbound" }
+  | { readonly kind: "project"; readonly projectId: string }
+  | { readonly kind: "org"; readonly orgId: string };
+
+/** The bound (narrowing) members of {@link CredentialBinding}. */
+export type BoundCredentialBinding = Exclude<CredentialBinding, { kind: "unbound" }>;
 
 export interface User {
   id: string;

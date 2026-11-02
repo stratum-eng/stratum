@@ -4,6 +4,7 @@ import { recordAudit } from "../storage/audit";
 import { ensureOrgMember } from "../storage/orgs";
 import {
   type ScimScopedUser,
+  type ScimUserFilter,
   type SsoConnection,
   deprovisionUser,
   ensureScimMember,
@@ -165,7 +166,7 @@ function coerceActive(value: unknown): boolean | undefined {
 // case-insensitive, value double-quoted). Anything else is unsupported.
 const FILTER_PATTERN = /^\s*(userName|externalId)\s+eq\s+"([^"]*)"\s*$/i;
 
-function parseFilter(raw: string): { attribute: "username" | "externalid"; value: string } | null {
+function parseFilter(raw: string): ScimUserFilter | null {
   const match = FILTER_PATTERN.exec(raw);
   if (!match) return null;
   return {
@@ -386,23 +387,16 @@ app.get("/Users", async (c) => {
   if (ctx instanceof Response) return ctx;
   const { connection, logger } = ctx;
 
-  const listResult = await listScimScopedUsers(c.env.DB, logger, connection);
-  if (!listResult.success) return scimError(500, "Failed to list users");
-  let users = listResult.data;
-
+  let filter: ScimUserFilter | undefined;
   const rawFilter = c.req.query("filter");
   if (rawFilter !== undefined) {
-    const filter = parseFilter(rawFilter);
-    if (!filter) {
+    const parsed = parseFilter(rawFilter);
+    if (!parsed) {
       // RFC 7644 §3.4.2.2: an unsupported filter is 501, not an empty list —
       // an empty 200 would make the IdP believe the user does not exist.
       return scimError(501, "Only 'userName eq \"...\"' and 'externalId eq \"...\"' are supported");
     }
-    users = users.filter((user) =>
-      filter.attribute === "username"
-        ? user.email === filter.value.trim().toLowerCase()
-        : user.externalId === filter.value,
-    );
+    filter = parsed;
   }
 
   const startIndex = Math.max(parsePositiveInt(c.req.query("startIndex")) ?? 1, 1);
@@ -412,11 +406,17 @@ app.get("/Users", async (c) => {
     Math.max(parsePositiveInt(c.req.query("count")) ?? DEFAULT_PAGE_COUNT, 0),
     MAX_PAGE_COUNT,
   );
-  const page = count === 0 ? [] : users.slice(startIndex - 1, startIndex - 1 + count);
+  const listResult = await listScimScopedUsers(c.env.DB, logger, connection, {
+    filter,
+    startIndex,
+    count,
+  });
+  if (!listResult.success) return scimError(500, "Failed to list users");
+  const { totalResults, users: page } = listResult.data;
 
   return scimJson({
     schemas: [LIST_SCHEMA],
-    totalResults: users.length,
+    totalResults,
     startIndex,
     itemsPerPage: page.length,
     Resources: page.map((user) => userResource(c, user)),

@@ -120,6 +120,28 @@ describe("bearer credentials", () => {
     ]);
   });
 
+  it("does NOT record a bound token refused a route outside its binding", async () => {
+    // TOKEN_BINDING_EXCLUDES_ROUTE is an authorization refusal of a GOOD
+    // credential, not a failed authentication.
+    const minted = await createApiToken(env.DB, logger, {
+      userId: "usr_alice",
+      name: "bound",
+      scope: "read_write",
+      binding: { kind: "org", orgId: "org_acme" },
+    });
+    if (!minted.success) throw minted.error;
+    app.get("/api/users/me/usage", (c) => c.json({}));
+    const res = await app.fetch(
+      new Request("http://localhost/api/users/me/usage", {
+        headers: { Authorization: `Bearer ${minted.data.plaintext}` },
+      }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { code: string }).code).toBe("TOKEN_BINDING_EXCLUDES_ROUTE");
+    expect(failures()).toEqual([]);
+  });
+
   it("does NOT record a credential that identifies nobody", async () => {
     for (const token of [
       "stratum_user_nonsense",

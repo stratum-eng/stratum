@@ -28,6 +28,21 @@ meant to.
 Read-only bounds *damage*, not *exposure*: a `read` token still reads every
 private project its owner can read.
 
+### `403 TOKEN_BINDING_EXCLUDES_ROUTE`
+
+The token is limited to one project or organization, and the endpoint is not a
+project endpoint — account settings, usage, token or agent creation,
+organization administration, bulk import, the admin API, or a web page. A
+bound token reaches only project surfaces, MCP, and git. Use an account-wide
+token (or the settings UI) for these.
+
+### A bound token gets `404` on a project you can see
+
+That project is outside the token's binding. A token limited to a project or
+organization answers every other project exactly as if it did not exist —
+public ones included — so the binding does not reveal what else the account
+owns. Check the token's **Access** column under **Settings → API tokens**.
+
 ### `403 SESSION_REQUIRED`
 
 Token-management endpoints (`GET|POST /api/users/me/tokens`,

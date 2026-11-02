@@ -9,7 +9,7 @@ import { SCOPE_WRITE, resolveOAuthAccessToken, touchOAuthTokenLastUsed } from ".
 import { deleteSession, getSession } from "../storage/sessions";
 import { getSsoConnectionByScimTokenHash } from "../storage/sso";
 import { getUser, getUserByToken } from "../storage/users";
-import type { ApiTokenScope, Env, User } from "../types";
+import type { ApiTokenScope, CredentialBinding, Env, User } from "../types";
 import { auditAuthFailure } from "../utils/auth-audit";
 import { hashToken } from "../utils/crypto";
 import { RejectedCredentialError } from "../utils/errors";
@@ -41,6 +41,10 @@ declare module "hono" {
      * `tokenScope` cannot tell the two apart and anything that must treat them
      * differently has to key on this. */
     apiTokenId?: string;
+    /** Which projects the authenticating scoped token may reach (#323). Set
+     * for scoped tokens only; read it through `credentialBindingFrom`, which
+     * answers `unbound` for every other credential kind. */
+    credentialBinding?: CredentialBinding;
     /** Row id of the authenticating OAuth grant (#349). Present ONLY for a
      * caller holding an `stratum_mcp_` access token — i.e. one acting through
      * a client the user consented to, rather than a credential they hold
@@ -86,6 +90,48 @@ export function cannotMintLegacyCredential(c: {
 }): boolean {
   return c.get("apiTokenId") !== undefined || c.get("oauthGrantId") !== undefined;
 }
+
+/**
+ * Can a token bound to one project or org (#323) reach this route at all?
+ *
+ * An ALLOW-LIST of the surfaces whose every handler authorizes through
+ * `utils/authz.ts`, where the binding is a required argument. Everything else —
+ * account settings, token and agent minting, org administration, bulk import,
+ * the instance admin API, the HTML UI, session management — is refused before
+ * routing, for the same reason the read-only rule is an allow-list: a deny-list
+ * fails OPEN on the route added next year, and the failure is invisible.
+ *
+ * - `/api/projects`, `/api/changes`, `/api/workspaces`, `/api/deployments`:
+ *   project-addressed, and each handler resolves the project and asks authz.
+ *   The two non-project-addressed handlers under `/api/projects` (list and
+ *   create) are themselves bound-aware.
+ * - `GET /api/users/me`: identity only (id, email). The MCP `whoami` tool reads
+ *   it; nothing under `/me/*` (usage, tokens, rotation, deletion) is reachable.
+ * - `/mcp`: every tool call re-dispatches as an API sub-request carrying the
+ *   same credential, which re-enters this check with the real path.
+ * - `GET /health`, `GET /api/health[/…]`: public liveness probes that carry no
+ *   account data. `stratum login --key` validates a key against `/health`, so
+ *   refusing it would make a bound token impossible to log in with.
+ *
+ * git smart-HTTP never reaches this middleware; `git-http.ts` threads the
+ * binding into its own authorization.
+ */
+export function boundTokenMayReach(method: string, path: string): boolean {
+  if (isMcpPath(path)) return true;
+  const isRead = method === "GET" || method === "HEAD";
+  if (path === "/api/users/me") return isRead;
+  if (path === "/health" || path === "/api/health" || path.startsWith("/api/health/")) {
+    return isRead;
+  }
+  return BOUND_TOKEN_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
+const BOUND_TOKEN_PREFIXES = [
+  "/api/projects",
+  "/api/changes",
+  "/api/workspaces",
+  "/api/deployments",
+] as const;
 
 /**
  * Resolve the caller's identity from an agent token, a user token, or a session
@@ -219,12 +265,14 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
       let scope: ApiTokenScope;
       let tokenId: string | null;
       let lastUsedAt: string | undefined;
+      let binding: CredentialBinding | null = null;
 
       if (scopedToken.success) {
         user = scopedToken.data.user;
         scope = scopedToken.data.scope;
         tokenId = scopedToken.data.tokenId;
         lastUsedAt = scopedToken.data.lastUsedAt;
+        binding = scopedToken.data.binding;
       } else {
         // A scoped token that exists but was refused (revoked, expired, owner
         // disabled/deleting) names an account: audit it (#255). The legacy
@@ -290,11 +338,36 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         );
       }
 
+      // A bound token (#323) is refused before routing on every surface that
+      // does not authorize through the binding-aware helpers. Same placement
+      // and reasoning as the read-only rule above.
+      if (
+        binding !== null &&
+        binding.kind !== "unbound" &&
+        !boundTokenMayReach(c.req.method, c.req.path)
+      ) {
+        logger.warn("Auth rejected - bound token outside its reachable surface", {
+          path: c.req.path,
+          method: c.req.method,
+          userId: user.id,
+          binding: binding.kind,
+        });
+        return c.json(
+          {
+            error:
+              "This token is limited to one project or organization and cannot use this endpoint",
+            code: "TOKEN_BINDING_EXCLUDES_ROUTE",
+          },
+          403,
+        );
+      }
+
       c.set("userId", user.id);
       c.set("username", user.username);
       c.set("authVia", "token");
       c.set("tokenScope", scope);
       if (tokenId !== null) c.set("apiTokenId", tokenId);
+      if (binding !== null) c.set("credentialBinding", binding);
       // Read off `user`, which both branches above populate — the scoped-token
       // join selects `telemetry_opt_out` for exactly this reason, so opting out
       // is not defeated by authenticating with a scoped token instead of the

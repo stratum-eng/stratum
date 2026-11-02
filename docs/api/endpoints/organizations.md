@@ -35,6 +35,9 @@ deleted, joined, or left, is recorded in the org's audit log below.
 - `GET /api/orgs/:slug/audit/export` — the same entries as an NDJSON download
 
 Plain members get `403`; non-members get the same `404` as a missing org.
+A token bound to a project or organization is refused with `403
+TOKEN_BINDING_EXCLUDES_ROUTE`, even one bound to this org: reading the audit
+log is org administration, so use a session or an unbound token.
 
 **What lands in an org's trail.** Events about the org itself (creation,
 member added/removed, role changed, teams and team membership, SSO connection

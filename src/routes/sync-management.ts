@@ -23,9 +23,9 @@ import {
   setSyncSettings,
   updateProjectAfterSync,
 } from "../storage/sync";
-import type { Env } from "../types";
+import type { CredentialBinding, Env } from "../types";
 import { projectDefaultBranch, projectDisplayName } from "../types";
-import { canWriteProject } from "../utils/authz";
+import { canWriteProject, credentialBindingFrom } from "../utils/authz";
 import { getWaitUntil } from "../utils/execution-ctx";
 import { createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
@@ -53,11 +53,12 @@ async function verifyProjectAccess(
   namespace: string,
   slug: string,
   userId: string,
+  binding: CredentialBinding,
   logger: ReturnType<typeof createLogger>,
 ): Promise<boolean> {
   const projectResult = await getProjectByPath(env.STATE, namespace, slug, logger);
   if (!projectResult.success) return false;
-  return canWriteProject(env.DB, projectResult.data, userId);
+  return canWriteProject(env.DB, projectResult.data, binding, userId);
 }
 
 /**
@@ -81,7 +82,14 @@ app.get("/projects/:namespace/:slug/sync/status", async (c) => {
   logger.debug("Getting sync status", { namespace, slug });
 
   // Verify project access
-  const hasAccess = await verifyProjectAccess(c.env, namespace, slug, userId, logger);
+  const hasAccess = await verifyProjectAccess(
+    c.env,
+    namespace,
+    slug,
+    userId,
+    credentialBindingFrom(c),
+    logger,
+  );
   if (!hasAccess) {
     logger.warn("Unauthorized access attempt", { namespace, slug, userId });
     return c.json({ error: "Forbidden - You do not have access to this project" }, 403);
@@ -124,7 +132,14 @@ app.post("/projects/:namespace/:slug/sync", async (c) => {
   logger.info("Manual sync triggered", { namespace, slug });
 
   // Verify project access
-  const hasAccess = await verifyProjectAccess(c.env, namespace, slug, userId, logger);
+  const hasAccess = await verifyProjectAccess(
+    c.env,
+    namespace,
+    slug,
+    userId,
+    credentialBindingFrom(c),
+    logger,
+  );
   if (!hasAccess) {
     logger.warn("Unauthorized sync attempt", { namespace, slug, userId });
     return c.json({ error: "Forbidden - You do not have access to this project" }, 403);
@@ -226,7 +241,14 @@ app.post("/projects/:namespace/:slug/sync/settings", async (c) => {
   });
 
   // Verify project access
-  const hasAccess = await verifyProjectAccess(c.env, namespace, slug, userId, logger);
+  const hasAccess = await verifyProjectAccess(
+    c.env,
+    namespace,
+    slug,
+    userId,
+    credentialBindingFrom(c),
+    logger,
+  );
   if (!hasAccess) {
     logger.warn("Unauthorized settings update attempt", { namespace, slug, userId });
     return c.json({ error: "Forbidden - You do not have access to this project" }, 403);
@@ -286,7 +308,14 @@ app.get("/projects/:namespace/:slug/sync/history", async (c) => {
   logger.debug("Getting sync history", { namespace, slug });
 
   // Verify project access
-  const hasAccess = await verifyProjectAccess(c.env, namespace, slug, userId, logger);
+  const hasAccess = await verifyProjectAccess(
+    c.env,
+    namespace,
+    slug,
+    userId,
+    credentialBindingFrom(c),
+    logger,
+  );
   if (!hasAccess) {
     logger.warn("Unauthorized history access attempt", { namespace, slug, userId });
     return c.json({ error: "Forbidden - You do not have access to this project" }, 403);
@@ -329,7 +358,14 @@ app.get("/projects/:namespace/:slug/sync/stream", async (c) => {
   logger.debug("SSE connection established for sync updates", { namespace, slug });
 
   // Verify project access before establishing stream
-  const hasAccess = await verifyProjectAccess(c.env, namespace, slug, userId, logger);
+  const hasAccess = await verifyProjectAccess(
+    c.env,
+    namespace,
+    slug,
+    userId,
+    credentialBindingFrom(c),
+    logger,
+  );
   if (!hasAccess) {
     logger.warn("Unauthorized SSE stream attempt", { namespace, slug, userId });
     return c.json({ error: "Forbidden - You do not have access to this project" }, 403);
@@ -544,7 +580,7 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
   // Resolving a conflict mints a write token and pushes a merge into the project
   // repo, so it requires project write access — not merely knowing the (unguessable
   // but leakable) conflict id. Collapse to 404 to avoid leaking existence.
-  if (!(await canWriteProject(c.env.DB, project, userId))) {
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId))) {
     return c.json({ error: "Project not found" }, 404);
   }
 

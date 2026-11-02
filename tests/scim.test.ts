@@ -562,6 +562,154 @@ describe("GET /Users (list, filters, pagination)", () => {
     expect(body.Resources[0]?.userName).toBe(`hank@${DOMAIN}`);
   });
 
+  it("userName filter value is matched case-insensitively (trimmed, lowercased)", async () => {
+    const erin = await provision(`erin@${DOMAIN}`);
+    await provision(`frank@${DOMAIN}`);
+
+    const res = await scimFetch(
+      "GET",
+      `/scim/v2/Users?filter=${encodeURIComponent(`userName eq " ERIN@${DOMAIN.toUpperCase()} "`)}`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ListResponse;
+    expect(body.totalResults).toBe(1);
+    expect(body.itemsPerPage).toBe(1);
+    expect(body.Resources.map((r) => r.id)).toEqual([erin.id]);
+
+    const none = await scimFetch(
+      "GET",
+      `/scim/v2/Users?filter=${encodeURIComponent(`userName eq "nobody@${DOMAIN}"`)}`,
+    );
+    const empty = (await none.json()) as ListResponse;
+    expect(empty.totalResults).toBe(0);
+    expect(empty.Resources).toEqual([]);
+  });
+
+  it("externalId filter is case-exact", async () => {
+    const gina = await provision(`gina@${DOMAIN}`, { externalId: "Ext-Gina" });
+
+    const exact = await scimFetch(
+      "GET",
+      `/scim/v2/Users?filter=${encodeURIComponent('externalId eq "Ext-Gina"')}`,
+    );
+    const hit = (await exact.json()) as ListResponse;
+    expect(hit.totalResults).toBe(1);
+    expect(hit.Resources[0]?.id).toBe(gina.id);
+    expect(hit.Resources[0]?.externalId).toBe("Ext-Gina");
+
+    const folded = await scimFetch(
+      "GET",
+      `/scim/v2/Users?filter=${encodeURIComponent('externalId eq "ext-gina"')}`,
+    );
+    expect(((await folded.json()) as ListResponse).totalResults).toBe(0);
+  });
+
+  it("pages are disjoint, ordered by (created_at, id), and totalResults ignores the page", async () => {
+    // Same created_at for all: the id tiebreak alone must make paging stable.
+    const ids: string[] = [];
+    for (const name of ["p1", "p2", "p3", "p4", "p5"])
+      ids.push((await provision(`${name}@${DOMAIN}`)).id);
+    raw.prepare("UPDATE users SET created_at = '2026-01-01 00:00:00'").run();
+    const expected = [...ids].sort();
+
+    const seen: string[] = [];
+    for (const startIndex of [1, 3, 5]) {
+      const res = await scimFetch("GET", `/scim/v2/Users?startIndex=${startIndex}&count=2`);
+      const body = (await res.json()) as ListResponse;
+      expect(body.totalResults).toBe(5);
+      expect(body.startIndex).toBe(startIndex);
+      expect(body.itemsPerPage).toBe(body.Resources.length);
+      seen.push(...body.Resources.map((r) => r.id));
+    }
+    expect(seen).toEqual(expected);
+
+    // Past the end: empty page, real total. An absurd startIndex is no error.
+    for (const startIndex of ["6", "99999999999999999999999"]) {
+      const past = await scimFetch("GET", `/scim/v2/Users?startIndex=${startIndex}&count=2`);
+      expect(past.status).toBe(200);
+      const body = (await past.json()) as ListResponse;
+      expect(body.totalResults).toBe(5);
+      expect(body.Resources).toEqual([]);
+    }
+
+    // startIndex below 1 is treated as 1.
+    const low = await scimFetch("GET", "/scim/v2/Users?startIndex=0&count=1");
+    const lowBody = (await low.json()) as ListResponse;
+    expect(lowBody.startIndex).toBe(1);
+    expect(lowBody.Resources.map((r) => r.id)).toEqual([expected[0]]);
+  });
+
+  it("paging applies after filtering", async () => {
+    await provision(`ivy@${DOMAIN}`, { externalId: "ext-ivy" });
+    await provision(`jack@${DOMAIN}`);
+
+    const res = await scimFetch(
+      "GET",
+      `/scim/v2/Users?filter=${encodeURIComponent('externalId eq "ext-ivy"')}&startIndex=2&count=5`,
+    );
+    const body = (await res.json()) as ListResponse;
+    expect(body.totalResults).toBe(1);
+    expect(body.Resources).toEqual([]);
+  });
+
+  it("out-of-scope users never appear in lists, filters, or counts", async () => {
+    const alice = await provision(`alice@${DOMAIN}`, { externalId: "ext-alice" });
+
+    // Verified-domain email but not an org member.
+    const loner = await createUser(db, `loner@${DOMAIN}`, logger);
+    // Org member on a subdomain: its domain is NOT the connection's domain.
+    const sub = await createUser(db, `sub@eng.${DOMAIN}`, logger);
+    // Org member on an unrelated domain.
+    const guest = await createUser(db, "guest@other.example.net", logger);
+    // Org member on the verified domain, but mid-deletion.
+    const leaving = await createUser(db, `leaving@${DOMAIN}`, logger);
+    if (!loner.success || !sub.success || !guest.success || !leaving.success) {
+      throw new Error("seed failed");
+    }
+    for (const u of [sub, guest, leaving]) {
+      const added = await addOrgMember(db, logger, "org_1", u.data.user.id, "member");
+      expect(added.success).toBe(true);
+    }
+    raw
+      .prepare("UPDATE users SET deleting_at = datetime('now') WHERE id = ?")
+      .run(leaving.data.user.id);
+    // Managed by ANOTHER connection (different org) with an externalId.
+    const otherConnectionId = await makeConnection(
+      "org_2",
+      "globex",
+      "usr_owner",
+      "globex.example.com",
+    );
+    const foreign = await createUser(db, "bob@globex.example.com", logger);
+    if (!foreign.success) throw new Error("seed failed");
+    raw
+      .prepare(
+        "INSERT INTO scim_members (connection_id, user_id, scim_external_id) VALUES (?, ?, ?)",
+      )
+      .run(otherConnectionId, foreign.data.user.id, "ext-bob");
+
+    const outOfScope = [loner, sub, guest, leaving, foreign].map((u) => u.data.user);
+
+    const list = (await (await scimFetch("GET", "/scim/v2/Users")).json()) as ListResponse;
+    expect(list.Resources.map((r) => r.id)).toEqual([alice.id]);
+    expect(list.totalResults).toBe(1);
+
+    for (const user of outOfScope) {
+      const byName = await scimFetch(
+        "GET",
+        `/scim/v2/Users?filter=${encodeURIComponent(`userName eq "${user.email}"`)}`,
+      );
+      expect(((await byName.json()) as ListResponse).totalResults).toBe(0);
+      const byId = await scimFetch("GET", `/scim/v2/Users/${user.id}`);
+      expect(byId.status).toBe(404);
+    }
+    const byExt = await scimFetch(
+      "GET",
+      `/scim/v2/Users?filter=${encodeURIComponent('externalId eq "ext-bob"')}`,
+    );
+    expect(((await byExt.json()) as ListResponse).totalResults).toBe(0);
+  });
+
   it("any other filter is 501 per RFC 7644 §3.4.2.2", async () => {
     const res = await scimFetch(
       "GET",

@@ -12,10 +12,10 @@ import {
 } from "../storage/git-ops";
 import { deleteWorkspace, getProjectByPath, getWorkspace } from "../storage/state";
 import { getUser, getUserByToken } from "../storage/users";
-import type { ApiTokenScope, Env, ProjectEntry, WorkspaceEntry } from "../types";
+import type { ApiTokenScope, CredentialBinding, Env, ProjectEntry, WorkspaceEntry } from "../types";
 import { projectDefaultBranch } from "../types";
 import { type AuthFailure, recordAuthFailure } from "../utils/auth-audit";
-import { canReadProject, canWriteProject, canWriteWorkspace } from "../utils/authz";
+import { UNBOUND, canReadProject, canWriteProject, canWriteWorkspace } from "../utils/authz";
 import { RejectedCredentialError } from "../utils/errors";
 import { getWaitUntil } from "../utils/execution-ctx";
 import {
@@ -154,6 +154,14 @@ interface Identity {
   /** What the authenticating API token may do (#254). Absent for an anonymous
    * caller and for an agent token, neither of which is scope-limited. */
   tokenScope?: ApiTokenScope;
+  /** Which projects the credential may reach (#323). Required, so every branch
+   * of `authenticate` has to say — `UNBOUND` for agents and the legacy key. */
+  binding: CredentialBinding;
+}
+
+/** An anonymous caller has no credential, so nothing narrows it. */
+function bindingOf(identity: Identity | null): CredentialBinding {
+  return identity?.binding ?? UNBOUND;
 }
 
 /**
@@ -212,7 +220,11 @@ async function authenticate(
     const scoped = await resolveApiToken(c.env.DB, token, logger);
     if (scoped.success) {
       c.set?.("telemetryOptOut", scoped.data.user.telemetryOptOut === true);
-      return { userId: scoped.data.user.id, tokenScope: scoped.data.scope };
+      return {
+        userId: scoped.data.user.id,
+        tokenScope: scoped.data.scope,
+        binding: scoped.data.binding,
+      };
     }
     if (scoped.error instanceof RejectedCredentialError) {
       await auditGitAuthFailure(c.env.DB, logger, {
@@ -241,7 +253,7 @@ async function authenticate(
     }
     c.set?.("telemetryOptOut", result.data.telemetryOptOut === true);
     // The legacy credential predates scopes and carries full account power.
-    return { userId: result.data.id, tokenScope: "read_write" };
+    return { userId: result.data.id, tokenScope: "read_write", binding: UNBOUND };
   }
   const result = await getAgentByToken(c.env.DB, token, logger);
   if (!result.success) return null;
@@ -279,7 +291,7 @@ async function authenticate(
   // An agent's git traffic inherits its owner's telemetry choice, matching the
   // way it inherits the owner's access.
   c.set?.("telemetryOptOut", owner.data.telemetryOptOut === true);
-  return { agentId: result.data.id, agentOwnerId: result.data.ownerId };
+  return { agentId: result.data.id, agentOwnerId: result.data.ownerId, binding: UNBOUND };
 }
 
 function basicAuthHeader(artifactsToken: string): string {
@@ -425,8 +437,20 @@ async function authorizeProject(
   const project = projectResult.data;
   const allowed =
     scope === "write"
-      ? await canWriteProject(c.env.DB, project, identity?.userId, identity?.agentOwnerId)
-      : await canReadProject(c.env.DB, project, identity?.userId, identity?.agentOwnerId);
+      ? await canWriteProject(
+          c.env.DB,
+          project,
+          bindingOf(identity),
+          identity?.userId,
+          identity?.agentOwnerId,
+        )
+      : await canReadProject(
+          c.env.DB,
+          project,
+          bindingOf(identity),
+          identity?.userId,
+          identity?.agentOwnerId,
+        );
   if (!allowed) {
     return isAnonymous ? authChallenge() : gitNotFound();
   }
@@ -480,8 +504,20 @@ async function authorizeWorkspace(
 
   const allowed =
     scope === "write"
-      ? await canWriteProject(c.env.DB, project, identity?.userId, identity?.agentOwnerId)
-      : await canReadProject(c.env.DB, project, identity?.userId, identity?.agentOwnerId);
+      ? await canWriteProject(
+          c.env.DB,
+          project,
+          bindingOf(identity),
+          identity?.userId,
+          identity?.agentOwnerId,
+        )
+      : await canReadProject(
+          c.env.DB,
+          project,
+          bindingOf(identity),
+          identity?.userId,
+          identity?.agentOwnerId,
+        );
   if (!allowed) return isAnonymous ? authChallenge() : gitNotFound();
   const scopeRefusal = refuseReadOnlyToken(scope, identity, logger);
   if (scopeRefusal) return scopeRefusal;
@@ -507,6 +543,7 @@ async function authorizeWorkspace(
       c.env.DB,
       project,
       workspace,
+      bindingOf(identity),
       identity?.userId,
       identity?.agentOwnerId,
     );

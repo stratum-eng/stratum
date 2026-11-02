@@ -584,8 +584,10 @@ has its own rule, described with it below.
 #### List Tokens
 `GET /api/users/me/tokens`
 
-Shows each token's name, scope, expiry, `lastUsedAt`, and non-secret prefix.
-The plaintext is never listed again.
+Shows each token's name, scope, expiry, `lastUsedAt`, and non-secret prefix,
+and — for a token bound to a project or organization — a `binding` object
+(`kind`, the target's id, and a readable `label` such as `@alice/web`). An
+account-wide token has no `binding`. The plaintext is never listed again.
 
 #### Create Token
 `POST /api/users/me/tokens`
@@ -598,6 +600,20 @@ The plaintext is never listed again.
 a token that never expires. The plaintext is returned **exactly once**, by this
 call, with `Cache-Control: no-store`. `409 TOKEN_LIMIT_REACHED` past 20 active
 tokens.
+
+To limit the token to one project or one organization's projects, add **one**
+of:
+
+```json
+{ "name": "deploy-bot", "scope": "read_write", "project": "@alice/web" }
+{ "name": "acme-ci", "scope": "read", "org": "acme" }
+```
+
+You must be able to read the project, or be a member of the organization;
+otherwise `404`, exactly as for one that does not exist. Both at once is a
+`400`. A bound token is refused (`403 TOKEN_BINDING_EXCLUDES_ROUTE`) on every
+endpoint outside the project surfaces — see
+[Project and organization binding](/reference/authentication/#project-and-organization-binding).
 
 #### Revoke Token
 `DELETE /api/users/me/tokens/{id}`
@@ -678,6 +694,9 @@ deleted, joined, or left, is recorded in the org's audit log below.
 - `GET /api/orgs/:slug/audit/export` — the same entries as an NDJSON download
 
 Plain members get `403`; non-members get the same `404` as a missing org.
+A token bound to a project or organization is refused with `403
+TOKEN_BINDING_EXCLUDES_ROUTE`, even one bound to this org: reading the audit
+log is org administration, so use a session or an unbound token.
 
 **What lands in an org's trail.** Events about the org itself (creation,
 member added/removed, role changed, teams and team membership, SSO connection
