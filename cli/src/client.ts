@@ -85,17 +85,68 @@ export interface ActivityEvent {
 // the deadline must comfortably exceed a slow LLM + sandbox run.
 const DEFAULT_TIMEOUT_MS = 120_000;
 
+/**
+ * A credential that can be presented and, if the server rejects it, renewed.
+ * A bare string is an API key: presented as-is, never renewable.
+ */
+export interface ClientCredential {
+  token(): Promise<string>;
+  refresh(): Promise<string | null>;
+}
+
+function asCredential(auth: string | ClientCredential): ClientCredential {
+  if (typeof auth !== "string") return auth;
+  return { token: async () => auth, refresh: async () => null };
+}
+
+/** An API error that kept its status code, so callers can act on a 401. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 export class StratumClient {
+  private readonly credential: ClientCredential;
+
   constructor(
     private host: string,
-    private apiKey: string,
+    auth: string | ClientCredential,
     private opts: { timeoutMs?: number } = {},
-  ) {}
+  ) {
+    this.credential = asCredential(auth);
+  }
 
+  /**
+   * One retry, and only on a 401 that a refresh could plausibly fix: an access
+   * token can expire mid-session (they last an hour), and re-running the whole
+   * command is not something a user should have to do for that.
+   */
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const token = await this.credential.token();
+    try {
+      return await this.send<T>(method, path, token, body);
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.status !== 401) throw err;
+      // A refresh that fails for its own reason — the network is down, the host
+      // is unreachable — must surface that reason. Reporting it as the original
+      // 401 sends the user to re-authenticate over a problem login cannot fix.
+      const renewed = await this.credential.refresh().catch((refreshErr: unknown) => {
+        throw refreshErr instanceof Error ? refreshErr : err;
+      });
+      if (renewed === null) throw err;
+      return this.send<T>(method, path, renewed, body);
+    }
+  }
+
+  private async send<T>(method: string, path: string, token: string, body?: unknown): Promise<T> {
     const url = `${this.host.replace(/\/$/, "")}${path}`;
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${this.apiKey}`,
+      Authorization: `Bearer ${token}`,
     };
     if (body !== undefined) headers["Content-Type"] = "application/json";
 
@@ -126,10 +177,22 @@ export class StratumClient {
         } catch {
           message = response.statusText || message;
         }
-        throw new Error(message);
+        throw new ApiError(message, response.status);
       }
 
-      return (await response.json()) as T;
+      // The error path above is already defensive; the success path was not.
+      // A 200 with an empty body (a delete) or an HTML body (a proxy, a captive
+      // portal) otherwise surfaces as a raw `Unexpected token '<'`.
+      const text = await response.text();
+      if (text === "") return undefined as T;
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        throw new ApiError(
+          `${url} returned a non-JSON body (HTTP ${response.status})`,
+          response.status,
+        );
+      }
     } finally {
       clearTimeout(timer);
     }
@@ -252,8 +315,6 @@ export class StratumClient {
     const params = new URLSearchParams();
     if (opts?.force) params.set("force", "true");
     if (opts?.strategy) params.set("strategy", opts.strategy);
-    // params.size needs Node >= 18.16; the serialized string works on every
-    // release the engines field allows.
     const serialized = params.toString();
     const query = serialized ? `?${serialized}` : "";
     return this.request<{

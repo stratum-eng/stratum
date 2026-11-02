@@ -4,19 +4,30 @@ This document explains the new PR-based CI/CD workflow and how to use it effecti
 
 ## Overview
 
-The Stratum project now uses a comprehensive PR-based workflow with automatic staging deployments, integration tests, and manual production approvals.
+The Stratum project uses a PR-based workflow with per-PR preview environments, integration tests, and manual production approvals.
 
-```
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────────┐
-│   Create    │───▶│    Push      │───▶│   Staging   │───▶│  Production  │
-│    PR       │    │   Commits    │    │   Deploy    │    │   Deploy     │
-└─────────────┘    └──────────────┘    └─────────────┘    └──────────────┘
-                                              │                   │
-                                              ▼                   ▼
-                                       ┌──────────────┐    ┌──────────────┐
-                                       │  Automated   │    │   Manual     │
-                                       │    Tests     │    │  Approval    │
-                                       └──────────────┘    └──────────────┘
+Each PR gets its own isolated preview Worker. The shared staging and production
+environments are deployed only from `main`, after the PR merges.
+
+```text
+┌─────────────┐    ┌──────────────┐    ┌─────────────┐
+│   Create    │───▶│    Push      │───▶│   PR        │   per-PR, isolated
+│    PR       │    │   Commits    │    │   Preview   │   (torn down on close)
+└─────────────┘    └──────────────┘    └─────────────┘
+                                              │
+                                              ▼
+                                       ┌──────────────┐
+                                       │  Automated   │
+                                       │    Tests     │
+                                       └──────────────┘
+                                              │
+                                       merge to main
+                                              │
+                                              ▼
+┌─────────────┐    ┌──────────────┐    ┌──────────────┐
+│   Staging   │───▶│    Manual    │───▶│  Production  │
+│   Deploy    │    │   Approval   │    │    Deploy    │
+└─────────────┘    └──────────────┘    └──────────────┘
 ```
 
 ## Creating a Pull Request
@@ -68,13 +79,16 @@ When you create or update a PR, the following happens automatically:
 3. **Unit Tests** - Fast unit test suite
 4. **Integration Tests** - Integration test suite
 5. **Security Scan** - Secret detection and security checks
-6. **Staging Deployment** - Deploy to staging environment
+6. **Preview Environment** - Deploy an isolated preview Worker for this PR
+
+PRs do **not** deploy to the shared staging Worker. See
+[Why PRs don't deploy to staging](#why-prs-dont-deploy-to-staging).
 
 ### PR Comments
 
 The CI will automatically comment on your PR with:
 
-- ✅ Staging deployment URL
+- ✅ Preview environment URL
 - ✅ Test results summary
 - ✅ Links to workflow runs
 
@@ -83,38 +97,63 @@ The CI will automatically comment on your PR with:
 Every push to your PR branch will:
 
 1. Re-run all checks
-2. Update the staging deployment
+2. Update the preview environment
 3. Update the PR comment with new information
 
-## Staging Environment
+## Preview Environment
 
-### Accessing Staging
+### Accessing Your Preview
 
 Once your PR is open, you can access your changes at:
 
+```text
+https://pr-<number>.staging.app.usestratum.dev
 ```
-https://stratum-staging.<subdomain>.workers.dev
-```
 
-The exact URL will be posted as a comment on your PR.
+The exact URL is posted as a comment on your PR. Each preview is a dedicated
+`stratum-pr-<number>` Worker with its own D1 database and KV namespace, and it is
+destroyed when the PR closes.
 
-### Testing on Staging
+### Testing on Your Preview
 
-1. **Manual Testing** - Use the staging URL to manually test your changes
+1. **Manual Testing** - Use the preview URL to manually test your changes
 2. **API Testing** - Test API endpoints with tools like curl or Postman
-3. **Integration Testing** - Run the smoke tests against staging:
+3. **Integration Testing** - Run the smoke tests against it:
 
 ```bash
-STAGING_URL=https://stratum-staging.<subdomain>.workers.dev \
+STAGING_URL=https://pr-<number>.staging.app.usestratum.dev \
   npm run test:smoke
 ```
 
-### Staging Database
+### Why PRs don't deploy to staging
 
-The staging environment uses a separate database:
+PR branches used to run `wrangler deploy --env=staging`, publishing over the
+single shared `stratum-staging` Worker. Cloudflare records the last-applied
+Durable Object migration tag **on the script itself**, so a PR that added a
+migration left staging one tag ahead of `main`. Wrangler could not find that tag
+in `main`'s `wrangler.toml`, assumed it had been deleted, and replayed the whole
+chain from `v1` — which fails on the already-populated `MergeQueue` class:
 
-- **Production**: `stratum` (D1 database)
-- **Staging**: `stratum-staging` (D1 database)
+```text
+Cannot apply new-class migration to class 'MergeQueue' that is already
+depended on by existing Durable Objects [code: 10074]
+```
+
+That red-lined every push to `main`, and with it the production deploy that gates
+on staging. Deploying the shared environments from `main` only keeps their
+migration state a function of `main`'s `wrangler.toml` alone.
+
+`tests/wrangler-migration-chain.test.ts` guards the other half of the rule: a PR
+may append migrations but never remove, rename, reorder, or rewrite one that
+`main` already carries.
+
+### Databases
+
+| Environment | D1 database |
+|-------------|-------------|
+| Production | `stratum` |
+| Staging | `stratum-staging` |
+| PR preview | `stratum-pr-<number>` |
 
 Staging data is isolated from production and may be reset periodically.
 
@@ -128,7 +167,7 @@ Before a PR can be merged to `main`, all checks must pass:
 - ✅ Type check passed
 - ✅ Unit tests passed
 - ✅ Integration tests passed
-- ✅ Staging deployment successful
+- ✅ Preview environment deployed
 - ✅ Security scan passed
 
 ### Merge Process
@@ -210,6 +249,12 @@ STAGING_URL=https://... npm run test:smoke
 1. Check the workflow logs in GitHub Actions
 2. Verify your code compiles: `npm run typecheck`
 3. Check for environment-specific issues (wrangler.toml config)
+
+If the log carries `migration tag "vN", which was not found in your
+wrangler.toml file` followed by error 10074, the deployed script's Durable Object
+migration tag is ahead of the config being deployed. Reconcile the two — land the
+commit that defines the missing tag, rather than deleting tags from
+`wrangler.toml`, which only widens the gap.
 
 ### Tests Pass Locally but Fail in CI
 

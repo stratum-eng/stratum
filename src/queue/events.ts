@@ -31,6 +31,37 @@ export type StratumEvent =
       issueNumber: number;
       title: string;
       changeId?: string;
+    }
+  // Deploy work never travels on this registry — `stratum-deploys` carries it.
+  // These are notifications *about* a deploy, for webhooks and analytics, and a
+  // subscriber that never sees one has lost a notification, not a deployment.
+  | {
+      type: "deployment.requested";
+      project: string;
+      deploymentId: string;
+      name: string;
+      target: string;
+      commit: string;
+      changeId?: string;
+    }
+  | {
+      type: "deployment.succeeded";
+      project: string;
+      deploymentId: string;
+      name: string;
+      target: string;
+      commit: string;
+      url?: string;
+    }
+  | {
+      type: "deployment.failed";
+      project: string;
+      deploymentId: string;
+      name: string;
+      target: string;
+      commit: string;
+      /** Already redacted against the deployment's secret values by the runner. */
+      reason: string;
     };
 
 export interface EventActor {

@@ -291,6 +291,13 @@ export async function getChangeByGitHubBranch(
 }
 
 export interface UpdateChangeStatusOpts {
+  /** The base commit the evaluation actually ran against. Re-evaluation re-pins
+   * it for the same reason it re-pins `evaluatedSha`: the merge gate compares
+   * `change.baseSha` against the current project head under
+   * `merge.requireFreshBase`, so leaving it at its creation-time value means a
+   * re-evaluated change stays STALE_BASE forever and re-evaluation can never
+   * clear it. */
+  baseSha?: string;
   evalScore?: number;
   evalPassed?: boolean;
   evalReason?: string;
@@ -331,6 +338,7 @@ function buildUpdateChangeStatusStatement(
     bindings.push(value);
   };
 
+  addOptional("base_sha", opts?.baseSha);
   addOptional("eval_score", opts?.evalScore);
   addOptional(
     "eval_passed",

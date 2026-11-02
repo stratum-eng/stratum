@@ -10,12 +10,28 @@ import { type Result, err, ok } from "../utils/result";
  */
 export const BACKUP_TABLES: readonly string[] = [
   "users",
+  // Which namespaces each account has ever created a project under (migration
+  // 046). Small, but it is the record that fixes a username; a restore without
+  // it would let an account rename over a namespace its projects still use.
+  "namespace_claims",
+  // After `users`: the list is FK-ordered and api_tokens.user_id references it.
+  // Included rather than excluded (unlike `magic_links`) because a restore that
+  // silently invalidated every API credential is a worse failure than holding
+  // token hashes a backup already carries on `users.token_hash`.
+  "api_tokens",
+  // MCP OAuth (#349), FK-ordered: `oauth_clients` has no parent, and
+  // `oauth_tokens` references both it and `users`. Included for the same reason
+  // as `api_tokens` — these are live credentials held by editors the user has
+  // connected, and a restore that silently disconnected all of them (with no
+  // way to tell the user which) is worse than holding their hashes.
+  "oauth_clients",
+  "oauth_tokens",
   "orgs",
   "agents",
   "teams",
   "org_members",
   "team_members",
-  // SSO/SCIM (migration 041): identities references users; scim_members
+  // SSO/SCIM (migration 049): identities references users; scim_members
   // references org_sso_connections, which references orgs — so this order.
   "identities",
   "org_sso_connections",
@@ -42,6 +58,22 @@ export const BACKUP_TABLES: readonly string[] = [
   "audit_log",
   "deletion_jobs",
   "commit_metrics",
+  // Post-merge deployments (migration 047). `project_secrets` holds the
+  // encrypted provider credentials and is the only copy that exists — the
+  // plaintext was never stored and no route can read one back, so a restore
+  // without it means every deploying project is silently broken until each
+  // token is re-pasted by hand. Both declare no foreign keys, so order is free.
+  //
+  // RESTORE DEPENDENCY: these rows are ciphertext only. They are decryptable
+  // *solely* by the `DEPLOY_SECRET_KEY` in force when they were written — that
+  // key is a Wrangler secret and is NOT in any backup. Restoring these rows
+  // into an instance with a different (or missing) key yields rows that look
+  // present in the UI but fail every deploy with "Could not decrypt project
+  // secret…". Preserve `DEPLOY_SECRET_KEY` alongside the backups, or plan on
+  // every project re-entering its secrets after the restore. See
+  // `docs/runbooks/backup-restore.md`.
+  "project_secrets",
+  "deployments",
 ];
 
 /**
@@ -54,16 +86,17 @@ export const BACKUP_EXCLUDED_TABLES: readonly string[] = [
   // Ephemeral, single-use, short-TTL login tokens (stored hashed). They expire
   // in minutes, so a backup would only ever hold dead rows — nothing to restore.
   "magic_links",
-  // Same story for OIDC login state (migration 041): single-use, 10-minute-TTL
+  // Same story for OIDC login state (migration 049): single-use, 10-minute-TTL
   // rows consumed at callback time; a backup would only ever hold dead rows.
   "oidc_login_states",
   // The backup orchestrator's own per-repo rotation cursor. It describes backup
   // progress, not user data; restoring it into a fresh DB would be meaningless.
   "backup_state",
-  // Transient rebuild alias from migration 037 (widening the verdict CHECK):
-  // renamed to change_reviews within the same migration, so it never exists in
-  // a live database. The real table is covered as change_reviews above.
-  "change_reviews_new",
+  // In-flight OAuth authorization codes (#349): single-use and 60 seconds long.
+  // Every row in a backup is already dead by the time it is written, and a
+  // restored one could not be redeemed even if it weren't. Same reasoning as
+  // `magic_links` above.
+  "oauth_auth_codes",
 ];
 
 const PAGE_SIZE = 500;

@@ -1,12 +1,26 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { cannotMintLegacyCredential } from "../middleware/auth";
+import {
+  MAX_TOKEN_EXPIRY_DAYS,
+  MIN_TOKEN_EXPIRY_DAYS,
+  createApiToken,
+  listApiTokens,
+  revokeApiToken,
+} from "../storage/api-tokens";
 import { recordAudit } from "../storage/audit";
 import { createDeletionJob } from "../storage/deletion-jobs";
-import { getUser, getUserByUsername, markUserDeleting, rotateUserToken } from "../storage/users";
-import type { Env } from "../types";
+import {
+  disableLegacyToken,
+  getUser,
+  getUserByUsername,
+  markUserDeleting,
+  rotateUserToken,
+} from "../storage/users";
+import type { ApiTokenScope, Env } from "../types";
 import { createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
-import { badRequest, internalError, ok } from "../utils/response";
+import { badRequest, internalError, notFound, ok } from "../utils/response";
 import { validateUsername } from "../utils/username-validation";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -62,6 +76,21 @@ app.post("/me/rotate-token", async (c) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
+  // Sessions and the legacy key still rotate — that is the backward
+  // compatibility this route exists to keep. A scoped token or an OAuth grant
+  // may not, because the key it would mint outlives the revocation of the
+  // credential that minted it.
+  if (cannotMintLegacyCredential(c)) {
+    logger.warn("Rotate rejected - delegated credential cannot mint the legacy key", { userId });
+    return c.json(
+      {
+        error: "A scoped API token or OAuth grant cannot rotate the legacy API key",
+        code: "SESSION_REQUIRED",
+      },
+      403,
+    );
+  }
+
   const result = await rotateUserToken(c.env.DB, userId, logger);
   if (!result.success) {
     logger.error("Failed to rotate API key", result.error, { userId });
@@ -76,6 +105,200 @@ app.post("/me/rotate-token", async (c) => {
 
   // The old key is invalid as of this response; the new one is shown once.
   return ok({ token: result.data });
+});
+
+/** A token body is two short strings; anything larger is a client bug. */
+const MAX_TOKEN_BODY_BYTES = 4 * 1024;
+
+/**
+ * Requires a browser SESSION, not an API token (#254).
+ *
+ * A `read_write` token that could mint tokens, revoke its siblings, and rotate
+ * the legacy credential would make the whole feature circular: the "revoke the
+ * lost laptop" story fails if the lost laptop can simply issue itself a
+ * replacement. GitHub forbids PATs from managing PATs for the same reason.
+ *
+ * `POST /me/rotate-token` still accepts the LEGACY key, so existing automation
+ * keeps working, but refuses a scoped token or an OAuth grant: see
+ * `cannotMintLegacyCredential`. The
+ * backward-compatibility argument only ever covered credentials that predate
+ * this feature, and a scoped token minting a permanent key would reopen exactly
+ * the circularity this helper closes.
+ */
+function requireSession(
+  c: Context<{ Bindings: Env }>,
+): { userId: string } | { response: Response } {
+  const userId = c.get("userId");
+  if (!userId) return { response: c.json({ error: "Unauthorized" }, 401) };
+  if (c.get("authVia") !== "session") {
+    return {
+      response: c.json(
+        {
+          error: "Token management requires a signed-in session, not an API token",
+          code: "SESSION_REQUIRED",
+        },
+        403,
+      ),
+    };
+  }
+  return { userId };
+}
+
+// GET /api/users/me/tokens — the caller's tokens. Never returns a hash.
+app.get("/me/tokens", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+    userId: c.get("userId"),
+  });
+
+  const access = requireSession(c);
+  if ("response" in access) return access.response;
+
+  const result = await listApiTokens(c.env.DB, logger, access.userId);
+  if (!result.success) return internalError(result.error.message);
+  return ok({ tokens: result.data });
+});
+
+// POST /api/users/me/tokens — mint a named token. The plaintext is returned
+// exactly once, here, and never stored.
+app.post("/me/tokens", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+    userId: c.get("userId"),
+  });
+
+  const access = requireSession(c);
+  if ("response" in access) return access.response;
+
+  type TokenBody = { name?: unknown; scope?: unknown; expiresInDays?: unknown };
+  const parsed = await readJsonWithLimit<TokenBody>(c, MAX_TOKEN_BODY_BYTES, logger).catch(
+    (): TokenBody => ({}),
+  );
+  if (parsed instanceof Response) return parsed;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return badRequest("Request body must be a JSON object");
+  }
+
+  const { name, scope, expiresInDays } = parsed;
+  if (typeof name !== "string" || name.trim().length === 0 || name.length > 100) {
+    return badRequest("name must be a non-empty string of at most 100 characters");
+  }
+  if (scope !== undefined && scope !== "read" && scope !== "read_write") {
+    return badRequest("scope must be 'read' or 'read_write'");
+  }
+  if (
+    expiresInDays !== undefined &&
+    (typeof expiresInDays !== "number" ||
+      !Number.isInteger(expiresInDays) ||
+      expiresInDays < MIN_TOKEN_EXPIRY_DAYS ||
+      expiresInDays > MAX_TOKEN_EXPIRY_DAYS)
+  ) {
+    return badRequest(
+      `expiresInDays must be an integer between ${MIN_TOKEN_EXPIRY_DAYS} and ${MAX_TOKEN_EXPIRY_DAYS}`,
+    );
+  }
+
+  const result = await createApiToken(c.env.DB, logger, {
+    userId: access.userId,
+    name: name.trim(),
+    // Default to the weaker scope: a caller who does not say what they need
+    // should not be handed the ability to write.
+    scope: (scope ?? "read") as ApiTokenScope,
+    ...(expiresInDays !== undefined ? { expiresInDays } : {}),
+  });
+  if (!result.success) {
+    // A rejected name or expiry is a 400; only the active-token cap is a 409.
+    // Reporting a validation failure as a conflict tells the caller to retry
+    // after freeing a slot, which will never help.
+    if (result.error.statusCode === 400) {
+      return c.json({ error: result.error.message, code: result.error.code }, 400);
+    }
+    if (result.error.statusCode === 409) {
+      return c.json({ error: result.error.message, code: result.error.code }, 409);
+    }
+    return internalError(result.error.message);
+  }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "token.created",
+    actorType: "user",
+    actorId: access.userId,
+    // The token id is the audit subject, matching the settings-form routes —
+    // `subject` is what an audit query filters on; `detail` is not indexed.
+    subject: result.data.token.id,
+    detail: { scope: result.data.token.scope },
+  });
+
+  // The plaintext exists nowhere else after this response, so it must not be
+  // cached anywhere on the way back.
+  return new Response(
+    JSON.stringify({ token: result.data.token, plaintext: result.data.plaintext }),
+    {
+      status: 201,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    },
+  );
+});
+
+// DELETE /api/users/me/tokens/:id — revoke one of the caller's own tokens.
+app.delete("/me/tokens/:id", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+    userId: c.get("userId"),
+  });
+
+  const access = requireSession(c);
+  if ("response" in access) return access.response;
+
+  const tokenId = c.req.param("id");
+  const result = await revokeApiToken(c.env.DB, logger, { userId: access.userId, tokenId });
+  if (!result.success) {
+    // Another user's token id is indistinguishable from one that does not exist.
+    if (result.error.statusCode === 404) return notFound("Token", tokenId);
+    return internalError(result.error.message);
+  }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "token.revoked",
+    actorType: "user",
+    actorId: access.userId,
+    subject: tokenId,
+  });
+  return ok({ revoked: tokenId });
+});
+
+// POST /api/users/me/legacy-token/disable — turn off the pre-scopes credential.
+//
+// Without this, every account that existed before scoped tokens permanently
+// keeps one un-revocable, un-expiring, unnamed read_write credential alongside
+// its scoped ones — leaving this feature's guarantee unavailable to exactly the
+// people who already have accounts.
+app.post("/me/legacy-token/disable", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+    userId: c.get("userId"),
+  });
+
+  const access = requireSession(c);
+  if ("response" in access) return access.response;
+
+  const result = await disableLegacyToken(c.env.DB, access.userId, logger);
+  if (!result.success) return internalError(result.error.message);
+
+  await recordAudit(c.env.DB, logger, {
+    action: "token.legacy_disabled",
+    actorType: "user",
+    actorId: access.userId,
+  });
+  return ok({ disabled: true });
 });
 
 /**

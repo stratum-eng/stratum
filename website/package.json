@@ -1,5 +1,5 @@
 {
-  "name": "@stratum/website",
+  "name": "@stratum-eng/website",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
@@ -7,9 +7,14 @@
   "type": "module",
   "scripts": {
     "sync:openapi": "node -e \"require('fs').copyFileSync('../docs/api/openapi.yml', 'public/openapi.yml')\"",
-    "predev": "npm run sync:openapi",
+    "sync:guides": "node scripts/mirror-docs.mjs",
+    "check:guides": "node scripts/mirror-docs.mjs --check",
+    "sync:skills": "node scripts/emit-agent-skills.mjs",
+    "sync:header": "node scripts/mirror-header.mjs",
+    "check:header": "node scripts/mirror-header.mjs --check",
+    "predev": "npm run sync:openapi && npm run sync:skills && npm run sync:header",
     "dev": "astro dev",
-    "prebuild": "npm run sync:openapi",
+    "prebuild": "npm run sync:openapi && npm run sync:skills && npm run sync:header",
     "build": "astro build && node scripts/emit-markdown.mjs",
     "preview": "astro preview",
     "deploy": "npm run build && wrangler deploy",

@@ -1,26 +1,37 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { importRateLimitMiddleware, releaseImportLock } from "../middleware/rate-limit";
+import {
+  importRateLimitMiddleware,
+  rateLimitMiddleware,
+  releaseImportLock,
+} from "../middleware/rate-limit";
 import { emitEvent } from "../queue/events";
 import { syncOrImportProject } from "../services/project-sync";
 import { recordAudit } from "../storage/audit";
-import { captureDeletionTarget } from "../storage/deletion";
+import { captureDeletionTarget, isTargetDeleting } from "../storage/deletion";
 import { createDeletionJob } from "../storage/deletion-jobs";
 import { listProjectEvents } from "../storage/events";
 import {
+  createBranchRef,
+  deleteBranchRef,
   freshRepoToken,
   getCommitLog,
   importFromGitHub,
   initAndPush,
+  isValidBranchName,
   listFilesInRepo,
+  listRepoBranches,
   listRepoTags,
+  resolveBranchRef,
 } from "../storage/git-ops";
 import { buildAuthConfig, resolveDefaultBranch } from "../storage/git-providers";
 import { finalizeImportSnapshot } from "../storage/import-finalize";
 import {
+  STALLED_THRESHOLD_MS,
   cancelImportJob,
   createImportJob,
   deleteImportJob,
+  deleteImportJobById,
   getImportProgress,
   getLatestImportDepth,
   isImportCancelled,
@@ -28,6 +39,11 @@ import {
   updateImportStatus,
 } from "../storage/imports";
 import { getOrgAccessLevel, getOrgBySlug } from "../storage/orgs";
+import {
+  claimNamespace,
+  confirmOwnerNamespace,
+  releaseNamespaceClaim,
+} from "../storage/project-namespace";
 import { listProvenance } from "../storage/provenance";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { getProjectByPath, listProjectsByNamespace, setProject } from "../storage/state";
@@ -40,14 +56,20 @@ import {
   updateProjectAfterSync,
   updateProjectSyncError,
 } from "../storage/sync";
-import type { ArtifactsCreateResult, Env, ProjectEntry } from "../types";
-import { getArtifactsRepoName, projectDefaultBranch } from "../types";
+import type { ArtifactsCreateResult, Env, ImportStatus, ProjectEntry } from "../types";
+import { getArtifactsRepoName, getUserNamespace, projectDefaultBranch } from "../types";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
-import { canReadProject, filterReadableProjects, isDirectOwner } from "../utils/authz";
+import {
+  canReadProject,
+  canWriteProject,
+  filterReadableProjects,
+  isDirectOwner,
+} from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 import {
+  appError,
   badRequest,
   created,
   forbidden,
@@ -93,11 +115,6 @@ function parseGitHubRepo(url: string): { owner: string; repo: string } | null {
 // Helper to generate project ID
 function generateProjectId(): string {
   return crypto.randomUUID();
-}
-
-// Helper to get user's namespace (username with @ prefix)
-function getUserNamespace(username: string): string {
-  return username.startsWith("@") ? username : `@${username}`;
 }
 
 // POST /projects - Create a new project
@@ -243,10 +260,25 @@ app.post("/", async (c) => {
     visibility,
   };
 
+  // The claim goes into D1 before the KV entry so a username change cannot
+  // slip between the two; see storage/project-namespace.ts.
+  if (owner.type === "user") {
+    const claimed = await claimNamespace(c.env.DB, { ownerId: owner.id, namespace, slug }, logger);
+    if (!claimed.success) return appError(claimed.error);
+  }
+
   const setResult = await setProject(c.env.STATE, project, logger);
   if (!setResult.success) {
     logger.error("Failed to set project", setResult.error);
+    if (owner.type === "user") await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
     return internalError(setResult.error.message);
+  }
+
+  // The username on this request was read at auth time, before the repository
+  // was created; see confirmOwnerNamespace for the rename it may have crossed.
+  if (owner.type === "user") {
+    const confirmed = await confirmOwnerNamespace(c.env, owner.id, project, logger);
+    if (!confirmed.success) return appError(confirmed.error);
   }
 
   logger.info("Project created", {
@@ -640,11 +672,21 @@ app.post(
         importCompleted: false,
       };
 
+      // Claim before the KV write, as project creation does.
+      const claimed = await claimNamespace(c.env.DB, { ownerId: userId, namespace, slug }, logger);
+      if (!claimed.success) return appError(claimed.error);
+
       const setResult = await setProject(c.env.STATE, project, logger);
       if (!setResult.success) {
         logger.error("Failed to set project after import", setResult.error);
+        await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
         return internalError(setResult.error.message);
       }
+
+      // Same guard as project creation. The import job row created above is
+      // never queued in this case; it ages out with cleanupOldImports.
+      const confirmed = await confirmOwnerNamespace(c.env, userId, project, logger);
+      if (!confirmed.success) return appError(confirmed.error);
 
       // Queue the actual import job for background processing using the queue if available
       if (c.env.IMPORT_QUEUE) {
@@ -931,22 +973,27 @@ app.get("/:namespace/:slug/files", async (c) => {
 
   const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
   if (!readToken.success) return internalError(readToken.error.message);
-  const filesResult = await listFilesInRepo(
-    project.remote,
-    readToken.data,
-    logger,
-    projectDefaultBranch(project),
-  );
+
+  const ref = await resolveRequestedRef(c, project, readToken.data, logger);
+  if ("response" in ref) return ref.response;
+
+  const filesResult = await listFilesInRepo(project.remote, readToken.data, logger, ref.branch);
   if (!filesResult.success) {
     logger.error("Failed to list files in repo", filesResult.error);
     return internalError(filesResult.error.message);
   }
 
-  logger.info("Project files listed", { namespace, slug, fileCount: filesResult.data.length });
+  logger.info("Project files listed", {
+    namespace,
+    slug,
+    ref: ref.branch,
+    fileCount: filesResult.data.length,
+  });
   return ok({
     namespace,
     slug,
     path: `/${namespace}/${slug}`,
+    ref: ref.branch,
     files: filesResult.data,
   });
 });
@@ -982,29 +1029,46 @@ app.get("/:namespace/:slug/content", async (c) => {
 
   const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
   if (!readToken.success) return internalError(readToken.error.message);
+
+  const ref = await resolveRequestedRef(c, project, readToken.data, logger);
+  if ("response" in ref) return ref.response;
+
   const contentResult = await getFileContent(
     project.remote,
     readToken.data,
     filePath,
     logger,
-    projectDefaultBranch(project),
+    ref.branch,
   );
   if (!contentResult.success) {
     return internalError(contentResult.error.message);
   }
 
   const result = contentResult.data;
-  logger.info("File content retrieved", { namespace, slug, path: filePath, kind: result.kind });
+  logger.info("File content retrieved", {
+    namespace,
+    slug,
+    path: filePath,
+    ref: ref.branch,
+    kind: result.kind,
+  });
 
   if (result.kind === "not-found") {
     return notFound("File", filePath);
   }
 
   if (result.kind === "content") {
-    return ok({ namespace, slug, path: filePath, kind: "content", value: result.value });
+    return ok({
+      namespace,
+      slug,
+      path: filePath,
+      ref: ref.branch,
+      kind: "content",
+      value: result.value,
+    });
   }
 
-  return ok({ namespace, slug, path: filePath, kind: result.kind });
+  return ok({ namespace, slug, path: filePath, ref: ref.branch, kind: result.kind });
 });
 
 // GET /projects/:namespace/:slug/log - Get commit log
@@ -1036,13 +1100,11 @@ app.get("/:namespace/:slug/log", async (c) => {
   const depth = Number(c.req.query("depth") ?? 20);
   const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
   if (!readToken.success) return internalError(readToken.error.message);
-  const logResult = await getCommitLog(
-    project.remote,
-    readToken.data,
-    logger,
-    depth,
-    projectDefaultBranch(project),
-  );
+
+  const ref = await resolveRequestedRef(c, project, readToken.data, logger);
+  if ("response" in ref) return ref.response;
+
+  const logResult = await getCommitLog(project.remote, readToken.data, logger, depth, ref.branch);
   if (!logResult.success) {
     logger.error("Failed to get commit log", logResult.error);
     return internalError(logResult.error.message);
@@ -1052,12 +1114,14 @@ app.get("/:namespace/:slug/log", async (c) => {
     namespace,
     slug,
     depth,
+    ref: ref.branch,
     commitCount: logResult.data.length,
   });
   return ok({
     namespace,
     slug,
     path: `/${namespace}/${slug}`,
+    ref: ref.branch,
     log: logResult.data,
   });
 });
@@ -1108,6 +1172,386 @@ app.get("/:namespace/:slug/tags", async (c) => {
     truncated: tagsResult.data.truncated,
     totalTagCount: tagsResult.data.totalTagCount,
   });
+});
+
+/**
+ * Longest `POST /branches` body accepted. A branch request is two short
+ * strings; anything larger is a client bug or an attempt to make the parser do
+ * work, and every other JSON route in this codebase caps its body the same way.
+ */
+const MAX_BRANCH_BODY_BYTES = 4 * 1024;
+
+/**
+ * Recovers the branch name from a `DELETE .../branches/*` URL.
+ *
+ * Reads the RAW pathname rather than `c.req.path`, because the two decode
+ * differently: Hono gives route params through `decodeURIComponent` but the
+ * path through `decodeURI`, which leaves `%40` alone. A client that builds the
+ * URL with `encodeURIComponent` — as this codebase's own UI does — therefore
+ * sends `%40alice`, and matching a `/@alice/api/branches/` prefix against the
+ * path finds nothing.
+ *
+ * So each segment is decoded here, and the anchor is the decoded
+ * namespace/slug pair rather than a bare "branches" segment: a project whose
+ * slug IS `branches` would otherwise match the slug and lop the name in half,
+ * while taking the first match keeps a branch legitimately named
+ * `refs/branches/x` intact.
+ *
+ * Decoding per segment also means `%2F` becomes a real `/`, so a client may
+ * send a hierarchical name either way and gets the same branch.
+ */
+function branchNameFromPath(url: string, namespace: string, slug: string): string {
+  let segments: string[];
+  try {
+    segments = new URL(url).pathname.split("/").map(decodeURIComponent);
+  } catch {
+    // A malformed percent-escape cannot name any branch; an empty name is
+    // refused by the caller's validity check.
+    return "";
+  }
+  for (let i = 0; i + 2 < segments.length; i++) {
+    if (segments[i] === namespace && segments[i + 1] === slug && segments[i + 2] === "branches") {
+      return segments.slice(i + 3).join("/");
+    }
+  }
+  return "";
+}
+
+/** Loads a project and confirms the caller may WRITE to it.
+ *
+ * Non-writers get 404, not 403 — the same choice the other project-scoped
+ * sub-resource routers make (`webhooks.ts`, `changes.ts`), so a private
+ * project's existence is not disclosed by the status code. `agentOwnerId` is
+ * passed through: agents are first-class contributors here, and a token
+ * belonging to a writer's agent gets that writer's access.
+ */
+async function requireProjectWriter(
+  c: {
+    env: Env;
+    get: (key: "userId" | "agentOwnerId") => string | undefined;
+    req: { param: (key: string) => string };
+  },
+  logger: Logger,
+): Promise<{ project: ProjectEntry } | { response: Response }> {
+  const namespace = c.req.param("namespace");
+  const slug = c.req.param("slug");
+  const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") {
+      return { response: notFound("Project", `${namespace}/${slug}`) };
+    }
+    logger.error("Failed to get project", projectResult.error);
+    return { response: internalError(projectResult.error.message) };
+  }
+  const project = projectResult.data;
+
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  if (!(await canWriteProject(c.env.DB, project, userId, agentOwnerId))) {
+    return { response: notFound("Project", `${project.namespace}/${project.slug}`) };
+  }
+  // An import still in flight is pushing refs of its own, so the advertisement
+  // a branch write reads is a moving target: the answer would be either "no
+  // default branch yet" or a branch pinned to a tip the import is about to move
+  // past. `importCompleted` is absent on legacy projects; absence means done.
+  if (project.importCompleted === false) {
+    return {
+      response: c409("Project import is still in progress", "IMPORT_IN_PROGRESS"),
+    };
+  }
+  return { project };
+}
+
+/** Maps a branch write refusal onto this API's status codes.
+ *
+ * There is no 422 in `src/utils/errors.ts`; invalid input is a 400 here, as it
+ * is everywhere else in this codebase.
+ */
+function branchWriteFailureResponse(
+  failure: { kind: string; name?: string; startPoint?: string; existing?: string },
+  namespace: string,
+  slug: string,
+): Response {
+  switch (failure.kind) {
+    case "invalid-name":
+      return badRequest(`Invalid branch name: ${failure.name}`);
+    case "exists":
+      return c409(`Branch already exists: ${failure.name}`, "BRANCH_EXISTS");
+    case "conflicts-with":
+      return c409(
+        `Cannot create branch '${failure.name}': it collides with the existing branch '${failure.existing}'. Git stores refs as files, so one name cannot also be a directory containing the other.`,
+        "BRANCH_NAME_CONFLICT",
+      );
+    case "no-default-branch":
+      return c409(
+        `This repository does not advertise its default branch ('${failure.name}'), so there is nothing to branch from.`,
+        "NO_DEFAULT_BRANCH",
+      );
+    case "not-found":
+      return notFound("Branch", `${namespace}/${slug}#${failure.name}`);
+    case "default-branch":
+      return c409(`Cannot delete the default branch: ${failure.name}`, "DEFAULT_BRANCH_PROTECTED");
+    case "bad-start-point":
+      return badRequest(
+        `Start point not found in this repository: ${failure.startPoint}. Use a branch name or a full 40-character commit sha that the repository already contains. Tag names are not accepted.`,
+      );
+    default:
+      return internalError("Branch operation failed");
+  }
+}
+
+/** Who to credit an audited branch write to. An agent token carries its
+ * owner's id, so the acting user is still recorded — the actor TYPE is what
+ * distinguishes the two, and an audit trail that flattened them would lose the
+ * distinction the provenance model exists to keep. */
+function auditActor(c: {
+  get: (key: "userId" | "agentOwnerId") => string | undefined;
+}): { actorType: "user" | "agent"; actorId?: string } {
+  const agentOwnerId = c.get("agentOwnerId");
+  const actorId = c.get("userId") ?? agentOwnerId;
+  return {
+    actorType: agentOwnerId !== undefined ? "agent" : "user",
+    ...(actorId !== undefined ? { actorId } : {}),
+  };
+}
+
+/** A 409 carrying a machine-readable code, matching how the other routers
+ * report conflicts (`{ error, code }` at 409). */
+function c409(message: string, code: string): Response {
+  return new Response(JSON.stringify({ error: message, code }), {
+    status: 409,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * Resolves a read route's `?ref=` query parameter to the branch it should read.
+ *
+ * Absent means the project's default branch, exactly as before this parameter
+ * existed. Present means the ref must actually be a branch on the remote:
+ * there is deliberately no fall back to the default, because serving the
+ * default branch's tree under a URL that names another ref is the precise bug
+ * ref-scoped browsing exists to avoid.
+ *
+ * Costs one ref advertisement (two subrequests) when a ref is given, and
+ * nothing at all when it is not — so the common, unparameterized read is
+ * unchanged.
+ */
+async function resolveRequestedRef(
+  c: { env: Env; req: { query: (key: string) => string | undefined } },
+  project: ProjectEntry,
+  readToken: string,
+  logger: Logger,
+): Promise<{ branch: string } | { response: Response }> {
+  // An empty `ref=` is treated as absent rather than as an invalid name: a GET
+  // form that submits with nothing chosen sends exactly that, and answering a
+  // browser's default submission with a 400 would be a worse contract than
+  // reading it as "no preference".
+  const requested = c.req.query("ref");
+  if (requested === undefined || requested === "") {
+    return { branch: projectDefaultBranch(project) };
+  }
+
+  const resolved = await resolveBranchRef(project.remote, readToken, logger, requested);
+  if (resolved.success) return { branch: resolved.data.name };
+
+  if (!("kind" in resolved.error)) {
+    logger.error("Failed to resolve requested ref", resolved.error);
+    return { response: internalError(resolved.error.message) };
+  }
+  switch (resolved.error.kind) {
+    case "invalid":
+      return { response: badRequest(`Invalid ref: ${resolved.error.name}`) };
+    case "ambiguous":
+      return {
+        response: c409(
+          `Ambiguous ref '${resolved.error.name}': it names both a branch and a tag. Browsing resolves branches only.`,
+          "AMBIGUOUS_REF",
+        ),
+      };
+    default:
+      return {
+        response: notFound("Branch", `${project.namespace}/${project.slug}#${resolved.error.name}`),
+      };
+  }
+}
+
+// GET /projects/:namespace/:slug/branches - List branches (#181).
+// Reads the remote's ref advertisement — two subrequests, no clone — so this
+// endpoint costs the same on a repo with three branches as on one with three
+// thousand. See listRepoBranches for why a clone cannot answer this.
+app.get("/:namespace/:slug/branches", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const { namespace, slug } = c.req.param();
+
+  const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") {
+      return notFound("Project", `${namespace}/${slug}`);
+    }
+    logger.error("Failed to get project", projectResult.error);
+    return internalError(projectResult.error.message);
+  }
+  const project = projectResult.data;
+
+  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+    return notFound("Project", `${project.namespace}/${project.slug}`);
+
+  const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
+  if (!readToken.success) return internalError(readToken.error.message);
+
+  const defaultBranch = projectDefaultBranch(project);
+  const branchesResult = await listRepoBranches(
+    project.remote,
+    readToken.data,
+    logger,
+    defaultBranch,
+  );
+  if (!branchesResult.success) {
+    logger.error("Failed to list branches", branchesResult.error);
+    return internalError(branchesResult.error.message);
+  }
+
+  logger.info("Branches retrieved", {
+    namespace,
+    slug,
+    branchCount: branchesResult.data.branches.length,
+  });
+  return ok({
+    namespace,
+    slug,
+    path: `/${namespace}/${slug}`,
+    defaultBranch,
+    branches: branchesResult.data.branches,
+    truncated: branchesResult.data.truncated,
+    totalBranchCount: branchesResult.data.totalBranchCount,
+  });
+});
+
+// POST /projects/:namespace/:slug/branches - Create a branch (#181).
+// The new ref can only ever point at an object the repository already holds, so
+// this cannot introduce unevaluated content and the change gate is untouched —
+// see createBranchRef, which is where that invariant is enforced.
+app.post("/:namespace/:slug/branches", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const { namespace, slug } = c.req.param();
+  const access = await requireProjectWriter(c, logger);
+  if ("response" in access) return access.response;
+  const { project } = access;
+
+  if (await isTargetDeleting(c.env, project, logger)) {
+    return c409("Project is being deleted", "TARGET_DELETING");
+  }
+
+  type BranchCreateBody = { name?: unknown; startPoint?: unknown };
+  const parsed = await readJsonWithLimit<BranchCreateBody>(c, MAX_BRANCH_BODY_BYTES, logger).catch(
+    (): BranchCreateBody => ({}),
+  );
+  if (parsed instanceof Response) return parsed;
+  // `readJsonWithLimit` returns whatever JSON.parse produced, so a literal
+  // `null` body throws nothing and arrives here — destructuring it is a
+  // TypeError, i.e. a 500 for input that is merely malformed.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return badRequest("Request body must be a JSON object");
+  }
+
+  const { name, startPoint } = parsed;
+  if (!isValidBranchName(name)) {
+    return badRequest("Invalid branch name");
+  }
+  if (startPoint !== undefined && typeof startPoint !== "string") {
+    return badRequest("startPoint must be a string");
+  }
+
+  const writeToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "write", logger);
+  if (!writeToken.success) return internalError(writeToken.error.message);
+
+  const createResult = await createBranchRef(project.remote, writeToken.data, logger, {
+    name,
+    ...(startPoint !== undefined ? { startPoint } : {}),
+    defaultBranch: projectDefaultBranch(project),
+  });
+  if (!createResult.success) {
+    if ("kind" in createResult.error) {
+      return branchWriteFailureResponse(createResult.error, namespace, slug);
+    }
+    logger.error("Failed to create branch", createResult.error);
+    return internalError(createResult.error.message);
+  }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "branch.created",
+    ...auditActor(c),
+    subject: `${project.namespace}/${project.slug}`,
+    detail: { branch: createResult.data.name, oid: createResult.data.oid },
+  });
+
+  return created({ namespace, slug, branch: createResult.data });
+});
+
+// DELETE /projects/:namespace/:slug/branches/* - Delete a branch (#181).
+// Wildcard path so a hierarchical name (`release/2.x`) survives as real path
+// segments. Hono decodes the path with decodeURI, not decodeURIComponent, so a
+// percent-encoded `%2F` stays literal and is refused by the name guard.
+app.delete("/:namespace/:slug/branches/*", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const { namespace, slug } = c.req.param();
+  const access = await requireProjectWriter(c, logger);
+  if ("response" in access) return access.response;
+  const { project } = access;
+
+  if (await isTargetDeleting(c.env, project, logger)) {
+    return c409("Project is being deleted", "TARGET_DELETING");
+  }
+
+  const name = branchNameFromPath(c.req.url, namespace, slug);
+  if (!isValidBranchName(name)) {
+    return badRequest("Invalid branch name");
+  }
+
+  const writeToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "write", logger);
+  if (!writeToken.success) return internalError(writeToken.error.message);
+
+  const deleteResult = await deleteBranchRef(project.remote, writeToken.data, logger, {
+    name,
+    defaultBranch: projectDefaultBranch(project),
+  });
+  if (!deleteResult.success) {
+    if ("kind" in deleteResult.error) {
+      return branchWriteFailureResponse(deleteResult.error, namespace, slug);
+    }
+    logger.error("Failed to delete branch", deleteResult.error);
+    return internalError(deleteResult.error.message);
+  }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "branch.deleted",
+    ...auditActor(c),
+    subject: `${project.namespace}/${project.slug}`,
+    detail: { branch: name },
+  });
+
+  return ok({ namespace, slug, deleted: name });
 });
 
 // GET /projects/:namespace/:slug/provenance - Get provenance records
@@ -1246,10 +1690,13 @@ app.get("/:namespace/:slug/import/status", async (c) => {
     return notFound("Import job", `${namespace}/${slug}`);
   }
 
-  // Check for stalled imports (5 minute threshold)
-  // Note: 'queued' is not included because it's a valid initial state that doesn't indicate progress
-  const STALLED_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
-  if (["cloning", "processing", "syncing"].includes(progressResult.data.status)) {
+  // Check for stalled imports. 'queued' is excluded here because it means the
+  // job has not been picked up yet rather than that it stopped progressing; the
+  // scheduled sweep covers it under a longer grace period. 'cancelling' IS
+  // included (#304): a cancel that the consumer never finished is the exact
+  // state that left projects showing a CANCELLING badge indefinitely, and
+  // `recoverStalledImport` already matches it in SQL — only this guard omitted it.
+  if (["cloning", "processing", "syncing", "cancelling"].includes(progressResult.data.status)) {
     const lastUpdatedAt = new Date(progressResult.data.updatedAt).getTime();
     const elapsedMs = Date.now() - lastUpdatedAt;
 
@@ -1509,6 +1956,90 @@ app.post(
       slug,
       status: "queued",
     });
+  },
+);
+
+/**
+ * Statuses a user may delete. Deliberately narrower than "terminal": a
+ * `completed` job is the record the next sync reads its clone depth from
+ * (`getLatestImportDepth`), so removing it would silently downgrade a
+ * full-history project to a shallow clone.
+ */
+const DELETABLE_IMPORT_STATUSES: readonly ImportStatus[] = ["failed", "cancelled"];
+
+// POST /projects/:namespace/:slug/import/delete - Discard a finished import job
+// so an abandoned failure stops rendering import chrome on the project page (#304).
+app.post(
+  "/:namespace/:slug/import/delete",
+  // A plain per-user limiter, NOT importRateLimitMiddleware: that one takes the
+  // per-project import lock and only the import paths release it, so deleting a
+  // dead job would 429 the user's next import for the lock's full duration —
+  // and clearing a failed import is exactly what someone does right before
+  // retrying. Deleting a terminal row starts no work worth serialising.
+  rateLimitMiddleware({ requestsPerMinute: 20 }),
+  async (c) => {
+    const logger = createLogger({
+      requestId: crypto.randomUUID(),
+      userId: c.get("userId"),
+      path: c.req.path,
+      method: c.req.method,
+    });
+
+    const userId = c.get("userId");
+    const username = c.get("username");
+    if (!userId || !username) return unauthorized("Authentication required");
+
+    const { namespace, slug } = c.req.param();
+    const userNamespace = getUserNamespace(username);
+
+    if (namespace !== userNamespace) {
+      return forbidden("You can only delete imports in your own namespace");
+    }
+
+    const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
+    if (!progressResult.success) {
+      logger.error("Failed to get import progress", progressResult.error);
+      return internalError(progressResult.error.message);
+    }
+
+    if (!progressResult.data) {
+      return notFound("Import job", `${namespace}/${slug}`);
+    }
+
+    const existing = progressResult.data;
+
+    if (!DELETABLE_IMPORT_STATUSES.includes(existing.status)) {
+      // Removing a row the queue consumer still owns would orphan an in-flight
+      // import, so a live job must be cancelled before it can be discarded.
+      return c.json(
+        {
+          error: `Cannot delete an import with status: ${existing.status}. Cancel it first.`,
+        },
+        409,
+      );
+    }
+
+    // Scoped to this job's id, not to namespace+slug: a project accumulates a
+    // row per sync, and wiping them all would take the depth history with it.
+    const deleteResult = await deleteImportJobById(
+      c.env.DB,
+      existing.id,
+      DELETABLE_IMPORT_STATUSES,
+      logger,
+    );
+    if (!deleteResult.success) {
+      logger.error("Failed to delete import job", deleteResult.error);
+      return internalError(deleteResult.error.message);
+    }
+
+    if (!deleteResult.data) {
+      // Either another delete removed the row first, or a retry re-queued it
+      // between the status check above and the delete.
+      return notFound("Import job", `${namespace}/${slug}`);
+    }
+
+    logger.info("Import job deleted", { namespace, slug, importId: existing.id });
+    return ok({ message: "Import deleted", namespace, slug });
   },
 );
 

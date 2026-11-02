@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Env, ImportJobMessage, ImportProgress } from "../src/types";
 import type { Message, MessageBatch } from "../src/types";
 import { AppError } from "../src/utils/errors";
+import { makeSqliteD1 } from "./helpers/sqlite-d1";
 
 // ============================================================================
 // Mocks
@@ -253,7 +254,9 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
       import: vi.fn(),
     } as unknown as Env["ARTIFACTS"],
     STATE: makeKV(),
-    DB: {} as D1Database,
+    // Real schema: the import route records a namespace claim in D1 before it
+    // writes the project.
+    DB: makeSqliteD1().db,
     IMPORT_QUEUE: { send: vi.fn(), sendBatch: vi.fn() } as unknown as Queue,
     ...overrides,
   };

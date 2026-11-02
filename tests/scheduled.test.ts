@@ -8,10 +8,13 @@ import type { Logger } from "../src/utils/logger";
 const noopRunners: JobRunners = {
   "event-sweep": () => Promise.resolve(),
   "deletion-sweep": () => Promise.resolve(),
+  "import-sweep": () => Promise.resolve(),
   backup: () => Promise.resolve(),
   "ttl-sweep": () => Promise.resolve(),
   "project-sync": () => Promise.resolve(),
   "oidc-state-purge": () => Promise.resolve(),
+  "import-cleanup": () => Promise.resolve(),
+  "oauth-code-sweep": () => Promise.resolve(),
 };
 
 describe("jobsForCron", () => {
@@ -23,12 +26,24 @@ describe("jobsForCron", () => {
 
   it("runs housekeeping (no backup) on the 0 6 trigger", () => {
     const jobs = jobsForCron("0 6 * * *");
-    expect(jobs).toEqual(["ttl-sweep", "project-sync", "oidc-state-purge"]);
+    expect(jobs).toEqual(["ttl-sweep", "project-sync", "import-cleanup", "oidc-state-purge"]);
     expect(jobs).not.toContain("backup");
   });
 
-  it("runs the event + deletion sweeps on the */5 trigger", () => {
-    expect(jobsForCron("*/5 * * * *")).toEqual(["event-sweep", "deletion-sweep"]);
+  it("runs the event, deletion and import sweeps on the */5 trigger", () => {
+    expect(jobsForCron("*/5 * * * *")).toEqual([
+      "event-sweep",
+      "deletion-sweep",
+      "import-sweep",
+      "oauth-code-sweep",
+    ]);
+  });
+
+  // #304: a wedged import must reach a terminal state without anyone loading
+  // the project page, so the sweep belongs on the frequent tick, not the daily one.
+  it("sweeps stalled imports frequently rather than once a day", () => {
+    expect(jobsForCron("*/5 * * * *")).toContain("import-sweep");
+    expect(jobsForCron("0 6 * * *")).not.toContain("import-sweep");
   });
 
   it("returns nothing for an unknown cron", () => {
@@ -48,9 +63,10 @@ describe("runScheduledJobs", () => {
   });
 
   it("registers a SEPARATE waitUntil per job (not one batched Promise.all)", () => {
-    // The 06:00 cron has three jobs; each must be its own waitUntil so one failing
-    // job can't reject the others — a single Promise.all would show up as length 1.
-    expect(collect("0 6 * * *")).toHaveLength(3);
+    // The 06:00 cron has four jobs; each must be its own waitUntil so one
+    // failing job can't reject the others — a single Promise.all would show up
+    // as length 1.
+    expect(collect("0 6 * * *")).toHaveLength(4);
   });
 
   it("registers nothing for an unknown cron", () => {

@@ -1,5 +1,5 @@
 import { StratumClient } from "./client.js";
-import { getConfig } from "./config.js";
+import { getConfig, providerFor } from "./config.js";
 
 /**
  * Shared command wrapper: resolves config, runs the action, and converts
@@ -9,7 +9,7 @@ export async function withClient(action: (client: StratumClient) => Promise<void
   let client: StratumClient;
   try {
     const config = await getConfig();
-    client = new StratumClient(config.host, config.apiKey);
+    client = new StratumClient(config.host, providerFor(config));
   } catch (err) {
     process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
     process.exitCode = 1;

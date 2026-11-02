@@ -29,7 +29,7 @@ vi.mock("../src/storage/users", () => ({
   })),
   createUser: vi.fn(),
   getUserByUsername: vi.fn(),
-  upsertGitHubUser: vi.fn(),
+  signInGitHubUser: vi.fn(),
   getUserByToken: vi.fn(),
   getUser: vi.fn(),
   linkGitHub: vi.fn(),

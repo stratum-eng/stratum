@@ -827,7 +827,7 @@ describe("DELETE /Users/:id", () => {
   });
 });
 
-describe("externalId uniqueness per connection (migration 043)", () => {
+describe("externalId uniqueness per connection (migration 051)", () => {
   it("assigning a taken externalId on the same connection is 409 uniqueness", async () => {
     await provision(`alice@${DOMAIN}`, { externalId: "ext-dup" });
     const bob = await provision(`bob@${DOMAIN}`);

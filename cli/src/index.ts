@@ -2,15 +2,16 @@
 import { createInterface } from "node:readline";
 import { Command } from "commander";
 import { parseProjectRef } from "./client.js";
-import { writeConfig } from "./config.js";
+import { clearConfig, readConfig, writeConfig } from "./config.js";
 import { getStagedContent, getStagedFiles } from "./git.js";
+import { assertSecureHost, browserLogin, normalizeHost, revokeToken } from "./oauth.js";
 import { print, withClient } from "./run.js";
 
 const program = new Command();
 
 program
   .name("stratum")
-  .description("CLI for Stratum — code hosting for the AI engineering era")
+  .description("CLI for Stratum — the agent-first code forge")
   .version("0.2.0");
 
 function prompt(question: string): Promise<string> {
@@ -25,37 +26,151 @@ function prompt(question: string): Promise<string> {
 
 // ── login ─────────────────────────────────────────────────────────────────
 
+const DEFAULT_HOST = "https://app.usestratum.dev";
+
+/** A readline prompt in a pipe either hangs or reads EOF; neither is an answer. */
+function isInteractive(): boolean {
+  return process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+
+async function promptHost(): Promise<string> {
+  const answer = await prompt(`Stratum host [${DEFAULT_HOST}]: `);
+  return answer === "" ? DEFAULT_HOST : answer;
+}
+
+/** `login` verifies a key by calling an endpoint every host exposes. */
+async function healthCheck(host: string, apiKey: string): Promise<string | null> {
+  const response = await fetch(`${normalizeHost(host)}/health`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  }).catch((err: unknown) => {
+    return `could not connect to ${host}: ${err instanceof Error ? err.message : String(err)}`;
+  });
+  if (typeof response === "string") return response;
+  if (!response.ok) return `health check failed: HTTP ${response.status}`;
+  return null;
+}
+
 program
   .command("login")
   .description("Authenticate with a Stratum instance")
-  .option("--host <url>", "Stratum host URL")
-  .option("--key <key>", "API key")
-  .action(async (opts: { host?: string; key?: string }) => {
-    const host = opts.host ?? (await prompt("Stratum host (e.g. https://stratum.example.com): "));
-    const apiKey = opts.key ?? (await prompt("API key: "));
-    if (!host || !apiKey) {
-      process.stderr.write("Error: host and key are required\n");
-      process.exitCode = 1;
+  .option("--host <url>", `Stratum host URL (default: ${DEFAULT_HOST})`)
+  .option("--key <key>", "Authenticate with an API token instead of the browser")
+  .option("--read-only", "Request a read-only session")
+  .action(async (opts: { host?: string; key?: string; readOnly?: boolean }) => {
+    // Headless path: an API token, for CI and anywhere without a browser.
+    // Kept explicit — passing --key is how you say "do not open a browser".
+    if (opts.key !== undefined) {
+      try {
+        const resolvedHost = opts.host ?? (isInteractive() ? await promptHost() : DEFAULT_HOST);
+        // An API token never expires on its own, so putting one on a plaintext
+        // wire is strictly worse than doing it with an OAuth grant — which the
+        // browser path already refuses.
+        assertSecureHost(resolvedHost);
+        const failure = await healthCheck(resolvedHost, opts.key);
+        if (failure !== null) {
+          process.stderr.write(`Error: ${failure}\n`);
+          process.exitCode = 1;
+          return;
+        }
+        await writeConfig({ host: resolvedHost, credential: { kind: "apiKey", apiKey: opts.key } });
+        print(`Logged in to ${resolvedHost}`);
+      } catch (err) {
+        // Commander does not await this action, so without a boundary here a
+        // filesystem failure escapes as an unhandled rejection and a raw stack.
+        process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exitCode = 1;
+      }
       return;
     }
-    const response = await fetch(`${host.replace(/\/$/, "")}/health`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    }).catch((err: unknown) => {
+
+    // Without a terminal there is nobody to approve the consent screen, and the
+    // browser flow would burn its five-minute timeout before failing. Say so now
+    // and name the two paths that do work unattended.
+    if (!isInteractive()) {
       process.stderr.write(
-        `Error: could not connect to ${host}: ${err instanceof Error ? err.message : String(err)}\n`,
+        "Error: stratum login needs a terminal to open a browser.\n" +
+          "  Use: stratum login --key <token>  (or set STRATUM_HOST and STRATUM_API_KEY)\n",
       );
       process.exitCode = 1;
-      return null;
-    });
-    if (!response) return;
-    if (!response.ok) {
-      process.stderr.write(`Error: health check failed: HTTP ${response.status}\n`);
-      process.exitCode = 1;
       return;
     }
-    await writeConfig({ host, apiKey });
-    print(`Logged in to ${host}`);
+
+    const host = normalizeHost(opts.host ?? DEFAULT_HOST);
+    // Reuse the client registration from a previous login on this host, so a
+    // user does not collect a new entry under Settings > Connected
+    // applications every time they sign in.
+    const existing = await readConfig();
+    const cachedClientId =
+      existing !== null &&
+      normalizeHost(existing.host) === host &&
+      existing.credential.kind === "oauth"
+        ? existing.credential.clientId
+        : undefined;
+
+    try {
+      const tokens = await browserLogin(host, {
+        cachedClientId,
+        ...(opts.readOnly ? { readOnly: true } : {}),
+        notify: print,
+      });
+      await writeConfig({
+        host,
+        credential: {
+          kind: "oauth",
+          clientId: tokens.clientId,
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
+          expiresAt: tokens.expiresAt,
+          scope: tokens.scope,
+        },
+      });
+      // The GRANTED scope, never the requested one: a server may narrow it, and
+      // hiding that is how `--key` used to let a read-only credential look fine
+      // until the first write failed.
+      print(`Logged in to ${host}${tokens.scope ? ` (scope: ${tokens.scope})` : ""}`);
+    } catch (err) {
+      process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exitCode = 1;
+    }
   });
+
+program
+  .command("logout")
+  .description("Revoke this machine's session and clear stored credentials")
+  .action(async () => {
+    try {
+      await runLogout();
+    } catch (err) {
+      process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exitCode = 1;
+    }
+  });
+
+async function runLogout(): Promise<void> {
+  {
+    const config = await readConfig();
+    if (config === null) {
+      print("Not logged in.");
+      return;
+    }
+    if (config.credential.kind === "oauth") {
+      // Best effort in the strict sense: the local credential is cleared either
+      // way, and even a delivered request proves nothing, because RFC 7009 §2.2
+      // has the server answer 200 whether or not anything matched. So this
+      // reports delivery, never confirmed revocation.
+      const delivered = await revokeToken(config.host, {
+        clientId: config.credential.clientId,
+        token: config.credential.refreshToken,
+      });
+      if (!delivered) {
+        print(`Could not reach ${config.host} to revoke the session — clearing it locally.`);
+        print("Revoke it from Settings > Connected applications when you are back online.");
+      }
+    }
+    await clearConfig();
+    print(`Logged out of ${config.host}`);
+  }
+}
 
 // ── projects ──────────────────────────────────────────────────────────────
 
@@ -374,6 +489,13 @@ program
     withClient(async (client) => {
       const user = await client.me();
       print(`Authenticated as ${user.email} (${user.id})`);
+      // Scope decides whether the next write succeeds, so it belongs in the
+      // answer to "who am I" rather than in a 403 later.
+      const config = await readConfig();
+      if (config?.credential.kind === "oauth") {
+        print(`Host: ${config.host}`);
+        if (config.credential.scope) print(`Scope: ${config.credential.scope}`);
+      }
     }),
   );
 

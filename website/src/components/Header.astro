@@ -1,0 +1,130 @@
+---
+/**
+ * The site header, overriding Starlight's own.
+ *
+ * The docs site and the app are one product, so they get one header: the markup
+ * below mirrors the app's (`src/ui/layout.tsx`) and the styling comes from the
+ * app's stylesheet, mirrored into `src/styles/header.css` by
+ * `scripts/mirror-header.mjs`. Only the docs-specific controls — search, theme,
+ * social links — are extra, and they are sized to sit on the app's chrome
+ * rather than bring their own.
+ */
+import config from 'virtual:starlight/user-config';
+import LanguageSelect from 'virtual:starlight/components/LanguageSelect';
+import Search from 'virtual:starlight/components/Search';
+import SocialIcons from 'virtual:starlight/components/SocialIcons';
+import ThemeSelect from 'virtual:starlight/components/ThemeSelect';
+
+/** Matches Starlight's own Header: no search button when there is no search. */
+const shouldRenderSearch =
+	config.pagefind || config.components.Search !== '@astrojs/starlight/components/Search.astro';
+
+const APP_ORIGIN = 'https://app.usestratum.dev';
+// The wordmark is the product's, not this site's: it goes to the marketing site,
+// the way the app's own wordmark goes to the app. The docs home is reachable from
+// the sidebar's "Overview" entry.
+const SITE_ORIGIN = 'https://usestratum.dev';
+---
+
+<nav class="nav">
+	<a class="nav-brand" href={SITE_ORIGIN} translate="no">stratum</a>
+	<div class="nav-auth">
+		{shouldRenderSearch && <div class="nav-search print:hidden"><Search /></div>}
+		<div class="nav-icons sl-hidden md:sl-flex print:hidden"><SocialIcons /></div>
+		<div class="nav-selects sl-hidden md:sl-flex print:hidden">
+			<ThemeSelect />
+			<LanguageSelect />
+		</div>
+		<a class="nav-auth-link" href={`${APP_ORIGIN}/auth/login`}>sign in</a>
+	</div>
+</nav>
+
+<style>
+	/*
+	 * Starlight's header wrapper carries the padding, background, and hairline
+	 * that `.nav` brings with it from the app. Hand those over so the two sites
+	 * are not stacking two headers' worth of chrome; the wrapper keeps only its
+	 * fixed positioning and `--sl-nav-height` (set to the app's nav height in
+	 * theme.css). These rules are unlayered, so they win over `starlight.core`
+	 * without needing to out-specify it.
+	 */
+	:global(header.header) {
+		padding: 0;
+		border-bottom: 0;
+		background-color: transparent;
+	}
+
+	.nav {
+		height: 100%;
+		flex-wrap: nowrap;
+	}
+
+	/*
+	 * Below 50rem the sidebar's menu button is fixed over the header's trailing
+	 * edge, so the header has to reserve room for it — the same calculation
+	 * Starlight applies to its own wrapper.
+	 */
+	:global(:root[data-has-sidebar]) .nav {
+		padding-inline-end: calc(var(--sl-nav-gap) + var(--sl-nav-pad-x) + var(--sl-menu-button-size));
+	}
+
+	@media (min-width: 50rem) {
+		:global(:root[data-has-sidebar]) .nav {
+			padding-inline-end: 1.5rem;
+		}
+	}
+
+	/*
+	 * The docs-only controls, sized to the app's 1.75rem link row. Below 50rem
+	 * the icons and selects are hidden here and rendered in the mobile menu
+	 * instead, which is what Starlight's own header does.
+	 */
+	.nav-icons,
+	.nav-selects {
+		align-items: center;
+		gap: 0.75rem;
+	}
+
+	.nav-search {
+		display: flex;
+		align-items: center;
+		min-width: 0;
+	}
+
+	.nav-search :global(button[data-open-modal]) {
+		height: 1.75rem;
+		width: auto;
+		max-width: 14rem;
+		gap: 0.4rem;
+		border-radius: 4px;
+		border-color: var(--border);
+		background-color: var(--sl-color-bg);
+		padding-inline: 0.5rem;
+		font-family: var(--font-mono);
+		font-size: 0.9rem;
+		color: var(--text-muted);
+	}
+
+	.nav-search :global(button[data-open-modal]:hover) {
+		border-color: var(--accent-text);
+		color: var(--text-primary);
+	}
+
+	.nav-icons :global(a) {
+		color: var(--accent-text);
+		padding: 0.25rem;
+		margin: 0;
+	}
+
+	.nav-selects :global(label) {
+		color: var(--accent-text);
+		font-family: var(--font-mono);
+		font-size: 0.9rem;
+	}
+
+	.nav-selects :global(select) {
+		padding-block: 0.25rem;
+		font-family: var(--font-mono);
+		font-size: 0.9rem;
+	}
+</style>

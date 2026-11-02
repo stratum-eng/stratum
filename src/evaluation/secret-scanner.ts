@@ -51,6 +51,15 @@ const SECRET_PATTERNS = [
   { name: "Azure Storage Account Key", pattern: /AccountKey=[A-Za-z0-9+/=]{40,}/ },
   { name: "Stratum User Token", pattern: /stratum_user_[a-f0-9]{32}/ },
   { name: "Stratum Agent Token", pattern: /stratum_agent_[a-f0-9]{32}/ },
+  // Every credential the MCP OAuth server mints (#349), in one pattern: the
+  // access token (`stratum_mcp_`), its refresh token (`stratum_mcprt_`), an
+  // authorization code (`stratum_mcpac_`), and a confidential client's secret
+  // (`stratum_mcpcs_`). The infixes are disjoint from the bare `mcp` arm, so
+  // each shape matches exactly one alternative.
+  {
+    name: "Stratum MCP OAuth Credential",
+    pattern: /stratum_mcp(?:rt|ac|cs)?_[a-f0-9]{32}/,
+  },
 ];
 
 /**

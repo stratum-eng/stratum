@@ -27,6 +27,12 @@
 ## Checklist
 
 - [ ] Tests added or updated for the change (coverage thresholds still pass)
-- [ ] Docs updated where the change makes them inaccurate
+- [ ] A `changelog.d/<slug>.md` fragment added if this is user-visible (not a direct
+      `CHANGELOG.md` edit — see `changelog.d/README.md`)
+- [ ] Public docs updated if this changes user-facing config, API shape, or evaluator/policy
+      behavior — edit the canonical page under `docs/user-guide/` or `docs/api/`, then
+      `cd website && npm run sync:guides` and commit the regenerated mirrors (see AGENTS.md)
 - [ ] No secrets, tokens, or personal data committed
 - [ ] The web UI change (if any) stays server-rendered with no client-side JavaScript
+- [ ] I have read the [CLA](https://github.com/stratum-eng/stratum/blob/main/CLA.md) and agree
+      to it for this contribution

@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { disableUser, enableUser, getUser, getUserByToken } from "../src/storage/users";
+import {
+  disableUser,
+  enableUser,
+  getUser,
+  getUserByToken,
+  signInGitHubUser,
+} from "../src/storage/users";
 import type { Logger } from "../src/utils/logger";
 import { makeSqliteD1, makeThrowingD1 } from "./helpers/sqlite-d1";
 
@@ -117,5 +123,60 @@ describe("disableUser / enableUser", () => {
     const fetched = await getUserByToken(db, plaintext, mockLogger);
     expect(fetched.success).toBe(true);
     if (fetched.success) expect(fetched.data.disabledAt).toBeDefined();
+  });
+});
+
+describe("signInGitHubUser with a frozen account", () => {
+  function githubIdOf(raw: ReturnType<typeof makeSqliteD1>["raw"], id: string): string | null {
+    const row = raw.prepare("SELECT github_id FROM users WHERE id = ?").get(id) as {
+      github_id: string | null;
+    };
+    return row.github_id;
+  }
+
+  it("returns a disabled account matched by email WITHOUT linking the GitHub id", async () => {
+    const { db, raw } = makeSqliteD1();
+    seedUser(raw, "usr_1");
+    await disableUser(db, "usr_1", mockLogger);
+
+    const result = await signInGitHubUser(
+      db,
+      { githubId: "4242", email: "usr_1@example.com", username: "gh-usr" },
+      mockLogger,
+    );
+
+    // Returned (so the callback can refuse it) but never linked: a link would
+    // hand the frozen row a working GitHub login the moment it is re-enabled.
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data?.disabledAt).toBeDefined();
+    expect(githubIdOf(raw, "usr_1")).toBeNull();
+  });
+
+  it("does not link onto a deleting account either", async () => {
+    const { db, raw } = makeSqliteD1();
+    seedUser(raw, "usr_1");
+    raw
+      .prepare("UPDATE users SET deleting_at = ? WHERE id = 'usr_1'")
+      .run("2026-01-01T00:00:00.000Z");
+
+    await signInGitHubUser(
+      db,
+      { githubId: "4243", email: "usr_1@example.com", username: "gh-usr" },
+      mockLogger,
+    );
+    expect(githubIdOf(raw, "usr_1")).toBeNull();
+  });
+
+  it("still links an enabled account matched by verified email", async () => {
+    const { db, raw } = makeSqliteD1();
+    seedUser(raw, "usr_1");
+
+    const result = await signInGitHubUser(
+      db,
+      { githubId: "4244", email: "usr_1@example.com", username: "gh-usr" },
+      mockLogger,
+    );
+    expect(result.success).toBe(true);
+    expect(githubIdOf(raw, "usr_1")).toBe("4244");
   });
 });

@@ -595,8 +595,27 @@ async function processSyncJob(
       return;
     }
 
-    // Update status to syncing
-    await updateImportStatus(env.DB, namespace, slug, "syncing", logger, "Syncing repository");
+    // #304: this write silently failed for every sync until migration 043 —
+    // 'syncing' was missing from the status CHECK constraint, so the row kept
+    // its previous status (usually 'queued') and the job read as never having
+    // been picked up. A failure here must not abort a working sync, but it must
+    // not be invisible either: an unwritable status label is what makes a job
+    // look wedged to both the UI and the stall sweep.
+    const syncingStatusResult = await updateImportStatus(
+      env.DB,
+      namespace,
+      slug,
+      "syncing",
+      logger,
+      "Syncing repository",
+    );
+    if (!syncingStatusResult.success) {
+      logger.error("Failed to record 'syncing' status; continuing with sync", undefined, {
+        namespace,
+        slug,
+        error: syncingStatusResult.error.message,
+      });
+    }
 
     // #190: sync is an INCREMENTAL fetch into the existing Artifacts repo, never
     // a delete-and-re-import — re-importing destroyed Stratum-native commits and

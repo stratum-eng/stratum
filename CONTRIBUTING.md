@@ -1,7 +1,7 @@
 # Contributing to Stratum
 
-Thanks for your interest in contributing! Stratum is a code-collaboration platform for the AI
-engineering era, where both humans and AI agents are first-class contributors. This guide covers
+Thanks for your interest in contributing! Stratum is the open-source, agent-first code
+forge, where both humans and AI agents are first-class contributors. This guide covers
 how to set up, make changes, and get them merged.
 
 > Working with an AI coding agent? Point it at [`AGENTS.md`](AGENTS.md) — it's the agent-facing
@@ -73,11 +73,54 @@ token.**
   Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
   ```
 
+## Changelog & releases
+
+Every user-visible change gets one new file under [`changelog.d/`](changelog.d/README.md), in the
+same PR — not a direct edit to `CHANGELOG.md`'s `## [Unreleased]` section, which is how two PRs
+end up editing the same lines. Use a [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+group (`Breaking`, `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`). That text
+becomes the release notes verbatim, so write it for someone deciding whether to upgrade.
+
+Releases are cut from the changelog with `npm run release:prepare` and published by the
+**Release** workflow. Maintainers: see
+[`docs/developer/releasing.md`](docs/developer/releasing.md).
+
+## Documentation
+
+User-facing and API docs live in [`docs/`](docs/). The public subset is also
+published at [docs.usestratum.dev](https://docs.usestratum.dev/) from
+[`website/`](website/) — but those pages are **generated**:
+`website/scripts/mirror-docs.mjs` renders them from `docs/user-guide/` and
+`docs/api/`. Edit the copy under `docs/`, then regenerate and commit the
+mirrors in the same PR; a direct edit under `website/src/content/docs/` is
+overwritten by the next sync.
+
+```bash
+cd website
+npm run sync:guides    # regenerate the mirrors, then commit them
+npm run check:guides   # exit 1 if they are stale — this is what CI runs
+```
+
+If your change alters behaviour a doc describes, update the doc in the same PR.
+See [`docs/README.md`](docs/README.md) for the full layout and conventions.
+
 ## Reporting bugs & requesting features
 
 Use the [issue templates](.github/ISSUE_TEMPLATE/). For anything security-related, **do not open a
 public issue** — follow [`SECURITY.md`](SECURITY.md).
 
-## License
+## License and the CLA
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+Stratum is licensed by directory — [AGPL-3.0-or-later](LICENSE) for the server and
+everything not listed otherwise, [Apache-2.0](cli/LICENSE) for `cli/` and `agent/`, and MIT
+for the published agent skills under `website/public/.well-known/agent-skills/`.
+[`LICENSING.md`](LICENSING.md) is authoritative and explains why each is where it is.
+
+Your contribution goes out under the license of the directory it lands in. Beyond that,
+opening a pull request means agreeing to the [Contributor License Agreement](CLA.md), which
+the pull request template asks you to confirm. You keep your copyright; the agreement grants
+the maintainer the right to license your contribution under other terms as well, which is
+what makes a commercial license for Stratum possible. Read it once — it is short, and it is
+the Apache ICLA with the names changed.
+
+Contributions merged before 2026-09-05 were made under the MIT License and stay that way.

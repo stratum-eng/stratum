@@ -110,7 +110,10 @@ vi.mock("../src/storage/users", () => {
       return { success: true, data: user };
     }),
 
-    upsertGitHubUser: vi.fn(async (_db, opts, _logger) => {
+    // Mirrors production: matches, links — and creates nothing. A GitHub
+    // identity with no account comes back as null so the callback parks it for
+    // the (invite-gated) username form.
+    signInGitHubUser: vi.fn(async (_db, opts, _logger) => {
       const users = getMockUsers();
       // Check if user exists by GitHub ID first
       for (const user of users.values()) {
@@ -122,29 +125,18 @@ vi.mock("../src/storage/users", () => {
       // Check if user exists by email
       const existingByEmail = users.get(`email:${opts.email}`);
       if (existingByEmail) {
+        // Never link onto a frozen account; return it unlinked so the callback
+        // refuses the sign-in.
+        if (existingByEmail.disabledAt || existingByEmail.deletingAt) {
+          return { success: true, data: existingByEmail };
+        }
         // Link GitHub to existing user
         existingByEmail.githubId = opts.githubId;
         existingByEmail.githubUsername = opts.username;
         return { success: true, data: existingByEmail };
       }
 
-      // Create new user
-      const counter = incrementMockUserIdCounter();
-      const user: User = {
-        id: `usr_${counter.toString(36)}`,
-        email: opts.email,
-        username: opts.username.toLowerCase().replace(/[^a-z0-9]/g, ""),
-        githubId: opts.githubId,
-        githubUsername: opts.username,
-        tokenHash: `hash_${counter}`,
-        createdAt: new Date().toISOString(),
-      };
-
-      users.set(`email:${user.email}`, user);
-      users.set(`username:${user.username}`, user);
-      users.set(`id:${user.id}`, user);
-
-      return { success: true, data: user };
+      return { success: true, data: null };
     }),
     getUserByToken: vi.fn(),
     getUser: vi.fn(),
@@ -1457,6 +1449,9 @@ describe("Auth Signup/Login Integration Tests", () => {
       );
 
       expect(res.status).toBe(302);
+      // A first-time GitHub identity is asked to choose a username before an
+      // account exists (tests/oauth-signup.test.ts covers the rest).
+      expect(res.headers.get("location")).toBe("/auth/signup/complete");
 
       // Restore fetch
       vi.restoreAllMocks();
@@ -1502,8 +1497,8 @@ describe("Auth Signup/Login Integration Tests", () => {
       expect(res.status).toBe(422);
       const body = (await res.json()) as { error: string };
       expect(body.error).toContain("No verified email");
-      const { upsertGitHubUser } = await import("../src/storage/users");
-      expect(upsertGitHubUser).not.toHaveBeenCalled();
+      const { signInGitHubUser } = await import("../src/storage/users");
+      expect(signInGitHubUser).not.toHaveBeenCalled();
       const { createSession } = await import("../src/storage/sessions");
       expect(createSession).not.toHaveBeenCalled();
       expect(res.headers.get("set-cookie") ?? "").not.toContain("stratum_session");
@@ -1542,6 +1537,8 @@ describe("Auth Signup/Login Integration Tests", () => {
     });
 
     it("persists an identities row on a verified GitHub sign-in", async () => {
+      const { createUser } = await import("../src/storage/users");
+      await createUser(env.DB, "github@example.com", {} as unknown as Logger, "githubuser");
       mockGitHubFetch({ id: 12345, login: "testuser" }, [
         { email: "github@example.com", primary: true, verified: true },
       ]);
@@ -1549,8 +1546,9 @@ describe("Auth Signup/Login Integration Tests", () => {
       const res = await githubCallback("identity-row-state");
 
       expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/");
       const created = mockUsers.get("email:github@example.com");
-      if (!created) throw new Error("expected the callback to create an account");
+      if (!created) throw new Error("seed failed");
       expect(upsertIdentity).toHaveBeenCalledWith(env.DB, expect.anything(), {
         userId: created.id,
         provider: "github",
@@ -1571,8 +1569,8 @@ describe("Auth Signup/Login Integration Tests", () => {
       const res = await githubCallback("mixed-emails-state");
 
       expect(res.status).toBe(302);
-      const { upsertGitHubUser } = await import("../src/storage/users");
-      expect(upsertGitHubUser).toHaveBeenCalledWith(
+      const { signInGitHubUser } = await import("../src/storage/users");
+      expect(signInGitHubUser).toHaveBeenCalledWith(
         env.DB,
         expect.objectContaining({ email: "verified@example.com" }),
         expect.anything(),
@@ -1593,8 +1591,8 @@ describe("Auth Signup/Login Integration Tests", () => {
 
       expect(res.status).toBe(302);
       expect(res.headers.get("location")).toBe("/");
-      const { upsertGitHubUser } = await import("../src/storage/users");
-      expect(upsertGitHubUser).toHaveBeenCalledWith(
+      const { signInGitHubUser } = await import("../src/storage/users");
+      expect(signInGitHubUser).toHaveBeenCalledWith(
         env.DB,
         expect.objectContaining({ email: "cased@example.com" }),
         expect.anything(),
@@ -1635,7 +1633,7 @@ describe("Auth Signup/Login Integration Tests", () => {
       vi.restoreAllMocks();
     });
 
-    it("beta gate: an unmatched user with a verified email is redirected to invite_required", async () => {
+    it("beta gate: an unmatched user with a verified email is parked for the invite-gated form", async () => {
       const gateEnv = makeEnv({
         ...env,
         BETA_GATE: "1",
@@ -1655,19 +1653,22 @@ describe("Auth Signup/Login Integration Tests", () => {
       );
 
       expect(res.status).toBe(302);
-      expect(res.headers.get("location")).toBe("/auth/signup?error=invite_required");
-      const { upsertGitHubUser } = await import("../src/storage/users");
-      expect(upsertGitHubUser).not.toHaveBeenCalled();
+      // Nothing is created here; /auth/signup/complete demands the invite code.
+      expect(res.headers.get("location")).toBe("/auth/signup/complete");
+      expect(res.headers.get("set-cookie") ?? "").not.toContain("stratum_session");
+      expect(mockUsers.get("email:brandnew@example.com")).toBeUndefined();
 
       vi.restoreAllMocks();
     });
 
-    it("ignores a next query param on the callback (always redirects home)", async () => {
+    it("drops an off-origin next on the callback (redirects home)", async () => {
+      const { createUser } = await import("../src/storage/users");
+      await createUser(env.DB, "github@example.com", {} as unknown as Logger, "githubuser");
       mockGitHubFetch({ id: 12345, login: "testuser" }, [
         { email: "github@example.com", primary: true, verified: true },
       ]);
 
-      const res = await githubCallback("next-param-state", "&next=%2Fdashboard");
+      const res = await githubCallback("next-param-state", "&next=%2F%2Fevil.com");
 
       expect(res.status).toBe(302);
       expect(res.headers.get("location")).toBe("/");
@@ -2021,8 +2022,9 @@ describe("Auth Signup/Login Integration Tests", () => {
     });
 
     it("GitHub callback refuses a disabled account matched by email WITHOUT linking github_id", async () => {
-      // The refusal must come before upsertGitHubUser: linking a GitHub id
-      // onto the frozen row would hand it a working credential at re-enable.
+      // signInGitHubUser must not link a GitHub id onto the frozen row — that
+      // would hand it a working credential at re-enable (the storage-level
+      // guard is covered in tests/users-disable.test.ts).
       const user = await seedDisabledUser("disabled-nolink@example.com", "disablednolink");
       expect(user.githubId).toBeUndefined();
 
@@ -2055,8 +2057,7 @@ describe("Auth Signup/Login Integration Tests", () => {
 
       expect(res.status).toBe(302);
       expect(res.headers.get("location")).toBe("/auth/login?error=account_disabled");
-      const { upsertGitHubUser } = await import("../src/storage/users");
-      expect(upsertGitHubUser).not.toHaveBeenCalled();
+      expect(res.headers.get("set-cookie") ?? "").not.toContain("stratum_session");
       expect(user.githubId).toBeUndefined();
 
       vi.restoreAllMocks();

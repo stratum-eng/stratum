@@ -7,8 +7,7 @@ vi.mock("../src/storage/users", () => ({
   createUser: vi.fn(),
   getUser: vi.fn(),
   getUserByEmail: vi.fn(),
-  getUserByGitHubId: vi.fn(),
-  upsertGitHubUser: vi.fn(),
+  signInGitHubUser: vi.fn(),
 }));
 
 vi.mock("../src/storage/sessions", () => ({
@@ -168,7 +167,7 @@ describe("Google OAuth", () => {
     expect(createUser).not.toHaveBeenCalled();
   });
 
-  it("creates a new account when the email is unknown", async () => {
+  it("asks a new identity to choose a username instead of creating an account", async () => {
     const app = makeApp();
     const env = makeEnv({ STATE: makeKv({ "oauth_state:goodstate": "1" }) });
 
@@ -186,23 +185,6 @@ describe("Google OAuth", () => {
       success: false,
       error: new Error("not found") as never,
     });
-    vi.mocked(createUser).mockResolvedValue({
-      success: true,
-      data: {
-        user: {
-          id: "usr_new",
-          email: "new@example.com",
-          username: "new",
-          tokenHash: "h",
-          createdAt: "",
-        },
-        plaintext: "stratum_user_x",
-      },
-    });
-    vi.mocked(createSession).mockResolvedValue({
-      success: true,
-      data: { id: "sess_2", userId: "usr_new", expiresAt: "2099-01-01T00:00:00.000Z" },
-    });
 
     const res = await app.fetch(
       new Request("http://localhost/auth/google/callback?code=ok&state=goodstate", {
@@ -211,7 +193,11 @@ describe("Google OAuth", () => {
       env,
     );
     expect(res.status).toBe(302);
-    expect(createUser).toHaveBeenCalledWith(env.DB, "new@example.com", expect.any(Object));
+    expect(res.headers.get("Location")).toBe("/auth/signup/complete");
+    expect(res.headers.get("Set-Cookie")).toContain("stratum_pending_signup=");
+    // The account does not exist until its owner has named it (tests/oauth-signup.test.ts).
+    expect(createUser).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
   });
 
   it("refuses a disabled account before minting a session (no session.created audit)", async () => {

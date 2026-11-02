@@ -31,6 +31,7 @@ function makeEvent(overrides: Partial<EventRecord> = {}): EventRecord {
     id: "evt_1",
     type: "change.merged",
     project: "my-project",
+    projectId: "proj_my_project",
     actorType: "user",
     actorId: "user_1",
     payload: { changeId: "chg_1", commit: "abc" },
@@ -46,6 +47,7 @@ describe("webhook storage", () => {
     const { db } = makeWebhooksD1();
     const result = await createWebhook(db, mockLogger, {
       project: "p",
+      projectId: "proj_p",
       url: "https://example.com/hook",
       createdBy: "user_1",
     });
@@ -74,10 +76,7 @@ describe("webhook storage", () => {
     });
 
     // Delivery for alice's project must only find alice's webhook.
-    const forAlice = await listWebhooks(db, mockLogger, "api", {
-      activeOnly: true,
-      projectId: "proj_alice",
-    });
+    const forAlice = await listWebhooks(db, mockLogger, "proj_alice", { activeOnly: true });
     expect(forAlice.success).toBe(true);
     if (!forAlice.success) return;
     expect(forAlice.data).toHaveLength(1);
@@ -98,19 +97,42 @@ describe("webhook storage", () => {
     };
 
     // Same id → owned.
-    expect(webhookBelongsToProject(base, { id: "proj_alice", name: "api" })).toBe(true);
+    expect(webhookBelongsToProject(base, { id: "proj_alice" })).toBe(true);
     // A different project that merely shares the name must NOT own it (the leak).
-    expect(webhookBelongsToProject(base, { id: "proj_bob", name: "api" })).toBe(false);
-    // Legacy row with no project_id falls back to the name.
+    expect(webhookBelongsToProject(base, { id: "proj_bob" })).toBe(false);
+    // #235 step 3: a legacy row with no project_id belongs to NO project — it is
+    // no longer name-matched into whichever tenant happens to share the name.
     const legacy: Webhook = { ...base, projectId: undefined };
-    expect(webhookBelongsToProject(legacy, { id: "proj_bob", name: "api" })).toBe(true);
-    expect(webhookBelongsToProject(legacy, { id: "proj_bob", name: "other" })).toBe(false);
+    expect(webhookBelongsToProject(legacy, { id: "proj_alice" })).toBe(false);
+    expect(webhookBelongsToProject(legacy, { id: "proj_bob" })).toBe(false);
+  });
+
+  it("#235: a legacy row with a NULL project_id is neither listed nor delivered to", async () => {
+    const { db, webhooks } = makeWebhooksD1();
+    // A row as the pre-migration-025 schema left it: named, but unstamped.
+    webhooks.push({
+      id: "wh_legacy",
+      project: "api",
+      project_id: null,
+      url: "https://legacy.example.com/hook",
+      secret: "stm_whsec_legacy",
+      events: "*",
+      active: 1,
+      created_by: "alice",
+      created_at: new Date().toISOString(),
+    });
+
+    const listed = await listWebhooks(db, mockLogger, "proj_api");
+    expect(listed.success).toBe(true);
+    if (!listed.success) return;
+    expect(listed.data).toHaveLength(0);
   });
 
   it("lists, toggles, and deletes webhooks", async () => {
     const { db, deliveries } = makeWebhooksD1();
     const created = await createWebhook(db, mockLogger, {
       project: "p",
+      projectId: "proj_p",
       url: "https://example.com/hook",
       createdBy: "user_1",
     });
@@ -119,12 +141,12 @@ describe("webhook storage", () => {
     const id = created.data.id;
 
     await setWebhookActive(db, mockLogger, id, false);
-    const activeOnly = await listWebhooks(db, mockLogger, "p", { activeOnly: true });
+    const activeOnly = await listWebhooks(db, mockLogger, "proj_p", { activeOnly: true });
     expect(activeOnly.success).toBe(true);
     if (!activeOnly.success) return;
     expect(activeOnly.data).toHaveLength(0);
 
-    const all = await listWebhooks(db, mockLogger, "p");
+    const all = await listWebhooks(db, mockLogger, "proj_p");
     expect(all.success).toBe(true);
     if (!all.success) return;
     expect(all.data).toHaveLength(1);
@@ -142,7 +164,7 @@ describe("webhook storage", () => {
       created_at: new Date().toISOString(),
     });
     await deleteWebhook(db, mockLogger, id);
-    const afterDelete = await listWebhooks(db, mockLogger, "p");
+    const afterDelete = await listWebhooks(db, mockLogger, "proj_p");
     expect(afterDelete.success).toBe(true);
     if (!afterDelete.success) return;
     expect(afterDelete.data).toHaveLength(0);
@@ -194,6 +216,7 @@ describe("deliverEventToWebhooks", () => {
     const { db, deliveries } = makeWebhooksD1();
     const created = await createWebhook(db, mockLogger, {
       project: "my-project",
+      projectId: "proj_my_project",
       url: "https://example.com/hook",
       events,
       createdBy: "user_1",
@@ -243,6 +266,41 @@ describe("deliverEventToWebhooks", () => {
     expect(deliveries[1]?.error).toContain("connection refused");
   });
 
+  it("#235: skips delivery entirely for an event carrying no project_id", async () => {
+    const { env, deliveries } = await setup();
+    fetchMock.mockResolvedValue(new Response("ok", { status: 200 }));
+
+    // A legacy outbox row: named, but never stamped with the canonical id.
+    // Resolving it by name would deliver to whichever same-named project
+    // matched, across namespaces — so nothing is delivered at all.
+    await deliverEventToWebhooks(env, makeEvent({ projectId: undefined }), mockLogger);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(deliveries).toHaveLength(0);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      "Skipping webhook delivery for an event with no project_id",
+      expect.objectContaining({ eventId: "evt_1", project: "my-project" }),
+    );
+  });
+
+  it("#235: does not deliver to a same-named project in another namespace", async () => {
+    const { db, deliveries } = makeWebhooksD1();
+    await createWebhook(db, mockLogger, {
+      project: "my-project",
+      projectId: "proj_other_tenant",
+      url: "https://other.example.com/hook",
+      createdBy: "bob",
+    });
+    const env = { DB: db } as unknown as Env;
+    fetchMock.mockResolvedValue(new Response("ok", { status: 200 }));
+
+    // The event names the same project string but a different canonical id.
+    await deliverEventToWebhooks(env, makeEvent(), mockLogger);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(deliveries).toHaveLength(0);
+  });
+
   it("skips webhooks whose event filter does not match", async () => {
     const { env } = await setup("change.rejected");
     await deliverEventToWebhooks(env, makeEvent(), mockLogger);
@@ -273,11 +331,13 @@ describe("deliverEventToWebhooks", () => {
     const { db, deliveries } = makeWebhooksD1();
     await createWebhook(db, mockLogger, {
       project: "my-project",
+      projectId: "proj_my_project",
       url: "https://bad.example.com/hook",
       createdBy: "u",
     });
     await createWebhook(db, mockLogger, {
       project: "my-project",
+      projectId: "proj_my_project",
       url: "https://good.example.com/hook",
       createdBy: "u",
     });

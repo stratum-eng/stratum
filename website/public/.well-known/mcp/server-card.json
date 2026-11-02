@@ -2,27 +2,26 @@
   "name": "stratum",
   "title": "Stratum",
   "description": "Gives any MCP-capable agent or editor the full evaluation-gated change flow: read files, fork workspaces, commit, open changes with each gate's verdict returned, review, merge, and track issues.",
-  "version": "0.1.0",
-  "documentation": "https://docs.usestratum.dev/guides/getting-started/",
+  "version": "0.2.0",
+  "documentation": "https://docs.usestratum.dev/guides/mcp/",
   "repository": "https://github.com/stratum-eng/stratum",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "transport": {
-    "type": "stdio",
-    "command": "node",
-    "args": ["/path/to/stratum/mcp/dist/index.js"],
-    "env": {
-      "STRATUM_API_KEY": "<user or agent token>",
-      "STRATUM_HOST": "https://app.usestratum.dev"
-    }
+    "type": "streamable-http",
+    "url": "https://app.usestratum.dev/mcp"
   },
   "authentication": {
-    "type": "bearer",
-    "description": "Stratum user token (stratum_user_...) or agent token (stratum_agent_...), passed via the STRATUM_API_KEY environment variable.",
+    "type": "oauth2",
+    "description": "OAuth 2.1 with dynamic client registration and PKCE. Register at /oauth/register, then authorize in a browser; no credential needs to be configured in advance. Headless callers may instead send a Stratum user token (stratum_user_...) or agent token (stratum_agent_...) as a bearer token.",
+    "authorization_servers": ["https://app.usestratum.dev"],
+    "protected_resource_metadata": "https://app.usestratum.dev/.well-known/oauth-protected-resource",
+    "scopes_supported": ["mcp:read", "mcp:write"],
     "documentation": "https://docs.usestratum.dev/reference/authentication/"
   },
   "constraints": [
     "Agent tokens can never approve a change. Reviews are human-only on every surface, with no configuration that relaxes it.",
-    "Merges are rejected when a required evaluator is failing, approvals are short, or the workspace advanced after evaluation."
+    "Merges are rejected when a required evaluator is failing, approvals are short, or the workspace advanced after evaluation.",
+    "OAuth grants cannot reach the admin API, and cannot mint the legacy API key, regardless of the scope granted."
   ],
   "tools": [
     "stratum_whoami",

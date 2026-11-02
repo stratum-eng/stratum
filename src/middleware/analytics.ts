@@ -1,6 +1,8 @@
 import type { MiddlewareHandler } from "hono";
 import { routePath } from "hono/route";
-import { createPostHogClient } from "../analytics/posthog";
+import { surfaceForRoute } from "../analytics/events";
+import { trackerForRequest } from "../analytics/tracker";
+import { isPostHogProxyPath } from "../routes/posthog-proxy";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
 
@@ -11,6 +13,11 @@ export const analyticsMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (
   await next();
   const path = c.req.path;
   if (path === "/health") return;
+  // The analytics proxy must not measure itself. `surfaceForRoute` returns
+  // "ui" for any unmatched route, so without this every browser event would
+  // also produce a server `api_request` counted as a page view — recursive
+  // telemetry inflating the exact figure it exists to report.
+  if (isPostHogProxyPath(path)) return;
   // Unmatched routes are overwhelmingly internet scanners probing for
   // /.env, /.git/config, and the like — noise, not product traffic.
   if (c.res.status === 404) return;
@@ -22,7 +29,15 @@ export const analyticsMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (
   // the concrete path — namespaces, repo slugs, change ids, and file paths
   // must not leave the process. Route patterns are source-code literals, so
   // they carry no request data by construction.
-  const route = routePath(c, -1);
+  // `routePath(c)` defaults to `c.req.routeIndex`, the handler that actually
+  // answered this request. It was previously `routePath(c, -1)`, which returns
+  // the last *registered* route matching the path — and `uiRouter`'s
+  // `/:namespace/:slug` catch-all is mounted last, so it shadowed every earlier
+  // route. `/auth/signup`, `/settings` and `/new` were all reported as
+  // `/:namespace/:slug`, which is why that pattern dominates the route
+  // breakdown. Both are source-code literals, so this was never a privacy
+  // issue — only an accuracy one.
+  const route = routePath(c);
 
   logger.debug("Recording analytics", {
     method: c.req.method,
@@ -33,27 +48,16 @@ export const analyticsMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (
     agentId,
   });
 
-  const distinctId = userId ?? agentId ?? "server";
-  const client = createPostHogClient(c.env);
-  const capture = client.capture({
-    event: "api_request",
-    distinctId,
-    properties: {
-      method: c.req.method,
-      route,
-      status: c.res.status,
-      latency_ms: latency,
-      // Unattributed events would otherwise accrete on a shared "server"
-      // person profile; capture them personless instead.
-      ...(distinctId === "server" ? { $process_person_profile: false } : {}),
-    },
+  // The caller's opt-out (#257) is enforced inside the tracker, which cannot be
+  // built without resolving it. Deliberately *after* the debug log above: that
+  // log stays in the operator's own Workers logs and never leaves the instance,
+  // whereas the tracker governs export to a third party.
+  trackerForRequest(c).capture("api_request", {
+    method: c.req.method,
+    route,
+    status: c.res.status,
+    latency_ms: latency,
+    surface: surfaceForRoute(route),
+    actor_type: userId ? "user" : agentId ? "agent" : "anonymous",
   });
-  try {
-    const ctx = c.executionCtx;
-    if (ctx?.waitUntil) {
-      ctx.waitUntil(capture);
-    }
-  } catch {
-    capture.catch(() => undefined);
-  }
 };

@@ -2,7 +2,7 @@
 
 Welcome to the Stratum documentation. This directory contains comprehensive guides for users, developers, and API consumers.
 
-The public-facing subset (user guide and API reference) is also published as a docs site built from [`website/`](../website/) — when editing those pages here, mirror the change in `website/src/content/docs/` (the OpenAPI spec needs no mirroring; the site build copies `api/openapi.yml` automatically).
+The public-facing subset (user guide and API reference) is also published as a docs site built from [`website/`](../website/) — the site's guide and reference pages are generated from this directory by `website/scripts/mirror-docs.mjs`, so edit here and never by hand under `website/src/content/docs/` (see [Keeping the two trees in sync](#keeping-the-two-trees-in-sync)).
 
 ## Documentation Structure
 
@@ -20,16 +20,20 @@ docs/
 │   ├── errors.md                       # Error codes reference
 │   └── endpoints/                      # Endpoint documentation
 │       ├── README.md                   # Overview
-│       ├── projects.md                 # Project API
+│       ├── projects.md                 # Projects, branches, browsing, import
 │       ├── workspaces.md               # Workspace API
-│       ├── changes.md                  # Changes API
+│       ├── changes.md                  # Change lifecycle, merge, GitHub promotion
+│       ├── reviews.md                  # Comment threads and review verdicts
+│       ├── issues.md                   # Issue tracker API
 │       ├── agents.md                   # Agents API
-│       ├── users.md                    # Users API
+│       ├── users.md                    # Profile, account deletion, API tokens
 │       └── organizations.md            # Organizations API
 ├── user-guide/                         # User Documentation
 │   ├── README.md                       # User guide overview
 │   ├── getting-started.md              # First steps tutorial
 │   ├── importing.md                    # GitHub import guide
+│   ├── code-review.md                  # Comment threads and review verdicts
+│   ├── issues.md                       # The built-in issue tracker
 │   ├── ci-integration.md               # Bring-your-own-CI guide
 │   ├── troubleshooting.md              # Problem solving
 │   └── faq.md                          # Frequently asked questions
@@ -47,7 +51,8 @@ docs/
 │   ├── 003-d1-for-import-state.md
 │   ├── 004-high-frequency-agent-commits.md
 │   ├── 005-git-smart-http-proxy.md
-│   └── 006-ssh-transport.md
+│   ├── 006-ssh-transport.md
+│   └── 007-sandbox-evaluator-threat-model.md
 ├── research/                           # Research notes
 │   ├── github-alternatives-pain-points.md
 │   ├── master-plan-alignment.md
@@ -77,7 +82,9 @@ docs/
 1. [User Guide Overview](user-guide/README.md)
 2. [Getting Started](user-guide/getting-started.md)
 3. [Importing from GitHub](user-guide/importing.md)
-4. [CI Integration (Bring Your Own CI)](user-guide/ci-integration.md)
+4. [Code Review](user-guide/code-review.md)
+5. [Issues](user-guide/issues.md)
+6. [CI Integration (Bring Your Own CI)](user-guide/ci-integration.md)
 
 **Help:**
 - [Troubleshooting](user-guide/troubleshooting.md)
@@ -93,7 +100,10 @@ docs/
 - [Projects](api/endpoints/projects.md)
 - [Workspaces](api/endpoints/workspaces.md)
 - [Changes](api/endpoints/changes.md)
+- [Reviews and Comments](api/endpoints/reviews.md)
+- [Issues](api/endpoints/issues.md)
 - [Agents](api/endpoints/agents.md)
+- [Users](api/endpoints/users.md)
 
 **Reference:**
 - [Error Codes](api/errors.md)
@@ -118,32 +128,46 @@ docs/
 - [ADR 004: High-Frequency Agent Commits to a Shared Repo](adr/004-high-frequency-agent-commits.md)
 - [ADR 005: Native `git push` via a Smart-HTTP Proxy](adr/005-git-smart-http-proxy.md)
 - [ADR 006: SSH Transport for Git](adr/006-ssh-transport.md)
+- [ADR 007: Sandbox Evaluator Threat Model and Time Budget](adr/007-sandbox-evaluator-threat-model.md)
 
 **Historical Reference:**
 - [Archived Documents](archive/README.md) - Code reviews, audits, etc.
 
 ## Documentation Status
 
-"Last Updated" is the date of the last substantive commit touching the document. The table was last refreshed in full on 2026-08-18; individual rows are updated as their documents change, so a row may be newer than that. "Outline" means the document exists but is a short stub that needs to be fleshed out.
+"Last Updated" is the date of the last substantive commit touching the document.
+Refreshed in full on 2026-08-31. "Outline" means the document exists but is a
+short stub that needs to be fleshed out.
 
 | Document | Status | Priority | Last Updated |
 |----------|--------|----------|--------------|
 | ROADMAP.md (Open work) | ✅ Complete | Critical | 2026-08-29 |
-| API OpenAPI Spec | ✅ Complete | High | 2026-08-18 |
-| API Authentication | 🚧 Outline | High | 2026-06-17 |
-| API Endpoints | 🚧 Outline | High | 2026-07-19 |
-| API Errors | 🚧 Outline | Medium | 2026-06-16 |
-| User Guide - Getting Started | ✅ Complete | High | 2026-08-18 |
-| User Guide - Importing | 🚧 Outline | High | 2026-06-16 |
-| User Guide - Troubleshooting | 🚧 Outline | Medium | 2026-06-16 |
-| User Guide - FAQ | ✅ Complete | Medium | 2026-08-18 |
-| Developer - Architecture | ✅ Complete | High | 2026-08-18 |
-| Developer - Local Setup | 🚧 Outline | High | 2026-06-17 |
-| Developer - Database | 🚧 Outline | High | 2026-06-16 |
-| Developer - Queues | 🚧 Outline | Medium | 2026-06-16 |
-| Developer - Testing | 🚧 Outline | Medium | 2026-06-16 |
-| Developer - Deployment | ✅ Complete | Medium | 2026-08-07 |
-| ADRs (001-006) | ✅ Complete | Low | 2026-08-25 |
+| CHANGELOG.md | ✅ Complete | High | 2026-08-31 |
+| API OpenAPI Spec | ✅ Complete | High | 2026-08-31 |
+| API Authentication | ✅ Complete | High | 2026-08-31 |
+| API Endpoints - Projects | ✅ Complete | High | 2026-08-31 |
+| API Endpoints - Changes | ✅ Complete | High | 2026-08-31 |
+| API Endpoints - Reviews | ✅ Complete | High | 2026-08-31 |
+| API Endpoints - Issues | ✅ Complete | High | 2026-08-31 |
+| API Endpoints - Users | ✅ Complete | High | 2026-08-31 |
+| API Endpoints - Workspaces | 🚧 Outline | Medium | 2026-08-25 |
+| API Endpoints - Agents | 🚧 Outline | Medium | 2026-08-25 |
+| API Endpoints - Organizations | 🚧 Outline | Medium | 2026-08-25 |
+| API Errors | ✅ Complete | Medium | 2026-08-31 |
+| User Guide - Getting Started | ✅ Complete | High | 2026-08-31 |
+| User Guide - Importing | ✅ Complete | High | 2026-08-31 |
+| User Guide - Code Review | ✅ Complete | High | 2026-08-31 |
+| User Guide - Issues | ✅ Complete | High | 2026-08-31 |
+| User Guide - CI Integration | ✅ Complete | High | 2026-08-31 |
+| User Guide - Troubleshooting | ✅ Complete | Medium | 2026-08-31 |
+| User Guide - FAQ | ✅ Complete | Medium | 2026-08-31 |
+| Developer - Architecture | ✅ Complete | High | 2026-08-31 |
+| Developer - Deployment | ✅ Complete | Medium | 2026-08-31 |
+| Developer - Local Setup | 🚧 Outline | High | 2026-08-29 |
+| Developer - Database | 🚧 Outline | High | 2026-08-25 |
+| Developer - Queues | 🚧 Outline | Medium | 2026-08-25 |
+| Developer - Testing | 🚧 Outline | Medium | 2026-08-25 |
+| ADRs (001-007) | ✅ Complete | Low | 2026-08-31 |
 
 **Legend:** ✅ Complete | 🚧 Outline / In Progress | 📋 Planned
 
@@ -179,83 +203,60 @@ docs/
 4. Request review
 5. Deploy with code
 
-## Hosting/Publishing
+## Hosting and publishing
 
-### Options
+The public subset of these docs is already published at
+**[docs.usestratum.dev](https://docs.usestratum.dev/)** — an Astro Starlight
+site built from [`website/`](../website/) and served by a Cloudflare Worker
+(`website/wrangler.toml`). The Worker exists to add agent-discovery `Link`
+headers and Markdown content negotiation; the pages themselves are static.
 
-1. **GitHub Pages** (Recommended)
-   - Free hosting
-   - Version controlled
-   - Integrated with repo
+Two workflows drive it:
 
-2. **ReadTheDocs**
-   - Better search
-   - Versioning support
-   - PDF generation
+- `.github/workflows/docs.yml` — builds on every PR touching `website/**` or
+  `docs/**`, and deploys on push to `main`.
+- `.github/workflows/deploy-docs.yml` — a manual `workflow_dispatch` deploy,
+  guarded to `main` and sharing a concurrency group with the above so the two
+  cannot race.
 
-3. **Vercel**
-   - Fast CDN
-   - Preview deployments
-   - Custom domains
+The OpenAPI spec needs no mirroring: `npm run sync:openapi` copies
+`docs/api/openapi.yml` into the site's `public/` on every build.
 
-4. **Cloudflare Pages**
-   - Native to stack
-   - Fast globally
-   - Integrated with Workers
+### Keeping the two trees in sync
 
-### Setup for GitHub Pages
+The user guide and API reference exist twice — here, and as Starlight pages
+under `website/src/content/docs/`. **The copies under `docs/` are canonical**;
+the website copies are mirrors that differ only in frontmatter and link style
+(site-absolute `/guides/…` links between published pages, `github.com` links for
+repo files the site does not publish).
 
-```yaml
-# .github/workflows/docs.yml
-name: Deploy Documentation
+You do not mirror by hand. `website/scripts/mirror-docs.mjs` regenerates the
+website copies from these files:
 
-on:
-  push:
-    branches: [main]
-    paths: [docs/**]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Setup Node
-        uses: actions/setup-node@v3
-        
-      - name: Install dependencies
-        run: npm install -g @redocly/cli
-        
-      - name: Build docs
-        run: |
-          mkdir -p _site
-          cp -r docs/* _site/
-          redocly build-docs docs/api/openapi.yml -o _site/api/index.html
-          
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./_site
+```bash
+cd website
+npm run sync:guides    # regenerate the mirrors, then commit them
+npm run check:guides   # exit 1 if any mirror is stale, without writing
 ```
 
-## Documentation Gaps
+Edit the copy under `docs/`, never the one under `website/src/content/docs/` —
+the next `sync:guides` overwrites a direct edit there. Run `sync:guides` and
+commit the result in the same PR as the `docs/` change.
 
-### Known Gaps
+The mirrors are **committed, not generated at build time**: a build that wrote
+into tracked source files would leave every builder with a dirty tree. Instead
+`.github/workflows/docs.yml` watches `docs/**` and runs `check:guides` before it
+builds, so a `docs/` change that was not mirrored fails CI rather than deploying
+a silently stale page.
 
-1. **UI Screenshots** - Web UI documentation lacks visual guides
-2. **Video Tutorials** - No video walkthroughs yet
-3. **Interactive API Explorer** - OpenAPI spec exists but no hosted explorer
-4. **Changelog** - No formal changelog documentation
-5. **Migration Guides** - No guides for migrating from other platforms
-
-### Planned Additions
-
-1. **CLI Documentation** - When CLI tool is built
-2. **Advanced Topics** - Performance tuning, scaling
-3. **Case Studies** - Real-world usage examples
-4. **API SDKs** - Client library documentation
-5. **Contributing Guide** - Detailed contribution guidelines
+To publish a **new** page: add the canonical file (`docs/user-guide/` for a
+guide, `docs/api/` for a reference page), add a `[slug, description]` entry to
+the matching list in `mirror-docs.mjs` — `GUIDES` for a guide, `REFERENCE` for
+an API reference page, since a page missing from both is simply not mirrored —
+then add it to the
+`sidebar` in `website/astro.config.mjs`, and add it to `PAGES` in
+`website/public/webmcp.js` (a test asserts that list covers every published
+page) and to the documentation list in `website/public/index.md`.
 
 ## Feedback
 
@@ -278,11 +279,12 @@ Found an issue with the documentation? Please:
 
 ### Versioning
 
-When Stratum reaches 1.0:
+Releases are changelog-driven: see [CHANGELOG.md](../CHANGELOG.md) and the
+[release process](developer/releasing.md). When Stratum reaches 1.0:
 - Maintain versioned docs
-- Keep changelog
 - Archive old versions
 
 ## License
 
-Documentation is licensed under the same MIT license as the project.
+Documentation is licensed under the same terms as the code it documents —
+[AGPL-3.0-or-later](../LICENSE). See [`LICENSING.md`](../LICENSING.md).

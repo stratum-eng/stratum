@@ -183,10 +183,14 @@ describe("backup snapshot passes the project's default branch to the clone", () 
     // change that silently drops `ref` fails here. `includeTags` arrived with
     // tag-aware backups (#182) — backups must capture tags, so it belongs in
     // the expectation rather than being loosened away with objectContaining.
+    // `timeoutMs` is backup's explicit override of cloneRepo's 30s default
+    // (#332) — a full-history + tags clone of a large repo legitimately
+    // needs more than the request-path budget.
     expect(vi.mocked(cloneRepo).mock.calls[0]?.[3]).toEqual({
       fullHistory: true,
       ref: "trunk",
       includeTags: true,
+      timeoutMs: 300_000,
     });
   });
 });

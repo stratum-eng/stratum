@@ -26,10 +26,14 @@ been complete since 2026-06-11.
 | 4 (code) | Audit trail, backup/restore, deletion jobs, gated `git push` (ADR 005), security hardening |
 
 What remains is Phase 4's **operational** half — the work required to run Stratum as a
-hosted, multi-tenant service — plus engineering debt and one feature gap. None of it blocks
-single-tenant self-hosted usage.
+hosted, multi-tenant service — plus engineering debt and the feature gaps below. None of it
+blocks single-tenant self-hosted usage.
 
-## Operational / scale (Stratum Cloud)
+Post-merge deployments shipped on 2026-09-04 (`deploys:` in `.stratum/policy.yaml`,
+targeting Cloudflare and Vercel). What that first version deliberately left out is tracked
+under [Deployments](#deployments).
+
+## Operational / scale (hosted, multi-tenant service)
 
 - [ ] **Load testing** — validate 1000+ concurrent workspaces per repo; establish latency
       and error budgets before any public hosting.
@@ -62,11 +66,50 @@ single-tenant self-hosted usage.
 
 ### Publish the client packages to npm
 
-- [ ] `@stratum/cli`, `@stratum/mcp`, and `@stratum/agent` all live in this repo at full API
-      parity, but none are published, so consumers must build from source. Publishing needs a
-      release workflow, provenance attestation, and a version policy across the three.
+- [ ] `@stratum-eng/cli` and `@stratum-eng/agent` both live in this repo at full API parity, but
+      neither is published, so consumers must build from source. Publishing needs a release
+      workflow, provenance attestation, and a version policy across the two. (The MCP
+      server no longer needs publishing at all — it is served by the Worker at `/mcp`.)
 
 ## Feature gaps
+
+### Deployments
+
+Post-merge deploys ship; what follows is what the first version left out. Ordered by how
+much each unblocks — the build step gates everything below it, because until a deploy can
+build, the set of projects this serves stays small. Rationale for each in
+[`docs/REMAINING_WORK.md`](docs/REMAINING_WORK.md#deployments).
+
+- [ ] **A build step.** v1 deploys the tree *as committed*, so it serves static sites,
+      single-file Workers, and `vercel` (which builds the uploaded source remotely) — not
+      the median project that runs `npm run build` first. The design is already drawn: build
+      in a sandbox with **no credentials** and egress denied, then let the Worker upload the
+      artifact, so the untrusted step and the credentialed step stay apart. Two
+      prerequisites: enable the `[[sandboxes]]` binding (still commented out in
+      `wrangler.toml`, so nothing that executes code runs on any deploy today), and replace
+      `materializeTree`'s file-by-file base64 write with a `git clone` inside the sandbox.
+- [ ] **Deployment status that reflects the provider.** A `vercel` row reads `succeeded`
+      when Vercel has only *accepted* the upload; a deploy that later fails to build still
+      reads green. Needs a non-terminal state completed by polling or a provider webhook.
+- [ ] **Rollback.** Retrying an earlier successful commit is the only recovery today, and it
+      rebuilds rather than reverting. Both Cloudflare and Vercel can promote a previous
+      deployment by id, so storing that id turns rollback into one API call.
+- [ ] **Environments and promotion.** `deploys:` is a flat list of names. The model people
+      expect is staging → production, where production is a *promotion* of an artifact that
+      already passed staging, gated by an approval an agent cannot supply. Every piece
+      exists — the approval gate, the deployment record, the audit trail, the
+      agents-cannot-approve invariant — except the environment as a first-class object and a
+      "what is live where" view.
+- [ ] **Preview deploys for unmerged changes.** The most-requested and the most dangerous:
+      it publishes agent-authored code that no human has approved. Needs the build step
+      first and a **separate preview-scoped credential**, never the production token behind
+      a flag.
+- [ ] **Netlify target.** The provider interface takes it; nobody has written it.
+- [ ] **Operational gaps.** A batch merge (`changes/merge-batch`) triggers neither the
+      post-merge check nor a deploy. Outbox recovery fires when a failed enqueue is
+      *observed*, so an isolate that dies between the status write and the send still strands
+      a `queued` row that nothing reclaims — a stale-queued sweep would close it. Rotating
+      `DEPLOY_SECRET_KEY` makes every stored secret undecryptable with no re-encryption path.
 
 ### Git LFS support
 
@@ -84,8 +127,13 @@ single-tenant self-hosted usage.
 
 ### Merge conflict resolution for changes
 
-- [ ] A conflicting three-way merge falls back to a squash merge; there is no interactive
-      conflict resolution for changes. (GitHub *sync* conflicts do have a resolution UI.)
+- [ ] A conflicting three-way merge is **refused**, not silently squashed: the merge answers
+      `409 MERGE_CONFLICT` with a `conflictId`, and the conflicting paths where they are
+      known (isomorphic-git's `MergeNotSupportedError` shapes carry no file list, so
+      `conflictingFiles` is empty for those). What is missing is
+      an interactive way to resolve one for a *change* — resolution today is the out-of-band
+      `POST /api/projects/conflicts/{id}/resolve` (`accept-project`, `accept-workspace`, or
+      `manual`). (GitHub *sync* conflicts do have a resolution UI.)
 
 ## Explicitly not planned
 

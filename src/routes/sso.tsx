@@ -21,6 +21,7 @@ import {
 } from "../storage/sso";
 import { createUser, getUser, getUserByEmail } from "../storage/users";
 import type { Env, User } from "../types";
+import { SourceFooter } from "../ui/components/source-footer";
 import { SSO_SECRET_SALT, constantTimeEqual, decryptToken } from "../utils/crypto";
 import { NotFoundError } from "../utils/errors";
 import { type Logger, createLogger } from "../utils/logger";
@@ -404,6 +405,7 @@ function renderPickerPage(
             </div>
           </div>
         </main>
+        <SourceFooter />
       </body>
     </html>,
     status,

@@ -87,15 +87,161 @@ const LFS_BATCH_RESPONSE_MARKERS = ["batch response", "/info/lfs/objects/batch"]
  * the ORDER of these branches is load-bearing, and order is exactly what a
  * rendering test cannot see.
  */
+/**
+ * Spans that carry a repository's own name into an error message: a URL, or
+ * git's scp-style `user@host:path` remote. Removed before classification so a
+ * repository called `oauth-server` or `fetch-utils` cannot decide how its
+ * failure is described.
+ */
+const REMOTE_SPAN = /\b[a-z][a-z0-9+.-]*:\/\/\S+|\b[\w.-]+@[\w.-]+:\S+/gi;
+
+/**
+ * Fully-qualified ref spans, removed for the same reason as {@link REMOTE_SPAN}:
+ * a ref is named by whoever pushed it, so `refs/heads/401` must not be read as
+ * an HTTP status and `refs/heads/disk-cleanup` must not be read as a storage
+ * failure. A ref name is not inside a URL, so remote-stripping alone never
+ * reached these.
+ *
+ * Only the `refs/...` form is removed here; a bare branch name is handled by
+ * {@link MISSING_REF_SPAN}, which needs git's phrasing to recognise one.
+ */
+const REF_SPAN = /\brefs\/(?:heads|tags|remotes)\/\S+/gi;
+
+/**
+ * git's own wording for a ref the remote does not have. Shared by the stripper
+ * below and the not-found branch, so a phrase can never be taught to one and
+ * not the other.
+ */
+const MISSING_REF_MARKERS = ["couldn't find remote ref", "could not find remote ref"];
+
+/**
+ * The bare ref name in `couldn't find remote ref fix-401-redirect`.
+ *
+ * A bare name carries no `refs/` prefix, so {@link REF_SPAN} cannot see it and
+ * the marker shape cannot exclude it: a phrase marker holds a space and a name
+ * cannot, but an HTTP status is digits, and digits are something a branch is
+ * plausibly called. `fix-401-redirect` and `release-403` are ordinary branch
+ * names, and both reported an authentication failure for a ref that simply is
+ * not there.
+ *
+ * What makes the name recognisable is the phrase in front of it: git only says
+ * this about a ref, so the token that follows is a ref name by construction.
+ * The phrase itself is kept — the not-found branch classifies on it.
+ */
+const MISSING_REF_SPAN = new RegExp(`(${MISSING_REF_MARKERS.join("|")})\\s+\\S+`, "gi");
+
+/**
+ * Markers of a real authentication failure, as git and the GitHub API phrase
+ * them.
+ *
+ * Every entry contains a space, and that is not decoration: neither a URL nor
+ * a ref name can, so a phrase git emits cannot also be something a repository
+ * is called. The bare nouns these replace (`auth`, `credentials`) are exactly
+ * the substrings that made `acme/oauth-server` report an authentication
+ * problem — and because this branch runs first, its answer won over every
+ * other classification.
+ */
+const AUTH_MARKERS = [
+  "authentication failed",
+  "authentication required",
+  "requires authentication",
+  "could not read username",
+  "could not read password",
+  "invalid username or password",
+  "permission denied",
+  "access denied",
+  "bad credentials",
+  "invalid credentials",
+];
+
+/**
+ * Markers of a real transport failure.
+ *
+ * Same space-carrying rule as {@link AUTH_MARKERS}. Node's transport codes
+ * cannot follow it — they are single tokens — so they are matched separately
+ * by {@link hasTransportCode} rather than excepted from the rule here.
+ */
+const NETWORK_MARKERS = [
+  "connection refused",
+  "connection reset",
+  "connection closed",
+  "connection timed out",
+  "operation timed out",
+  "timed out",
+  "network is unreachable",
+  "network error",
+  "failed to connect",
+  "failed to fetch",
+  "fetch failed",
+  "socket hang up",
+];
+
+/**
+ * Node's transport codes, which no phrase can express.
+ *
+ * Matched against the message with its ORIGINAL case, because Node always
+ * emits them upper-case (`getaddrinfo ENOTFOUND`, `connect ECONNREFUSED`)
+ * while a ref name is conventionally lower-case. That is what separates a
+ * real DNS failure from a branch called `enotfound-handling` — treating them
+ * as case-insensitive single tokens reintroduced exactly the name collision
+ * this function exists to remove.
+ */
+const TRANSPORT_CODES = ["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EHOSTUNREACH"];
+
+/** Whether `rawText` carries a Node transport code as a standalone upper-case token. */
+function hasTransportCode(rawText: string): boolean {
+  return TRANSPORT_CODES.some((code) => new RegExp(`(?<![A-Z])${code}(?![A-Z])`).test(rawText));
+}
+
+/**
+ * Keeps digits that belong to a repository or ref path from being read as an
+ * HTTP status. `1403` is not a 403, and neither is `/v1/403/spec` — a real
+ * status is preceded by a space, a bracket, or nothing at all.
+ */
+function hasStatus(text: string, code: string): boolean {
+  return new RegExp(`(?<![\\d/])${code}(?!\\d)`).test(text);
+}
+
+/**
+ * Turns an import failure into guidance a person can act on.
+ *
+ * The message is the only input, and it carries the repository remote and the
+ * ref alongside git's own words — both named by whoever pushed them. So one
+ * rule governs every branch below: a marker must be something git says, not a
+ * word a name can contain. Two spans are removed before matching for what the
+ * rule cannot express, and the remaining markers are phrases, because neither
+ * a URL nor a ref name can hold a space.
+ *
+ * Branch order is load-bearing and separately covered by the LFS suite in
+ * #218; the earliest match wins, so a widened predicate here is answered on
+ * far more failures than the one it was widened for.
+ */
 export function classifyError(errorMessage: string): ErrorInfo {
   const msg = errorMessage.toLowerCase();
+  // Matched against by every branch EXCEPT LFS and not-found below. Those two
+  // read the full message on purpose: LFS_BATCH_RESPONSE_MARKERS requires the
+  // path `/info/lfs/objects/batch`, which legitimately arrives inside a URL,
+  // so stripping there would undo the LFS detection #218 added.
+  const prose = msg
+    .replace(REMOTE_SPAN, " ")
+    .replace(REF_SPAN, " ")
+    .replace(MISSING_REF_SPAN, "$1 ");
+  // The same text with its original case kept, for the transport codes above.
+  const proseRaw = errorMessage
+    .replace(REMOTE_SPAN, " ")
+    .replace(REF_SPAN, " ")
+    .replace(MISSING_REF_SPAN, "$1 ");
 
   // Authentication errors
+  // 401/403 carry the refusal on their own, so the original predicate's bare
+  // "unauthorized" token is gone: it is redundant beside them (every real
+  // message carrying the word carries the status too — `HTTP Error: 401
+  // Unauthorized`) and it broke the space rule, classifying a 404 for a ref
+  // named `fix-unauthorized-redirect` as an auth failure.
   if (
-    msg.includes("auth") ||
-    msg.includes("unauthorized") ||
-    msg.includes("403") ||
-    msg.includes("credentials")
+    AUTH_MARKERS.some((marker) => prose.includes(marker)) ||
+    hasStatus(prose, "401") ||
+    hasStatus(prose, "403")
   ) {
     return {
       type: "AUTH_ERROR",
@@ -115,12 +261,7 @@ export function classifyError(errorMessage: string): ErrorInfo {
   }
 
   // Network errors
-  if (
-    msg.includes("network") ||
-    msg.includes("fetch") ||
-    msg.includes("connection") ||
-    msg.includes("timeout")
-  ) {
+  if (NETWORK_MARKERS.some((marker) => prose.includes(marker)) || hasTransportCode(proseRaw)) {
     return {
       type: "NETWORK_ERROR",
       title: "Network Error",
@@ -164,11 +305,18 @@ export function classifyError(errorMessage: string): ErrorInfo {
   }
 
   // Not found errors
+  //
+  // "couldn't find remote ref" is git's own wording for a ref that is absent
+  // from the remote, and it earns its place here: without it the message
+  // carries no not-found token at all, so once {@link REF_SPAN} removes the
+  // ref name the failure falls through to UNKNOWN_ERROR — a message that says
+  // precisely what went wrong, answered with "an unexpected error occurred".
   if (
     msg.includes("not found") ||
     msg.includes("404") ||
     msg.includes("doesn't exist") ||
-    msg.includes("does not exist")
+    msg.includes("does not exist") ||
+    MISSING_REF_MARKERS.some((marker) => msg.includes(marker))
   ) {
     return {
       type: "NOT_FOUND",
@@ -187,7 +335,11 @@ export function classifyError(errorMessage: string): ErrorInfo {
   }
 
   // Rate limiting
-  if (msg.includes("rate limit") || msg.includes("429") || msg.includes("too many requests")) {
+  if (
+    prose.includes("rate limit") ||
+    hasStatus(prose, "429") ||
+    prose.includes("too many requests")
+  ) {
     return {
       type: "RATE_LIMITED",
       title: "Rate Limited",
@@ -202,7 +354,10 @@ export function classifyError(errorMessage: string): ErrorInfo {
   }
 
   // Git errors
-  if (msg.includes("git") || msg.includes("clone") || msg.includes("repository")) {
+  // Still bare nouns, but read from `prose`: a repository named `git-tools` no
+  // longer reaches here through its URL. A ref name can still collide, which
+  // needs the corpus of real messages this branch produces to narrow safely.
+  if (prose.includes("git") || prose.includes("clone") || prose.includes("repository")) {
     return {
       type: "GIT_ERROR",
       title: "Git Operation Failed",
@@ -217,7 +372,7 @@ export function classifyError(errorMessage: string): ErrorInfo {
   }
 
   // Storage / naming conflict errors
-  if (msg.includes("already exists")) {
+  if (prose.includes("already exists")) {
     return {
       type: "ALREADY_EXISTS",
       title: "Import Conflict",
@@ -230,12 +385,14 @@ export function classifyError(errorMessage: string): ErrorInfo {
     };
   }
 
+  // As with the git branch: URL-borne collisions are closed, ref-name ones are
+  // not yet.
   if (
-    msg.includes("disk") ||
-    msg.includes("quota") ||
-    msg.includes("space") ||
-    msg.includes("storage") ||
-    msg.includes("artifacts")
+    prose.includes("disk") ||
+    prose.includes("quota") ||
+    prose.includes("space") ||
+    prose.includes("storage") ||
+    prose.includes("artifacts")
   ) {
     return {
       type: "STORAGE_ERROR",
@@ -277,19 +434,29 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
   branch,
   nonce,
 }) => {
-  const isActive = ["queued", "cloning", "processing"].includes(status);
+  // 'syncing' belongs here: until migration 043 widened the status CHECK it
+  // could never be stored, so this list never had to account for it. Now that
+  // the consumer's sync-phase write actually lands, omitting it would render a
+  // running import with no spinner, no Cancel button, and — because the live
+  // refresh script is gated on this too — no way for the page to advance.
+  const isActive = ["queued", "cloning", "processing", "syncing"].includes(status);
   const isComplete = status === "completed";
   const isFailed = status === "failed";
   const isCancelled = status === "cancelled";
   const isCancelling = status === "cancelling";
 
+  // Coarse fallbacks for phases that report no file counts. 'syncing' runs
+  // after the file work, so it sits above 'processing' rather than dropping the
+  // bar back to empty.
   const percent = progress.totalFiles
     ? Math.round((progress.processedFiles / progress.totalFiles) * 100)
     : status === "cloning"
       ? 10
       : status === "processing"
         ? 50
-        : 0;
+        : status === "syncing"
+          ? 75
+          : 0;
 
   // Safely escape for interpolation into a quoted string inside an inline
   // <script> body — JSON.stringify alone doesn't escape "<", so a namespace
@@ -441,12 +608,50 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
               Retry import
             </button>
           </form>
+          {/*
+            Delete is offered only once the job has actually finished. While it
+            is still 'cancelling' the queue consumer may yet own the row, and
+            removing it there would orphan an in-flight import.
+          */}
+          {(isFailed || isCancelled) && (
+            <form
+              id="import-delete-form"
+              method="post"
+              action={`/api/projects/${namespace}/${slug}/import/delete`}
+              class="delete-form"
+            >
+              <button type="submit" class="btn btn-secondary">
+                Delete import
+              </button>
+            </form>
+          )}
           {isCancelling && (
             <p class="help-text">
               Cancelling can take a moment. If it stays stuck, Retry re-queues the import.
             </p>
           )}
         </div>
+      )}
+
+      {(isFailed || isCancelled) && (
+        <script
+          nonce={nonce}
+          dangerouslySetInnerHTML={{
+            __html: `
+            // Progressive enhancement only: discarding the job also discards its
+            // error log, and there is no undo. Without JS the form still posts.
+            (function () {
+              var deleteForm = document.getElementById('import-delete-form');
+              if (!deleteForm) return;
+              deleteForm.addEventListener('submit', function (event) {
+                if (!confirm('Delete this import record? Its logs and error details will be lost.')) {
+                  event.preventDefault();
+                }
+              });
+            })();
+          `,
+          }}
+        />
       )}
 
       {isFailed && errorInfo?.actionButton && (
@@ -497,7 +702,10 @@ export const ImportProgressCard: FC<ImportProgressProps> = ({
               // Update progress bar
               const percent = data.progress.totalFiles 
                 ? Math.round((data.progress.processedFiles / data.progress.totalFiles) * 100)
-                : data.status === 'cloning' ? 10 : data.status === 'processing' ? 50 : 0;
+                : data.status === 'cloning' ? 10
+                : data.status === 'processing' ? 50
+                : data.status === 'syncing' ? 75
+                : 0;
               
               const fill = document.querySelector('.progress-fill');
               if (fill) fill.style.width = percent + '%';

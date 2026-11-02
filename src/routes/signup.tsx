@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { betaGateEnabled } from "../beta/gate";
 import type { Env } from "../types";
+import { SourceFooter } from "../ui/components/source-footer";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -15,6 +16,8 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Email authentication is not fully configured. Please contact the administrator.",
   send_failed: "Failed to send email. Please try again later.",
   signup_failed: "Failed to create account. Please try again.",
+  signup_expired:
+    "Your GitHub or Google sign-in expired before a username was chosen. Please start again.",
   rate_limited: "Too many requests. Please try again later.",
   invite_required: "Stratum is in closed beta — an invite code is required to sign up.",
   invalid_invite: "That invite code isn't valid or has already been used.",
@@ -24,34 +27,12 @@ const SUCCESS_MESSAGES: Record<string, string> = {
   email_sent: "Check your email! We sent a magic link to complete your signup.",
 };
 
-// GET /auth/signup - Show signup form
-app.get("/", (c) => {
-  const errorCode = c.req.query("error");
-  const successCode = c.req.query("success");
-  const prefillEmail = c.req.query("email") ?? "";
-  const betaGate = betaGateEnabled(c.env);
-  const prefillInvite = c.req.query("ref") ?? c.req.query("invite") ?? "";
-  const error =
-    errorCode !== undefined
-      ? (ERROR_MESSAGES[errorCode] ?? "Signup failed. Please try again.")
-      : undefined;
-  const success =
-    successCode !== undefined
-      ? (SUCCESS_MESSAGES[successCode] ?? "Success! Please check your email.")
-      : undefined;
-
-  return c.html(
-    <html lang="en">
-      <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Create Account — Stratum</title>
-        <link
-          rel="icon"
-          href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230d0d0d'/%3E%3Ctext%20x='16'%20y='23'%20font-family='monospace'%20font-size='20'%20font-weight='700'%20fill='%237ca9f7'%20text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E"
-        />
-        <link rel="stylesheet" href="/ui.css" />
-        <style>{`
+/**
+ * Stylesheet for the signup form. Exported because the "choose your username"
+ * step of an OAuth signup (`src/routes/oauth-signup.tsx`) is the same form
+ * minus the email field, and must look like the page the user just left.
+ */
+export const SIGNUP_PAGE_CSS = `
 					.signup-container {
 						max-width: 420px;
 						margin: 3rem auto;
@@ -346,7 +327,36 @@ app.get("/", (c) => {
 							padding: 1.5rem;
 						}
 					}
-				`}</style>
+				`;
+
+// GET /auth/signup - Show signup form
+app.get("/", (c) => {
+  const errorCode = c.req.query("error");
+  const successCode = c.req.query("success");
+  const prefillEmail = c.req.query("email") ?? "";
+  const betaGate = betaGateEnabled(c.env);
+  const prefillInvite = c.req.query("ref") ?? c.req.query("invite") ?? "";
+  const error =
+    errorCode !== undefined
+      ? (ERROR_MESSAGES[errorCode] ?? "Signup failed. Please try again.")
+      : undefined;
+  const success =
+    successCode !== undefined
+      ? (SUCCESS_MESSAGES[successCode] ?? "Success! Please check your email.")
+      : undefined;
+
+  return c.html(
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Create Account — Stratum</title>
+        <link
+          rel="icon"
+          href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230d0d0d'/%3E%3Ctext%20x='16'%20y='23'%20font-family='monospace'%20font-size='20'%20font-weight='700'%20fill='%237ca9f7'%20text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E"
+        />
+        <link rel="stylesheet" href="/ui.css" />
+        <style>{SIGNUP_PAGE_CSS}</style>
       </head>
       <body>
         <nav class="nav">
@@ -382,7 +392,8 @@ app.get("/", (c) => {
                 <div class="signup-header">
                   <h1 class="signup-title">Create your account</h1>
                   <p class="signup-subtitle">
-                    Join Stratum to start managing your projects with AI-powered workflows.
+                    The agent-first code forge: agents open changes, evaluations gate them, and you
+                    approve what merges.
                   </p>
                 </div>
 
@@ -412,7 +423,7 @@ app.get("/", (c) => {
 
                   <div class="form-group">
                     <label class="form-label" for="username">
-                      Username <span>(your unique identifier)</span>
+                      Username <span>(your namespace — fixed while you own projects)</span>
                     </label>
                     <input
                       type="text"
@@ -505,6 +516,7 @@ app.get("/", (c) => {
           </div>
         </main>
 
+        <SourceFooter />
         {!success && (
           <script
             nonce={c.get("cspNonce") ?? ""}

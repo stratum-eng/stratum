@@ -1,12 +1,14 @@
 import git from "isomorphic-git";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reconstructRepo, restoreProjectRepo } from "../src/backup/repo-restore";
 import { type RepoManifest, buildSnapshot, walkRepoObjects } from "../src/backup/repo-snapshot";
 import type { NodeFS } from "../src/storage/git-ops";
 import { MemoryFS } from "../src/storage/memory-fs";
 import { placeLooseObject } from "../src/storage/object-loader";
 import type { Env, ProjectEntry } from "../src/types";
+import { AppError } from "../src/utils/errors";
 import type { Logger } from "../src/utils/logger";
+import { err } from "../src/utils/result";
 
 // Only `push` (the sole Artifacts-coupled git call in the restore path) is
 // mocked; every other git function runs for real against MemoryFS so the
@@ -18,6 +20,29 @@ vi.mock("isomorphic-git", async (importActual) => {
   return {
     ...actual,
     default: { ...actual.default, push: (args: unknown) => mockPush(args) },
+  };
+});
+
+// pushMain/pushTags themselves are mocked ONLY for the ambiguous-timeout
+// tests below (via mockImplementationOnce, restored to the real
+// implementation after each) — driving a genuine withTimeout timeout would
+// need either real wall-clock minutes or fake timers, and the latter hangs
+// here because restoreProjectRepo's own object reconstruction runs real
+// CompressionStream-based work first. pushMain/pushTags's own PUSH_TIMEOUT
+// behavior is covered directly, with fake timers, in tests/git-ops.test.ts.
+const { mockPushMain, mockPushTags } = vi.hoisted(() => ({
+  mockPushMain: vi.fn(),
+  mockPushTags: vi.fn(),
+}));
+
+vi.mock("../src/storage/git-ops", async (importActual) => {
+  const actual = await importActual<typeof import("../src/storage/git-ops")>();
+  return {
+    ...actual,
+    pushMain: (...args: Parameters<typeof actual.pushMain>) =>
+      mockPushMain.getMockImplementation() ? mockPushMain(...args) : actual.pushMain(...args),
+    pushTags: (...args: Parameters<typeof actual.pushTags>) =>
+      mockPushTags.getMockImplementation() ? mockPushTags(...args) : actual.pushTags(...args),
   };
 });
 
@@ -560,6 +585,62 @@ describe("restoreProjectRepo tag push", () => {
     const result = await restoreProjectRepo(env, snap, {}, logger);
     expect(result.success).toBe(false);
     expect(deleteFn).toHaveBeenCalledWith("repo");
+  });
+
+  // A rejection and a timeout must NOT be treated the same: withTimeout never
+  // actually cancels the underlying push (see its own doc comment in
+  // git-ops.ts), so a timed-out push may still land after pushMain/pushTags
+  // return. Deleting the repo on that ambiguous a signal risks destroying a
+  // restore that actually succeeded. pushMain/pushTags are mocked directly to
+  // return the PUSH_TIMEOUT-coded error they'd produce on a real timeout —
+  // driving a genuine one here would need real wall-clock minutes or fake
+  // timers, and the latter hangs against this file's real
+  // CompressionStream-based reconstruction step. The real pushMain/pushTags
+  // producing PUSH_TIMEOUT on an actual withTimeout timeout is covered
+  // directly, with fake timers, in tests/git-ops.test.ts.
+  describe("does not roll back on an ambiguous push timeout (#332 follow-up)", () => {
+    afterEach(() => {
+      mockPushMain.mockReset();
+      mockPushTags.mockReset();
+    });
+
+    it("main push times out", async () => {
+      mockPushMain.mockResolvedValue(
+        err(new AppError("Push during restore timed out", "PUSH_TIMEOUT", 504)),
+      );
+      const { env, deleteFn } = makeEnv();
+      const { snap } = await makeSnapshot();
+
+      const result = await restoreProjectRepo(env, snap, {}, logger);
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error.code).toBe("PUSH_TIMEOUT");
+      expect(deleteFn).not.toHaveBeenCalled();
+    });
+
+    it("a tag push times out after main already landed", async () => {
+      // Explicit, not inherited: main's push goes through the real pushMain
+      // (mocked only at the git.push level) and must succeed for this test
+      // to prove anything about state landed BEFORE the tag-push timeout.
+      mockPush.mockResolvedValue({ ok: true });
+      mockPushTags.mockResolvedValue(
+        err(new AppError("Push of tag during restore timed out", "PUSH_TIMEOUT", 504)),
+      );
+      const { env, deleteFn } = makeEnv();
+      const { snap } = await makeSnapshot();
+
+      const result = await restoreProjectRepo(env, snap, {}, logger);
+
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error.code).toBe("PUSH_TIMEOUT");
+      // Not just "no delete call" — main (pushed for real via mockPush
+      // before pushTags is reached) is landed state a rollback would
+      // otherwise destroy.
+      expect(mockPush).toHaveBeenCalledTimes(1);
+      expect(deleteFn).not.toHaveBeenCalled();
+    });
   });
 
   /** A forced restore over an EXISTING repo is deliberately not rolled back, so a

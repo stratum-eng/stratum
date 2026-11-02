@@ -390,3 +390,68 @@ export function validateCloneDepth(
 
   return { valid: true, depth: num };
 }
+
+/** Longest ref name a manifest or request may ask to write. */
+const MAX_REF_NAME_LENGTH = 255;
+
+/**
+ * Whether `name` is safe to write as the trailing component of a git ref —
+ * `refs/tags/<name>` or `refs/heads/<name>`.
+ *
+ * Both callers consume input they did not produce: restore reads names back
+ * out of a stored manifest, and the branch API takes them from a request. The
+ * ref path is therefore validated here rather than trusted: an unchecked `../`
+ * escapes its namespace and, with `force: true`, can overwrite the default
+ * branch's ref.
+ *
+ * These are git's own `check-ref-format` rules, expressed as a denylist. An
+ * allowlist was tried first and was wrong in a way that matters for a restore
+ * path: it rejected `release@prod`, every non-ASCII name, and `%`, `,`, `!`,
+ * `(`, `'`, `=`, `&`, `;`, `{` — all of which git accepts. A backup holding
+ * such a tag could be written but never restored, which is worse than the
+ * traversal the allowlist was defending against.
+ *
+ * The oracle here is isomorphic-git's `writeRef`, not the `git` CLI, because
+ * that is what performs the write. It is the stricter of the two: it treats a
+ * ref as valid only if `clean-git-ref` leaves it unchanged, so it refuses
+ * `v1./next` (`./` collapses to `/`) even though `git check-ref-format`
+ * accepts it. Validating against the CLI's looser rules would let such a name
+ * past this guard and throw from `writeRef` half-way through the tag loop,
+ * leaving a partially restored repository — so `./` is rejected here.
+ *
+ * Differentially fuzzed against `writeRef` over ~1300 generated names with a
+ * fresh MemoryFS per name: no name is accepted here that `writeRef` refuses.
+ *
+ * Deliberately NOT rejected here: `HEAD`. It is a ref name git accepts, and a
+ * backup holding a tag called `HEAD` must stay restorable — this guard's whole
+ * point is that it never refuses a name the ref store would have taken.
+ * Callers that additionally cannot accept it (branch creation) say so
+ * themselves; see `isValidBranchName` in `../storage/git-ops`.
+ *
+ * @param name - The candidate ref name, straight from a manifest or a request.
+ * @returns `true` if `refs/<namespace>/<name>` is a ref name git would accept.
+ */
+export function isValidRefName(name: unknown): name is string {
+  if (typeof name !== "string" || name.length === 0) return false;
+  // Not a git rule: a Stratum bound so a hostile manifest or request can't
+  // push an arbitrarily long path at the ref store.
+  if (name.length > MAX_REF_NAME_LENGTH) return false;
+
+  // Control characters (including DEL) and space, compared by code point. A
+  // regex range spanning them is what lint rules about control characters in
+  // patterns object to, and the comparison states the bound outright.
+  for (let i = 0; i < name.length; i++) {
+    const code = name.charCodeAt(i);
+    if (code <= 0x20 || code === 0x7f) return false;
+  }
+  // The characters git reserves for its revision syntax.
+  if (/[~^:?*[\\]/.test(name)) return false;
+
+  if (name.includes("..") || name.includes("@{")) return false;
+  if (name.startsWith("/") || name.endsWith("/")) return false;
+  // `./` and a trailing `.` are both rewritten by clean-git-ref, so writeRef
+  // rejects them.
+  if (name.includes("./") || name.endsWith(".")) return false;
+
+  return name.split("/").every((c) => c.length > 0 && !c.startsWith(".") && !c.endsWith(".lock"));
+}

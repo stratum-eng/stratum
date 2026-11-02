@@ -1,7 +1,9 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { isGitHttpPath } from "../routes/git-http";
+import { isPostHogProxyPath } from "../routes/posthog-proxy";
 import type { Env } from "../types";
 import { type Logger, createLogger } from "../utils/logger";
+import { isCspReportPath } from "./security-headers";
 
 const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -70,6 +72,22 @@ export const csrfMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
   // Git smart-HTTP is Basic/token-authenticated (not session cookies) and owns
   // its own access checks — exempt by path to be robust to future changes.
   if (isGitHttpPath(c.req.path)) {
+    await next();
+    return;
+  }
+  // Browsers deliver CSP violation reports with a bare POST that carries the
+  // session cookie but, under the Reporting API, no Origin or Referer. The
+  // endpoint only writes a log line, so there is nothing a forged report could
+  // change.
+  if (isCspReportPath(c.req.path)) {
+    await next();
+    return;
+  }
+  // Analytics beacons are same-origin POSTs that the SDK — and, on unload,
+  // `navigator.sendBeacon` — emits with no CSRF token and sometimes no Origin.
+  // The proxy forwards to PostHog and changes no state here, so there is
+  // nothing a forged beacon could alter beyond the sender's own analytics.
+  if (isPostHogProxyPath(c.req.path)) {
     await next();
     return;
   }

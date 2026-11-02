@@ -5,11 +5,16 @@ import { ExternalServiceError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import type { Result } from "../utils/result";
 import { err, ok } from "../utils/result";
-import type { EvalPolicy, EvalResult, Evaluator } from "./types";
+import {
+  DEFAULT_COMMAND,
+  DEFAULT_INSTALL_TIMEOUT_MS,
+  DEFAULT_TIMEOUT_MS,
+  DEFAULT_TOTAL_BUDGET_MS,
+  MAX_TOTAL_BUDGET_MS,
+  MIN_TOTAL_BUDGET_MS,
+} from "./limits";
+import type { EvalPolicy, EvalResult, Evaluator, SandboxEvaluatorConfig } from "./types";
 
-const DEFAULT_COMMAND = "npm test";
-const DEFAULT_TIMEOUT_MS = 60_000;
-const DEFAULT_INSTALL_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_IN_REASON = 500;
 
 /**
@@ -74,6 +79,94 @@ function parseTestOutput(stdout: string, stderr: string): number | null {
   return null;
 }
 
+/**
+ * The phases a sandbox evaluation spends time in, in execution order. Named so
+ * a budget-exceeded reason says *where* the time went — an agent reading the
+ * verdict can tell "your install is too slow" from "your suite is too slow"
+ * without a human reading the output.
+ */
+export type SandboxPhase = "tree-read" | "create" | "materialize" | "install" | "command";
+
+/**
+ * Bring a policy-supplied duration into range, falling back to `fallback` for
+ * anything that is not a finite number.
+ *
+ * Duplicated in spirit by `policy-loader`, which clamps the same fields when a
+ * policy file is read. Both exist on purpose: the loader produces the operator
+ * warning, and this one is the boundary that actually holds, because
+ * `evaluate` is reachable from a policy cache and from callers that never
+ * loaded a file.
+ */
+function clampToRange(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * Stable prefix for a budget-exceeded verdict. Exported because it is the
+ * contract callers and tests match on: the free-text remainder may change, this
+ * may not.
+ */
+export function budgetExceededReason(phase: SandboxPhase, totalBudgetMs: number): string {
+  return `sandbox budget exceeded (${phase}): evaluation did not finish within ${totalBudgetMs}ms`;
+}
+
+/**
+ * A wall-clock allowance shared across every phase of one evaluation.
+ *
+ * Exists because the per-phase timeouts are independent: with defaults, install
+ * and the scored command alone permit their sum, and nothing bounded the total.
+ * A caller or proxy gives up long before that, leaving the submitter with no
+ * verdict.
+ *
+ * What it does and does not bound is load-bearing, because Workers freeze
+ * `Date.now()` between I/O (see `src/utils/phase-timer.ts`): time spent
+ * *awaiting the sandbox* advances the clock and is bounded reliably — that is
+ * the overrun this exists for — while pure-CPU work inside the Worker (pack
+ * decompression, base64 encoding a large tree) may read as ~0ms and is
+ * constrained by workerd's CPU limit rather than by this.
+ */
+export interface Budget {
+  /** Milliseconds left before the budget is exhausted; never negative. */
+  remaining(): number;
+  /** The timeout a phase may actually use: `min(requested, remaining)`. */
+  allow(requestedMs: number): number;
+  /** True once nothing is left. */
+  expired(): boolean;
+  /** The total this budget started with, for reporting. */
+  readonly totalMs: number;
+}
+
+/**
+ * Smallest timeout ever handed to `sandbox.run`. Never 0: the Sandbox binding
+ * does not document how it reads `timeout: 0`, and "no timeout" is a plausible
+ * reading — the exact opposite of what an exhausted budget means.
+ */
+const MIN_GRANTED_TIMEOUT_MS = 1;
+
+/**
+ * `now` is injected so tests drive elapsed time with a fake clock instead of
+ * sleeping. Deliberately timer-free: an earlier design raced phases against a
+ * `setTimeout`, which a fake clock cannot drive and which leaks a live timer
+ * into the test event loop.
+ */
+export function startBudget(totalMs: number, now: () => number = Date.now): Budget {
+  // `Math.max(0, NaN)` is NaN, not 0 — so a non-finite total would produce a
+  // budget that never reports expired and hands `NaN` to `sandbox.run`, whose
+  // handling of it is undefined. This type is exported, so the guard belongs
+  // here rather than only at the call sites.
+  const total = Number.isFinite(totalMs) ? totalMs : DEFAULT_TOTAL_BUDGET_MS;
+  const startedAt = now();
+  const remaining = () => Math.max(0, total - (now() - startedAt));
+  return {
+    totalMs: total,
+    remaining,
+    expired: () => remaining() <= 0,
+    allow: (requestedMs: number) =>
+      Math.max(MIN_GRANTED_TIMEOUT_MS, Math.min(requestedMs, remaining())),
+  };
+}
+
 /** The lockfile names `npm ci` accepts. */
 const NPM_LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json"] as const;
 
@@ -89,11 +182,24 @@ const NPM_LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json"] as const;
  * their contents, so no text decode is needed here. `files` carries raw bytes
  * end to end like the rest of the read path; a manifest's actual contents
  * would be decoded at the point that genuinely needs text, not here.
+ *
+ * `--ignore-scripts` is the default because the tree is authored by an agent or
+ * by anyone who can push to the workspace, and `preinstall`/`install`/
+ * `postinstall` would otherwise execute before any human has reviewed the
+ * change. It narrows the window rather than closing it — a tree-supplied
+ * `.npmrc` still redirects the registry, lockfile `resolved` URLs are still
+ * fetched verbatim, and the scored command runs untrusted code by design (see
+ * `docs/adr/007-sandbox-evaluator-threat-model.md`). `opts` is optional so that
+ * omitting it yields the *safe* behaviour.
  */
-export function installCommandFor(files: ReadonlyMap<string, Uint8Array>): string | null {
+export function installCommandFor(
+  files: ReadonlyMap<string, Uint8Array>,
+  opts?: { allowInstallScripts?: boolean },
+): string | null {
   if (!files.has("package.json")) return null;
   const base = NPM_LOCKFILES.some((lockfile) => files.has(lockfile)) ? "npm ci" : "npm install";
-  return `${base} --no-audit --no-fund`;
+  const flags = opts?.allowInstallScripts === true ? "" : " --ignore-scripts";
+  return `${base} --no-audit --no-fund${flags}`;
 }
 
 /**
@@ -251,7 +357,25 @@ export interface MaterializedTree {
 export async function materializeTree(
   sandbox: SandboxInstance,
   files: ReadonlyMap<string, Uint8Array>,
-  opts: { decodeTimeoutMs: number; logger?: Logger },
+  opts: {
+    decodeTimeoutMs: number;
+    /**
+     * Supplies the decode step's timeout, called *after* the writes — which are
+     * unbounded and can consume most of a caller's remaining budget. A grant
+     * computed before this function runs would be spent against a stale
+     * remaining, letting the decode overrun the total budget on a large tree.
+     *
+     * Taking the caller's grant function rather than a `Budget` also lets the
+     * caller record that this grant was budget-shortened, so a decode that then
+     * times out is classified the same way as any other budgeted phase. Callers
+     * with no budget (the post-merge check) omit it and get `decodeTimeoutMs`
+     * unchanged.
+     */
+    grant?: (requestedMs: number) => number;
+    /** Clock for the decode timing, injectable to match the caller's budget. */
+    now?: () => number;
+    logger?: Logger;
+  },
 ): Promise<MaterializedTree> {
   // The full tree can hold thousands of files; one round trip per file
   // dominates latency, so write in bounded concurrent batches.
@@ -288,11 +412,12 @@ export async function materializeTree(
   const scriptPath = freeStagingPath(BINARY_DECODE_SCRIPT_PATH, taken);
   await sandbox.writeFile(manifestPath, binaryPaths.join("\n"));
   await sandbox.writeFile(scriptPath, decodeBinaryFilesScript(manifestPath));
-  const decodeStartedAt = Date.now();
+  const now = opts.now ?? Date.now;
+  const decodeStartedAt = now();
   const decodeResult = await sandbox.run(binaryDecodeCommandFor(scriptPath), {
-    timeout: opts.decodeTimeoutMs,
+    timeout: opts.grant ? opts.grant(opts.decodeTimeoutMs) : opts.decodeTimeoutMs,
   });
-  const decodeMs = Date.now() - decodeStartedAt;
+  const decodeMs = now() - decodeStartedAt;
   if (decodeResult.exitCode !== 0) {
     const output = (decodeResult.stdout + decodeResult.stderr)
       .slice(0, MAX_OUTPUT_IN_REASON)
@@ -311,11 +436,16 @@ export class SandboxEvaluator implements Evaluator {
    * survive the write boundary) lives in what comes back from that read, and
    * the alternative — standing up a real remote per case — would make those
    * paths expensive enough to go untested.
+   *
+   * `now` is injectable for the same reason: the total budget's behaviour is
+   * entirely a function of elapsed time, and driving it with a fake clock is
+   * the only way to test exhaustion without sleeping for minutes.
    */
   constructor(
     private sandbox: SandboxBinding,
     private repo: SandboxRepoAccess,
     private readFiles: RepoFilesReader = readRepoFiles,
+    private now: () => number = Date.now,
   ) {}
 
   /**
@@ -329,15 +459,24 @@ export class SandboxEvaluator implements Evaluator {
    * land. The parameter stays because it is part of the `Evaluator` contract
    * shared with the diff-based evaluators.
    *
-   * Two kinds of failure, deliberately distinguished:
+   * Three kinds of failure, deliberately distinguished:
    *
    * - The suite ran and did not pass, or a dependency install failed: score 0
    *   with `passed: false`. An evaluation that could not run must never read
    *   as one that passed, so these are verdicts, not errors.
+   * - The total budget ran out: also a verdict (score 0), with a reason naming
+   *   the phase. The sandbox was reachable and simply did not finish in the
+   *   time allowed, which is a judgement about the change — its install or its
+   *   suite is too slow for a synchronous request — not an infrastructure
+   *   failure. Reached two ways: a phase that cannot be started, and a phase
+   *   the budget had to shorten which then failed at that shortened timeout.
+   *   A phase that hits the project's *own* configured timeout is not this —
+   *   it keeps returning `err`, as it always has.
    * - The evaluated tree could not be reached or read, or the sandbox itself
-   *   threw: `err(ExternalServiceError)`. There is no verdict to give here —
-   *   the caller decides whether to retry or surface the failure, and scoring
-   *   0 would fabricate a judgement about code we never saw.
+   *   threw for any other reason: `err(ExternalServiceError)`. There is no
+   *   verdict to give here — the caller decides whether to retry or surface the
+   *   failure, and scoring 0 would fabricate a judgement about code we never
+   *   saw.
    *
    * A missing SANDBOX binding or missing repo access never reaches this method
    * at all: `buildEvaluators` substitutes an `UnavailableEvaluator` at
@@ -350,9 +489,7 @@ export class SandboxEvaluator implements Evaluator {
   ): Promise<Result<EvalResult, AppError>> {
     logger.debug("Starting sandbox evaluation");
 
-    const config = policy.evaluators.find((e) => e.type === "sandbox") as
-      | { type: "sandbox"; command?: string; timeoutMs?: number; installTimeoutMs?: number }
-      | undefined;
+    const config = policy.evaluators.find((e): e is SandboxEvaluatorConfig => e.type === "sandbox");
 
     if (!config) {
       logger.info("No sandbox evaluator configured");
@@ -362,11 +499,77 @@ export class SandboxEvaluator implements Evaluator {
     const command = config.command ?? DEFAULT_COMMAND;
     const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const installTimeoutMs = config.installTimeoutMs ?? DEFAULT_INSTALL_TIMEOUT_MS;
+    // Clamped here, not only at load time: `evaluate` is reachable from a KV
+    // policy cache and from callers that never went through `policy-loader`, and
+    // a `totalBudgetMs` of 0 would make every change on the project fail before
+    // a sandbox was ever created.
+    const totalBudgetMs = clampToRange(
+      config.totalBudgetMs ?? DEFAULT_TOTAL_BUDGET_MS,
+      MIN_TOTAL_BUDGET_MS,
+      MAX_TOTAL_BUDGET_MS,
+      DEFAULT_TOTAL_BUDGET_MS,
+    );
     const minScore = policy.minScore ?? 0.7;
 
-    logger.debug("Sandbox config", { command, timeoutMs, installTimeoutMs });
+    logger.debug("Sandbox config", { command, timeoutMs, installTimeoutMs, totalBudgetMs });
+
+    // Started before the tree read so a slow clone is charged against what the
+    // later phases get, even though the read itself is not interruptible.
+    const budget = startBudget(totalBudgetMs, this.now);
 
     let sb: Awaited<ReturnType<SandboxBinding["create"]>> | null = null;
+    let sandboxMs = 0;
+    // Tracked so a throw from a phase whose granted timeout fired can be
+    // reported against the phase that actually ran out, not a guess.
+    let currentPhase: SandboxPhase = "tree-read";
+    // When the current phase started, so a phase that throws still contributes
+    // the time it burned to `sandbox_ms` instead of losing it.
+    let phaseStartedAt: number | null = null;
+    /**
+     * Whether the budget — rather than the project's own configured timeout —
+     * is what shortened the current phase's grant. This is what separates
+     * "the total budget ran out" (a verdict) from "your configured phase
+     * timeout fired" (an error, as it has always been): without it, every
+     * ordinary phase timeout would be relabelled as budget exhaustion.
+     */
+    let grantWasBudgetCapped = false;
+
+    /** The grant handed to the phase now running, for the timeout check below. */
+    let currentGrantMs = 0;
+
+    /** Grant a phase its timeout, recording whether the budget capped it. */
+    const grantFor = (requestedMs: number): number => {
+      const granted = budget.allow(requestedMs);
+      grantWasBudgetCapped = granted < requestedMs;
+      currentGrantMs = granted;
+      return granted;
+    };
+
+    /**
+     * Did the phase that just threw actually burn its whole grant?
+     *
+     * Distinguishes a timeout from a transient failure without matching on
+     * error message text, which is binding-specific and would silently rot. A
+     * Sandbox API blip 200ms into a 5s grant is infrastructure; a throw at the
+     * 5s mark is the timeout firing.
+     */
+    const phaseConsumedItsGrant = (): boolean =>
+      phaseStartedAt !== null && this.now() - phaseStartedAt >= currentGrantMs;
+
+    /**
+     * The budget ran out. Reported as a verdict rather than an error — see the
+     * method doc. `costs` is omitted before the sandbox exists: there is no
+     * sandbox time to report, and clone time is `git_ops`, not `sandbox_ms`.
+     */
+    const budgetVerdict = (phase: SandboxPhase): Result<EvalResult, AppError> => {
+      logger.info("Sandbox evaluation exceeded its total budget", { phase, totalBudgetMs });
+      return ok({
+        score: 0,
+        passed: false,
+        reason: budgetExceededReason(phase, totalBudgetMs),
+        ...(sb === null ? {} : { costs: [{ kind: "sandbox_ms" as const, quantity: sandboxMs }] }),
+      });
+    };
 
     try {
       // Materialize the full workspace tree at the evaluated commit — the same
@@ -389,27 +592,53 @@ export class SandboxEvaluator implements Evaluator {
       }
       const files = filesResult.data;
 
+      // The read is not interruptible (`RepoFilesReader` takes no timeout), so
+      // the budget cannot cut it short — it can only decline to go further.
+      if (budget.expired()) return budgetVerdict("tree-read");
+
+      currentPhase = "create";
       sb = await this.sandbox.create();
       const instance = sb;
       logger.debug("Sandbox created");
 
-      let sandboxMs = 0;
+      currentPhase = "materialize";
+      if (budget.expired()) return budgetVerdict("materialize");
 
       // Materializing the tree — string-only writeFile, base64 for binaries,
       // in-sandbox decode — is shared with the post-merge check so the write
       // boundary has exactly one implementation. `installTimeoutMs` bounds the
-      // decode step because it is setup, not the scored command.
+      // decode step because it is setup, not the scored command; the batched
+      // `writeFile` loop takes no timeout and so is charged but not bounded.
+      //
+      // The budget is passed in rather than a precomputed timeout because those
+      // unbounded writes happen first: a grant calculated out here would be
+      // spent against whatever remained *before* the tree was written, letting
+      // the decode overrun the total budget on a large tree.
+      // Timed from here rather than from the decode alone: if the writes or the
+      // decode throw, the `catch` charges everything this phase burned, and the
+      // decode's own grant flows through `grantFor` so a budget-shortened
+      // decode that times out is classified like any other phase.
+      phaseStartedAt = this.now();
       const materialized = await materializeTree(instance, files, {
         decodeTimeoutMs: installTimeoutMs,
+        grant: grantFor,
+        now: this.now,
         logger,
       });
+      phaseStartedAt = null;
       sandboxMs += materialized.decodeMs;
 
-      const installCommand = installCommandFor(files);
+      const installCommand = installCommandFor(files, {
+        allowInstallScripts: config.allowInstallScripts,
+      });
       if (installCommand !== null) {
-        const installStartedAt = Date.now();
-        const install = await sb.run(installCommand, { timeout: installTimeoutMs });
-        sandboxMs += Date.now() - installStartedAt;
+        currentPhase = "install";
+        if (budget.expired()) return budgetVerdict("install");
+        const installStartedAt = this.now();
+        phaseStartedAt = installStartedAt;
+        const install = await sb.run(installCommand, { timeout: grantFor(installTimeoutMs) });
+        phaseStartedAt = null;
+        sandboxMs += this.now() - installStartedAt;
         logger.debug("Sandbox install completed", {
           installCommand,
           exitCode: install.exitCode,
@@ -426,9 +655,13 @@ export class SandboxEvaluator implements Evaluator {
         }
       }
 
-      const runStartedAt = Date.now();
-      const result = await sb.run(command, { timeout: timeoutMs });
-      sandboxMs += Date.now() - runStartedAt;
+      currentPhase = "command";
+      if (budget.expired()) return budgetVerdict("command");
+      const runStartedAt = this.now();
+      phaseStartedAt = runStartedAt;
+      const result = await sb.run(command, { timeout: grantFor(timeoutMs) });
+      phaseStartedAt = null;
+      sandboxMs += this.now() - runStartedAt;
       logger.debug("Sandbox command completed", { exitCode: result.exitCode, sandboxMs });
 
       let score: number;
@@ -445,6 +678,28 @@ export class SandboxEvaluator implements Evaluator {
       logger.info("Sandbox evaluation complete", { score, passed });
       return ok({ score, passed, reason, costs: [{ kind: "sandbox_ms", quantity: sandboxMs }] });
     } catch (error) {
+      // A phase whose granted timeout fired throws rather than returning, so
+      // budget exhaustion can arrive here as well as at a phase gate.
+      const timedOut = phaseConsumedItsGrant();
+      // Charge the time the throwing phase burned before classifying, so it is
+      // not lost from the cost record.
+      if (phaseStartedAt !== null) sandboxMs += this.now() - phaseStartedAt;
+
+      // Both conditions matter. `grantWasBudgetCapped` says the budget — not
+      // the project's own configured timeout — is what shortened this phase;
+      // without it, an ordinary configured timeout would be relabelled, quietly
+      // changing what every pre-existing sandbox timeout reports.
+      // `timedOut` says the phase actually spent its whole grant; without it, a
+      // transient Sandbox API failure part-way through a shortened phase would
+      // be reported as a definitive judgement about the change rather than the
+      // retryable infrastructure error it is.
+      //
+      // Note `expired()` is deliberately not the test: a capped grant is
+      // exactly `remaining`, so a phase that exhausts it lands within a
+      // millisecond of zero, and keying on which side of that boundary the
+      // clock happens to read would make the outcome nondeterministic.
+      if (grantWasBudgetCapped && timedOut) return budgetVerdict(currentPhase);
+
       const message = error instanceof Error ? error.message : String(error);
       logger.error(
         "Sandbox evaluation failed",
@@ -459,8 +714,20 @@ export class SandboxEvaluator implements Evaluator {
       );
     } finally {
       if (sb !== null) {
-        await sb.destroy();
-        logger.debug("Sandbox destroyed");
+        // Contained deliberately: an `await` that rejects inside `finally`
+        // replaces the returned Result with a rejection, which would reject the
+        // `Promise.all` in `runEvaluation` and discard every other evaluator's
+        // result. A sandbox we could not tear down is an operational problem to
+        // log, not a reason to lose the verdict.
+        try {
+          await sb.destroy();
+          logger.debug("Sandbox destroyed");
+        } catch (destroyError) {
+          logger.error(
+            "Failed to destroy sandbox; instance may leak",
+            destroyError instanceof Error ? destroyError : new Error(String(destroyError)),
+          );
+        }
       }
     }
   }

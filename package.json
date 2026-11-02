@@ -1,17 +1,14 @@
 {
   "name": "stratum",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "engines": {
-    "//": "node:sqlite is unflagged only from 22.13.0; tests/helpers/sqlite-d1.ts imports it.",
+    "//": "node:sqlite is unflagged only from 22.13.0; tests/helpers/sqlite-d1.ts imports it. Unflagged is not the same as complete: that shim cannot bind NUMBERED parameters (?1, ?2) on older 22.x — 22.14.0 throws 'column index out of range' — so SQL in src/ uses anonymous ? placeholders only (#340). The PR Checks 'engines floor' job runs the suite at exactly this version; bump it there too.",
     "node": ">=22.13.0"
   },
   "private": true,
-  "license": "MIT",
-  "description": "A code collaboration platform for the AI engineering era, built on Cloudflare Workers.",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/stratum-eng/stratum.git"
-  },
+  "license": "AGPL-3.0-or-later",
+  "description": "The open-source, agent-first code forge — evaluation-gated merges, provenance, and agent identities, built on Cloudflare Workers.",
+  "repository": { "type": "git", "url": "https://github.com/stratum-eng/stratum.git" },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -25,6 +22,11 @@
     "lint": "biome check src tests",
     "lint:fix": "biome check --write src tests",
     "typecheck": "tsc --noEmit",
+    "release:check": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts check",
+    "release:latest": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts latest",
+    "release:previous": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts previous",
+    "release:notes": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts notes",
+    "release:prepare": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts prepare",
     "cf-typegen": "wrangler types"
   },
   "dependencies": {

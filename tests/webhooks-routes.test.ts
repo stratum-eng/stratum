@@ -96,10 +96,9 @@ describe("webhook management routes — project-id scoping (SA-1)", () => {
     );
 
     expect(res.status).toBe(200);
-    // The list must be scoped by the unique project id, not just the name.
-    expect(listWebhooks).toHaveBeenCalledWith(env.DB, expect.any(Object), "api", {
-      projectId: "proj_alice",
-    });
+    // The list must be scoped by the unique project id. The name is not passed
+    // at all (#235 step 3), so a name-scoped lookup is not expressible.
+    expect(listWebhooks).toHaveBeenCalledWith(env.DB, expect.any(Object), "proj_alice");
     const body = (await res.json()) as { webhooks: Array<Record<string, unknown>> };
     expect(body.webhooks).toHaveLength(1);
     expect(body.webhooks[0]).not.toHaveProperty("secret");
@@ -240,7 +239,7 @@ describe("webhook management routes — project-id scoping (SA-1)", () => {
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
-  it("falls back to the name for a legacy webhook with no project_id", async () => {
+  it("#235: rejects a legacy webhook with no project_id instead of name-matching it", async () => {
     vi.mocked(getWebhook).mockResolvedValue({
       success: true,
       data: webhook({ id: "wh_legacy", projectId: undefined }),
@@ -255,8 +254,10 @@ describe("webhook management routes — project-id scoping (SA-1)", () => {
       env,
     );
 
-    // project.name === webhook.project ("api") → allowed for legacy rows.
-    expect(res.status).toBe(200);
-    expect(deleteWebhook).toHaveBeenCalled();
+    // The name fallback is gone: an unstamped row belongs to no project, so it
+    // is unreachable rather than reachable by whoever shares the name. The
+    // admin backfill exists to stamp these before they get here.
+    expect(res.status).toBe(404);
+    expect(deleteWebhook).not.toHaveBeenCalled();
   });
 });

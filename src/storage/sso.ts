@@ -9,7 +9,7 @@ import { deleteAllUserSessions } from "./sessions";
 import { disableUser, enableUser } from "./users";
 
 /**
- * Org SSO connections (migration 041 + 042): one OIDC connection per org.
+ * Org SSO connections (migration 049 + 050): one OIDC connection per org.
  * The client secret arrives here already encrypted (AES-GCM under the SSO
  * salt) and the SCIM bearer token is stored only as a SHA-256 hash — this
  * module never sees or logs either plaintext.
@@ -204,7 +204,7 @@ export async function upsertSsoConnection(
       const domainsUnchanged = sameDomains(existing.emailDomains, input.emailDomains);
       const domainsVerifiedAt = domainsUnchanged ? existing.domainsVerifiedAt : null;
       const enabled = domainsUnchanged && existing.enabled ? 1 : 0;
-      // Rows created before migration 042 have no verification token; generate
+      // Rows created before migration 050 have no verification token; generate
       // one on replace so verify-domains has a recovery path short of a
       // destructive DELETE.
       const domainVerificationToken = existing.domainVerificationToken ?? randomHexToken();
@@ -619,7 +619,7 @@ export async function ensureScimMember(
 }
 
 // ---------------------------------------------------------------------------
-// OIDC login states (migration 041): short-lived per-login rows whose atomic
+// OIDC login states (migration 049): short-lived per-login rows whose atomic
 // consumption is the replay guard for the authorization-code callback.
 // ---------------------------------------------------------------------------
 

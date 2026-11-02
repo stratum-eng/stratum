@@ -1,5 +1,8 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { setCookie } from "hono/cookie";
+import { routePath } from "hono/route";
+import { trackerForRequest } from "./analytics/tracker";
 import { githubWebhookRouter } from "./github/webhooks";
 import { analyticsMiddleware } from "./middleware/analytics";
 import { authMiddleware } from "./middleware/auth";
@@ -7,6 +10,9 @@ import { configGuardMiddleware } from "./middleware/config-guard";
 import { csrfMiddleware } from "./middleware/csrf";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
 import { securityHeadersMiddleware, setHtmlSecurityHeaders } from "./middleware/security-headers";
+import { sourceOfferMiddleware } from "./middleware/source-offer";
+import { webAnalyticsMiddleware } from "./middleware/web-analytics";
+import { handleDeployQueue } from "./queue/deploy-queue";
 import { handleEventQueue } from "./queue/event-consumer";
 import type { EventQueueMessage } from "./queue/events";
 import { handleImportQueue } from "./queue/import-queue";
@@ -17,15 +23,21 @@ import { backfillRouter } from "./routes/backfill";
 import { backupRouter } from "./routes/backup";
 import { bulkImportRouter } from "./routes/bulk-import";
 import { changesRouter } from "./routes/changes";
+import { cspReportRouter } from "./routes/csp-report";
 import { deletionJobsRouter } from "./routes/deletion-jobs";
+import { deploymentsRouter, projectDeploymentsRouter } from "./routes/deployments";
 import { emailAuthRouter } from "./routes/email-auth";
 import { gitHttpRouter } from "./routes/git-http";
 import { healthRouter } from "./routes/health";
 import { issuesRouter } from "./routes/issues";
 import { loginRouter } from "./routes/login";
+import { mcpRouter } from "./routes/mcp";
+import { mcpOAuthRouter } from "./routes/mcp-oauth";
 import { metricsRouter } from "./routes/metrics";
+import { oauthSignupRouter } from "./routes/oauth-signup";
 import { orgSsoRouter } from "./routes/org-sso";
 import { orgsRouter } from "./routes/orgs";
+import { posthogProxyRouter } from "./routes/posthog-proxy";
 import { projectsRouter } from "./routes/projects";
 import { restoreRouter } from "./routes/restore";
 import { reviewsRouter } from "./routes/reviews";
@@ -52,7 +64,33 @@ export { RepoDO } from "./queue/repo-do";
 
 const app = new Hono<{ Bindings: Env }>();
 
+/**
+ * The matched route pattern for an error, or `"*"` when there is none.
+ *
+ * `routePath` reads the matched-route registry, which a failure raised before
+ * routing (a middleware throwing) never populated. Falling back to the literal
+ * `"*"` keeps the concrete path — namespaces, slugs, file paths — out of the
+ * export, which is the same guarantee `analyticsMiddleware` makes.
+ */
+function errorRoute(c: Context<{ Bindings: Env }>): string {
+  try {
+    // Defaults to `c.req.routeIndex` — the responding handler. See the note in
+    // `analyticsMiddleware`: the `-1` form reports the last *registered*
+    // matching route, which the `/:namespace/:slug` catch-all always wins.
+    return routePath(c) || "*";
+  } catch {
+    return "*";
+  }
+}
+
 app.use("*", securityHeadersMiddleware);
+// Registered early so its post-`next()` work sees the final response, after
+// every other middleware has had its say. It reads `userId`/`telemetryOptOut`,
+// which `authMiddleware` below publishes before this runs. Outermost of the two
+// response rewriters, so it builds its replacement `Response` from headers
+// `sourceOfferMiddleware` has already set rather than racing it.
+app.use("*", webAnalyticsMiddleware);
+app.use("*", sourceOfferMiddleware);
 app.use("*", configGuardMiddleware);
 app.use("*", analyticsMiddleware);
 app.use("*", authMiddleware);
@@ -126,6 +164,10 @@ app.get("/dev-login", async (c) => {
   }
 });
 
+// Mounted before uiRouter, whose `/:namespace/:slug` catch-all is registered
+// last and would otherwise swallow these paths.
+app.route("/_ph", posthogProxyRouter);
+
 app.get("/ui.css", (c) => {
   return c.text(CSS, 200, { "Content-Type": "text/css; charset=UTF-8" });
 });
@@ -180,10 +222,16 @@ app.route("/auth/sso", ssoRouter);
 app.route("/auth/email", emailAuthRouter);
 app.route("/auth/login", loginRouter);
 app.route("/auth/signup", signupRouter);
+app.route("/auth/signup/complete", oauthSignupRouter);
 app.route("/auth/sessions", sessionRouter);
 app.route("/api/projects", webhooksRouter);
 app.route("/api/projects", issuesRouter);
+// Ahead of projectsRouter: both claim /api/projects, and Hono matches in mount
+// order, so the narrower :namespace/:slug/{secrets,deployments} paths have to be
+// offered first or the broader project routes shadow them.
+app.route("/api/projects", projectDeploymentsRouter);
 app.route("/api/projects", projectsRouter);
+app.route("/api/deployments", deploymentsRouter);
 app.route("/api/workspaces", workspacesRouter);
 app.route("/api/users", usersRouter);
 app.route("/api/agents", agentsRouter);
@@ -199,6 +247,17 @@ app.route("/api/bulk-import", bulkImportRouter);
 // closed unless authMiddleware resolved a SCIM connection.
 app.route("/scim/v2", scimRouter);
 app.route("/api/webhooks/github", githubWebhookRouter);
+
+// The remote MCP endpoint and the OAuth 2.1 authorization server that fronts it
+// (#349). Both own absolute paths (/mcp, /oauth/*, /.well-known/oauth-*), so
+// they mount at the root — before the UI catch-all, whose /:namespace/:slug
+// route would otherwise swallow /.well-known/oauth-protected-resource.
+app.route("/", mcpOAuthRouter);
+app.route("/", mcpRouter);
+
+// Browsers POST CSP violation reports here; every page's policy names it.
+app.route("/", cspReportRouter);
+
 // Git smart-HTTP proxy (clone/fetch). Mount before the UI catch-all so its
 // /@ns/slug/{info/refs,git-upload-pack,git-receive-pack} paths resolve here.
 app.route("/", gitHttpRouter);
@@ -214,6 +273,20 @@ app.onError((err, c) => {
   logger.error(`Unhandled error: ${err.message}`, err instanceof Error ? err : undefined, {
     path: c.req.path,
     method: c.req.method,
+  });
+  // An unhandled exception never reaches `analyticsMiddleware`'s post-`next()`
+  // body — the rejection propagates straight past it to here — so a 500 born
+  // this way is invisible in `api_request` entirely. That is the gap this
+  // fills, and why it is a distinct event rather than a status code.
+  //
+  // The message is deliberately absent: exception messages quote their input,
+  // which on this codebase means SQL fragments, tokens, and file paths. The
+  // constructor name is the bounded part, and the message stays in the log
+  // line above where an operator can read it and a third party cannot.
+  trackerForRequest(c).capture("error_occurred", {
+    route: errorRoute(c),
+    method: c.req.method,
+    error_type: err instanceof Error ? err.constructor.name : "unknown",
   });
   // Belt-and-suspenders: the middleware registers headers before next(), but the
   // error boundary builds a fresh response, so re-assert the full set here via the
@@ -244,6 +317,8 @@ export default {
       await handleImportQueue(batch as MessageBatch<ImportJobMessage | SyncJobMessage>, env);
     } else if (queueName.startsWith("stratum-events")) {
       await handleEventQueue(batch as MessageBatch<EventQueueMessage>, env);
+    } else if (queueName.startsWith("stratum-deploys")) {
+      await handleDeployQueue(batch, env);
     } else {
       // Unknown queue - ack all messages to prevent retries
       logger.warn("Unknown queue", { queue: queueName });

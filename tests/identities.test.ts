@@ -40,7 +40,7 @@ function identityRows(
     .all() as { user_id: string; issuer: string; subject: string }[];
 }
 
-describe("migration 041 schema", () => {
+describe("migration 049 schema", () => {
   it("adds the users disabled/github-drift columns", () => {
     const { raw } = makeSqliteD1();
     const columns = (raw.prepare("PRAGMA table_info(users)").all() as { name: string }[]).map(

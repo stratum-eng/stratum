@@ -1,3 +1,5 @@
+import type { AnalyticsTracker } from "../analytics/tracker";
+import { trackerForSystem } from "../analytics/tracker";
 import type { EventRecord } from "../storage/events";
 import {
   type Webhook,
@@ -45,6 +47,7 @@ async function deliverToWebhook(
   webhook: Webhook,
   event: EventRecord,
   logger: Logger,
+  tracker: AnalyticsTracker,
 ): Promise<void> {
   const payload: WebhookPayload = {
     id: event.id,
@@ -86,6 +89,11 @@ async function deliverToWebhook(
       durationMs: Date.now() - startedAt,
       ...(response.ok ? {} : { error: `Receiver responded ${response.status}` }),
     });
+    // The delivery log answers "did MY webhook fire" for one project owner.
+    // This answers the operator's version — "is outbound delivery healthy on
+    // this instance" — which the per-project log cannot, because nobody reads
+    // every project's log. Carries no URL, no ids, and no receiver response.
+    await trackDelivery(tracker, response.ok);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Webhook delivery failed", {
@@ -101,7 +109,16 @@ async function deliverToWebhook(
       error: message.slice(0, MAX_ERROR_LENGTH),
       durationMs: Date.now() - startedAt,
     });
+    await trackDelivery(tracker, false);
   }
+}
+
+/** One personless delivery outcome. The receiver's identity never leaves the instance. */
+function trackDelivery(tracker: AnalyticsTracker, ok: boolean): Promise<void> {
+  return tracker.capture("background_job_completed", {
+    job: "webhook-delivery",
+    outcome: ok ? "succeeded" : "failed",
+  });
 }
 
 /**
@@ -116,11 +133,24 @@ export async function deliverEventToWebhooks(
   event: EventRecord,
   logger: Logger,
 ): Promise<void> {
-  // Scope delivery by the canonical project_id when the event carries one, so a
-  // same-named project in another namespace never receives these events.
-  const webhooksResult = await listWebhooks(env.DB, logger, event.project, {
+  // Delivery is scoped by the canonical project_id only (#235). An outbox row
+  // that carries no project_id cannot be scoped to a tenant: resolving its
+  // free-form `project` name would deliver to whichever same-named project
+  // happened to match, across namespaces. Drop it loudly instead — every
+  // current emitter threads the id through `emitEvent`, so a row without one is
+  // legacy, and a missed delivery is recoverable where a cross-tenant one is
+  // not.
+  if (event.projectId === undefined) {
+    logger.warn("Skipping webhook delivery for an event with no project_id", {
+      eventId: event.id,
+      eventType: event.type,
+      project: event.project,
+    });
+    return;
+  }
+
+  const webhooksResult = await listWebhooks(env.DB, logger, event.projectId, {
     activeOnly: true,
-    ...(event.projectId !== undefined ? { projectId: event.projectId } : {}),
   });
   if (!webhooksResult.success) return;
 
@@ -129,5 +159,10 @@ export async function deliverEventToWebhooks(
   );
   if (matching.length === 0) return;
 
-  await Promise.all(matching.map((webhook) => deliverToWebhook(env.DB, webhook, event, logger)));
+  // One tracker for the whole fan-out: it holds no per-delivery state, and
+  // building it per webhook would re-read the environment for each receiver.
+  const tracker = trackerForSystem(env);
+  await Promise.all(
+    matching.map((webhook) => deliverToWebhook(env.DB, webhook, event, logger, tracker)),
+  );
 }

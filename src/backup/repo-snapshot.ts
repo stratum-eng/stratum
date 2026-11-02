@@ -1,5 +1,11 @@
 import git from "isomorphic-git";
-import { type NodeFS, cloneRepo, extractTreeObjects, freshRepoToken } from "../storage/git-ops";
+import {
+  type NodeFS,
+  cloneRepo,
+  extractTreeObjects,
+  freshRepoToken,
+  listRepoBranches,
+} from "../storage/git-ops";
 import { packObjects } from "../storage/object-loader";
 import type { Env, ProjectEntry } from "../types";
 import { projectDefaultBranch } from "../types";
@@ -24,6 +30,13 @@ export interface TagRefRecord {
   oid: string;
 }
 
+/** A branch ref captured in a snapshot: refs/heads/<name> → the commit oid the
+ * remote advertised for it. */
+export interface BranchRefRecord {
+  name: string;
+  oid: string;
+}
+
 export interface RepoManifest {
   projectId: string;
   /** Full identity so restore can recreate the correctly-named Artifacts repo
@@ -37,6 +50,23 @@ export interface RepoManifest {
    * compatibility: manifests written before tag support omit it, and restore
    * must treat a missing field as "no tags". */
   tags?: TagRefRecord[];
+  /** Branch refs captured with the pack (#181). OPTIONAL, but — unlike `tags`
+   * — absence and `[]` mean DIFFERENT things here, because the snapshot omits
+   * the field when the ref advertisement fails:
+   *   - absent  -> branch refs were not captured (a legacy manifest, or a
+   *                failed advertisement). Nothing is known about them.
+   *   - `[]`    -> the remote answered, and there are genuinely no branches.
+   * Restore skips branch publication in both cases, so the distinction costs it
+   * nothing; a reader that reports on backup completeness must not treat the
+   * first as a confirmed empty set. */
+  branches?: BranchRefRecord[];
+  /** Total branches the remote advertised when the snapshot was taken, present
+   * only when that exceeded the listing cap and `branches` is therefore a
+   * SUBSET. Recorded in the manifest rather than left to a log line: a restore
+   * that silently recreates 200 of 250 branches is the lossy-and-quiet failure
+   * #251 exists to prevent, and an operator reading the manifest is the one who
+   * needs to know. */
+  branchesTruncatedTotal?: number;
 }
 
 export interface RepoSnapshot {
@@ -356,12 +386,18 @@ export async function walkRepoObjects(
  * @param project - The project associated with the snapshot
  * @param walk - The collected repository objects, tip commit, and tag references
  * @param capturedAt - The snapshot capture timestamp
+ * @param branches - Branch refs read from the ref advertisement (#181). They do
+ * not come from the walk because listing them needs no object access at all;
+ * omitting the argument writes no `branches` key, which is precisely the shape
+ * of a pre-branch-support manifest.
  * @returns A packed repository snapshot with its manifest
  */
 export function buildSnapshot(
   project: ProjectEntry,
   walk: WalkResult,
   capturedAt: string,
+  branches?: BranchRefRecord[],
+  opts?: { branchesTruncatedTotal?: number },
 ): RepoSnapshot {
   const byteCount = walk.objects.reduce((n, o) => n + o.bytes.byteLength, 0);
   return {
@@ -374,6 +410,10 @@ export function buildSnapshot(
       byteCount,
       capturedAt,
       tags: walk.tags,
+      ...(branches ? { branches } : {}),
+      ...(opts?.branchesTruncatedTotal !== undefined
+        ? { branchesTruncatedTotal: opts.branchesTruncatedTotal }
+        : {}),
     },
   };
 }
@@ -421,6 +461,11 @@ export async function snapshotRepo(
     fullHistory: true,
     ref: projectDefaultBranch(project),
     includeTags: true,
+    // Overrides cloneRepo's default 30s budget (#332): this runs as a
+    // scheduled background job, not a user-facing request, and a
+    // full-history + tags clone of a large repo legitimately needs more
+    // time than the request-path default allows.
+    timeoutMs: 300_000,
   });
   if (!clone.success) return err(clone.error);
 
@@ -429,5 +474,53 @@ export async function snapshotRepo(
   if ("empty" in walk.data) return ok({ status: "skipped", reason: "empty" });
   if ("tooLarge" in walk.data) return ok({ status: "skipped", reason: "too large" });
 
-  return ok({ status: "ok", snapshot: buildSnapshot(project, walk.data, capturedAt) });
+  // Branch refs (#181) come from ONE ref advertisement — 2 subrequests, no
+  // extra clone, no object reads, no change to the byte budget.
+  //
+  // Recording the refs is enough; the walk is deliberately untouched. A branch
+  // ref can only be pointed at an object the repo already holds: `createBranchRef`
+  // resolves its start point to the default tip, another branch's tip, a tag's
+  // tip, or a commit in the default branch's history — every one of which
+  // `walkRepoObjects` already packs. A tip that is nonetheless absent from the
+  // pack is skipped at restore rather than written dangling, so the pack stays
+  // closed under reachability either way.
+  //
+  // Listed AFTER the walk so an empty or over-cap repo — which is skipped
+  // anyway — never spends the subrequests.
+  const listed = await listRepoBranches(
+    project.remote,
+    token.data,
+    logger,
+    projectDefaultBranch(project),
+  );
+  if (!listed.success) {
+    // Best-effort, like the tag-listing failure above: the pack is the valuable
+    // part of a backup, so a failed advertisement records no branches instead of
+    // losing the snapshot of the whole repository.
+    logger.warn("Failed to list branches for snapshot; backing up without branch refs", {
+      projectId: project.id,
+      error: listed.error.message,
+    });
+  }
+  // `undefined`, not `[]`, when the advertisement failed. An empty array is a
+  // positive claim — "this repository has no branches" — which is exactly what
+  // a failed listing cannot support, and it would be indistinguishable from a
+  // genuine zero-branch repo to anyone reading the stored manifest.
+  const branches = listed.success ? listed.data.branches : undefined;
+  if (listed.success && listed.data.truncated) {
+    logger.warn("Snapshot records only part of this repo's branches (listing cap reached)", {
+      projectId: project.id,
+      recordedBranchCount: listed.data.branches.length,
+      totalBranchCount: listed.data.totalBranchCount,
+    });
+  }
+
+  return ok({
+    status: "ok",
+    snapshot: buildSnapshot(project, walk.data, capturedAt, branches, {
+      ...(listed.success && listed.data.truncated
+        ? { branchesTruncatedTotal: listed.data.totalBranchCount }
+        : {}),
+    }),
+  });
 }

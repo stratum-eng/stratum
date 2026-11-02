@@ -4,6 +4,7 @@
 
 const ALGORITHM = "AES-GCM";
 const KEY_LENGTH = 256;
+const IV_LENGTH = 12;
 
 /**
  * Hash a token using SHA-256
@@ -54,6 +55,18 @@ export async function generateApiKey(prefix: string): Promise<string> {
   return `${prefix}_${hex}`;
 }
 
+function toBase64(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes));
+}
+
+function fromBase64(encoded: string): Uint8Array {
+  return new Uint8Array(
+    atob(encoded)
+      .split("")
+      .map((c) => c.charCodeAt(0)),
+  );
+}
+
 /**
  * The historical hardcoded salt. It predates any second use of the AES-GCM
  * helpers, so it stays the default: every existing GitHub-token ciphertext was
@@ -102,7 +115,7 @@ export async function encryptToken(
 ): Promise<string> {
   const key = await getEncryptionKey(secret, salt);
   const encoder = new TextEncoder();
-  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
 
   const encrypted = await crypto.subtle.encrypt(
     { name: ALGORITHM, iv },
@@ -114,7 +127,7 @@ export async function encryptToken(
   combined.set(iv);
   combined.set(new Uint8Array(encrypted), iv.length);
 
-  return btoa(String.fromCharCode(...combined));
+  return toBase64(combined);
 }
 
 /**
@@ -128,16 +141,143 @@ export async function decryptToken(
   try {
     const key = await getEncryptionKey(secret, salt);
 
-    const combined = new Uint8Array(
-      atob(ciphertext)
-        .split("")
-        .map((c) => c.charCodeAt(0)),
-    );
+    const combined = fromBase64(ciphertext);
 
-    const iv = combined.slice(0, 12);
-    const encrypted = combined.slice(12);
+    const iv = combined.slice(0, IV_LENGTH);
+    const encrypted = combined.slice(IV_LENGTH);
 
     const decrypted = await crypto.subtle.decrypt({ name: ALGORITHM, iv }, key, encrypted);
+
+    return new TextDecoder().decode(decrypted);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The `(project_id, name)` pair a deploy secret's ciphertext is cryptographically
+ * bound to. Both fields are authenticated but not encrypted — they are already
+ * public in the row that stores the ciphertext.
+ */
+export interface SecretScope {
+  projectId: string;
+  name: string;
+}
+
+/**
+ * Salt for deploy-secret key derivation.
+ *
+ * Deliberately distinct from the GitHub-token salt above: an operator who sets
+ * `DEPLOY_SECRET_KEY` and the GitHub token key to the same string must still end
+ * up with two unrelated AES keys, so compromise of one derived key cannot unlock
+ * the other store.
+ */
+const DEPLOY_SECRET_SALT = "stratum-deploy-secret-salt";
+
+/**
+ * NUL-separated so the AAD is an injective encoding of the pair: with a plain
+ * concatenation, ("proj_1A", "B") and ("proj_1", "AB") would authenticate
+ * identically and a ciphertext could be transplanted between them. Neither field
+ * can contain a NUL — ids are `prefix_<hex>` and names match
+ * `^[A-Z][A-Z0-9_]{0,63}$` — so the separator is unambiguous.
+ */
+function secretAad(scope: SecretScope): Uint8Array {
+  return new TextEncoder().encode(`${scope.projectId}\u0000${scope.name}`);
+}
+
+/**
+ * Derives the AES-GCM key used for deploy secrets from `DEPLOY_SECRET_KEY`.
+ *
+ * Call this **once** per deployment and pass the result to every
+ * {@link encryptSecret} / {@link decryptSecret} call. PBKDF2 at 100k iterations
+ * is real CPU work and the deploy queue consumer runs under a CPU limit, so
+ * deriving per secret is not viable for a deploy that resolves several.
+ *
+ * @param secret - The raw `DEPLOY_SECRET_KEY` value
+ * @returns A non-extractable AES-GCM key
+ */
+export async function deriveSecretKey(secret: string): Promise<CryptoKey> {
+  const encoder = new TextEncoder();
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "PBKDF2" },
+    false,
+    ["deriveBits", "deriveKey"],
+  );
+
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: encoder.encode(DEPLOY_SECRET_SALT),
+      iterations: 100000,
+      hash: "SHA-256",
+    },
+    baseKey,
+    { name: ALGORITHM, length: KEY_LENGTH },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+/**
+ * Encrypts a deploy secret, binding it to one project and one secret name.
+ *
+ * The scope travels as AES-GCM additional authenticated data, so a ciphertext
+ * copied into another project's row — or renamed within the same project — fails
+ * authentication instead of silently authenticating against the wrong provider
+ * account.
+ *
+ * @param plaintext - The secret value
+ * @param key - A key from {@link deriveSecretKey}
+ * @param scope - The `(project_id, name)` pair to bind the ciphertext to
+ * @returns Base64 of `iv || ciphertext || tag`
+ */
+export async function encryptSecret(
+  plaintext: string,
+  key: CryptoKey,
+  scope: SecretScope,
+): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
+
+  const encrypted = await crypto.subtle.encrypt(
+    { name: ALGORITHM, iv, additionalData: secretAad(scope) },
+    key,
+    new TextEncoder().encode(plaintext),
+  );
+
+  const combined = new Uint8Array(iv.length + encrypted.byteLength);
+  combined.set(iv);
+  combined.set(new Uint8Array(encrypted), iv.length);
+
+  return toBase64(combined);
+}
+
+/**
+ * Decrypts a deploy secret produced by {@link encryptSecret}.
+ *
+ * @param ciphertext - Base64 of `iv || ciphertext || tag`
+ * @param key - A key from {@link deriveSecretKey}
+ * @param scope - The `(project_id, name)` pair the ciphertext must be bound to
+ * @returns The plaintext, or `null` when the key, the scope, or the bytes fail to
+ *   authenticate. `null` never means "empty secret": the empty string is a legal
+ *   value and round-trips as `""`.
+ */
+export async function decryptSecret(
+  ciphertext: string,
+  key: CryptoKey,
+  scope: SecretScope,
+): Promise<string | null> {
+  try {
+    const combined = fromBase64(ciphertext);
+    const iv = combined.slice(0, IV_LENGTH);
+    const encrypted = combined.slice(IV_LENGTH);
+
+    const decrypted = await crypto.subtle.decrypt(
+      { name: ALGORITHM, iv, additionalData: secretAad(scope) },
+      key,
+      encrypted,
+    );
 
     return new TextDecoder().decode(decrypted);
   } catch {

@@ -49,8 +49,11 @@ curl -H "Authorization: Bearer $STRATUM_API_KEY" \
 This returns an `ImportProgress` object: a `status` (`queued`, `cloning`,
 `processing`, `completed`, `failed`, `cancelled`, …), a `progress` object
 (`totalFiles`, `processedFiles`, `currentFile`, `bytesTransferred`,
-`totalBytes`), and any `errors` and `logs`. Polling also recovers imports that
-have stalled for more than 5 minutes.
+`totalBytes`), and any `errors` and `logs`. Polling also recovers an import that
+has been in an actively-progressing state (`cloning`, `processing`, `syncing`,
+`cancelling`) for more than **20 minutes** without its timestamp advancing.
+`queued` is deliberately excluded — a job waiting to be picked up is not
+stalled, and the scheduled sweep covers it under a one-hour grace period.
 
 `processedFiles` and `totalFiles` are not an incrementing counter: they are
 both written once, from the file walk that builds the repository snapshot, in
@@ -103,10 +106,14 @@ Enable automatic syncing with:
 curl -X POST "$STRATUM_HOST/api/projects/@username/repo/sync/settings" \
   -H "Authorization: Bearer $STRATUM_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"autoSyncEnabled": true, "syncFrequency": 60}'
+  -d '{"autoSyncEnabled": true}'
 ```
 
-`syncFrequency` is in minutes. Past runs are listed by
+Auto-sync runs on a **fixed daily schedule** (06:00 UTC on the hosted
+instance) for every project with `autoSyncEnabled`. The settings endpoint also
+accepts a `syncFrequency` field, but it is stored and **not yet used** — the
+scheduler does not read it, so it does not change the cadence. Trigger
+`POST …/sync` yourself for anything more frequent. Past runs are listed by
 `GET …/sync/history` (paginated with `limit`/`offset`).
 
 ## Failure notifications
@@ -149,7 +156,8 @@ What import does **not** do yet:
   GitLab are not supported.
 
 Bidirectional GitHub sync — inbound webhooks and outbound PR promotion, i.e.
-**layer mode** — is covered in [Getting started](getting-started.md).
+**layer mode** — is covered in
+[Getting started](getting-started.md#choose-your-level-of-buy-in-layer-mode-vs-forge-mode).
 
 ## Unsupported content
 
@@ -181,4 +189,4 @@ rather than fail loudly. Remove submodules (or flatten them into the repo)
 before importing, or push to a workspace remote for content that never
 touches the default branch. Full submodule support (recursive clone and
 browsing) is tracked for later; see
-[`CURRENT_CAPABILITIES.md`](https://github.com/stratum-eng/stratum/blob/main/docs/CURRENT_CAPABILITIES.md).
+[`CURRENT_CAPABILITIES.md`](../CURRENT_CAPABILITIES.md).

@@ -7,6 +7,11 @@
 #   -> workers-ai/@cf/zai-org/glm-5.3-flash
 #   -> openai/gpt-5.6-terra          (via unified billing, Cloudflare-managed credentials)
 #
+# Timeouts: AI Gateway bounds a request on time-to-first-byte, and PR-Agent does not
+# stream, so TTFB is the entire generation. Long outputs hit that wall and come back
+# 408, which LiteLLM surfaces as a Timeout. The bounds below keep a wedged call to
+# minutes instead of hours — see docs/runbooks/ai-review.md#timeouts.
+#
 # Required repository secrets (see docs/runbooks/ai-review.md for setup):
 #   AI_GATEWAY_COMPAT_BASE - https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/compat
 #   CLOUDFLARE_AI_TOKEN    - Cloudflare API token with AI Gateway Run permission
@@ -52,6 +57,9 @@ jobs:
                   github.event.comment.author_association) &&
          startsWith(github.event.comment.body, '/')))
     runs-on: ubuntu-latest
+    # Backstop. The default job timeout is 360 minutes; a wedged model call burned
+    # ~2h of runner time per PR before the fallback chain gave up.
+    timeout-minutes: 20
     permissions:
       issues: write
       pull-requests: write
@@ -97,18 +105,54 @@ jobs:
           config.model: "openai/workers-ai/@cf/zai-org/glm-5.3"
           config.fallback_models: '["openai/workers-ai/@cf/zai-org/glm-5.3-flash","openai/openai/gpt-5.6-terra"]'
           # Gateway models are absent from LiteLLM's token registry; cap explicitly.
+          # This is the model's context window, not the prompt budget — PR-Agent
+          # clamps it with max_model_tokens below, which is the number that binds.
           config.custom_model_max_tokens: "131072"
-          # GLM-5.3 is a reasoning model; a full review takes minutes. The default
-          # 120s timeout kills it mid-generation and retries forever.
-          config.ai_timeout: "600"
+          # The prompt budget: PR-Agent prunes the diff down to this before calling.
+          # It is a latency control, not a context control. GLM-5.3 does not stream,
+          # so time-to-first-byte is the whole generation and grows with the prompt:
+          # 4.5K tokens ran ~3min, 16.8K ran ~7.5min, and the default 32K ceiling
+          # blew past the 420s wall on every attempt — two PRs (#358, #359) burned
+          # the full 20min job cap without posting a review. 14K keeps a full-size
+          # review inside one attempt. Raise it only alongside streaming.
+          config.max_model_tokens: "14000"
+          # /improve makes two sequential model calls: generate suggestions, then a
+          # self-reflection pass that re-ranks them. That second call is mandatory in
+          # 0.41.0 (pr_code_suggestions.py) and defaults to config.model, so without
+          # this it is a second full reasoning generation.
+          config.model_reasoning: "openai/workers-ai/@cf/zai-org/glm-5.3-flash"
+          # Per-attempt bound. The slowest review that has ever landed ran ~440s at
+          # 16.8K input tokens, which is why max_model_tokens is set below that rather
+          # than this being raised. LiteLLM only enforces this on its httpx path — the
+          # aiohttp transport ignores it, which is how a call ran 1800s against a
+          # nominal 600s limit — so the transport is disabled alongside it.
+          config.ai_timeout: "420"
+          DISABLE_AIOHTTP_TRANSPORT: "True"
+          # Same bound server-side, so the gateway answers instead of holding the
+          # connection open. cf-aig-max-attempts pins gateway retries to 1 so they
+          # cannot multiply against PR-Agent's own 2-attempts-per-model.
+          litellm.extra_headers: '{"cf-aig-request-timeout": "420000", "cf-aig-max-attempts": "1"}'
           github_action_config.pr_actions: '["opened", "reopened", "ready_for_review"]'
-          # Strictness dials (CodeRabbit-ish): inline code suggestions on, more findings.
-          pr_reviewer.num_max_findings: "8"
-          # Packaging ("safe preset"): quality-score row, walkthrough + changes
-          # diagram posted as a comment (never edits the author's description).
-          # Committable ```suggestion blocks stay OFF by documented security
-          # decision — suggestions render in a table only.
+          # Generated files, excluded from the diff the model sees. ~1MB of the repo is
+          # machine-written (worker-configuration.d.ts from `npm run cf-typegen`, five
+          # package-lock.json files); a single dep bump or typegen refresh would other-
+          # wise dominate the prompt and crowd out the code actually worth reviewing.
+          # Globs are matched against the repo-relative path, and a "**/" prefix also
+          # covers the root-level file.
+          ignore.glob: '["**/package-lock.json", "**/worker-configuration.d.ts"]'
+          # Strictness dials. num_max_findings drives output length, and output length
+          # is what pushes a call past the gateway's TTFB wall; 5 splits the difference
+          # between the 0.41.0 default of 3 and the 8 we started with.
+          pr_reviewer.num_max_findings: "5"
+          # Ticket-compliance analysis emits a block per referenced issue, and our PRs
+          # routinely cite several — a lot of output for a section nobody reads.
+          pr_reviewer.require_ticket_analysis_review: "false"
+          # Packaging ("safe preset"): quality-score row on the review. Committable
+          # ```suggestion blocks stay OFF by documented security decision —
+          # suggestions render in a table only.
           pr_reviewer.require_score_review: "true"
+          # These govern /describe when it is invoked by comment; auto_describe is
+          # off, so they do not apply to the automatic run.
           pr_description.publish_description_as_comment: "true"
           # The walkthrough comment sits under the description — don't echo it back,
           # and keep it lean: no PR-type row, no mermaid diagram.
@@ -116,5 +160,12 @@ jobs:
           pr_description.enable_pr_type: "false"
           pr_description.enable_pr_diagram: "false"
           github_action_config.auto_review: "true"
-          github_action_config.auto_describe: "true"
-          github_action_config.auto_improve: "true"
+          # Off: the walkthrough comment restated the author's own description back
+          # at them plus a file-by-file table, on a repo where PR descriptions are
+          # written by hand. Available on demand as a /describe comment.
+          github_action_config.auto_describe: "false"
+          # Off until long generations can clear the TTFB wall: both of /improve's
+          # calls exceeded it on every run, so auto-improve cost ~2h of runner time
+          # per PR and never posted a suggestion. Still available on demand as an
+          # /improve comment. See docs/runbooks/ai-review.md#timeouts.
+          github_action_config.auto_improve: "false"

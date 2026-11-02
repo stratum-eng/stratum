@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
+import { SourceFooter } from "../ui/components/source-footer";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -483,6 +484,7 @@ app.get("/", (c) => {
             )}
           </div>
         </main>
+        <SourceFooter />
       </body>
     </html>,
   );

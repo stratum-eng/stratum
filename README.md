@@ -1,12 +1,13 @@
 # Stratum
 
 [![CI Status](https://github.com/stratum-eng/stratum/actions/workflows/ci.yml/badge.svg)](https://github.com/stratum-eng/stratum/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Docs](https://img.shields.io/badge/docs-usestratum.dev-blue.svg)](https://docs.usestratum.dev)
 
-**The governance layer for AI-written code** — the control plane that decides what agent
-output is allowed to merge, wherever your code lives. Built on Cloudflare Workers with
-Artifacts, D1, KV, R2, Queues, and Durable Objects.
+**The open-source, agent-first code forge** — git hosting where every change, human or
+agent, proves itself before it merges. Start as a layer over GitHub, or make Stratum the
+source of truth. Built on Cloudflare Workers with Artifacts, D1, KV, R2, Queues, and
+Durable Objects.
 
 > [!NOTE]
 > **Project status: pre-1.0 and under active development.** The feature set below is
@@ -49,11 +50,13 @@ Humans and AI agents are both first-class citizens, with different powers by des
   prompt produced it, its evaluation score, and what it cost (LLM tokens, sandbox time).
 - **Agent identities with a hard invariant** — agents authenticate as themselves and can
   never approve work; approvals are a human gate.
-- **Any agent, any editor** — REST API, CLI, and MCP server: Claude Code, Cursor, Copilot,
-  or your own agents all speak to the same gate. No editor subscription required.
-- **Two ways to run it** — as a **layer over GitHub** (keep your repos and PRs; eval
-  verdicts land as PR comments and commit statuses) or as a **standalone forge** (Git
-  hosting on Cloudflare Artifacts, workspace forking, issues, orgs, server-rendered UI).
+- **Any agent, any editor** — REST API, CLI, and a remote MCP server at `/mcp`: Claude
+  Code, Cursor, Copilot, or your own agents all speak to the same gate. Connecting one is
+  a URL and a browser consent screen. No editor subscription required.
+- **Two ways to run it** — in **layer mode** over GitHub (keep your repos and PRs; eval
+  verdicts land as PR comments and commit statuses) or in **forge mode** as the standalone
+  source of truth (Git hosting on Cloudflare Artifacts, workspace forking, issues, orgs,
+  server-rendered UI). Same codebase, same change flow; layer mode is the on-ramp.
 
 ## Quick start
 
@@ -73,11 +76,19 @@ Humans and AI agents are both first-class citizens, with different powers by des
   | R2 | backups; backups no-op when unbound | recommended |
   | Analytics Engine | request analytics | optional |
   | Workers AI | the LLM evaluator | optional |
-  | Sandboxes | sandbox evaluator, post-merge smoke tests | optional |
+  | Sandboxes | sandbox evaluator, post-merge smoke tests | **beta, off by default** |
 
-  Every optional binding degrades rather than crashes — the sandbox evaluator, notably,
-  **fails closed** when its binding is absent, so a policy that requires it will block
-  merges rather than wave them through. `wrangler.toml` declares all of them.
+  `wrangler.toml` declares every binding above **except `[[sandboxes]]`, which is commented
+  out** — Sandboxes is a gated Cloudflare beta, so neither the hosted instance nor a fresh
+  self-host has it. Uncomment it (and add it to each `[env.*]` block you deploy) only once
+  your account has Sandboxes access.
+
+  Missing bindings do not crash the Worker, but the two evaluator bindings **fail closed**
+  rather than degrade: with no `SANDBOX` binding a `sandbox` evaluator is replaced by one
+  that returns score 0 / failed, and the same is true of `llm` with no `AI` binding. Naming
+  either in `merge.requiredEvaluators` while its binding is absent blocks **every** merge in
+  that project. `merge.postMergeCommand` is the exception — with no `SANDBOX` binding it is
+  skipped with a warning.
 
 ### Installation
 
@@ -108,9 +119,14 @@ npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 # and set GOOGLE_REDIRECT_URI in [vars]
 
+# Admin surface (/api/admin/*: backups, restore plans, audit, metrics).
+# Set at least one, or the whole admin surface is unreachable — including backups:
+npx wrangler secret put ADMIN_API_KEY        # accepted via the X-Admin-API-Key header
+npx wrangler secret put ADMIN_EMAIL          # or: a signed-in user with this email is admin
+
 # Optional:
 npx wrangler secret put POSTHOG_API_KEY      # analytics (route patterns only, never paths)
-npx wrangler secret put GITHUB_TOKEN         # higher rate limits on GitHub import
+npx wrangler secret put GITHUB_TOKEN         # REQUIRED for promote-to-PR and eval reporting to GitHub; also raises import rate limits
 npx wrangler secret put GITHUB_WEBHOOK_SECRET  # inbound GitHub sync
 npx wrangler secret put SSO_ENCRYPTION_SECRET  # enables enterprise SSO/SCIM
 ```
@@ -181,35 +197,54 @@ curl -X POST https://your-instance.workers.dev/api/projects/@you/react/import \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"url": "https://github.com/facebook/react", "branch": "main"}'
 
-# Fork a workspace, commit into it, then open an evaluation-gated change
-curl -X POST .../api/projects/@you/my-project/workspaces -d '{"name": "fix-bug"}'
+# Fork a workspace, commit into it, then open an evaluation-gated change.
+# The repeated "workspaces" segment is correct, not a typo: the router mounts at
+# /api/workspaces and declares /:namespace/:slug/workspaces. Project-scoped
+# though it is, this route does not live under /api/projects.
+curl -X POST .../api/workspaces/@you/my-project/workspaces -d '{"name": "fix-bug"}'
 curl -X POST .../api/workspaces/fix-bug/commit \
   -d '{"files": {"src/index.ts": "export const fixed = true;"}, "message": "Fix the bug", "projectId": "..."}'
 curl -X POST .../api/projects/@you/my-project/changes -d '{"workspace": "fix-bug"}'
 curl -X POST .../api/changes/<change-id>/merge
 ```
 
-The full surface — 72 paths, 91 operations — is specified in
+The full surface — 93 paths, 116 operations — is specified in
 [`docs/api/openapi.yml`](docs/api/openapi.yml), with per-resource guides under
 [`docs/api/endpoints/`](docs/api/endpoints/README.md).
 
-### CLI, MCP server, and reference agent
+### MCP — connect an editor or agent
 
-Three first-party clients live in this repo. None are published to npm yet
+The MCP server is part of the Worker, served at **`/mcp`**. Nothing to install:
+
+```bash
+claude mcp add --transport http stratum https://your-instance.workers.dev/mcp
+```
+
+The first tool call opens your browser for sign-in and a consent screen; the client
+registers itself and handles tokens from there. No Stratum credential is ever pasted
+into an editor's config, and **Settings → Connected applications** revokes access
+immediately. Headless callers can present a `stratum_user_` or `stratum_agent_` token
+directly instead.
+
+That exposes the whole eval-gated change flow as eighteen MCP tools, so Claude Code,
+Cursor, Zed, Copilot, or a custom agent can drive Stratum without a bespoke integration.
+See the [MCP guide](docs/user-guide/mcp.md).
+
+### CLI and reference agent
+
+Two first-party client packages live in this repo. Neither is published to npm yet
 ([tracked](ROADMAP.md#publish-the-client-packages-to-npm)), so install them from source:
 
 ```bash
 # from the repository root
-for pkg in cli mcp agent; do
+for pkg in cli agent; do
   (cd "$pkg" && npm install && npm run build && npm link)
 done
 ```
 
-That gives you `stratum` (CLI, full API parity), `stratum-mcp` (MCP server), and
-`stratum-agent` (reference agent: identity → fork → LLM edit plan → commit → change).
-
-`@stratum/mcp` exposes the whole eval-gated change flow as MCP tools, so Claude Code,
-Cursor, Zed, Copilot, or a custom agent can drive Stratum without a bespoke integration.
+That gives you `stratum` (CLI: projects, workspaces, commits, changes including review and
+merge, issues, and activity — not the whole REST surface) and `stratum-agent` (reference agent:
+identity → fork → LLM edit plan → commit → change).
 
 ## Configuring the merge gate
 
@@ -232,11 +267,14 @@ evaluators:
 
   - type: webhook
     url: "https://ci.example.com/evaluate"
-    timeoutMs: 300000
+    timeoutMs: 120000                   # clamped to 120000; larger values are lowered
 
-  - type: sandbox
-    command: "npm test"
-    timeoutMs: 120000
+  # Requires the Sandboxes beta (see Prerequisites). With no SANDBOX binding this
+  # evaluator does NOT skip — it returns score 0 / failed, so uncommenting it on an
+  # instance without Sandboxes makes every change in this project fail evaluation.
+  # - type: sandbox
+  #   command: "npm test"
+  #   timeoutMs: 120000
 
 requireAll: true
 minScore: 0.6
@@ -246,9 +284,18 @@ merge:
   requiredEvaluators: ["secret_scan"]   # latest run of each must have passed
   allowForce: false                     # deny-by-default; ?force=true is rejected unless true
   requireFreshBase: true                # block a change whose base moved (409 STALE_BASE)
-  postMergeCommand: "npm test"          # smoke test the merged HEAD in a sandbox
-  autoRevert: true                      # revert the merge commit if it fails
+  # Also Sandboxes-only. Unlike the evaluator this one degrades quietly: with no
+  # SANDBOX binding the smoke test is skipped with a warning and the merge stands.
+  # postMergeCommand: "npm test"        # smoke test the merged HEAD in a sandbox
+  # autoRevert: true                    # revert the merge commit if it fails (default true)
 ```
+
+> [!WARNING]
+> Never put `"sandbox"` in `merge.requiredEvaluators` unless the `[[sandboxes]]` binding is
+> actually enabled. A required evaluator that fails closed blocks every merge in the
+> project, and short of enabling the binding the only fix is to edit the policy file —
+> which itself needs a human approval and refuses force-merge, because
+> `.stratum/policy.yaml` is a protected config file.
 
 This repository runs under its own policy — [`.stratum/policy.yaml`](.stratum/policy.yaml)
 is the live, dogfooded example.
@@ -263,13 +310,23 @@ drift out of sync with them.
 Git hosting on Cloudflare Artifacts · clone/fetch/push over smart HTTP · workspace forking ·
 changes (PRs) with evaluation gates · hunk-level diffs with a pure-CSS unified/split toggle ·
 squash and true three-way merges · a Durable Object merge queue · batch merging ·
-post-merge smoke tests with auto-revert · repo browser, file viewer, commit log, and tags.
+post-merge smoke tests with auto-revert (Sandboxes beta) · repo browser, file viewer,
+commit log, and tags.
 
 **The evaluation gate**
 Secret scanner (always on and blocking; 25+ credential patterns plus entropy detection) ·
 diff analysis · webhook for external CI · LLM review via the Workers AI binding · sandboxed
-test execution · per-evaluator evidence and estimated resource costs (LLM tokens, sandbox
-time, git ops) · branch protection · provenance recorded per merged commit.
+test execution (Sandboxes beta; see [Prerequisites](#prerequisites)) · per-evaluator
+evidence and estimated resource costs (LLM tokens, sandbox time, git ops) · branch
+protection · provenance recorded per merged commit.
+
+**Post-merge deployments**
+A `deploys:` block in `.stratum/policy.yaml` publishes the merged tree to Cloudflare
+(static assets or a Worker script) or Vercel · encrypted per-project deploy secrets that
+no API ever reads back and that agent identities cannot manage · an optional approval gate
+per deploy · retry as a new attempt · supersession when a newer merge lands first ·
+deployment events on the webhook stream. There is no build step — see
+[Known limitations](#known-limitations).
 
 **Import and sync**
 Import from GitHub, GitLab, and Bitbucket · bidirectional GitHub sync (inbound webhooks,
@@ -278,8 +335,9 @@ resumable progress.
 
 **Identity and access**
 Magic-link email auth · GitHub OAuth · Google OAuth · per-org enterprise SSO (OIDC) with
-DNS-verified email domains and SCIM 2.0 user provisioning · API keys with rotation · agent
-identities with short-lived tokens scoped to an owning user · organizations, teams, and
+DNS-verified email domains and SCIM 2.0 user provisioning · named API tokens, each `read` or
+`read_write`, independently revocable and optionally expiring · agent identities with
+tokens bounded by an owning user · organizations, teams, and
 role-based project access · CSRF protection · rate limiting.
 
 **Collaboration**
@@ -293,14 +351,19 @@ tested restore path · deletion jobs · admin metrics API · durable event outbo
 queue consumer and a stale-event sweep · workspace TTL sweep.
 
 **Interfaces**
-Server-rendered web UI · REST API (72 paths) · `@stratum/cli` at full API parity ·
-`@stratum/mcp` MCP server · `@stratum/agent` reference agent.
+Server-rendered web UI · REST API (93 paths) · remote MCP server at `/mcp` with an
+OAuth 2.1 authorization server (dynamic client registration, PKCE, rotating refresh
+tokens) · `@stratum-eng/cli` covering the change flow, issues, and activity ·
+`@stratum-eng/agent` reference agent.
 
 ## Known limitations
 
-- **Merge conflicts** — a three-way merge that conflicts falls back to a squash merge;
-  there's no interactive conflict resolution for changes (GitHub *sync* conflicts do have a
-  resolution UI).
+- **Merge conflicts** — a three-way merge that conflicts does **not** fall back to a squash
+  merge: the merge is refused with `409 MERGE_CONFLICT`, carrying the conflicting paths and
+  a conflict id you resolve out-of-band via
+  `POST /api/projects/conflicts/{id}/resolve` — `accept-project`, `accept-workspace`, or
+  `manual` with whole-file contents, not a hunk editor. There's no in-UI conflict resolution
+  for changes; GitHub *sync* conflicts do have a resolution UI.
 - **Diff depth** — diffs are hunk-level with unified and split views, but there's no
   per-line intra-hunk highlighting, binary files aren't diffed, and very large files are
   rendered whole.
@@ -309,6 +372,11 @@ Server-rendered web UI · REST API (72 paths) · `@stratum/cli` at full API pari
   viable. Keep LFS repos on GitHub and use layer mode.
 - **Git submodules are rejected**, not supported — a gitlink or `.gitmodules` fails import,
   gated push, and change creation rather than corrupting the tree silently.
+- **Deploys have no build step** — v1 publishes the tree **exactly as committed**. There's
+  no install, bundle, or framework build, so commit your built output (and point `dir:` at
+  it) or use the `vercel` target, which builds the uploaded source remotely. There's also
+  no preview deploy of an unmerged change and no rollback: retrying an earlier successful
+  deployment is the recovery path. Netlify isn't supported.
 - **Scale** — git operations run in-memory on the Worker; large repos will hit Worker limits.
 - **Synchronous evaluation** — the evaluator suite runs inline at change creation, so change
   creation latency includes it.
@@ -332,6 +400,10 @@ Each of these is documented in full, with the specific code paths involved, in
 │  │    Auth     │  │  Evaluation │  │  Merge Queue    │  │
 │  │ Middleware  │  │   Engine    │  │ (Durable Obj)   │  │
 │  └─────────────┘  └─────────────┘  └─────────────────┘  │
+│  ┌─────────────┐  ┌─────────────────────────────────┐   │
+│  │  MCP /mcp   │  │  OAuth 2.1 authorization server │   │
+│  │  (tools)    │  │  register · authorize · token   │   │
+│  └─────────────┘  └─────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
                            │
     ┌─────────┬────────────┼───────────┬──────────┐
@@ -361,6 +433,7 @@ Published at [docs.usestratum.dev](https://docs.usestratum.dev), built from
 **Users** — [Getting started](docs/user-guide/getting-started.md) ·
 [Importing from GitHub](docs/user-guide/importing.md) ·
 [CI integration](docs/user-guide/ci-integration.md) ·
+[Deployments](docs/user-guide/deployments.md) ·
 [Troubleshooting](docs/user-guide/troubleshooting.md) ·
 [FAQ](docs/user-guide/faq.md)
 
@@ -391,8 +464,12 @@ Published at [docs.usestratum.dev](https://docs.usestratum.dev), built from
 
 ### GitHub Actions
 
-- **`pr-checks.yml`** — tests, lint, typecheck, and the CLI/agent/MCP package builds on
-  every pull request, plus a staging preview deploy.
+- **`pr-checks.yml`** — tests, lint, typecheck, security scan, and the CLI/agent package
+  builds on every pull request. It deliberately deploys nothing: a PR deploying over the
+  shared staging Worker desynchronised its Durable Object migration tag and red-lined
+  `main`.
+- **`pr-preview.yml`** — the per-PR preview instead: an isolated `stratum-pr-<N>` Worker
+  with its own D1 and KV, torn down when the PR closes. Fork PRs get none.
 - **`ci.yml`** — the same gates on every push to `main`, then deploys to staging and to
   production. Both deploys are gated by GitHub deployment environments, so production waits
   for whatever approvals that environment requires.
@@ -426,7 +503,8 @@ Working with an AI coding agent? Point it at [AGENTS.md](AGENTS.md) — the agen
 version of the contributor guide.
 
 This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). Notable changes are
-recorded in [CHANGELOG.md](CHANGELOG.md).
+recorded in [CHANGELOG.md](CHANGELOG.md), and tagged versions are published on the
+[releases page](https://github.com/stratum-eng/stratum/releases).
 
 ## Security
 
@@ -436,7 +514,28 @@ instead — see [SECURITY.md](SECURITY.md) for what to include and expected resp
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Split along the line that matters to you: what you run as a service is
+copyleft, what you run inside your own pipeline is not.
+
+| Path | License |
+|---|---|
+| [`cli/`](cli) — `@stratum-eng/cli` | [Apache-2.0](cli/LICENSE) |
+| [`agent/`](agent) — `@stratum-eng/agent` | [Apache-2.0](agent/LICENSE) |
+| `website/public/.well-known/agent-skills/` — the published agent skills | MIT |
+| everything else — the server, the web UI, `docs/`, `website/` | [AGPL-3.0-or-later](LICENSE) |
+
+Copyright © 2026 Jordan Lamoreaux.
+
+Self-hosting an unmodified Stratum obliges you to nothing. If you **modify** it
+and other people reach your instance over a network, AGPL §13 asks you to offer
+them that version's source: point `STRATUM_SOURCE_URL` in
+[`src/version.ts`](src/version.ts) at your repository and the page footer does
+it. Nothing in the AGPL reaches the repositories Stratum hosts, the changes it
+evaluates, or anything you build with it.
+
+Releases through **v0.2.0 are MIT and stay MIT**. See
+[LICENSING.md](LICENSING.md) for the full account, including commercial
+licensing, and [CLA.md](CLA.md) for what contributors agree to.
 
 ## Acknowledgments
 

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+  "name": "Stratum",
+  "description": "Skills for driving Stratum — the open-source, agent-first code forge.",
+  "homepage": "https://docs.usestratum.dev/",
+  "license": "MIT",
+  "skills": [
+    {
+      "name": "stratum-agent-identity",
+      "type": "skill-md",
+      "description": "Obtain a Stratum agent identity and token, authenticate to the REST API, and understand what an agent token may and may not do.",
+      "digest": "sha256:2cb547705b99c636e1d360dd81b3e06a51c1d934e3da578daced44563fb7589b",
+      "url": "https://docs.usestratum.dev/.well-known/agent-skills/stratum-agent-identity/SKILL.md"
+    },
+    {
+      "name": "stratum-mcp",
+      "type": "skill-md",
+      "description": "Connect an MCP-capable agent or editor to Stratum and use its tools for the full evaluation-gated change flow.",
+      "digest": "sha256:d352270d7d2d93c6b6647303059b586d076c1581b62312b7d3ffdef985f28a83",
+      "url": "https://docs.usestratum.dev/.well-known/agent-skills/stratum-mcp/SKILL.md"
+    },
+    {
+      "name": "stratum-merge-gate",
+      "type": "skill-md",
+      "description": "Get a change through Stratum's evaluation gates and merged, and read the verdict when a gate blocks it.",
+      "digest": "sha256:557f27a8c2b068d33fb9e849a68593479dd62edb0819b73a6362f250a79decbe",
+      "url": "https://docs.usestratum.dev/.well-known/agent-skills/stratum-merge-gate/SKILL.md"
+    }
+  ]
+}

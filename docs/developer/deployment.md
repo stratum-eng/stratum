@@ -298,6 +298,16 @@ npx wrangler secret put EMAIL_FROM_ADDRESS
 # no person profile is created). Note: the event property was renamed
 # `path` -> `route`; dashboards and queries keyed on `path` must switch to
 # `route` — old `path` references receive no new data.
+#
+# A second stream, stratum.<event type>, is emitted per repository activity by
+# the queue consumer; it carries the event type, actor type, and an opaque
+# projectId. Note: it previously carried `project`, the concrete project NAME —
+# that property was removed (#257) because it identified private source the
+# request path already redacts. Dashboards grouping on `project` must switch to
+# `projectId`; old `project` references receive no new data.
+#
+# Both streams are suppressed for a user who has turned analytics off in
+# Settings → Privacy, and for agents whose owner has.
 npx wrangler secret put POSTHOG_API_KEY
 
 # Backups — encrypts backup blobs at rest (D1 dumps contain secrets).
@@ -492,11 +502,24 @@ Set in `wrangler.toml`:
 POSTHOG_HOST = "https://app.posthog.com"
 OAUTH_REDIRECT_URI = "https://your-instance.workers.dev/auth/github/callback"
 STRATUM_TELEMETRY_DISABLED = "false"
+STRATUM_ENVIRONMENT = "production"
 
 [env.staging.vars]
 OAUTH_REDIRECT_URI = "https://your-instance-staging.workers.dev/auth/github/callback"
 STRATUM_TELEMETRY_DISABLED = "true"
+STRATUM_ENVIRONMENT = "staging"
 ```
+
+> **Named environments do not inherit top-level `[vars]` — they replace them.**
+> Setting `STRATUM_TELEMETRY_DISABLED` only under `[vars]` has no effect on
+> `wrangler deploy --env=production` or `--env=staging` (what `npm run
+> deploy:production` and `deploy:staging` run). Declare it in **each**
+> `[env.<name>.vars]` block you actually deploy, or the switch stays off.
+>
+> The same applies to `STRATUM_ENVIRONMENT`, which labels every analytics event
+> so staging traffic can be told apart from production's in one PostHog
+> project. An instance that leaves it unset reports `environment: "unknown"` —
+> harmless, but every funnel built across both deployments is then wrong.
 
 ### Per-Environment Configuration
 

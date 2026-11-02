@@ -1,12 +1,23 @@
 # Stratum Current Capabilities
 
-Last updated: 2026-08-28 — reflects completion of the master-plan feature roadmap
-(Phases 0–3 plus the code-level Phase 4 hardening items), enterprise OIDC SSO +
-SCIM provisioning (#253), plus the Git LFS limitation recorded below.
+Last updated: 2026-11-02 — reflects completion of the master-plan feature roadmap
+(Phases 0–3 plus the code-level Phase 4 hardening items), plus post-merge
+deployments, scoped API tokens, the MCP server and browser-based CLI login,
+enterprise OIDC SSO + SCIM provisioning (#253), and the Git LFS and submodule
+limitations recorded below.
+
+> **Read the caveats, not just the bullets.** Two capabilities below exist in
+> code but cannot be used on a stock instance, because the Cloudflare Sandboxes
+> binding they need is a gated beta and is **commented out in `wrangler.toml`**
+> (`# [[sandboxes]]`, `wrangler.toml:156` — the only occurrence in the file, and
+> named environments do not inherit top-level bindings). See
+> [Sandbox-dependent features](#sandbox-dependent-features-unavailable-by-default).
 
 ## Core platform
 
-- Cloudflare Worker (Hono) on Artifacts, KV, D1, Queues, and a merge Durable Object.
+- Cloudflare Worker (Hono) on Artifacts, KV, D1, Queues, R2 (backups), Workers
+  AI, Analytics Engine, Email, and three Durable Objects — `MergeQueue`,
+  `RepoDO` and `MagicLinkRateLimiter` (`src/index.ts:52`, `wrangler.toml:78`).
 - Project create/import (GitHub/GitLab/Bitbucket), workspace fork/commit/delete,
   change creation with synchronous evaluation, evaluation-gated merge, provenance
   (records the agent, the model and prompt hash snapshotted at change creation, and
@@ -19,8 +30,9 @@ SCIM provisioning (#253), plus the Git LFS limitation recorded below.
 ## Evaluation & merge pipeline
 
 - Evaluators: secret scan (always on, blocking), diff, webhook, LLM (AI binding),
-  sandbox (Sandboxes binding; fails closed when absent). Per-change evaluator
-  evidence and estimated resource costs (LLM tokens, sandbox time, git ops).
+  sandbox (Sandboxes binding — **unavailable by default**, see below). Per-change
+  evaluator evidence and estimated resource costs (LLM tokens, sandbox time, git
+  ops).
 - Branch protection in `.stratum/policy.yaml` (`merge:`): required evaluators
   (latest run per type), required human approvals, force-merge control
   (**deny-by-default** — force is only allowed when the policy sets
@@ -28,9 +40,53 @@ SCIM provisioning (#253), plus the Git LFS limitation recorded below.
   moved project base (409 STALE_BASE), and a merge is rejected if the workspace
   advanced since it was evaluated (409 STALE_WORKSPACE).
 - Post-merge smoke command in a sandbox with auto-revert (forward revert commit,
-  change marked `reverted`, `change.reverted` event).
+  change marked `reverted`, `change.reverted` event) — **unavailable by
+  default**, see below.
+- Post-merge deployments in `.stratum/policy.yaml` (`deploys:`): a named list of
+  deploys, each with a `target` (`cloudflare-pages`, `cloudflare-workers`,
+  `vercel`), an optional `dir`, declared `secrets`, and an optional
+  `requiresApproval` gate. Triggered only when the post-merge check did not
+  revert or fail — a check that was *skipped* (no `postMergeCommand`, or no
+  Sandboxes binding) does not hold a deploy back
+  (`src/queue/deploy-queue.ts:361`), so deployments work on a stock instance even
+  though the smoke check does not. Run from a queue consumer against the tree at
+  the pinned merge commit, with per-project AES-GCM-encrypted secrets
+  (`DEPLOY_SECRET_KEY` required; project admins only, agents refused),
+  supersession of older deploys of the same name, retry as a new attempt (open to
+  an agent with write access, unlike approval), and `deployment.requested` /
+  `deployment.succeeded` / `deployment.failed` events. **No build step, no
+  preview deploy, and no rollback** — see `user-guide/deployments.md`. A batch
+  merge (`changes/merge-batch`) triggers neither the post-merge check nor a
+  deploy. The deploy DLQ (`stratum-deploys-dlq`) has no consumer: dead-lettered
+  messages sit there for manual inspection.
 - Human reviews (approve / request changes) move the change state machine and are
   human-only; agents cannot approve work.
+
+### Sandbox-dependent features (unavailable by default)
+
+`[[sandboxes]]` is a gated Cloudflare beta and is commented out in
+`wrangler.toml` (`wrangler.toml:155-157`; it appears nowhere else, and named
+environments do not inherit top-level bindings). Unless an operator has
+Sandboxes access and uncomments it, `env.SANDBOX` is absent on **every**
+environment, including the maintainer's hosted instance, with two consequences:
+
+- **The `sandbox` evaluator is not skipped — it fails closed.**
+  `buildEvaluators` substitutes an `UnavailableEvaluator` that returns score 0
+  / failed (`src/services/change-flow.ts:137-152`), so naming `sandbox` in
+  `merge.requiredEvaluators` **blocks every merge in that project** until the
+  binding is enabled or the evaluator is removed from the policy.
+- **`merge.postMergeCommand` is skipped with a warning**: `post-merge.ts`
+  logs `Post-merge command configured but SANDBOX binding is absent` and returns
+  `{ status: "skipped", reason: "Sandbox binding is not configured" }`
+  (`src/merge/post-merge.ts:39-43`). Nothing runs and nothing is reverted, but
+  the skip is reported — it is in the logs and in the merge's post-merge status,
+  not swallowed.
+
+This repo's own `.stratum/policy.yaml` uses only `diff` and `llm` and sets no
+`postMergeCommand`, so it avoids both. The `llm` evaluator has the same
+fail-closed shape when the AI binding is absent
+(`src/services/change-flow.ts:129-136`), but `[ai]` **is** bound in every
+environment (`wrangler.toml:75`), so it works out of the box.
 
 ## Events & integrations
 
@@ -41,13 +97,27 @@ SCIM provisioning (#253), plus the Git LFS limitation recorded below.
   delivery log, SSRF-guarded URLs.
 - Issue tracker with per-project numbering and auto-close when a linked change
   merges. Bidirectional GitHub sync (inbound webhooks, outbound PR promotion).
+- Remote **MCP server** at `/mcp` (a protected resource of the OAuth server
+  above), advertising `tools` only — 18 tools spanning whoami, projects, files,
+  activity, workspaces, commits, changes (create/list/get/review/merge/reject)
+  and issues (`src/mcp/tools.ts:113-288`). The tools call the same route
+  handlers as the REST API, so scope and agent-identity rules apply unchanged.
 
 ## Auth & security
 
-- Magic-link email auth, GitHub OAuth, Google OAuth, and API keys; short-lived
-  agent tokens scoped to an owning user. OAuth logins persist a stable
-  (issuer, subject) identity per provider — GitHub links to an existing
-  account only via a verified email.
+- Magic-link email auth, GitHub OAuth, Google OAuth (email-identity model), and
+  named API tokens (`read` or `read_write`, optionally expiring after 1–365
+  days, individually revocable, 20 active per user —
+  `src/storage/api-tokens.ts:15-21`); agent tokens bounded by an owning user's
+  access. A `read` token is refused on every non-`GET`/`HEAD` request before
+  routing (`src/middleware/auth.ts:227-241`) and on `git push`. OAuth logins
+  persist a stable (issuer, subject) identity per provider — GitHub links to an
+  existing account only via a verified email.
+- Stratum is itself an **OAuth 2.1 authorization server** (RFC 7591 dynamic
+  registration, PKCE `S256` only): grants carry `mcp:read`/`mcp:write`, a
+  1-hour access token and a rotating 30-day refresh token capped at 180 days
+  absolute (`src/storage/oauth.ts:58-71`), and are revocable at
+  `POST /oauth/revoke` or from **Settings → Connected applications**.
 - Enterprise SSO: one OIDC connection per org, configured by an org
   admin/owner via `PUT/GET/DELETE /api/orgs/:slug/sso` (plus
   `verify-domains`, `enable`/`disable`, and `scim-token` sub-endpoints).
@@ -59,13 +129,18 @@ SCIM provisioning (#253), plus the Git LFS limitation recorded below.
 - SCIM 2.0 Users provisioning at `/scim/v2` (per-connection
   `stratum_scim_*` bearer): Users CRUD with userName/externalId eq filters,
   adopt-existing-account semantics, and reversible deactivation
-  (`users.disabled_at`) enforced at every credential path — API tokens, agent
-  tokens, session cookies, git smart-HTTP, and all login flows — with session
-  purge on deactivation. SCIM Groups are not implemented.
+  (`users.disabled_at`) enforced at every credential path — legacy and scoped
+  API tokens, OAuth grants, agent tokens, session cookies, git smart-HTTP, and
+  all login flows — with session purge on deactivation. SCIM Groups are not
+  implemented.
 - CSRF protection (Origin/Referer enforcement for session-cookie mutations),
-  API key rotation, settings UI for key + agent token management.
+  API key rotation, settings UI for API token, agent token and OAuth grant
+  management. Token management endpoints accept the browser session **only**
+  (`SESSION_REQUIRED`, `src/routes/users.ts:130-142`).
 - Append-only audit trail for sensitive operations with an admin query API;
-  admin access requires `ADMIN_API_KEY` or the `ADMIN_EMAIL` user (fails closed).
+  admin access requires `ADMIN_API_KEY` or the `ADMIN_EMAIL` user (fails closed),
+  and an OAuth grant is refused on `/api/admin/*` before routing even when its
+  owner is the instance admin (`src/middleware/auth.ts:344-358`).
 - Rate limiting (global + import-specific), secret scanning on every change,
   workspace TTL sweep.
 
@@ -74,13 +149,21 @@ SCIM provisioning (#253), plus the Git LFS limitation recorded below.
 - Server-rendered (Hono JSX): dashboard, repo browser with collapsible file tree,
   syntax-highlighted file viewer (dependency-free lexer), commit log, changes with
   diff viewer + evaluator evidence + costs + reviews + comments, issues, activity,
-  webhooks management, settings. Open changes poll via meta refresh.
+  webhooks management, deployments (history, log tail for writers, Approve and
+  Retry buttons), deploy-secret management in project settings, settings. Open
+  changes poll via meta refresh.
 
 ## Tooling
 
-- `cli/` — @stratum/cli at full API parity (projects, workspaces, commits,
-  changes incl. review/merge, issues, activity).
-- `agent/` — @stratum/agent reference agent: identity → fork → Claude edit plan
+- `cli/` — @stratum-eng/cli covering projects, workspaces, commits, changes incl.
+  review/merge, issues, activity and account. `stratum login` is a
+  browser-based OAuth 2.1 + PKCE flow against a loopback redirect (RFC 8252),
+  with `--read-only` for an `mcp:read` grant and `--key <token>` as the
+  headless path for CI (`cli/src/index.ts:54-133`); `stratum logout` always
+  clears the local credential and revokes the grant on a best-effort basis
+  (`cli/src/index.ts:148-171`). Deployments have no CLI command yet — use the
+  API or the UI.
+- `agent/` — @stratum-eng/agent reference agent: identity → fork → Claude edit plan
   → commit → Change with evaluation.
 
 ## Known limitations / future work
@@ -91,8 +174,14 @@ SCIM provisioning (#253), plus the Git LFS limitation recorded below.
 - Evaluation runs synchronously at change creation; the event pipeline is async
   but evaluation itself has no queue worker yet.
 - Team permissions are org-wide; per-project team grants are not implemented.
+- The Cloudflare Sandboxes binding is a gated beta and is commented out in
+  `wrangler.toml`, so the `sandbox` evaluator and `merge.postMergeCommand` are
+  unusable on a stock instance — see
+  [Sandbox-dependent features](#sandbox-dependent-features-unavailable-by-default).
+- Deployments have no build step, no preview environment and no rollback, and
+  the deploy DLQ has no consumer.
 - Phase 4 operational items remain: load testing at 1000+ concurrent workspaces,
-  D1 hot/cold rotation, multi-tenancy/billing for Stratum Cloud. OIDC SSO +
+  D1 hot/cold rotation, multi-tenancy/billing for a managed offering. OIDC SSO +
   SCIM shipped; SAML, SCIM Groups, an SSO enforcement toggle, and an SSO
   management UI (API only today) remain.
 - Durability is covered: D1 and KV identity back up to R2 daily and on demand,

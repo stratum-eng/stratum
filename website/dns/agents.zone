@@ -1,0 +1,59 @@
+; DNS for AI Discovery (DNS-AID) records for usestratum.dev
+; draft-mozleywilliams-dnsop-dnsaid, on RFC 9460 SVCB/HTTPS ServiceMode records.
+;
+; This file is the source of truth for what belongs in DNS. It is NOT applied by
+; CI — DNS lives at the registrar/provider, so publishing is a deliberate
+; operator action. See website/dns/README.md for how to apply and verify it.
+;
+; $ORIGIN is usestratum.dev. Names are written absolute so this fragment can be
+; pasted into a zone with any $ORIGIN.
+
+; ---------------------------------------------------------------------------
+; Discovery index. Points agents at the origin that serves every machine-
+; readable entry point (ARD catalogue, MCP server card, agent skills, auth.md).
+;
+; key65280 carries the draft's `well-known` SvcParam. The draft's parameters are
+; not IANA-registered yet, so it has to travel as a private-use numeric key
+; (RFC 9460 §14.3.2 reserves 65280-65534 for exactly this). Swap it for
+; `well-known=` once registration lands; the value is unchanged.
+; ---------------------------------------------------------------------------
+_index._agents.usestratum.dev.       3600 IN SVCB 1 docs.usestratum.dev. (
+                                          alpn="h2,http/1.1"
+                                          port=443
+                                          mandatory=alpn,port
+                                          key65280="/.well-known/ai-catalog.json" )
+
+; The docs origin is scanned directly as often as the apex is, so it carries its
+; own index rather than relying on the scanner walking up to the registrable
+; domain.
+_index._agents.docs.usestratum.dev.  3600 IN SVCB 1 docs.usestratum.dev. (
+                                          alpn="h2,http/1.1"
+                                          port=443
+                                          mandatory=alpn,port
+                                          key65280="/.well-known/ai-catalog.json" )
+
+; ---------------------------------------------------------------------------
+; The Stratum REST API — the endpoint an agent actually authenticates against.
+;
+; No key65280 here. There is no RFC 9728 protected-resource document to point
+; at: the API origin does not serve one, and publishing a copy on the docs
+; origin would be found only by agents that already knew where to look. The
+; record still does its job without it — it names the host, port, and ALPN of
+; the API — and an agent learns the credential contract from /auth.md, which
+; the ARD catalogue lists.
+;
+; If the API origin ever serves RFC 9728 metadata, add
+; `key65280="/.well-known/oauth-protected-resource"` here.
+; ---------------------------------------------------------------------------
+_api._agents.usestratum.dev.         3600 IN SVCB 1 app.usestratum.dev. (
+                                          alpn="h2,http/1.1"
+                                          port=443
+                                          mandatory=alpn,port )
+
+; ---------------------------------------------------------------------------
+; No _a2a record is published. Stratum does not speak the A2A protocol, and the
+; MCP server is stdio-launched rather than a hosted endpoint (see
+; /.well-known/mcp/server-card.json), so there is no host:port to advertise for
+; either. Advertising one would send agents to a socket that does not exist.
+; Add the records here if that changes.
+; ---------------------------------------------------------------------------

@@ -1,14 +1,14 @@
 # Stratum Architecture
 
-**Last Updated:** 2026-08-18  
-**Strategic Position:** Progressive buy-in platform supporting both GitHub layer mode and full alternative mode
+**Last Updated:** 2026-09-22  
+**Strategic Position:** The agent-first code forge, with progressive buy-in: GitHub layer mode or full forge mode
 
 ## Overview
 
-Stratum is an agent operations platform built on Cloudflare Workers. It supports two modes of operation:
+Stratum is the open-source, agent-first code forge, built on Cloudflare Workers. It supports two modes of operation:
 
 1. **Layer Mode (minimal buy-in):** Stratum sits between agents and GitHub. Developers use Stratum for agent workflows, team reviews in GitHub PRs.
-2. **Alternative Mode (full buy-in):** Stratum is the source of truth for repos, workspaces, and changes.
+2. **Forge Mode (full buy-in):** Stratum is the source of truth for repos, workspaces, and changes.
 
 The same codebase supports both modes. Users choose their level of adoption.
 
@@ -330,10 +330,34 @@ evaluators:
   - type: sandbox
     command: "npm test"        # default
     timeoutMs: 60000           # command timeout (default 60s)
-    installTimeoutMs: 120000   # dependency install timeout (default 120s)
+    installTimeoutMs: 90000    # dependency install timeout (default 90s)
+    totalBudgetMs: 150000      # whole-evaluation budget (default 150s)
+    allowInstallScripts: false # run npm lifecycle scripts (default false)
 # Pass/fail is decided by the policy-level `minScore` and `requireAll` fields,
 # not by a per-evaluator `required` flag.
 ```
+
+**Total budget:** the per-phase timeouts are independent, so nothing used to
+bound their sum — with the old defaults a single evaluation could occupy the
+request for 180s before the tree read was even counted. `totalBudgetMs` bounds
+the whole evaluation: each phase is granted `min(configured, budget remaining)`,
+and running out returns a *verdict* (score 0, reason
+`sandbox budget exceeded (<phase>)`) rather than hanging or erroring. The
+defaults are chosen to sum exactly to the budget, so an unconfigured project is
+never truncated.
+
+The budget bounds time spent awaiting the sandbox — the install and the scored
+command — which is what the per-phase timeouts failed to cap. It does **not**
+bound CPU-bound work inside the Worker (pack decompression, base64-encoding a
+large tree): Workers freeze `Date.now()` across pure-CPU spans (see
+`src/utils/phase-timer.ts`), so that work is constrained by workerd's own CPU
+limit instead. It is also not a request-level bound — the policy load and diff
+clones happen before evaluation starts. See
+`docs/adr/007-sandbox-evaluator-threat-model.md`.
+
+**Lifecycle scripts:** installs pass `--ignore-scripts` unless a project sets
+`allowInstallScripts: true`. The evaluated tree is untrusted, and a
+`postinstall` would otherwise execute before any human review.
 
 **Fail-closed when unavailable:** the `[[sandboxes]]` binding is commented out
 in `wrangler.toml` (beta feature; enabling it is an ops decision). While it is
@@ -588,6 +612,12 @@ src/
 │   ├── client.ts            # GitHub API client
 │   ├── sync.ts              # Bidirectional sync logic
 │   └── webhooks.ts          # Webhook event handling
+├── mcp/
+│   ├── client.ts            # Stratum API client used by the tools
+│   ├── dispatch.ts          # Runs tool calls against the real routers, in-process
+│   ├── protocol.ts          # JSON-RPC 2.0 / MCP message layer
+│   ├── schema.ts            # Tool arg schemas: JSON Schema + validator
+│   └── tools.ts             # The eighteen tools
 ├── merge/
 │   ├── post-merge.ts        # Post-merge actions
 │   └── protection.ts        # Merge protection rules
@@ -606,6 +636,7 @@ src/
 │   ├── events.ts            # Event definitions
 │   ├── group-commit.ts      # Grouped commit handling
 │   ├── import-queue.ts      # Import job processor
+│   ├── import-sweep.ts      # Reaps wedged import jobs to a terminal state
 │   ├── issue-autoclose.ts   # Auto-close issues on merge
 │   ├── merge-queue.ts       # Merge queue durable object
 │   ├── repo-do.ts           # Repository durable object
@@ -625,6 +656,8 @@ src/
 │   ├── health.ts            # Health check endpoints
 │   ├── issues.ts            # Issue tracking
 │   ├── login.tsx            # Login page
+│   ├── mcp.ts               # Remote MCP endpoint (/mcp)
+│   ├── mcp-oauth.tsx        # OAuth 2.1 authorization server for /mcp
 │   ├── metrics.ts           # Admin metrics
 │   ├── orgs.ts              # Organization management
 │   ├── projects.ts          # Project CRUD
@@ -665,6 +698,7 @@ src/
 │   ├── memory-fs.ts
 │   ├── metrics.ts
 │   ├── object-loader.ts
+│   ├── oauth.ts             # MCP OAuth clients, codes, and grants
 │   ├── object-store.ts
 │   ├── orgs.ts
 │   ├── provenance.ts
@@ -742,6 +776,9 @@ clone, all in `src/storage/git-ops.ts` unless noted):
 | git push command section | 1 MiB (`MAX_COMMAND_SECTION_BYTES`) — the inflated pkt-line command list a push is inspected through, bounded so a compressed body cannot expand without limit | `src/routes/git-http.ts` |
 | REST commit payload | 25 MB aggregate (`MAX_COMMIT_BYTES`), 2000 files (`MAX_COMMIT_FILES`), 10 MB per file (`MAX_FILE_BYTES`) | `src/routes/workspaces.ts` |
 | Conflict resolution repo size | 500 files (`MAX_REPO_FILES`), 10 MB per file (`MAX_FILE_BYTES`) | `src/storage/git-ops.ts` |
+| Pinned-commit sandbox tree read (`readRepoFiles`) | clones shallow, then grows the fetch window (doubling) only as far as needed to reach the pinned commit, capped at 500 commits (`PINNED_COMMIT_MAX_FETCH_DEPTH`) — never an unbounded full-history clone (#246) | `src/storage/git-ops.ts` |
+| Materialized commit tree size (`readTreeAtCommit`) | 50 MB aggregate across all blobs in one commit's tree (`MAX_TREE_READ_BYTES`), checked as each blob is read — independent of the history-depth bound above, since even a single commit can carry an oversized tree (#333) | `src/storage/git-ops.ts` |
+| Git network-call wall-clock budget | every `git.clone`/`git.fetch`/`git.push`/`git.getRemoteInfo` call in `git-ops.ts` races against a timeout (`withTimeout`) — 30s clone/push default (overridable, e.g. 300s for backup's full-history clone and for backup-restore's push), 15s per tag fetch/enumeration/deepen round, 60s for background sync fetch and push. Stops the caller *waiting*, not the underlying request itself — isomorphic-git has no cancellation support (#332) | `src/storage/git-ops.ts` |
 | Worker isolate memory | ~128 MB (Cloudflare Workers platform limit) — the budget belongs to the **whole isolate**, not to one request. Concurrent requests share it, and each contributes every clone it opens (diff holds two at once), the fetch buffers those clones fill, and its fully-buffered request body. Peak usage is the sum across all of them | platform |
 
 `MAX_FILE_BYTES` is one constant, exported from `git-ops.ts` and enforced at

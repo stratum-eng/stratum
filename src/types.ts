@@ -1,3 +1,6 @@
+// Type-only: erased at compile time, so parameterizing DEPLOY_QUEUE with the
+// runner's message union cannot create a runtime import cycle.
+import type { DeployQueueMessage } from "./deploy/runner";
 import type { MagicLinkRateLimiter } from "./queue/magic-link-limiter";
 import type { LoggerContext } from "./utils/logger";
 export type { LoggerContext };
@@ -102,8 +105,28 @@ export interface Env {
   STATE: KVNamespace;
   DB: D1Database;
   POSTHOG_API_KEY?: string;
+  /**
+   * The PostHog **project** token, published in every page of HTML.
+   *
+   * Deliberately separate from `POSTHOG_API_KEY` and deliberately a `[vars]`
+   * entry rather than a secret. Reusing the existing secret would silently
+   * redefine what a self-hoster's configuration means — today it exports
+   * server-side route patterns, it would additionally load third-party
+   * JavaScript in their users' browsers and send those users' IP addresses —
+   * for operators who set it long ago and took no action since. Browser
+   * analytics is therefore opt-in on its own key, and a value that ships in
+   * public HTML is not a secret.
+   */
+  POSTHOG_PUBLIC_KEY?: string;
   POSTHOG_HOST?: string;
   STRATUM_TELEMETRY_DISABLED?: string;
+  /**
+   * Which deployment this is ("production", "staging", a self-hoster's own
+   * label). Attached to every analytics event. Without it a staging deploy's
+   * traffic is indistinguishable from production's in the same PostHog
+   * project, and every funnel built on the data is quietly wrong.
+   */
+  STRATUM_ENVIRONMENT?: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
   GOOGLE_CLIENT_ID?: string;
@@ -173,6 +196,17 @@ export interface Env {
   ENVIRONMENT?: string;
   /** Comma-separated extra CORS origin allowlist (beyond same-origin). Optional. */
   ALLOWED_ORIGINS?: string;
+  /** Master key for the per-project deploy secret store: provider credentials
+   * are AES-GCM encrypted under a key derived from it. Optional because a
+   * self-hoster who never deploys never needs one — but a project that HAS
+   * configured a deploy fails loudly (a `failed` deployment naming the missing
+   * key) rather than silently not deploying. Rotating it makes every existing
+   * ciphertext undecryptable, so secrets must be re-entered after a rotation. */
+  DEPLOY_SECRET_KEY?: string;
+  /** Post-merge deployments. Deliberately NOT the events queue: a deploy is a
+   * minutes-long job, and the shared `stratum-events` consumer awaits each
+   * message in turn, so a slow deploy there would stall webhook delivery. */
+  DEPLOY_QUEUE?: Queue<DeployQueueMessage>;
   EVENTS_QUEUE?: Queue;
   IMPORT_QUEUE?: Queue<ImportJobMessage | SyncJobMessage>;
 }
@@ -255,6 +289,15 @@ export interface ProjectEntry {
 // Helper to generate full project path
 export function projectPath(project: ProjectEntry): string {
   return `/${project.namespace}/${project.slug}`;
+}
+
+/**
+ * A user's namespace as it appears in every project key and URL: the username
+ * with an "@" prefix. Tolerates an already-prefixed value so callers can pass
+ * either a username or a namespace.
+ */
+export function getUserNamespace(username: string): string {
+  return username.startsWith("@") ? username : `@${username}`;
 }
 
 // Helper to generate Artifacts repo name
@@ -382,10 +425,24 @@ export interface ApiError {
   code?: string;
 }
 
+/**
+ * What an API token is allowed to do (#254).
+ *
+ * `read` permits GET/HEAD over the API and `git clone`/`fetch`; every other HTTP
+ * method and every git write is refused. `read_write` is the full account power
+ * a token has always had, and is what the legacy `users.token_hash` resolves to.
+ *
+ * Deliberately coarse: per-project and per-org narrowing is a separate change,
+ * and this is a TEXT column so that vocabulary can grow without a migration.
+ */
+export type ApiTokenScope = "read" | "read_write";
+
 export interface User {
   id: string;
   email: string;
   username: string; // Username for namespace (@username)
+  /** Free-form label shown in place of the username; never an identifier. */
+  displayName?: string;
   githubId?: string;
   githubUsername?: string;
   tokenHash: string;
@@ -403,6 +460,12 @@ export interface User {
    * the same credentials work again. Set by SCIM deprovisioning.
    */
   disabledAt?: string;
+  /**
+   * When true, the user has opted out of product analytics: no PostHog event is
+   * exported for their requests or for domain events they author (#257).
+   * Absent means opted in, which is the default for every account.
+   */
+  telemetryOptOut?: boolean;
 }
 
 export interface Session {

@@ -35,6 +35,29 @@ export async function readJsonWithLimit<T>(
   maxBytes: number,
   logger?: Logger,
 ): Promise<T | Response> {
+  const read = await readTextWithLimit(c, maxBytes, logger);
+  if (read.tooLarge) {
+    return payloadTooLarge(`request body too large (max ${maxBytes} bytes)`);
+  }
+  // An empty body raises the same "Unexpected end of JSON input" that
+  // `c.req.json()` would, which callers already wrap where they tolerate it.
+  return JSON.parse(read.text) as T;
+}
+
+/**
+ * The capped read itself, returning the raw text.
+ *
+ * Split out of `readJsonWithLimit` so a caller that must answer an oversized
+ * body in its OWN error shape can still get the enforcement — the MCP endpoint
+ * has to reply with a JSON-RPC error object, which an MCP client parses, rather
+ * than with this repo's `{ error, code }`, which it cannot. Both callers share
+ * one implementation of the cap so there is only ever one thing to get right.
+ */
+export async function readTextWithLimit(
+  c: BodyLimitedContext,
+  maxBytes: number,
+  logger?: Logger,
+): Promise<{ tooLarge: true } | { tooLarge: false; text: string }> {
   const log = logger ?? defaultLogger;
 
   // Cheap early reject when the client declares a length outright — saves
@@ -46,16 +69,12 @@ export async function readJsonWithLimit<T>(
     const declared = Number(declaredLength);
     if (Number.isFinite(declared) && declared > maxBytes) {
       log.warn("request body exceeds cap (Content-Length)", { cap: maxBytes, declared });
-      return payloadTooLarge(`request body too large (max ${maxBytes} bytes)`);
+      return { tooLarge: true };
     }
   }
 
   const stream = c.req.raw.body;
-  if (!stream) {
-    // No body at all — let JSON.parse raise the same "Unexpected end of JSON
-    // input" that `c.req.json()` would on an empty body.
-    return JSON.parse("") as T;
-  }
+  if (!stream) return { tooLarge: false, text: "" };
 
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
@@ -67,7 +86,7 @@ export async function readJsonWithLimit<T>(
     if (total > maxBytes) {
       await reader.cancel();
       log.warn("request body exceeds cap", { cap: maxBytes });
-      return payloadTooLarge(`request body too large (max ${maxBytes} bytes)`);
+      return { tooLarge: true };
     }
     chunks.push(value);
   }
@@ -79,6 +98,5 @@ export async function readJsonWithLimit<T>(
     offset += chunk.byteLength;
   }
 
-  const text = new TextDecoder().decode(buffer);
-  return JSON.parse(text) as T;
+  return { tooLarge: false, text: new TextDecoder().decode(buffer) };
 }

@@ -1,0 +1,206 @@
+name: Release
+
+# Two ways in, one outcome — a `vX.Y.Z` tag and a GitHub release whose notes are
+# that version's CHANGELOG section:
+#
+#   workflow_dispatch  Tag whatever is on the default branch right now. The
+#                      version comes from CHANGELOG.md, so the release PR from
+#                      `npm run release:prepare` must be merged first.
+#   push: tags         Publish (or refresh) the release for a tag pushed by hand,
+#                      including tags backfilled onto commits that predate this
+#                      workflow.
+#
+# Both paths read CHANGELOG.md and the release tooling from the default branch,
+# never from the tagged tree: the changelog on the default branch is the record
+# of every version, and a backfilled tag points at a commit that has neither.
+#
+# See docs/developer/releasing.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run the checks and print the notes without tagging or publishing"
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Tag & Publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the default branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          # This job holds `contents: write`, and the `npm ci` below runs
+          # dependency lifecycle scripts. Persisting the token in .git/config
+          # would leave a repository-write credential within reach of any
+          # postinstall script, so git never gets it: the tag is created through
+          # the API, which needs no local credential.
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Resolve the version
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(npm run --silent release:latest)"
+          fi
+          {
+            echo "version=$VERSION"
+            echo "tag=v$VERSION"
+            echo "previous=$(npm run --silent release:previous -- "$VERSION")"
+            echo "sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing v$VERSION from $(git rev-parse --short HEAD)"
+
+      - name: Check the changelog
+        run: npm run --silent release:check
+
+      - name: Extract the release notes
+        run: |
+          set -euo pipefail
+          npm run --silent release:notes -- "${{ steps.version.outputs.version }}" > release-notes.md
+          echo "--- release notes ---"
+          cat release-notes.md
+
+      # Only on the dispatch path: we are about to tag this exact tree, and a tag
+      # is permanent, so re-run the gates rather than trust that the last push to
+      # the default branch was green.
+      - name: Verify the tree matches the version
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$PKG" != "$VERSION" ]; then
+            echo "::error::package.json is $PKG but CHANGELOG.md's newest release is $VERSION. Run 'npm run release:prepare' and merge that PR first."
+            exit 1
+          fi
+
+      - name: Lint
+        if: github.event_name == 'workflow_dispatch'
+        run: npm run lint
+
+      - name: Typecheck
+        if: github.event_name == 'workflow_dispatch'
+        run: npm run typecheck
+
+      - name: Test
+        if: github.event_name == 'workflow_dispatch'
+        run: npm run test:coverage
+
+      # This version's changelog link is `compare/v<previous>...v<version>`, so
+      # publishing before the predecessor is tagged would ship a release whose
+      # history link 404s — exactly the breakage this whole process exists to
+      # prevent. Fail loudly instead, naming the tag to backfill.
+      - name: Verify the predecessor tag exists
+        if: steps.version.outputs.previous != ''
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          PREVIOUS_TAG: v${{ steps.version.outputs.previous }}
+        with:
+          script: |
+            const tag = process.env.PREVIOUS_TAG;
+            const { owner, repo } = context.repo;
+            try {
+              await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.setFailed(
+                `${tag} is not tagged yet, and this release's changelog compare link points at it. ` +
+                  `Backfill it first: git tag -a ${tag} <commit> -m "${tag}" && git push origin ${tag}`,
+              );
+            }
+
+      - name: Create the tag
+        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          SHA: ${{ steps.version.outputs.sha }}
+        with:
+          script: |
+            const tag = process.env.TAG;
+            const sha = process.env.SHA;
+            const { owner, repo } = context.repo;
+
+            try {
+              const { data: existing } = await github.rest.git.getRef({
+                owner, repo, ref: `tags/${tag}`,
+              });
+              core.notice(`${tag} already exists at ${existing.object.sha}; publishing its notes only.`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            const { data: object } = await github.rest.git.createTag({
+              owner, repo, tag, message: tag, object: sha, type: "commit",
+            });
+            await github.rest.git.createRef({ owner, repo, ref: `refs/tags/${tag}`, sha: object.sha });
+            core.notice(`Tagged ${tag} at ${sha}`);
+
+      - name: Publish the GitHub release
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const body = fs.readFileSync("release-notes.md", "utf8").trim();
+            const tag = process.env.TAG;
+            const { owner, repo } = context.repo;
+
+            // Idempotent: re-running for a tag that already has a release
+            // refreshes its notes instead of failing, so a changelog correction
+            // can be republished.
+            let existing = null;
+            try {
+              existing = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            const release = existing
+              ? (await github.rest.repos.updateRelease({
+                  owner, repo, release_id: existing.id, name: tag, body,
+                })).data
+              : (await github.rest.repos.createRelease({
+                  owner, repo, tag_name: tag, name: tag, body,
+                })).data;
+
+            core.notice(`${existing ? "Updated" : "Published"} ${release.html_url}`);
+
+      - name: Dry-run summary
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: |
+          {
+            echo "### Dry run — nothing tagged or published"
+            echo
+            echo "Would release \`${{ steps.version.outputs.tag }}\` at \`${{ steps.version.outputs.sha }}\` with these notes:"
+            echo
+            cat release-notes.md
+          } >> "$GITHUB_STEP_SUMMARY"

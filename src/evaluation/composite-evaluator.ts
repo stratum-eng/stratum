@@ -2,7 +2,7 @@ import type { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import type { Result } from "../utils/result";
 import { err, ok } from "../utils/result";
-import type { EvalPolicy, EvalResult, Evaluator } from "./types";
+import type { EvalPolicy, EvalResult, EvaluationContext, Evaluator } from "./types";
 
 export class CompositeEvaluator {
   constructor(private evaluators: Evaluator[]) {}
@@ -11,13 +11,14 @@ export class CompositeEvaluator {
     diff: string,
     policy: EvalPolicy,
     logger: Logger,
+    context?: EvaluationContext,
   ): Promise<Result<EvalResult[], AppError>> {
     logger.debug("Starting composite evaluation", { evaluatorCount: this.evaluators.length });
 
     try {
       const results: EvalResult[] = [];
       for (const evaluator of this.evaluators) {
-        const result = await evaluator.evaluate(diff, policy, logger);
+        const result = await evaluator.evaluate(diff, policy, logger, context);
         if (result.success) {
           results.push(result.data);
         } else {
@@ -39,10 +40,11 @@ export class CompositeEvaluator {
     diff: string,
     policy: EvalPolicy,
     logger: Logger,
+    context?: EvaluationContext,
   ): Promise<Result<EvalResult, AppError>> {
     logger.debug("Starting aggregated evaluation");
 
-    const results = await this.evaluate(diff, policy, logger);
+    const results = await this.evaluate(diff, policy, logger, context);
     if (!results.success) {
       return results;
     }

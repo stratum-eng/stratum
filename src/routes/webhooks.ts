@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { StratumEvent } from "../queue/events";
 import { recordAudit } from "../storage/audit";
 import { getProjectByPath } from "../storage/state";
 import {
@@ -11,6 +12,7 @@ import {
   webhookBelongsToProject,
 } from "../storage/webhooks";
 import type { Env, ProjectEntry } from "../types";
+import { SOURCE_FOOTER_HTML } from "../ui/components/source-footer";
 import { canWriteProject } from "../utils/authz";
 import { escapeHtml } from "../utils/html";
 import { createLogger } from "../utils/logger";
@@ -24,23 +26,38 @@ const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
 
 const app = new Hono<{ Bindings: Env }>();
 
-/** Event types a webhook may subscribe to. */
-const SUBSCRIBABLE_EVENTS = [
-  "change.created",
-  "change.evaluated",
-  "change.merged",
-  "change.rejected",
-  "change.reverted",
-  "change.commented",
-  "change.reviewed",
-  "project.created",
-  "project.imported",
-  "workspace.created",
-  "sync.completed",
-  "issue.opened",
-  "issue.commented",
-  "issue.closed",
-];
+/**
+ * Event types a webhook may subscribe to.
+ *
+ * Keyed by `StratumEvent["type"]` rather than written as a bare string array so
+ * the two cannot drift: adding a variant to the event union without listing it
+ * here is a missing-property error, and listing a type the union does not have
+ * is an excess-property error. Both fail the build instead of silently making
+ * an event unsubscribable (or advertising one that can never fire).
+ *
+ * Object key order is the order the list is rendered and reported in.
+ */
+const SUBSCRIBABLE_EVENT_TYPES: Record<StratumEvent["type"], true> = {
+  "change.created": true,
+  "change.evaluated": true,
+  "change.merged": true,
+  "change.rejected": true,
+  "change.reverted": true,
+  "change.commented": true,
+  "change.reviewed": true,
+  "project.created": true,
+  "project.imported": true,
+  "workspace.created": true,
+  "sync.completed": true,
+  "issue.opened": true,
+  "issue.commented": true,
+  "issue.closed": true,
+  "deployment.requested": true,
+  "deployment.succeeded": true,
+  "deployment.failed": true,
+};
+
+const SUBSCRIBABLE_EVENTS: string[] = Object.keys(SUBSCRIBABLE_EVENT_TYPES);
 
 interface ProjectAccess {
   project: ProjectEntry;
@@ -210,7 +227,7 @@ app.post("/:namespace/:slug/webhooks", async (c) => {
 })();`;
     return noStore(
       c.html(
-        `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Webhook created — Stratum</title><link rel="stylesheet" href="/ui.css"></head><body><main class="main" style="max-width:640px"><div class="card settings-token-reveal"><h3 style="margin-top:0">Webhook created</h3><p class="settings-help"><strong>Copy the signing secret now — it will not be shown again.</strong></p><p class="settings-help">Payload URL: <code>${escapeHtml(wh.url)}</code></p><div class="token-reveal-row"><code class="settings-token" id="webhook-secret">${escapeHtml(wh.secret)}</code><button type="button" class="btn btn-small" id="copy-secret">Copy</button></div><p class="settings-help" style="margin-top:0.75rem">Verify each delivery's <code>X-Stratum-Signature</code> (HMAC-SHA256) with this secret.</p><p style="margin-top:1rem"><a href="${escapeHtml(backUrl)}">&larr; Back to webhooks</a></p></div></main><script nonce="${escapeHtml(nonce)}">${copyScript}</script></body></html>`,
+        `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Webhook created — Stratum</title><link rel="stylesheet" href="/ui.css"></head><body><main class="main" style="max-width:640px"><div class="card settings-token-reveal"><h3 style="margin-top:0">Webhook created</h3><p class="settings-help"><strong>Copy the signing secret now — it will not be shown again.</strong></p><p class="settings-help">Payload URL: <code>${escapeHtml(wh.url)}</code></p><div class="token-reveal-row"><code class="settings-token" id="webhook-secret">${escapeHtml(wh.secret)}</code><button type="button" class="btn btn-small" id="copy-secret">Copy</button></div><p class="settings-help" style="margin-top:0.75rem">Verify each delivery's <code>X-Stratum-Signature</code> (HMAC-SHA256) with this secret.</p><p style="margin-top:1rem"><a href="${escapeHtml(backUrl)}">&larr; Back to webhooks</a></p></div></main>${SOURCE_FOOTER_HTML}<script nonce="${escapeHtml(nonce)}">${copyScript}</script></body></html>`,
         201,
       ),
     );
@@ -232,9 +249,7 @@ app.get("/:namespace/:slug/webhooks", async (c) => {
   if ("response" in access) return access.response;
   const { project } = access;
 
-  const webhooksResult = await listWebhooks(c.env.DB, logger, project.name, {
-    projectId: project.id,
-  });
+  const webhooksResult = await listWebhooks(c.env.DB, logger, project.id);
   if (!webhooksResult.success) {
     return internalError(webhooksResult.error.message);
   }

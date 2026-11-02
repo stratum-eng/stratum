@@ -11,8 +11,14 @@ concurrency:
 
 jobs:
   packages:
-    name: CLI, Agent & MCP Packages
+    name: CLI & Agent Packages (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor each package declares in `engines`, and the version most
+        # contributors run. Testing only the latter lets the floor rot.
+        node: ["20", "22"]
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -20,15 +26,19 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "22"
+          node-version: ${{ matrix.node }}
 
-      - name: CLI — install, typecheck, test, build
+      # Lint runs last, per AGENTS.md: Biome autofixes formatting, so putting it
+      # ahead of the correctness gates just reports style on code that may not
+      # compile.
+      - name: CLI — install, typecheck, test, build, lint
         working-directory: cli
         run: |
           npm install
           npm run typecheck
           npm test
           npm run build
+          npm run lint
 
       - name: Agent — install, typecheck, test, build
         working-directory: agent
@@ -38,29 +48,6 @@ jobs:
           npm test
           npm run build
 
-      - name: MCP — install, typecheck, test, build
-        working-directory: mcp
-        run: |
-          npm install
-          npm run typecheck
-          npm test
-          npm run build
-          # Smoke: the built entrypoint must complete a real MCP initialize
-          # handshake over stdio (it exits 0 on stdin EOF).
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"smoke","version":"0.0.0"}}}' \
-            | env STRATUM_API_KEY=smoke-not-a-real-key timeout 30s node dist/index.js > /tmp/mcp-smoke.log 2>&1
-          # Parse the JSON-RPC reply semantically — a grep on raw JSON breaks on
-          # formatting/key-order changes and can match inside other text.
-          node -e '
-            const lines = require("fs").readFileSync("/tmp/mcp-smoke.log", "utf8").split("\n");
-            const ok = lines.some((line) => {
-              try {
-                const msg = JSON.parse(line);
-                return msg.id === 1 && msg.result?.serverInfo?.name === "stratum";
-              } catch { return false; }
-            });
-            if (!ok) { console.error("no initialize reply with serverInfo.name=stratum"); process.exit(1); }
-          '
 
   # ========================================================================
   # Code Quality Checks
@@ -109,6 +96,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # tests/wrangler-migration-chain.test.ts reads wrangler.toml at
+          # origin/main to prove this PR only appends Durable Object
+          # migrations. The default shallow fetch has no origin/main, and the
+          # guard fails rather than skips in CI, so fetch the full history.
+          fetch-depth: 0
+          # The guard only reads local objects (git show, git rev-parse) and
+          # nothing else here talks to a remote, so the job needs no token in
+          # .git/config — and this job uploads an artifact.
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -128,6 +125,44 @@ jobs:
         with:
           name: coverage-report
           path: coverage/
+
+  # ========================================================================
+  # Engines Floor
+  # ========================================================================
+  engines-floor:
+    # `engines` in package.json claims >=22.13.0, but every job above runs the
+    # floating "22", which resolves to the newest 22.x. That gap hid #340: the
+    # `node:sqlite` shim behind the D1 test harness could not bind numbered
+    # parameters on 22.14.0, so a contributor on an older 22.x saw 43 red tests
+    # on a clean checkout while CI stayed green. Running the suite at the exact
+    # declared floor is what keeps that claim honest — this job going red means
+    # either the code stopped supporting the floor or the floor should move.
+    name: Unit Tests (engines floor)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Same reason as the Unit Tests job: the wrangler migration-chain
+          # guard reads wrangler.toml at origin/main and fails rather than skips.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          # The exact floor `engines` declares, not a range. Bump both together.
+          node-version: "22.13.0"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # No coverage here: the Unit Tests job owns the thresholds and the
+      # artifact. This job answers one question — does the suite pass at the
+      # oldest Node we claim to support.
+      - name: Run tests
+        run: npm test
 
   # ========================================================================
   # Integration Tests
@@ -155,194 +190,28 @@ jobs:
           CI: true
 
   # ========================================================================
-  # Staging Deployment
+  # No staging deployment here — on purpose.
   # ========================================================================
-  deploy-staging:
-    name: Deploy to Staging
-    needs: [integration-tests]
-    runs-on: ubuntu-latest
-    # Fork PRs are excluded: pull_request withholds secrets from forks, so the
-    # deploy can only fail there — and unreviewed fork code shouldn't reach the
-    # shared staging environment anyway. Jobs that need this one cascade to
-    # skipped on fork PRs. Never convert this workflow to pull_request_target.
-    if: >
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    concurrency:
-      group: deploy-staging-${{ github.head_ref }}
-      cancel-in-progress: true
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-    outputs:
-      staging_url: ${{ steps.deploy.outputs.url }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci
-
-      # Staging binds its own -staging queues (see wrangler.toml); a deploy
-      # fails if a bound queue doesn't exist, so create them idempotently.
-      - name: Ensure Staging Queues Exist
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          for queue in stratum-events-staging stratum-imports-staging; do
-            if out=$(npx wrangler queues create "$queue" 2>&1); then
-              echo "✓ Created queue $queue"
-            elif echo "$out" | grep -qiE "already (exists|taken)|11009"; then
-              echo "✓ Queue $queue already exists"
-            else
-              echo "$out"
-              exit 1
-            fi
-          done
-
-      - name: Deploy to Cloudflare Staging
-        id: deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          npx wrangler deploy --env=staging
-          SUBDOMAIN=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
-            | jq -r '.result.subdomain')
-          URL="https://stratum-staging.$SUBDOMAIN.workers.dev"
-          echo "url=$URL" >> $GITHUB_OUTPUT
-          echo "Deployed to: $URL"
-
-      - name: Smoke test - Health endpoint
-        env:
-          STAGING_URL: ${{ steps.deploy.outputs.url }}
-        run: |
-          set -e
-          echo "→ Testing health endpoint: $STAGING_URL/health"
-          curl -sfS --retry 5 --retry-delay 5 "$STAGING_URL/health"
-          echo "✓ Health check passed"
-
-      - name: Smoke test - API endpoints
-        env:
-          STAGING_URL: ${{ steps.deploy.outputs.url }}
-        run: |
-          set -e
-          echo "→ Testing API availability"
-          curl -sfS "$STAGING_URL/api/projects" || true
-          echo "✓ API check completed"
-
-      - name: Comment PR with staging URL
-        if: success()
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
-        with:
-          # Ride out transient GitHub API 5xx (503 brownouts have failed
-          # otherwise-green runs on nothing but the status comment). A retried
-          # POST can rarely duplicate a status comment — accepted trade-off vs.
-          # red runs. Every non-transient 4xx is exempt; 429 stays retryable.
-          retries: 3
-          retry-exempt-status-codes: 400,401,402,403,404,405,406,407,409,410,411,412,413,414,415,416,417,418,421,422,423,424,426,428,431,451
-          script: |
-            const stagingUrl = '${{ steps.deploy.outputs.url }}';
-            const workflowRunUrl = `${context.payload.repository.html_url}/actions/runs/${context.runId}`;
-
-            const body = `## 🚀 Staging Deployment Ready
-
-            **Preview URL:** ${stagingUrl}
-
-            ### Quick Links
-            - [Health Check](${stagingUrl}/health)
-            - [Home Page](${stagingUrl}/)
-            - [Workflow Run](${workflowRunUrl})
-
-            ### Testing Checklist
-            - [ ] Smoke tests pass
-            - [ ] Integration tests pass
-            - [ ] Manual testing completed
-
-            > This deployment will be updated automatically when new commits are pushed to this PR.
-            `;
-
-            // Find existing comment
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number
-            });
-
-            const botComment = comments.find(comment =>
-              comment.user.type === 'Bot' &&
-              comment.body.includes('Staging Deployment Ready')
-            );
-
-            if (botComment) {
-              // Update existing comment
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: botComment.id,
-                body: body
-              });
-            } else {
-              // Create new comment
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: body
-              });
-            }
-
-      - name: Run smoke tests against staging
-        env:
-          STAGING_URL: ${{ steps.deploy.outputs.url }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -e
-          echo "Running smoke tests against $STAGING_URL"
-          # Run vitest smoke tests with staging URL
-          npx vitest run tests/smoke/ --reporter=verbose || true
-
-      - name: Notify on deployment failure
-        if: failure()
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
-        with:
-          # Ride out transient GitHub API 5xx (503 brownouts have failed
-          # otherwise-green runs on nothing but the status comment). A retried
-          # POST can rarely duplicate a status comment — accepted trade-off vs.
-          # red runs. Every non-transient 4xx is exempt; 429 stays retryable.
-          retries: 3
-          retry-exempt-status-codes: 400,401,402,403,404,405,406,407,409,410,411,412,413,414,415,416,417,418,421,422,423,424,426,428,431,451
-          script: |
-            const workflowRunUrl = `${context.payload.repository.html_url}/actions/runs/${context.runId}`;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `## ❌ Staging Deployment Failed
-
-            The staging deployment failed for this PR.
-
-            [View Workflow Run](${workflowRunUrl})
-
-            Please check the logs and fix any issues before merging.`
-            });
+  # PRs used to run `wrangler deploy --env=staging`, which published the PR
+  # branch over the single shared stratum-staging Worker. Cloudflare records
+  # the last-applied Durable Object migration tag on the script itself, so a
+  # PR that added a migration left staging one tag ahead of main. Wrangler
+  # cannot find that tag in main's wrangler.toml, assumes it was deleted, and
+  # replays the whole chain from v1 — which fails on the already-populated
+  # MergeQueue class (API error 10074) and red-lines every subsequent push to
+  # main, and with it the production deploy that gates on staging.
+  #
+  # Per-PR environments live in pr-preview.yml: an isolated stratum-pr-<N>
+  # Worker with its own D1 and KV, torn down when the PR closes. The shared
+  # staging Worker is deployed from main only (ci.yml), which keeps its
+  # migration tag a function of main's wrangler.toml alone.
 
   # ========================================================================
   # PR Status Summary
   # ========================================================================
   pr-status:
     name: PR Status Summary
-    needs: [lint, typecheck, test, integration-tests]
+    needs: [lint, typecheck, test, engines-floor, integration-tests]
     runs-on: ubuntu-latest
     if: always()
     permissions:
@@ -363,6 +232,7 @@ jobs:
               lint: '${{ needs.lint.result }}',
               typecheck: '${{ needs.typecheck.result }}',
               test: '${{ needs.test.result }}',
+              enginesFloor: '${{ needs.engines-floor.result }}',
               integration: '${{ needs.integration-tests.result }}'
             };
 
@@ -379,7 +249,7 @@ jobs:
               conclusion: allPassed ? 'success' : 'failure',
               output: {
                 title: status,
-                summary: `Lint: ${jobs.lint}, Type Check: ${jobs.typecheck}, Tests: ${jobs.test}, Integration: ${jobs.integration}`
+                summary: `Lint: ${jobs.lint}, Type Check: ${jobs.typecheck}, Tests: ${jobs.test}, Engines floor: ${jobs.enginesFloor}, Integration: ${jobs.integration}`
               }
             });
 

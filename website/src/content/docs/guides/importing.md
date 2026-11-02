@@ -1,6 +1,7 @@
 ---
-title: Importing from GitHub
-description: Import a repository from GitHub, GitLab, or Bitbucket, track progress, and keep the project in sync with its source.
+title: "Importing from GitHub"
+description: "Import a repository from GitHub, GitLab, or Bitbucket, track progress, and keep the project in sync with its source."
+editUrl: "https://github.com/stratum-eng/stratum/edit/main/docs/user-guide/importing.md"
 ---
 
 Stratum imports repositories from **GitHub, GitLab, and Bitbucket**. Imports run
@@ -25,12 +26,20 @@ curl -X POST "$STRATUM_HOST/api/projects/@username/repo/import" \
   -d '{"url": "https://github.com/owner/repo", "branch": "main"}'
 ```
 
-The body requires `url`; `branch` (default `main`), `depth` (clone depth), and
-`visibility` (`private`, the default, or `public`) are optional. A successful
+A successful
 request returns `201` with an `importId` and `status: "queued"`. Imports are
 rate limited (3 per minute per user, 1 concurrent import per project) and only
 allowed into your own namespace. If the project already exists with an
 incomplete import, the import is re-triggered and `200` is returned.
+
+### Options
+
+| Field        | Default                   | Description |
+| ------------ | ------------------------- | ----------- |
+| `url`        | (required)                | Repository URL on `github.com`, `gitlab.com`, or `bitbucket.org`. |
+| `branch`     | provider's default branch | Branch to import. When omitted, Stratum asks the provider API for the repository's real default branch; if that lookup fails the import falls back to `main` (fail-open) and logs a warning. |
+| `depth`      | `10`                      | Shallow clone depth: an integer from 1 to 1000, or `0` / `"full"` to import the branch's full history. |
+| `visibility` | `private`                 | `private` or `public`. |
 
 ## Track progress
 
@@ -44,8 +53,22 @@ curl -H "Authorization: Bearer $STRATUM_API_KEY" \
 This returns an `ImportProgress` object: a `status` (`queued`, `cloning`,
 `processing`, `completed`, `failed`, `cancelled`, …), a `progress` object
 (`totalFiles`, `processedFiles`, `currentFile`, `bytesTransferred`,
-`totalBytes`), and any `errors` and `logs`. Polling also recovers imports that
-have stalled for more than 5 minutes.
+`totalBytes`), and any `errors` and `logs`. Polling also recovers an import that
+has been in an actively-progressing state (`cloning`, `processing`, `syncing`,
+`cancelling`) for more than **20 minutes** without its timestamp advancing.
+`queued` is deliberately excluded — a job waiting to be picked up is not
+stalled, and the scheduled sweep covers it under a one-hour grace period.
+
+`processedFiles` and `totalFiles` are not an incrementing counter: they are
+both written once, from the file walk that builds the repository snapshot, in
+the `processing` phase just before the status becomes `completed`. Expect them
+to stay at `0` for the whole clone and then jump to the final count.
+
+One exception: the snapshot write handles its own failures and returns no
+count, and the import is still marked `completed` in that case. So a completed
+import whose `processedFiles` and `totalFiles` are both `0` means the snapshot
+could not be built — not that the repository was empty. The repository itself
+imported fine; only the file listing is missing.
 
 Or subscribe to Server-Sent Events instead of polling — the stream emits the
 same `ImportProgress` JSON as an SSE `data:` line every 2 seconds until the
@@ -87,15 +110,58 @@ Enable automatic syncing with:
 curl -X POST "$STRATUM_HOST/api/projects/@username/repo/sync/settings" \
   -H "Authorization: Bearer $STRATUM_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"autoSyncEnabled": true, "syncFrequency": 60}'
+  -d '{"autoSyncEnabled": true}'
 ```
 
-`syncFrequency` is in minutes. Past runs are listed by
+Auto-sync runs on a **fixed daily schedule** (06:00 UTC on the hosted
+instance) for every project with `autoSyncEnabled`. The settings endpoint also
+accepts a `syncFrequency` field, but it is stored and **not yet used** — the
+scheduler does not read it, so it does not change the cadence. Trigger
+`POST …/sync` yourself for anything more frequent. Past runs are listed by
 `GET …/sync/history` (paginated with `limit`/`offset`).
+
+## Failure notifications
+
+If a **queued** import fails, Stratum emails the user who started it, plus one
+operator copy. (A deployment with no import queue configured falls back to
+processing the import directly in the request, and that path sends no failure
+notification at all — it is a development fallback, not the normal path.)
+
+Sending requires two things:
+
+- **An `EMAIL` binding on the Worker.** Without it no failure notification is
+  sent, whatever the addresses below are set to.
+- **At least one resolvable recipient.** The operator copy goes to
+  `ADMIN_EMAIL`, or — when `ADMIN_EMAIL` is unset — to `EMAIL_FROM_ADDRESS`.
+  Leaving `ADMIN_EMAIL` unconfigured therefore does not switch the operator copy
+  off; it redirects it to the sender address.
+
+When the initiator's address cannot be resolved, the operator copy is still
+sent, and identical addresses are de-duplicated so nobody is mailed twice. A
+failure is reported only in the logs when the `EMAIL` binding is absent, or when
+neither an initiator address nor an operator address can be resolved.
+
+## Current limitations
+
+What import does **not** do yet:
+
+- **Public repositories only.** Imports clone anonymously — provider tokens are
+  not used for the clone, and GitHub sign-in only requests the `user:email`
+  OAuth scope. Token-authenticated clones of private repositories are future
+  work.
+- **Git data only.** Issues, pull requests, releases, and tags are not
+  imported — only the selected branch's commit history and files.
+- **Single branch.** Only one branch is imported per project. The clone is a
+  `singleBranch` clone; it is bounded by `depth` only for shallow imports —
+  `depth: 0` (or `"full"`) omits the cutoff and fetches the whole history of
+  that one branch.
+- **No self-hosted instances.** Only `github.com`, `gitlab.com`, and
+  `bitbucket.org` URLs are recognized; GitHub Enterprise Server and self-hosted
+  GitLab are not supported.
 
 Bidirectional GitHub sync — inbound webhooks and outbound PR promotion, i.e.
 **layer mode** — is covered in
-[Getting started](/guides/getting-started/#choose-your-level-of-buy-in-layer-mode-vs-alternative-mode).
+[Getting started](/guides/getting-started/#choose-your-level-of-buy-in-layer-mode-vs-forge-mode).
 
 ## Unsupported content
 
@@ -126,4 +192,5 @@ importing a repo with submodules would let a later merge quietly corrupt it
 rather than fail loudly. Remove submodules (or flatten them into the repo)
 before importing, or push to a workspace remote for content that never
 touches the default branch. Full submodule support (recursive clone and
-browsing) is tracked for later.
+browsing) is tracked for later; see
+[`CURRENT_CAPABILITIES.md`](https://github.com/stratum-eng/stratum/blob/main/docs/CURRENT_CAPABILITIES.md).

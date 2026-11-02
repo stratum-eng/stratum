@@ -11,6 +11,31 @@ import { type Result, err, ok } from "../utils/result";
 const MAX_LOGS = 100; // Prevent unbounded growth
 const MAX_ERRORS = 50; // Prevent unbounded growth
 
+/**
+ * How long a job may sit in an actively-progressing status (`cloning`,
+ * `processing`, `syncing`, `cancelling`) without its `updated_at` advancing
+ * before it is treated as stalled.
+ *
+ * This MUST stay above a queue consumer's 15-minute maximum wall time. The
+ * consumer writes `cloning` and then calls into the clone with no intervening
+ * progress write, so a perfectly healthy import can leave `updated_at`
+ * untouched for its entire run. Anything at or under that ceiling would let the
+ * sweep mark live imports `failed`. Past 15 minutes the invocation is gone, so
+ * silence really does mean the job was abandoned.
+ *
+ * Shared by the on-demand recovery in the progress route and the scheduled
+ * sweep so the two cannot disagree about what "stalled" means.
+ */
+export const STALLED_THRESHOLD_MS = 20 * 60 * 1000;
+
+/**
+ * The grace period for `queued`, which is not a sign of progress but of a job
+ * waiting to be picked up. A queue backlog is normal for seconds to minutes, so
+ * this is deliberately longer than `STALLED_THRESHOLD_MS`; exceeding it means
+ * the queue message was almost certainly lost.
+ */
+export const QUEUED_GRACE_MS = 60 * 60 * 1000;
+
 // Valid status values for validation
 const VALID_STATUSES: ImportStatus[] = [
   "queued",
@@ -495,6 +520,148 @@ export async function updateImportProgress(
   }
 }
 
+/**
+ * Outcome of an id-scoped update. A lost optimistic-locking race is a normal,
+ * expected result for a background sweep — another writer legitimately owns the
+ * job — so it is reported as an outcome rather than an error.
+ */
+export type ImportUpdateOutcome =
+  | { updated: true; job: ImportProgress }
+  | { updated: false; reason: "version-conflict" | "not-found" };
+
+/**
+ * Update one specific import job, identified by its primary key.
+ *
+ * `updateImportProgress` resolves its target through `getImportProgress`, which
+ * is `ORDER BY started_at DESC LIMIT 1` — the newest job for a namespace/slug.
+ * That is correct for the request paths that own the current import, but wrong
+ * for any caller that has already selected a specific row: a project
+ * accumulates an `import_jobs` row per sync, so the newest row is frequently
+ * not the one the caller chose. Its `WHERE namespace = ? AND slug = ? AND
+ * version = ?` can also match several sibling rows at once, since fresh rows
+ * all start at version 1.
+ *
+ * Scoping to `id` makes the update hit exactly the intended row (id is the
+ * primary key) and makes the version check a true compare-and-swap.
+ *
+ * Unlike `updateImportProgress` this does not retry on conflict: a caller that
+ * lost the race no longer holds a current view of the job, and for the stall
+ * sweep a conflict means the job is being actively worked on — precisely the
+ * case where it must not interfere.
+ */
+export async function updateImportProgressById(
+  db: D1Database,
+  id: string,
+  expectedVersion: number,
+  updates: Partial<ImportProgress>,
+  logger: Logger,
+): Promise<Result<ImportUpdateOutcome, AppError>> {
+  const existingResult = await getImportById(db, id, logger);
+  if (!existingResult.success) {
+    return existingResult;
+  }
+
+  const existing = existingResult.data;
+  if (!existing) {
+    return ok({ updated: false, reason: "not-found" });
+  }
+
+  const updatedProgress = { ...existing.progress, ...updates.progress };
+  const updatedLogs = [...existing.logs, ...(updates.logs || [])].slice(-MAX_LOGS);
+  const updatedErrors = [...existing.errors, ...(updates.errors || [])].slice(-MAX_ERRORS);
+
+  try {
+    const result = await db
+      .prepare(
+        `UPDATE import_jobs SET
+          status = COALESCE(?, status),
+          progress_processed_files = ?,
+          progress_total_files = ?,
+          progress_current_file = ?,
+          logs = ?,
+          errors = ?,
+          completed_at = COALESCE(?, completed_at),
+          version = version + 1,
+          updated_at = ?
+        WHERE id = ? AND version = ?`,
+      )
+      .bind(
+        updates.status ?? null,
+        updatedProgress.processedFiles,
+        updatedProgress.totalFiles ?? null,
+        updatedProgress.currentFile ?? null,
+        JSON.stringify(updatedLogs),
+        JSON.stringify(updatedErrors),
+        updates.completedAt ?? null,
+        new Date().toISOString(),
+        id,
+        expectedVersion,
+      )
+      .run();
+
+    if ((result.meta?.changes ?? 0) === 0) {
+      return ok({ updated: false, reason: "version-conflict" });
+    }
+
+    const refreshed = await getImportById(db, id, logger);
+    if (!refreshed.success) {
+      return refreshed;
+    }
+    if (!refreshed.data) {
+      return err(new AppError("Import job vanished after update", "STORAGE_ERROR", 500));
+    }
+
+    return ok({ updated: true, job: refreshed.data });
+  } catch (error) {
+    logger.error(
+      "Failed to update import progress by id",
+      error instanceof Error ? error : undefined,
+      { importId: id },
+    );
+    return err(new AppError("Failed to update import progress", "STORAGE_ERROR", 500));
+  }
+}
+
+/**
+ * Delete one specific import job by primary key.
+ *
+ * Distinct from `deleteImportJob`, which removes *every* row for a
+ * namespace/slug — correct for the cancellation path that tears down a
+ * project's import state, but far too broad for a user deleting a single
+ * finished job. Wiping the history would also strip the depth record that
+ * `getLatestImportDepth` reads, silently downgrading the project's next sync to
+ * `DEFAULT_CLONE_DEPTH`.
+ *
+ * @returns whether a row was actually removed
+ */
+export async function deleteImportJobById(
+  db: D1Database,
+  id: string,
+  allowedStatuses: readonly ImportStatus[],
+  logger: Logger,
+): Promise<Result<boolean, AppError>> {
+  try {
+    // The status is re-checked here rather than trusted from the caller's
+    // earlier read: between that read and this delete the job can be re-queued
+    // by a retry, and removing a row a consumer has just picked up would orphan
+    // a live import.
+    const placeholders = allowedStatuses.map(() => "?").join(", ");
+    const result = await db
+      .prepare(`DELETE FROM import_jobs WHERE id = ? AND status IN (${placeholders})`)
+      .bind(id, ...allowedStatuses)
+      .run();
+    const deleted = (result.meta?.changes ?? 0) > 0;
+
+    logger.debug("Import job delete by id", { importId: id, deleted });
+    return ok(deleted);
+  } catch (error) {
+    logger.error("Failed to delete import job by id", error instanceof Error ? error : undefined, {
+      importId: id,
+    });
+    return err(new AppError("Failed to delete import job", "STORAGE_ERROR", 500));
+  }
+}
+
 export async function updateImportStatus(
   db: D1Database,
   namespace: string,
@@ -583,7 +750,13 @@ export async function isImportCancelled(
   if (!progressResult.success || !progressResult.data) {
     return false;
   }
-  return progressResult.data.status === "cancelling";
+  // `cancelled` counts, not just `cancelling`. The stall sweep terminalises a
+  // quiet `cancelling` job, and a consumer that was merely slow rather than
+  // dead would otherwise see a status it does not recognise as a cancellation,
+  // take its failure branch instead, overwrite `cancelled` with `failed`, email
+  // the user about a failure they never had, and — on the sync path — call
+  // msg.retry(), restarting the very work they cancelled.
+  return progressResult.data.status === "cancelling" || progressResult.data.status === "cancelled";
 }
 
 export async function deleteImportJob(
@@ -643,11 +816,27 @@ export async function cleanupOldImports(
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
 
+    // The newest job per project is retained regardless of age — deliberately
+    // "newest", not "newest finished", because that is precisely the row
+    // `getLatestImportDepth` selects (ORDER BY started_at DESC LIMIT 1, no
+    // status filter). Protecting a different row than the reader reads would
+    // let the clone depth be pruned out from under it, silently re-deriving
+    // DEFAULT_CLONE_DEPTH and turning a full-history project into a shallow
+    // clone. Depth propagates forward — each sync writes the depth it read onto
+    // the row it creates — so keeping the newest row keeps the depth reachable.
+    // Only finished rows are candidates, so an in-flight job is never at risk.
     const result = await db
       .prepare(
-        `DELETE FROM import_jobs 
-         WHERE completed_at IS NOT NULL 
-         AND completed_at < ?`,
+        `DELETE FROM import_jobs
+         WHERE completed_at IS NOT NULL
+         AND completed_at < ?
+         AND id NOT IN (
+           SELECT id FROM import_jobs AS newest
+           WHERE newest.namespace = import_jobs.namespace
+             AND newest.slug = import_jobs.slug
+           ORDER BY newest.started_at DESC
+           LIMIT 1
+         )`,
       )
       .bind(cutoffDate.toISOString())
       .run();
@@ -708,13 +897,18 @@ export async function recoverStalledImport(
   try {
     const row = await db
       .prepare(
+        // The cutoff is an ISO string, not `datetime('now', ?)`: `updated_at`
+        // stores `new Date().toISOString()`, and TEXT comparison puts an ISO
+        // value after a same-day `datetime()` value ('T' > ' '). Comparing the
+        // two formats made this predicate false for every row until the UTC
+        // date rolled over, so on-demand recovery silently never fired.
         `SELECT * FROM import_jobs
          WHERE namespace = ? AND slug = ?
          AND status IN ('cloning', 'processing', 'syncing', 'cancelling')
-         AND updated_at < datetime('now', ?)
+         AND updated_at < ?
          ORDER BY updated_at DESC LIMIT 1`,
       )
-      .bind(namespace, slug, `-${Math.ceil(maxStallMs / 1000)} seconds`)
+      .bind(namespace, slug, new Date(Date.now() - maxStallMs).toISOString())
       .first<ImportJobRow>();
 
     if (!row) {
@@ -731,12 +925,17 @@ export async function recoverStalledImport(
       updatedAt: row.updated_at,
     });
 
-    // Use updateImportProgress to properly handle MAX_ERRORS and timestamps
+    // Written by id, not by namespace+slug. The SELECT above picks the stalest
+    // matching row, but `updateImportProgress` re-resolves its target through
+    // `getImportProgress` (ORDER BY started_at DESC) — the NEWEST row for the
+    // project. A project owns one row per sync, so those are routinely
+    // different rows, and the namespace-scoped write would fail a healthy
+    // in-flight job while leaving the wedged one exactly as it was.
     const now = new Date().toISOString();
-    const updateResult = await updateImportProgress(
+    const updateResult = await updateImportProgressById(
       db,
-      namespace,
-      slug,
+      row.id,
+      row.version,
       {
         status: targetStatus,
         completedAt: now,
@@ -755,27 +954,28 @@ export async function recoverStalledImport(
       logger,
     );
 
-    if (updateResult.success) {
-      logger.info("Successfully recovered stalled import", {
-        namespace,
-        slug,
-        importId: row.id,
-      });
-      return ok(true);
+    if (!updateResult.success) {
+      return err(updateResult.error);
     }
 
-    // If update failed due to version conflict, the import was updated elsewhere
-    if (updateResult.error.code === "CONFLICT") {
+    if (!updateResult.data.updated) {
+      // Another writer owns the row (or it has since been removed) — the job is
+      // not abandoned after all, so recovery correctly stands down.
       logger.debug("Stalled import was updated elsewhere, skipping recovery", {
         namespace,
         slug,
         importId: row.id,
+        reason: updateResult.data.reason,
       });
       return ok(false);
     }
 
-    // Other error
-    return err(updateResult.error);
+    logger.info("Successfully recovered stalled import", {
+      namespace,
+      slug,
+      importId: row.id,
+    });
+    return ok(true);
   } catch (error) {
     logger.error("Failed to recover stalled import", error instanceof Error ? error : undefined, {
       namespace,

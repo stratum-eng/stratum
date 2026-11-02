@@ -27,6 +27,26 @@ export function generateCspNonce(): string {
   return btoa(binary);
 }
 
+export interface CspOptions {
+  /**
+   * Extra `form-action` sources beyond `'self'`, or `null` to omit the
+   * directive entirely.
+   *
+   * Exists for one page: the OAuth consent screen (`/oauth/authorize`), which
+   * passes `null`. Its form POSTs to us, but the RESPONSE to that POST is a
+   * redirect to the client's callback, and Chromium and WebKit enforce the
+   * submitting page's `form-action` against every hop of the redirect chain
+   * that follows, not only the form's own action (the CSP spec leaves this
+   * open — w3c/webappsec-csp#8 — and Firefox does not check redirects). Under
+   * the site-wide `'self'`, clicking Allow minted an authorization code the
+   * browser then refused to deliver, and the page just sat there. Listing the
+   * client's origin was not enough either: the client's callback redirects
+   * onward, and a hop to any origin not listed cancels the navigation the same
+   * way. Every other page keeps the default.
+   */
+  formAction?: string[] | null;
+}
+
 /**
  * CSP for the server-rendered UI and API, parameterized by the per-request
  * script nonce. Built in ONE place so the request middleware and the error
@@ -44,8 +64,48 @@ export function generateCspNonce(): string {
  *   scripts; the UI loads no external scripts and injects none, so granting
  *   transitive trust would only widen the policy.
  */
-export function contentSecurityPolicy(nonce: string): string {
-  return `frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; script-src 'nonce-${nonce}'`;
+export function contentSecurityPolicy(nonce: string, options: CspOptions = {}): string {
+  const formAction =
+    options.formAction === null
+      ? []
+      : [`form-action ${["'self'", ...(options.formAction ?? [])].join(" ")}`];
+  return [
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    ...formAction,
+    "frame-src 'none'",
+    `script-src 'nonce-${nonce}'`,
+    // Both reporting directives, deliberately. A browser that implements the
+    // Reporting API honours `report-to` and ignores `report-uri`; one that does
+    // not falls back to `report-uri`. No browser sends the same report twice.
+    `report-to ${CSP_REPORT_GROUP}`,
+    `report-uri ${CSP_REPORT_PATH}`,
+  ].join("; ");
+}
+
+/**
+ * Where browsers POST Content Security Policy violation reports.
+ *
+ * A CSP block happens entirely inside the browser: the server answers a
+ * perfectly good request and never learns that the page refused to act on it.
+ * That is how #353/#355 stayed invisible — every user who clicked Allow on the
+ * MCP consent screen hit a `form-action` block, and the Worker logs showed a
+ * healthy flow right up to the redirect nobody followed. With a report
+ * endpoint, each of those clicks would have produced a warning naming the
+ * blocked URL and the directive within seconds. Served by
+ * `src/routes/csp-report.ts`; exempt from the CSRF check because browsers send
+ * reports with a bare POST and no Origin, and the endpoint only logs.
+ */
+export const CSP_REPORT_PATH = "/csp-report";
+
+/** The Reporting API endpoint group that `report-to` names; declared to the
+ * browser by the `Reporting-Endpoints` header `setHtmlSecurityHeaders` sets. */
+const CSP_REPORT_GROUP = "csp-endpoint";
+
+/** Is this the CSP report endpoint? Read by `csrfMiddleware`. */
+export function isCspReportPath(path: string): boolean {
+  return path === CSP_REPORT_PATH;
 }
 
 /**
@@ -56,7 +116,7 @@ export function contentSecurityPolicy(nonce: string): string {
  * already stamped, and both calls must emit the SAME policy string. HSTS is
  * applied separately — it is conditional on HTTPS.
  */
-export function setHtmlSecurityHeaders(c: Context<{ Bindings: Env }>): void {
+export function setHtmlSecurityHeaders(c: Context<{ Bindings: Env }>, options?: CspOptions): void {
   let nonce = c.get("cspNonce");
   if (nonce === undefined) {
     nonce = generateCspNonce();
@@ -65,7 +125,10 @@ export function setHtmlSecurityHeaders(c: Context<{ Bindings: Env }>): void {
   c.header("X-Content-Type-Options", "nosniff");
   c.header("X-Frame-Options", "DENY");
   c.header("Referrer-Policy", "strict-origin-when-cross-origin");
-  c.header("Content-Security-Policy", contentSecurityPolicy(nonce));
+  // A relative endpoint URL is resolved against the response URL, so a
+  // self-hosted instance reports to itself with nothing to configure.
+  c.header("Reporting-Endpoints", `${CSP_REPORT_GROUP}="${CSP_REPORT_PATH}"`);
+  c.header("Content-Security-Policy", contentSecurityPolicy(nonce, options));
 }
 
 /**

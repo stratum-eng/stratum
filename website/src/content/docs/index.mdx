@@ -1,57 +1,31 @@
 ---
 title: Stratum
-description: The governance layer for AI-written code — evaluation-gated merges, provenance, and agent identities, built on Cloudflare Workers.
-template: splash
+description: The open-source, agent-first code forge — evaluation-gated merges, provenance, and agent identities, built on Cloudflare Workers.
 head:
   - tag: title
-    content: Stratum — governance for AI-written code
+    content: Stratum — documentation
   - tag: meta
     attrs:
       property: og:type
       content: website
-hero:
-  tagline: The governance layer for AI-written code — the control plane that decides what agent output is allowed to merge, wherever your code lives.
-  actions:
-    - text: Get started
-      link: /guides/getting-started/
-      icon: right-arrow
-    - text: View on GitHub
-      link: https://github.com/stratum-eng/stratum
-      icon: external
-      variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+The documentation for Stratum, the open-source, agent-first code forge. For what Stratum is and who it is for, see
+[usestratum.dev](https://usestratum.dev).
 
-## Humans and AI agents, both first-class citizens — with different powers by design
+## Start here
 
-<CardGrid stagger>
-  <Card title="Evaluation-gated merges" icon="approve-check">
-    Policy-as-code (`.stratum/policy.yaml`) blocks merges on secret scans, diff
-    rules, sandboxed tests, external CI, and LLM review. A malformed policy
-    fails closed.
-  </Card>
-  <Card title="Provenance & cost tracking" icon="magnifier">
-    Every merged commit records which agent, model, and prompt produced it, its
-    evaluation score, and what it cost — LLM tokens, sandbox time, git
-    operations.
-  </Card>
-  <Card title="Agent identities with a hard invariant" icon="seti:lock">
-    Agents authenticate as themselves and can never approve work. Approvals are
-    a human gate, on every surface — REST, CLI, and MCP — with no configuration
-    that relaxes it.
-  </Card>
-  <Card title="Any agent, any editor" icon="puzzle">
-    REST API, CLI, and MCP server: Claude Code, Cursor, Copilot, or your own
-    agents all speak to the same gate. No editor subscription required.
-  </Card>
-  <Card title="Two ways to run it" icon="setting">
-    As a **layer over GitHub** — keep your repos and PRs; eval verdicts land as
-    PR comments and commit statuses — or as a **standalone forge** with Git
-    hosting on Cloudflare Artifacts, workspace forking, issues, and orgs.
-  </Card>
-  <Card title="Self-hostable and MIT-licensed" icon="cloud-download">
-    Runs on your own Cloudflare account: Workers, Artifacts, D1, KV, and
-    Queues. You pay only for the resources you use.
-  </Card>
-</CardGrid>
+- [Getting started](/guides/getting-started/) — from sign-up to a merged,
+  evaluation-gated change: policy, agent identity, and the change flow.
+- [Importing from GitHub](/guides/importing/) — bring an existing repository in and
+  keep it in sync with its source.
+- [CI integration](/guides/ci-integration/) — run evaluations on infrastructure you
+  already have and report verdicts back.
+
+## Reference
+
+- [Authentication](/reference/authentication/) — tokens, sessions, and the admin key.
+- [Endpoints](/reference/endpoints/) — the REST surface, with the
+  [OpenAPI specification](/reference/openapi/) as its contract.
+- [Agent discovery](/reference/agent-discovery/) — the metadata an agent reads before
+  its first request.

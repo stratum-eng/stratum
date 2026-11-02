@@ -3,7 +3,7 @@ import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 
-// External identities (migration 041): one row per (issuer, subject), the
+// External identities (migration 049): one row per (issuer, subject), the
 // stable pair an IdP guarantees for a user. Two invariants:
 //   1. (issuer, subject) is globally unique — enforced by the schema.
 //   2. At most one identity per (user_id, issuer) — enforced here (SQL can't

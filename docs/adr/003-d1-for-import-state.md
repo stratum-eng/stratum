@@ -38,7 +38,8 @@ CREATE TABLE import_jobs (
   slug TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN (
     'queued', 'cloning', 'processing', 
-    'completed', 'failed', 'cancelled', 'cancelling'
+    'completed', 'failed', 'cancelled', 'cancelling',
+    'syncing', 'checking'
   )),
   source_url TEXT NOT NULL,
   branch TEXT NOT NULL,
@@ -58,11 +59,25 @@ CREATE TABLE import_jobs (
 -- Indexes for efficient lookups
 CREATE INDEX idx_import_jobs_ns_slug ON import_jobs(namespace, slug);
 CREATE INDEX idx_import_jobs_status ON import_jobs(status) 
-  WHERE status IN ('queued', 'cloning', 'processing', 'cancelling');
+  WHERE status IN ('queued', 'cloning', 'processing', 'cancelling', 'syncing');
 CREATE INDEX idx_import_jobs_completed_at ON import_jobs(completed_at) 
   WHERE completed_at IS NOT NULL;
 CREATE INDEX idx_import_jobs_project_id ON import_jobs(project_id);
+-- Serves the scheduled stall sweep: non-terminal rows ordered by staleness.
+CREATE INDEX idx_import_jobs_status_updated_at ON import_jobs(status, updated_at);
 ```
+
+`'syncing'` and `'checking'` were added to the CHECK constraint by migration 043.
+They had always been part of the `ImportStatus` union, and the queue consumer
+wrote `'syncing'` on every sync — against a constraint that rejected it. The
+write failed silently, leaving jobs reading as `'queued'` long after they had
+been picked up (#304).
+
+There is **no unique constraint on `(namespace, slug)`**: a project accumulates
+one row per import *and* per sync. Anything that has already selected a specific
+row must therefore write back by `id` — see `updateImportProgressById` — because
+`getImportProgress` resolves to the newest row for the project, which is
+frequently not the one the caller chose.
 
 ### Optimistic Locking
 

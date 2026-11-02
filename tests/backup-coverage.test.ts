@@ -1,6 +1,6 @@
-/// <reference types="vite/client" />
 import { describe, expect, it } from "vitest";
 import { BACKUP_EXCLUDED_TABLES, BACKUP_TABLES } from "../src/storage/d1-backup";
+import { makeSqliteD1 } from "./helpers/sqlite-d1";
 
 /**
  * Backup-coverage drift guard. `BACKUP_TABLES` is a hand-maintained allow-list,
@@ -8,23 +8,22 @@ import { BACKUP_EXCLUDED_TABLES, BACKUP_TABLES } from "../src/storage/d1-backup"
  * left out of every backup. This derives the real table set from migrations/
  * (the schema source of truth) and asserts every table is either backed up or
  * explicitly excluded — forcing that decision at PR time, not after data loss.
+ *
+ * The set comes from the schema the migrations actually build, not from a regex
+ * over their text: a table rebuild (migration 043) creates a scratch table and a
+ * `_new` table that it drops and renames away before finishing, and neither
+ * exists at runtime to be backed up.
  */
-const migrationModules = import.meta.glob("../migrations/*.sql", {
-  query: "?raw",
-  import: "default",
-  eager: true,
-}) as Record<string, string>;
-
 function tablesDefinedInMigrations(): Set<string> {
-  const names = new Set<string>();
-  const createTable = /CREATE TABLE (?:IF NOT EXISTS )?["'`]?([a-z_]+)/gi;
-  for (const sql of Object.values(migrationModules)) {
-    for (const match of sql.matchAll(createTable)) {
-      const table = match[1];
-      if (table) names.add(table.toLowerCase());
-    }
+  const { raw } = makeSqliteD1();
+  try {
+    const rows = raw
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+      .all() as Array<{ name: string }>;
+    return new Set(rows.map((r) => r.name.toLowerCase()));
+  } finally {
+    raw.close();
   }
-  return names;
 }
 
 describe("backup coverage", () => {

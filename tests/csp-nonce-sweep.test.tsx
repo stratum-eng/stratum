@@ -264,7 +264,17 @@ describe("CSP nonce sweep — components", () => {
       <ImportProgressCard
         {...importProgressBase}
         status="failed"
-        errors={[{ file: "repo", error: "unauthorized", timestamp: "2024-01-01T00:00:00Z" }]}
+        // A realistic auth failure rather than the bare word "unauthorized":
+        // classifyError deliberately no longer treats that token alone as an
+        // auth error (it collided with ref names — see #278), and this case
+        // needs a classification that renders the action button it asserts on.
+        errors={[
+          {
+            file: "repo",
+            error: "HTTP Error: 401 Unauthorized",
+            timestamp: "2024-01-01T00:00:00Z",
+          },
+        ]}
         nonce={NONCE}
       />,
     );
@@ -353,6 +363,34 @@ describe("CSP nonce sweep — full responses", () => {
       DB: {} as D1Database,
     } as unknown as Env;
   }
+
+  /**
+   * With analytics enabled, so the sweep covers the injected tags too.
+   *
+   * `makeEnv` supplies no `POSTHOG_PUBLIC_KEY`, which means the injector is
+   * inert in every other case here — the sweep passed by luck rather than by
+   * covering the analytics path.
+   */
+  function makeEnvWithAnalytics(): Env {
+    return { ...makeEnv(), POSTHOG_PUBLIC_KEY: "phc_sweep" } as unknown as Env;
+  }
+
+  it("GET /auth/signup with analytics on: every script, injected ones included, is nonce'd", async () => {
+    const res = await app.fetch(
+      new Request("http://localhost/auth/signup"),
+      makeEnvWithAnalytics(),
+    );
+    expect(res.status).toBe(200);
+    const csp = res.headers.get("Content-Security-Policy") ?? "";
+    const nonce = /'nonce-([^']+)'/.exec(csp)?.[1];
+    expect(nonce).toBeTruthy();
+    const html = await res.text();
+    // The injected pair must actually be present, or this asserts nothing.
+    expect(html).toContain("posthog.init");
+    const tags = scriptTags(html);
+    expect(tags.filter((t) => !t.includes(`nonce="${nonce}"`))).toEqual([]);
+    expect(inlineHandlerAttrs(html)).toEqual([]);
+  });
 
   it("GET /auth/signup: rendered script nonce matches the CSP header nonce", async () => {
     const res = await app.fetch(new Request("http://localhost/auth/signup"), makeEnv());

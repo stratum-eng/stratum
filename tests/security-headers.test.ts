@@ -90,6 +90,38 @@ describe("SEC-7: security headers", () => {
     expect(csp).toContain("frame-src 'none'");
   });
 
+  it("contentSecurityPolicy can widen or drop form-action for a page that redirects off-origin", () => {
+    // The OAuth consent page's form POST is answered with a redirect to the
+    // client, and Chromium checks form-action against that redirect too.
+    expect(contentSecurityPolicy("n", { formAction: ["https://claude.ai"] })).toContain(
+      "form-action 'self' https://claude.ai;",
+    );
+    expect(contentSecurityPolicy("n", { formAction: null })).not.toContain("form-action");
+    // Every other directive survives either way.
+    for (const csp of [
+      contentSecurityPolicy("n", { formAction: ["https://claude.ai"] }),
+      contentSecurityPolicy("n", { formAction: null }),
+    ]) {
+      expect(csp).toContain("frame-ancestors 'none'");
+      expect(csp).toContain("script-src 'nonce-n'");
+    }
+    // And the default is byte-for-byte what it was.
+    expect(contentSecurityPolicy("n")).toBe(
+      "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; script-src 'nonce-n'; report-to csp-endpoint; report-uri /csp-report",
+    );
+  });
+
+  it("names the violation-report endpoint in every policy and declares it to the browser", async () => {
+    // A CSP block is invisible to the server unless the browser is told where
+    // to report it (#355). Both directives, so browsers with and without the
+    // Reporting API report; the header is what makes `report-to` resolvable.
+    const res = await app.fetch(new Request("http://localhost/health"), makeEnv());
+    expect(res.headers.get("Reporting-Endpoints")).toBe('csp-endpoint="/csp-report"');
+    const csp = res.headers.get("Content-Security-Policy") ?? "";
+    expect(csp).toContain("report-to csp-endpoint");
+    expect(csp).toContain("report-uri /csp-report");
+  });
+
   it("applies the same CSP to 500 error responses (error boundary parity)", async () => {
     // GET / renders the dashboard, which throws under the bare test env and hits
     // the error boundary — the 500 must carry the identical hardened policy.

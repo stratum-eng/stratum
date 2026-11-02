@@ -2,16 +2,24 @@ openapi: 3.1.0
 info:
   title: Stratum API
   description: |
-    A code collaboration platform for the AI engineering era.
+    The open-source, agent-first code forge: git hosting where every change, human or
+    agent, proves itself through evaluation gates before it merges.
 
     This specification is generated from the route code (`src/index.ts` and
     `src/routes/*.ts`) and covers every `/api/*` route, the root health check,
     the GitHub webhook receiver, and the SCIM 2.0 provisioning endpoints under
     `/scim/v2`.
 
+    Also covered: the remote MCP endpoint (`/mcp`) and the OAuth 2.1
+    authorization server that fronts it (`/oauth/*` and its `.well-known`
+    discovery documents), which sit outside `/api/*` but are the surface an MCP
+    client speaks to.
+
     Not covered here:
     - HTML page routes (`/`, `/p/*`, `/changes/*`, `/auth/*` — including the
       SSO sign-in flow at `/auth/sso/*` — `/dev-login`, `/ui.css`, ...).
+    - `GET|POST /oauth/authorize`, which renders and processes an HTML consent
+      screen rather than serving JSON.
     - The git smart-HTTP endpoints (`/@{namespace}/{slug}/info/refs`,
       `git-upload-pack`, `git-receive-pack`) — documented separately in
       `docs/adr/005`.
@@ -24,10 +32,21 @@ info:
     accept only a per-connection SCIM bearer token (`stratum_scim_*`) and no
     other credential.
 
+    MCP OAuth grants (`stratum_mcp_...`) authenticate like any user token and
+    obey the same scopes — `mcp:write` maps to `read_write`, anything else to
+    `read` — with two extra refusals: they cannot reach `/api/admin/*` and
+    cannot rotate the legacy key.
+
+    Token scopes: a user token carries either `read` or `read_write`. A `read`
+    token is refused, before routing, on anything that is not a GET or HEAD —
+    `403` with code `TOKEN_SCOPE_INSUFFICIENT` — so every non-GET/HEAD endpoint
+    below can return it. Sessions and agent tokens are unaffected. Token
+    management (`/api/users/me/tokens*`) is session-only.
+
     Several form-friendly endpoints return a `302` redirect instead of JSON when
     the request body is form-encoded rather than `application/json`; this spec
     documents the JSON behaviour.
-  version: 1.0.0
+  version: 0.2.0
 
 servers:
   - url: https://your-instance.workers.dev
@@ -55,6 +74,8 @@ tags:
     description: Project issues
   - name: webhooks
     description: Outbound project webhooks
+  - name: deployments
+    description: Post-merge deployments and the per-project deploy secret store
   - name: orgs
     description: Organizations, members, and teams
   - name: sso
@@ -69,6 +90,8 @@ tags:
     description: Importing many repositories at once
   - name: github
     description: Inbound GitHub webhook receiver
+  - name: mcp
+    description: The remote MCP server and its OAuth 2.1 authorization server
   - name: admin
     description: Administrator-only operations (metrics, audit, backup, restore, deletion jobs)
 
@@ -495,6 +518,8 @@ paths:
       tags: [projects]
       summary: List files in the project repository
       security: [{ bearerAuth: [] }, {}]
+      parameters:
+        - $ref: "#/components/parameters/Ref"
       responses:
         "200":
           description: File listing
@@ -506,6 +531,9 @@ paths:
                   namespace: { type: string }
                   slug: { type: string }
                   path: { type: string }
+                  ref:
+                    type: string
+                    description: The branch actually read
                   files:
                     type: array
                     items: { type: string }
@@ -529,6 +557,7 @@ paths:
           required: true
           schema: { type: string }
           description: File path within the repository
+        - $ref: "#/components/parameters/Ref"
       responses:
         "200":
           description: File content, or a marker for binary/oversized files
@@ -541,6 +570,9 @@ paths:
                   namespace: { type: string }
                   slug: { type: string }
                   path: { type: string }
+                  ref:
+                    type: string
+                    description: The branch actually read
                   kind:
                     type: string
                     description: '"content" when `value` carries the text; other kinds (e.g. binary/too-large) omit `value`.'
@@ -568,6 +600,7 @@ paths:
           in: query
           schema: { type: integer, default: 20 }
           description: Number of commits to return
+        - $ref: "#/components/parameters/Ref"
       responses:
         "200":
           description: Commit log
@@ -579,11 +612,148 @@ paths:
                   namespace: { type: string }
                   slug: { type: string }
                   path: { type: string }
+                  ref:
+                    type: string
+                    description: The branch actually read
                   log:
                     type: array
                     items: { $ref: "#/components/schemas/CommitLogEntry" }
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/projects/{namespace}/{slug}/branches:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+    get:
+      operationId: listProjectBranches
+      tags: [projects]
+      summary: List the repository's branches
+      description: >
+        Reads the remote's ref advertisement, so the cost does not grow with the
+        number of branches. Capped at 200; `truncated` reports when the list was
+        cut, and the default branch is always retained.
+      security: [{ bearerAuth: [] }, {}]
+      responses:
+        "200":
+          description: Branch listing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  namespace: { type: string }
+                  slug: { type: string }
+                  path: { type: string }
+                  defaultBranch: { type: string }
+                  branches:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        oid: { type: string }
+                  truncated: { type: boolean }
+                  totalBranchCount: { type: integer }
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createProjectBranch
+      tags: [projects]
+      summary: Create a branch
+      description: >
+        Creates `refs/heads/{name}` pointing at an object the repository already
+        contains. The start point may be a branch name or a full 40-character
+        commit sha; short shas and tag names are refused. Because the ref can
+        only be aimed at an existing object, this cannot introduce unevaluated
+        content and does not bypass the change gate. Writers only.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                startPoint:
+                  type: string
+                  description: >
+                    Branch name or full 40-hex commit sha. Defaults to the default
+                    branch's tip. Tag names are rejected: a tag can point at a
+                    non-commit, and one may sit outside the history a backup captures.
+      responses:
+        "201":
+          description: Branch created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  namespace: { type: string }
+                  slug: { type: string }
+                  branch:
+                    type: object
+                    properties:
+                      name: { type: string }
+                      oid: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The branch already exists (`BRANCH_EXISTS`); the name collides with
+            an existing ref path, such as `release` when `release/2.x` exists
+            (`BRANCH_NAME_CONFLICT`); the configured default branch is not
+            advertised by the remote, so there is no start point to default to
+            (`NO_DEFAULT_BRANCH`); or the project is being deleted
+            (`TARGET_DELETING`)
+        "413":
+          description: Request body too large
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/projects/{namespace}/{slug}/branches/{name}:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+        description: >
+          Branch name. May contain slashes (`release/2.x`), passed as real path
+          segments. A percent-encoded slash (`%2F`) is accepted too and names the
+          same branch — each path segment is decoded individually.
+    delete:
+      operationId: deleteProjectBranch
+      tags: [projects]
+      summary: Delete a branch
+      description: Writers only. The project's default branch cannot be deleted.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Branch deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  namespace: { type: string }
+                  slug: { type: string }
+                  deleted: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The branch is the default branch (`DEFAULT_BRANCH_PROTECTED`), or the project is being deleted (`TARGET_DELETING`)
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -820,6 +990,16 @@ paths:
         Applies a resolution strategy to a conflict previously recorded by a
         failed merge and commits the result to the project. Requires project
         write access.
+
+        The `manual` strategy is the only one that introduces content no
+        evaluator has seen, so it is gated: the project's evaluator suite and
+        merge protection both run on the resolution before anything is
+        committed. That evaluation is pinned to the revision it read, so if a
+        push lands on the default branch in between, the resolution is refused
+        with `409 STALE_PROJECT` rather than committed onto the newer tip —
+        re-resolve against the current revision. The `accept-*` strategies
+        re-stage content that is already committed on one side of the conflict
+        and are neither evaluated nor pinned.
       requestBody:
         required: true
         content:
@@ -856,6 +1036,15 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The project advanced past the revision this resolution was evaluated
+            against (code STALE_PROJECT) — detected before committing, or by the
+            remote refusing the commit if the project moved in between. Nothing
+            was committed either way; re-resolve against the current revision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "410":
           description: Conflict not found or already resolved
           content:
@@ -863,6 +1052,15 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "422":
           description: Resolution failed to apply (or invalid file path)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: >
+            An infrastructure failure while applying the resolution — most often
+            a clone whose current revision could not be read, so the evaluated
+            base could not be verified. Reported as 5xx rather than 422 because
+            the request itself was well formed.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -900,7 +1098,8 @@ paths:
                     change.rejected, change.reverted, change.commented,
                     change.reviewed, project.created, project.imported,
                     workspace.created, sync.completed, issue.opened,
-                    issue.commented, issue.closed
+                    issue.commented, issue.closed, deployment.requested,
+                    deployment.succeeded, deployment.failed
       responses:
         "201":
           description: Webhook created (includes the secret, shown once)
@@ -1048,6 +1247,408 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/projects/{namespace}/{slug}/secrets:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+    get:
+      operationId: listProjectSecrets
+      tags: [deployments]
+      summary: List deploy secret names (values never returned)
+      description: |
+        Requires **project admin**, and the caller must not be an agent: an
+        agent token is refused on every secret route even when its owner owns
+        the project. There is no read path for a stored secret value anywhere
+        in the API.
+      responses:
+        "200":
+          description: Secret names and metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secrets:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProjectSecret" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: putProjectSecretForm
+      tags: [deployments]
+      summary: Create or replace a deploy secret (form-friendly alias)
+      description: |
+        The browser's way in to the PUT below, which an HTML form cannot issue;
+        the secret's name travels in the body. Same authorization gate. A
+        form-encoded caller is redirected back to the project settings page
+        with a fixed error code rather than a caller-supplied message.
+
+        The content type is what selects the response shape, not just the
+        parser: `application/json` is answered with JSON, and anything else is
+        treated as a browser form and answered with a `302`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, value]
+              properties:
+                name:
+                  type: string
+                  pattern: "^[A-Z][A-Z0-9_]{0,63}$"
+                value:
+                  type: string
+                  description: At most 4096 bytes. Never returned by any endpoint.
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [name, value]
+              properties:
+                name:
+                  type: string
+                  pattern: "^[A-Z][A-Z0-9_]{0,63}$"
+                  description: >
+                    Surrounding whitespace is trimmed before validation. A name
+                    that does not match the pattern redirects with
+                    `?secretError=name` instead of returning `400`.
+                value:
+                  type: string
+                  description: >
+                    At most 4096 bytes; must not be empty (an empty value
+                    redirects with `?secretError=value`). Never returned by any
+                    endpoint.
+          multipart/form-data:
+            schema:
+              type: object
+              required: [name, value]
+              properties:
+                name:
+                  type: string
+                  pattern: "^[A-Z][A-Z0-9_]{0,63}$"
+                value:
+                  type: string
+                  description: At most 4096 bytes. Never returned by any endpoint.
+      responses:
+        "200":
+          description: Secret stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { $ref: "#/components/schemas/ProjectSecret" }
+        "302":
+          description: Form-encoded caller redirected back to project settings
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          description: >
+            Storage failed, or the instance has no DEPLOY_SECRET_KEY configured
+            (`DEPLOY_SECRET_KEY_MISSING`), without which secrets cannot be encrypted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/projects/{namespace}/{slug}/secrets/{name}:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^[A-Z][A-Z0-9_]{0,63}$"
+    put:
+      operationId: putProjectSecret
+      tags: [deployments]
+      summary: Create or replace a deploy secret
+      description: |
+        Requires project admin and a non-agent identity. Encrypted at rest with
+        the project id and secret name bound as additional authenticated data;
+        only the deploy runner ever decrypts it. Audited as `secret.written`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value:
+                  type: string
+                  description: At most 4096 bytes. Never returned by any endpoint.
+      responses:
+        "200":
+          description: Secret stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { $ref: "#/components/schemas/ProjectSecret" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          description: >
+            Storage failed, or the instance has no DEPLOY_SECRET_KEY configured
+            (`DEPLOY_SECRET_KEY_MISSING`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: deleteProjectSecret
+      tags: [deployments]
+      summary: Delete a deploy secret
+      description: Requires project admin and a non-agent identity. Audited as `secret.deleted`.
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  name: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/projects/{namespace}/{slug}/secrets/{name}/delete:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: deleteProjectSecretForm
+      tags: [deployments]
+      summary: Delete a deploy secret (form-friendly alias)
+      description: |
+        Browsers cannot issue DELETE. Same gate as the DELETE above; a
+        form-encoded caller is redirected back to project settings even when the
+        name was already gone.
+      responses:
+        "200":
+          description: Deleted (JSON caller)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  name: { type: string }
+        "302":
+          description: Form-encoded caller redirected back to project settings
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/projects/{namespace}/{slug}/deployments:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+    get:
+      operationId: listDeployments
+      tags: [deployments]
+      summary: List post-merge deployments, newest first
+      description: |
+        Readable by anyone who can read the project (anonymously, on a public
+        project). `logTail` is included **only** for callers with project write
+        access — it holds a redacted provider payload.
+      parameters:
+        - name: name
+          in: query
+          schema: { type: string }
+          description: Only deployments for this `deploys:` entry name
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending_approval, queued, running, succeeded, failed, superseded, skipped]
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Deployments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployments:
+                    type: array
+                    items: { $ref: "#/components/schemas/Deployment" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/deployments/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getDeployment
+      tags: [deployments]
+      summary: Get one deployment
+      description: |
+        The URL carries no project, so the row's own project is authorized. A
+        deployment in a project the caller cannot read answers `404` rather than
+        `403`, so an id cannot be confirmed by probing. `logTail` is included
+        only for project writers.
+      responses:
+        "200":
+          description: The deployment
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployment: { $ref: "#/components/schemas/Deployment" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/deployments/{id}/approve:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: approveDeployment
+      tags: [deployments]
+      summary: Approve a deployment awaiting approval
+      description: |
+        Moves a `pending_approval` deployment to `queued` and enqueues it.
+        Requires project **write** access and a **user** identity — an agent
+        token is refused. Like a human review verdict, the guarantee is "not an
+        agent identity": a user's scoped API token and MCP OAuth grants are
+        accepted, so this is not evidence of a human at a keyboard.
+
+        Audited as `deployment.approved`. A form-encoded caller receives a
+        `302` back to the deployment page instead of JSON.
+      responses:
+        "200":
+          description: Approved and enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployment: { $ref: "#/components/schemas/Deployment" }
+        "302":
+          description: Form-encoded caller redirected to the deployment page
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The deployment is not awaiting approval (`DEPLOYMENT_NOT_PENDING`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: Deployments are not enabled on this instance (`DEPLOY_QUEUE_UNAVAILABLE`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/deployments/{id}/retry:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: retryDeployment
+      tags: [deployments]
+      summary: Re-run a finished deployment as a new attempt
+      description: |
+        Creates a new row for the same commit with `attempt` incremented and
+        enqueues it; the original row is kept. Requires project write access,
+        and unlike approve an agent identity is accepted. The originating
+        change id is carried over, so the "was this change reverted?" check
+        still applies. Audited as `deployment.retried`.
+      responses:
+        "201":
+          description: Retry attempt created and enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployment: { $ref: "#/components/schemas/Deployment" }
+        "302":
+          description: Form-encoded caller redirected to the new deployment page
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The deployment is not in a terminal status
+            (`DEPLOYMENT_NOT_RETRYABLE`) — a `pending_approval` row in
+            particular cannot be retried, since the retry would start `queued`
+            and route around the approval gate — or this attempt already exists
+            (`DEPLOYMENT_RETRY_EXISTS`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: Deployments are not enabled on this instance (`DEPLOY_QUEUE_UNAVAILABLE`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/projects/{namespace}/{slug}/issues:
     parameters:
@@ -2676,7 +3277,16 @@ paths:
       operationId: rotateToken
       tags: [users]
       summary: Rotate the caller's API token
-      description: The old token is invalid as of this response; the new one is shown once.
+      description: >
+        The old token is invalid as of this response; the new one is shown once.
+        This rotates the single legacy `users.token_hash` credential, not a named
+        API token — prefer `POST /api/users/me/tokens`.
+
+
+        Callable with a browser session or the legacy credential itself. A
+        SCOPED API token is refused with `SESSION_REQUIRED`: the key this mints
+        never expires and cannot be revoked individually, so a scoped token able
+        to rotate it would outlive its own revocation.
       responses:
         "200":
           description: New API token
@@ -2689,6 +3299,171 @@ paths:
                   token: { type: string }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/TokenScopeInsufficient"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/users/me/tokens:
+    get:
+      operationId: listApiTokens
+      tags: [users]
+      summary: List the caller's API tokens
+      description: >
+        Never returns a token hash or plaintext — only the non-secret prefix,
+        which is enough to recognise a credential already deployed somewhere.
+        Requires a browser session; an API token is refused with SESSION_REQUIRED.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The caller's tokens, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tokens]
+                properties:
+                  tokens:
+                    type: array
+                    items: { $ref: "#/components/schemas/ApiToken" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/SessionRequired"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createApiToken
+      tags: [users]
+      summary: Mint a named API token
+      description: >
+        The plaintext is returned exactly once, in this response, and is never
+        stored — only its hash is. The response carries `Cache-Control: no-store`.
+        Requires a browser session; an API token is refused with SESSION_REQUIRED,
+        so a token can never mint another.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 100
+                  description: A label. Not unique; uniqueness is on the hash.
+                scope:
+                  type: string
+                  enum: [read, read_write]
+                  default: read
+                  description: >
+                    `read` permits GET/HEAD and `git clone`/`fetch` only; every
+                    other method is refused with TOKEN_SCOPE_INSUFFICIENT.
+                expiresInDays:
+                  type: integer
+                  minimum: 1
+                  maximum: 365
+                  description: Omit for a token that never expires.
+      responses:
+        "201":
+          description: The token, plus its plaintext (shown only here)
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: Always `no-store`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, plaintext]
+                properties:
+                  token: { $ref: "#/components/schemas/ApiToken" }
+                  plaintext:
+                    type: string
+                    description: The `stratum_user_…` credential. Shown once, never again.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/SessionRequired"
+        "409":
+          description: >
+            The caller already holds the maximum of 20 active tokens
+            (code TOKEN_LIMIT_REACHED). Revoked tokens do not count.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/users/me/tokens/{id}:
+    delete:
+      operationId: revokeApiToken
+      tags: [users]
+      summary: Revoke one of the caller's API tokens
+      description: >
+        A soft revoke: the row is kept for the audit trail and stops
+        authenticating immediately. Scoped by owner, so another user's token id
+        is indistinguishable from one that does not exist. Requires a browser
+        session.
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: Token id
+      responses:
+        "200":
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/SessionRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/users/me/legacy-token/disable:
+    post:
+      operationId: disableLegacyToken
+      tags: [users]
+      summary: Disable the legacy (pre-scopes) API token
+      description: >
+        Rotates `users.token_hash` to a value that is never returned to anyone,
+        making the single unnamed, never-expiring credential minted by
+        `POST /api/users/me/rotate-token` permanently unusable. Named API tokens
+        are unaffected. Requires a browser session.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The legacy token no longer authenticates
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [disabled]
+                properties:
+                  disabled: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/SessionRequired"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -3608,6 +4383,261 @@ paths:
         "404":
           $ref: "#/components/responses/ScimNotFound"
 
+  /mcp:
+    post:
+      tags: [mcp]
+      summary: MCP endpoint (JSON-RPC 2.0 over streamable HTTP)
+      description: |
+        Stateless. One JSON-RPC request in, one response out; there is no
+        session to establish and no `Mcp-Session-Id`. Methods: `initialize`,
+        `notifications/initialized`, `notifications/cancelled`, `ping`,
+        `tools/list`, `tools/call`.
+
+        A JSON array is accepted as a batch (for the protocol revisions that
+        allow one). A message with no `id` is a notification and is answered
+        with `202` and no body.
+
+        Authenticate with an MCP OAuth access token, a user token, or an agent
+        token. A request with no credential gets `401` with a
+        `WWW-Authenticate` header naming the protected-resource metadata, which
+        is how a client bootstraps the OAuth flow.
+      parameters:
+        - name: Mcp-Protocol-Version
+          in: header
+          required: false
+          schema:
+            type: string
+            enum: ["2025-06-18", "2025-03-26", "2024-11-05"]
+          description: Omit it, or send a version this server speaks; anything else is a 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/JsonRpcRequest"
+                - type: array
+                  items: { $ref: "#/components/schemas/JsonRpcRequest" }
+      responses:
+        "200":
+          description: JSON-RPC response (or an array of them, for a batch)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/JsonRpcResponse"
+                  - type: array
+                    items: { $ref: "#/components/schemas/JsonRpcResponse" }
+        "202":
+          description: Notification accepted; no body
+        "400":
+          description: Malformed JSON, an empty batch, or an unsupported protocol version
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JsonRpcResponse" }
+        "401":
+          description: Missing or invalid credential
+          headers:
+            WWW-Authenticate:
+              schema: { type: string }
+              description: 'Bearer challenge carrying `resource_metadata`'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JsonRpcResponse" }
+        "413":
+          description: Request body exceeded the endpoint's cap
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JsonRpcResponse" }
+    get:
+      tags: [mcp]
+      summary: Server-initiated stream (not offered)
+      description: This server never initiates messages, so there is no stream to open.
+      responses:
+        "405":
+          description: No server-initiated stream
+    delete:
+      tags: [mcp]
+      summary: End an MCP session
+      description: There is no session state to discard, so this always succeeds.
+      responses:
+        "204":
+          description: Acknowledged
+
+  /.well-known/oauth-protected-resource:
+    get:
+      tags: [mcp]
+      summary: Protected-resource metadata (RFC 9728)
+      security: []
+      responses:
+        "200":
+          description: Metadata document, built from the request origin
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resource: { type: string }
+                  authorization_servers:
+                    type: array
+                    items: { type: string }
+                  scopes_supported:
+                    type: array
+                    items: { type: string }
+
+  /.well-known/oauth-authorization-server:
+    get:
+      tags: [mcp]
+      summary: Authorization-server metadata (RFC 8414)
+      security: []
+      responses:
+        "200":
+          description: Metadata document, built from the request origin
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  issuer: { type: string }
+                  authorization_endpoint: { type: string }
+                  token_endpoint: { type: string }
+                  registration_endpoint: { type: string }
+                  revocation_endpoint: { type: string }
+                  code_challenge_methods_supported:
+                    type: array
+                    items: { type: string, enum: [S256] }
+
+  /oauth/register:
+    post:
+      tags: [mcp]
+      summary: Dynamic client registration (RFC 7591)
+      description: |
+        Unauthenticated by design — an MCP client discovers this server from a
+        URL and has no pre-shared credential. The registration confers nothing
+        on its own: reaching a user's data still requires that user to complete
+        the consent screen in their own browser.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [redirect_uris]
+              properties:
+                client_name: { type: string, maxLength: 120 }
+                redirect_uris:
+                  type: array
+                  minItems: 1
+                  maxItems: 10
+                  items: { type: string }
+                  description: |
+                    `https`, or `http` on loopback (`localhost`, `127.0.0.1`,
+                    `[::1]`) for native apps. No fragment, no embedded
+                    credentials. Matched exactly at authorization time, except
+                    that a loopback redirect may use any port (RFC 8252 §7.3).
+                scope: { type: string, example: "mcp:read mcp:write" }
+                token_endpoint_auth_method:
+                  type: string
+                  enum: [none, client_secret_post, client_secret_basic]
+                  default: none
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  client_id: { type: string }
+                  client_secret:
+                    type: string
+                    description: Confidential clients only; returned once.
+                  client_id_issued_at: { type: integer }
+                  client_secret_expires_at: { type: integer, enum: [0] }
+        "400":
+          description: Invalid client metadata, redirect URI, or scope
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OAuthError" }
+
+  /oauth/token:
+    post:
+      tags: [mcp]
+      summary: Token endpoint
+      description: |
+        Grant types: `authorization_code` (PKCE `S256` required) and
+        `refresh_token` (rotating). Client authentication is `none`,
+        `client_secret_post`, or `client_secret_basic`.
+
+        A replayed authorization code revokes every token issued from that
+        client to that user (RFC 6749 §10.5).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type]
+              properties:
+                grant_type:
+                  type: string
+                  enum: [authorization_code, refresh_token]
+                code: { type: string }
+                code_verifier: { type: string, minLength: 43, maxLength: 128 }
+                redirect_uri: { type: string }
+                refresh_token: { type: string }
+                client_id: { type: string }
+                client_secret: { type: string }
+      responses:
+        "200":
+          description: Tokens issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string, example: "stratum_mcp_..." }
+                  token_type: { type: string, enum: [Bearer] }
+                  expires_in: { type: integer, example: 3600 }
+                  refresh_token: { type: string }
+                  scope: { type: string }
+        "400":
+          description: Invalid grant or request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OAuthError" }
+        "401":
+          description: Client authentication failed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OAuthError" }
+
+  /oauth/revoke:
+    post:
+      tags: [mcp]
+      summary: Token revocation (RFC 7009)
+      description: |
+        Accepts either half of a pair and revokes the whole grant. Always
+        returns `200`, whether or not the token existed — reporting the
+        difference would make this a free oracle for testing stolen tokens.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+                client_id: { type: string }
+                client_secret: { type: string }
+      responses:
+        "200":
+          description: Acknowledged
+
 components:
   securitySchemes:
     bearerAuth:
@@ -3627,6 +4657,14 @@ components:
         `POST /api/orgs/{slug}/sso/scim-token`. The only credential the
         `/scim/v2` endpoints accept — session cookies and user/agent tokens
         are never honored there.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: stratum_session
+      description: >
+        Browser session cookie, set by signing in through the web UI. Endpoints
+        that declare only this scheme are session-only: they reject API tokens,
+        so a token can never manage tokens.
 
   parameters:
     Namespace:
@@ -3641,6 +4679,17 @@ components:
       required: true
       schema: { type: string }
       description: Project slug
+    Ref:
+      name: ref
+      in: query
+      required: false
+      schema: { type: string }
+      description: >
+        Branch to read. Defaults to the project's default branch. Branch names
+        only — tags and raw commit shas are not resolved, and a name that is
+        both a branch and a tag is refused as ambiguous (409) rather than
+        resolved to either. An unknown branch is a 404; there is no fall back
+        to the default branch.
     ProjectName:
       name: name
       in: path
@@ -3686,6 +4735,21 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    SessionRequired:
+      description: >
+        The caller authenticated with an API token, but this endpoint requires a
+        signed-in browser session (code SESSION_REQUIRED)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TokenScopeInsufficient:
+      description: >
+        The request was authenticated by a `read` API token and is not a GET or
+        HEAD (code TOKEN_SCOPE_INSUFFICIENT). Enforced before routing, so it can
+        be returned by any non-GET/HEAD endpoint that accepts a bearer token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     InternalError:
       description: Internal server error
       content:
@@ -3708,6 +4772,61 @@ components:
           schema: { $ref: "#/components/schemas/ScimError" }
 
   schemas:
+    JsonRpcRequest:
+      type: object
+      required: [jsonrpc, method]
+      properties:
+        jsonrpc: { type: string, enum: ["2.0"] }
+        id:
+          oneOf:
+            - { type: string }
+            - { type: integer }
+          description: Omit it to send a notification, which is answered with 202 and no body.
+        method:
+          type: string
+          enum:
+            - initialize
+            - notifications/initialized
+            - notifications/cancelled
+            - ping
+            - tools/list
+            - tools/call
+        params: { type: object }
+
+    JsonRpcResponse:
+      type: object
+      required: [jsonrpc, id]
+      properties:
+        jsonrpc: { type: string, enum: ["2.0"] }
+        id:
+          oneOf:
+            - { type: string }
+            - { type: integer }
+            - { type: "null" }
+        result: { type: object }
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: integer
+              description: >
+                JSON-RPC 2.0 reserved code: -32700 parse error, -32600 invalid
+                request, -32601 method (or tool) not found, -32602 invalid
+                params, -32603 internal error.
+            message: { type: string }
+            data: {}
+
+    OAuthError:
+      type: object
+      required: [error]
+      description: RFC 6749 §5.2 error body — distinct from this API's `{error, code}` shape.
+      properties:
+        error:
+          type: string
+          example: invalid_grant
+        error_description: { type: string }
+
     Error:
       type: object
       required: [error]
@@ -3721,6 +4840,7 @@ components:
             Machine-readable code present on some errors (e.g. TARGET_DELETING,
             STALE_BASE, STALE_WORKSPACE, WORKSPACE_UNVERIFIABLE, MERGE_CONFLICT,
             PROTECTION_BLOCKED, NOT_REDRIVABLE, GONE, INVALID_PATH,
+            TOKEN_SCOPE_INSUFFICIENT, TOKEN_LIMIT_REACHED, SESSION_REQUIRED,
             DOMAIN_VERIFICATION_FAILED)
 
     SsoConnectionEnvelope:
@@ -3823,6 +4943,38 @@ components:
         status: { type: string }
         detail: { type: string }
         scimType: { type: string }
+
+    ApiToken:
+      type: object
+      description: A token as listed to its owner. Deliberately carries no hash.
+      required: [id, name, tokenPrefix, scope, createdAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        tokenPrefix:
+          type: string
+          description: >
+            The credential's leading, non-secret characters (e.g.
+            "stratum_user_1a2b3c4d") — enough to recognise a token already
+            deployed somewhere, never enough to use one.
+        scope:
+          type: string
+          enum: [read, read_write]
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absent when the token never expires
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: >
+            Absent until first use. Written at most hourly, and not at all on
+            the git smart-HTTP path, which has no execution context.
+        createdAt: { type: string, format: date-time }
+        revokedAt:
+          type: string
+          format: date-time
+          description: Present on a revoked token; the row is kept for the audit trail
 
     Project:
       type: object
@@ -4059,6 +5211,74 @@ components:
         active: { type: boolean }
         createdBy: { type: string }
         createdAt: { type: string, format: date-time }
+
+    ProjectSecret:
+      type: object
+      required: [name, createdBy, updatedBy, createdAt, updatedAt]
+      description: >
+        A deploy secret as anyone other than the deploy runner may ever see it.
+        The value is deliberately absent: no endpoint returns it.
+      properties:
+        name: { type: string, pattern: "^[A-Z][A-Z0-9_]{0,63}$" }
+        createdBy: { type: string }
+        updatedBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Deployment:
+      type: object
+      required: [id, projectId, project, commitSha, name, target, attempt, status, requestedByType, createdAt]
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        project: { type: string }
+        changeId:
+          type: string
+          description: Absent for a deploy not traceable to a change
+        commitSha: { type: string }
+        name:
+          type: string
+          description: >
+            The `deploys:` entry name, or "(unresolved)" for a row that never
+            selected one — a rejected entry, an unreadable tree, or a merge with
+            nothing configured
+        target:
+          type: string
+          enum: [cloudflare-pages, cloudflare-workers, vercel, unresolved]
+        attempt:
+          type: integer
+          description: 1 for the original; incremented by each retry
+        status:
+          type: string
+          enum: [pending_approval, queued, running, succeeded, failed, superseded, skipped]
+          description: >
+            `skipped` means only that nothing was configured to deploy. Every
+            operator error (missing secret, unset DEPLOY_SECRET_KEY, limit
+            exceeded, provider error) is `failed` with a reason. For the
+            `vercel` target, `succeeded` means "accepted for build" — Vercel
+            builds asynchronously and Stratum does not poll it.
+        reason: { type: string }
+        url:
+          type: string
+          description: >
+            Absent when the provider returned none. The Cloudflare targets derive
+            it from the optional CLOUDFLARE_WORKERS_SUBDOMAIN secret, so without
+            that secret a deployment succeeds with no URL.
+        logTail:
+          type: string
+          description: >
+            Redacted, truncated provider payload (16 KiB). Returned **only** to
+            callers with project write access.
+        durationMs: { type: number }
+        leaseExpiresAt: { type: string, format: date-time }
+        requestedByType:
+          type: string
+          enum: [user, agent, system]
+        requestedById: { type: string }
+        approvedBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
 
     WebhookDelivery:
       type: object

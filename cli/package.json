@@ -1,31 +1,42 @@
 {
-  "name": "@stratum/cli",
+  "name": "@stratum-eng/cli",
   "version": "0.2.0",
-  "description": "CLI for Stratum — code hosting for the AI engineering era",
-  "license": "MIT",
+  "description": "CLI for Stratum \u2014 the agent-first code forge",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/stratum-eng/stratum.git",
     "directory": "cli"
   },
   "type": "module",
-  "bin": { "stratum": "./dist/index.js" },
-  "files": ["dist"],
-  "publishConfig": { "access": "public" },
+  "bin": {
+    "stratum": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "prepublishOnly": "npm run build",
+    "lint": "biome check src tests",
+    "lint:fix": "biome check --write src tests"
   },
   "dependencies": {
     "commander": "^12.0.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
     "@types/node": "^22.0.0",
     "typescript": "^5.4.0",
     "vitest": "^3.0.0"
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=20"
+  }
 }

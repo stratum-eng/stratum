@@ -7,6 +7,9 @@ import { type Result, err, ok } from "../utils/result";
 export type AuditAction =
   | "session.created"
   | "token.rotated"
+  | "token.created"
+  | "token.revoked"
+  | "token.legacy_disabled"
   | "agent.created"
   | "agent.revoked"
   | "webhook.created"
@@ -22,6 +25,23 @@ export type AuditAction =
   | "deletion.incomplete"
   | "deletion.redrive"
   | "webhook.project_id_backfilled"
+  | "branch.created"
+  | "branch.deleted"
+  | "telemetry.preference_changed"
+  | "user.display_name_changed"
+  | "user.renamed"
+  // MCP OAuth grants (#349). Recorded on the consent decision and on revocation
+  // so "which editor did I connect, and when did I disconnect it" is answerable
+  // from the trail rather than only from the live grant list.
+  | "oauth.authorized"
+  | "oauth.revoked"
+  // Post-merge deployments. The secret entries record only the name — the value
+  // is never read back anywhere, and an audit row is not the place to start.
+  | "secret.written"
+  | "secret.deleted"
+  | "deployment.approved"
+  | "deployment.retried"
+  // Enterprise SSO (OIDC) + SCIM (#253).
   | "user.disabled"
   | "user.enabled"
   | "sso.connection.created"

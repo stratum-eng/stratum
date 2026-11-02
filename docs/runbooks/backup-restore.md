@@ -43,6 +43,26 @@ do not rotate it without re-encrypting or retaining the old value.
 Independently, lock the `BACKUPS` bucket down: no public access, least-privilege
 tokens, and a bucket lifecycle policy that matches your retention expectations.
 
+### The second key a restore depends on: `DEPLOY_SECRET_KEY`
+
+`BACKUP_ENCRYPTION_SECRET` is not the only key a restore needs. The
+`project_secrets` table is backed up as **ciphertext only** — the plaintext of a
+deploy secret is never stored and no route can read one back — and those rows are
+decryptable solely by the `DEPLOY_SECRET_KEY` that was in force when they were
+written. That key is a Wrangler secret and is **not in any backup**.
+
+Consequences to plan for *before* you need them:
+
+- Restoring `project_secrets` into an instance with a different or missing
+  `DEPLOY_SECRET_KEY` produces rows that look present on each project's settings
+  page but fail every deploy with `Could not decrypt project secret…` (or, with
+  no key at all, `DEPLOY_SECRET_KEY is not configured on this instance`).
+- There is no re-encryption path. The only recovery is the original key, or
+  having every project re-enter its secret values by hand.
+- So: store `DEPLOY_SECRET_KEY` wherever you store `BACKUP_ENCRYPTION_SECRET`,
+  retain the old value across a rotation, and treat a restore into a fresh
+  instance as needing *both* keys carried over.
+
 ## Configuration
 
 | Binding / var | Purpose | Default |
@@ -117,6 +137,14 @@ Restore tables in the file order `BACKUP_TABLES` lists — it is FK-dependency
 ordered (parents before children). `restoreTable` verifies the NDJSON header's
 table name matches and chunks inserts under D1's bind cap.
 
+`project_secrets` restores like any other table, but its rows are only *usable*
+if the target instance has the same `DEPLOY_SECRET_KEY` — see
+[the second key a restore depends on](#the-second-key-a-restore-depends-on-deploy_secret_key).
+If you cannot carry that key over, restore the table anyway (the names and
+metadata are still the record of what each project needs) and tell project
+admins to re-enter every value; a stale row is silently unusable, not visibly
+missing.
+
 ### KV identity
 
 Use `restoreKvIdentity` (in `src/storage/kv-backup.ts`) with `projects.json` then
@@ -161,5 +189,9 @@ Artifacts client, and before relying on backups in production.
   being skipped.
 - **Decrypt failure on restore** — `BACKUP_ENCRYPTION_SECRET` differs from the one
   used at backup time. Restore requires the original secret.
+- **Deploys fail with `Could not decrypt project secret…` after a restore** — the
+  restored `project_secrets` rows were encrypted under a different
+  `DEPLOY_SECRET_KEY`. Not a backup defect: that key is never backed up. Restore
+  the original key, or have each project re-enter its secrets.
 - **Repo restore `409`** — the target repo still exists; restore into a fresh
   instance, or pass `force` only when intentionally overwriting.

@@ -80,7 +80,7 @@ describe("anonymizeUserContributions", () => {
     expect(result.success).toBe(true);
 
     const updates = executed.filter((s) => s.sql.startsWith("UPDATE"));
-    expect(updates.length).toBe(7);
+    expect(updates.length).toBe(11);
     for (const stmt of updates) {
       expect(stmt.sql).toMatch(/^UPDATE \w+ SET \w+ = \? WHERE \w+ = \?$/);
       expect(stmt.bindings).toEqual([DELETED_USER_SENTINEL, "usr_1"]);
@@ -91,6 +91,8 @@ describe("anonymizeUserContributions", () => {
     expect(cols).toContain("UPDATE audit_log SET actor_id = ? WHERE actor_id = ?");
     expect(cols).toContain("UPDATE change_reviews SET reviewer_id = ? WHERE reviewer_id = ?");
     expect(cols).toContain("UPDATE webhooks SET created_by = ? WHERE created_by = ?");
+    expect(cols).toContain("UPDATE project_secrets SET updated_by = ? WHERE updated_by = ?");
+    expect(cols).toContain("UPDATE deployments SET approved_by = ? WHERE approved_by = ?");
   });
 });
 

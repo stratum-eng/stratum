@@ -17,7 +17,7 @@ vi.mock("../src/storage/users", () => ({
   getUserByEmail: vi.fn(async () => ({ success: false, error: new NotFoundError("User", "x") })),
   createUser: vi.fn(),
   getUserByUsername: vi.fn(),
-  upsertGitHubUser: vi.fn(),
+  signInGitHubUser: vi.fn(),
   getUserByToken: vi.fn(),
   getUser: vi.fn(),
   linkGitHub: vi.fn(),

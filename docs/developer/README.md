@@ -8,6 +8,7 @@
 4. [Queues](queues.md)
 5. [Testing](testing.md)
 6. [Deployment](deployment.md)
+7. [Releasing](releasing.md)
 
 ## Tech Stack
 

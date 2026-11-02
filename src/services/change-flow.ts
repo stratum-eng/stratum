@@ -9,7 +9,7 @@ import {
   loadPolicy,
 } from "../evaluation";
 import type { SandboxRepoAccess } from "../evaluation/sandbox-evaluator";
-import type { EvalPolicy, EvalResult, Evaluator } from "../evaluation/types";
+import type { EvalPolicy, EvalResult, EvaluationContext, Evaluator } from "../evaluation/types";
 import { buildEvaluationReport, reportEvaluationToGitHub } from "../github/sync";
 import { type EventActor, emitEvent } from "../queue/events";
 import { getAgent } from "../storage/agents";
@@ -125,7 +125,7 @@ export function buildEvaluators(
         case "diff":
           return [{ type: "diff", evaluator: new DiffEvaluator() }];
         case "webhook":
-          return [{ type: "webhook", evaluator: new WebhookEvaluator() }];
+          return [{ type: "webhook", evaluator: new WebhookEvaluator(cfg) }];
         case "llm":
           if (env.AI) return [{ type: "llm", evaluator: new LLMEvaluator(env.AI) }];
           return [
@@ -191,10 +191,15 @@ export async function runEvaluation(
   diff: string,
   policy: EvalPolicy,
   logger: Logger,
+  /** What the diff is a diff of. Forwarded to every evaluator so one that
+   * reproduces the change out-of-process can pin the base it applies to (#274).
+   * Callers pass the base resolved from the clone the diff came from, never a
+   * fresh read of the project head. */
+  context?: EvaluationContext,
 ): Promise<{ evalRuns: EvaluationRun[]; evalResult: EvalResult }> {
   const evalRuns = await Promise.all(
     evaluators.map(async ({ type, evaluator }) => {
-      const result = await evaluator.evaluate(diff, policy, logger);
+      const result = await evaluator.evaluate(diff, policy, logger, context);
       return {
         evaluatorType: type,
         result: result.success
@@ -385,6 +390,7 @@ export async function createChangeWithEvaluation(
     workspaceOid: evaluatedSha,
     workspaceTreeOid: evaluatedTreeOid,
     workspaceSha: workspaceHeadSha,
+    baseOid,
   } = diffResult.data;
 
   const evaluators = buildEvaluators(env, policy, projectName, logger, {
@@ -392,7 +398,12 @@ export async function createChangeWithEvaluation(
     token: workspaceReadToken.data,
     ref: evaluatedSha,
   });
-  const { evalRuns, evalResult } = await runEvaluation(evaluators, diff, policy, logger);
+  // `baseOid`, not the `baseSha` resolved further up: that one is read before
+  // the diff clone, so the default branch can advance in between. The evaluated
+  // base must be the one the diff was actually built against (#274).
+  const { evalRuns, evalResult } = await runEvaluation(evaluators, diff, policy, logger, {
+    baseSha: baseOid,
+  });
 
   const newStatus: Change["status"] = evalResult.passed ? "accepted" : "needs_changes";
 

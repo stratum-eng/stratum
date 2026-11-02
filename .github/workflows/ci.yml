@@ -36,8 +36,14 @@ jobs:
           path: coverage/
 
   packages:
-    name: CLI, Agent & MCP Packages
+    name: CLI & Agent Packages (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor each package declares in `engines`, and the version most
+        # contributors run. Testing only the latter lets the floor rot.
+        node: ["20", "22"]
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -45,15 +51,19 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "22"
+          node-version: ${{ matrix.node }}
 
-      - name: CLI — install, typecheck, test, build
+      # Lint runs last, per AGENTS.md: Biome autofixes formatting, so putting it
+      # ahead of the correctness gates just reports style on code that may not
+      # compile.
+      - name: CLI — install, typecheck, test, build, lint
         working-directory: cli
         run: |
           npm install
           npm run typecheck
           npm test
           npm run build
+          npm run lint
 
       - name: Agent — install, typecheck, test, build
         working-directory: agent
@@ -63,29 +73,6 @@ jobs:
           npm test
           npm run build
 
-      - name: MCP — install, typecheck, test, build
-        working-directory: mcp
-        run: |
-          npm install
-          npm run typecheck
-          npm test
-          npm run build
-          # Smoke: the built entrypoint must complete a real MCP initialize
-          # handshake over stdio (it exits 0 on stdin EOF).
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"smoke","version":"0.0.0"}}}' \
-            | env STRATUM_API_KEY=smoke-not-a-real-key timeout 30s node dist/index.js > /tmp/mcp-smoke.log 2>&1
-          # Parse the JSON-RPC reply semantically — a grep on raw JSON breaks on
-          # formatting/key-order changes and can match inside other text.
-          node -e '
-            const lines = require("fs").readFileSync("/tmp/mcp-smoke.log", "utf8").split("\n");
-            const ok = lines.some((line) => {
-              try {
-                const msg = JSON.parse(line);
-                return msg.id === 1 && msg.result?.serverInfo?.name === "stratum";
-              } catch { return false; }
-            });
-            if (!ok) { console.error("no initialize reply with serverInfo.name=stratum"); process.exit(1); }
-          '
 
   # ========================================================================
   # Staging Deployment with Automatic Migration
@@ -133,14 +120,19 @@ jobs:
           npx wrangler d1 migrations apply stratum-staging --remote --env=staging
           echo "✓ Migrations applied successfully"
 
-      # Staging binds its own -staging queues (see wrangler.toml); a deploy
-      # fails if a bound queue doesn't exist, so create them idempotently.
+      # A deploy fails outright on a bound queue that does not exist. The names
+      # come from wrangler.toml rather than a copy kept here, so binding a new
+      # queue cannot leave a deploy path un-provisioned.
       - name: Ensure Staging Queues Exist
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          for queue in stratum-events-staging stratum-imports-staging; do
+          node scripts/wrangler-queues.mjs staging > /tmp/queues-staging.txt
+          # Redirect, not a pipe: a `while ... | read` loop runs in a subshell,
+          # where `exit 1` would end the subshell and let the step pass.
+          while read -r queue; do
+            [ -z "$queue" ] && continue
             if out=$(npx wrangler queues create "$queue" 2>&1); then
               echo "✓ Created queue $queue"
             elif echo "$out" | grep -qiE "already (exists|taken)|11009"; then
@@ -149,15 +141,24 @@ jobs:
               echo "$out"
               exit 1
             fi
-          done
+          done < /tmp/queues-staging.txt
 
       - name: Deploy to Cloudflare Staging
         id: deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          POSTHOG_PUBLIC_KEY: ${{ vars.POSTHOG_PUBLIC_KEY }}
         run: |
-          npx wrangler deploy --env=staging
+          # The app's half of browser analytics. `POSTHOG_PUBLIC_KEY` is a
+          # `[vars]` entry that ships commented out, because a self-hoster who
+          # deployed this repo must not inherit our project token — so the
+          # value can only come from here, and until it did, the Worker served
+          # every page without the SDK while the docs site (deploy-docs.yml,
+          # which has passed it since day one) reported browser events. Empty
+          # when the repository variable is unset, which `webAnalyticsConfig`
+          # reads as off.
+          npx wrangler deploy --env=staging --var POSTHOG_PUBLIC_KEY:"$POSTHOG_PUBLIC_KEY"
           SUBDOMAIN=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
             | jq -r '.result.subdomain')
@@ -218,13 +219,46 @@ jobs:
           npx wrangler d1 migrations apply stratum --remote --env=production
           echo "✓ Migrations applied successfully"
 
+      # Production had no such step until deploys added two new queues: its
+      # original queues predated CI, so nothing ever created one here and the
+      # gap stayed invisible until a bound queue was missing and the deploy
+      # failed. Names come from wrangler.toml so the two cannot drift.
+      - name: Ensure Production Queues Exist
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          node scripts/wrangler-queues.mjs production > /tmp/queues-production.txt
+          # Redirect, not a pipe: a `while ... | read` loop runs in a subshell,
+          # where `exit 1` would end the subshell and let the step pass.
+          while read -r queue; do
+            [ -z "$queue" ] && continue
+            if out=$(npx wrangler queues create "$queue" 2>&1); then
+              echo "✓ Created queue $queue"
+            elif echo "$out" | grep -qiE "already (exists|taken)|11009"; then
+              echo "✓ Queue $queue already exists"
+            else
+              echo "$out"
+              exit 1
+            fi
+          done < /tmp/queues-production.txt
+
       - name: Deploy to Cloudflare Production
         id: deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          POSTHOG_PUBLIC_KEY: ${{ vars.POSTHOG_PUBLIC_KEY }}
         run: |
-          npx wrangler deploy --env=production
+          # The app's half of browser analytics. `POSTHOG_PUBLIC_KEY` is a
+          # `[vars]` entry that ships commented out, because a self-hoster who
+          # deployed this repo must not inherit our project token — so the
+          # value can only come from here, and until it did, the Worker served
+          # every page without the SDK while the docs site (deploy-docs.yml,
+          # which has passed it since day one) reported browser events. Empty
+          # when the repository variable is unset, which `webAnalyticsConfig`
+          # reads as off.
+          npx wrangler deploy --env=production --var POSTHOG_PUBLIC_KEY:"$POSTHOG_PUBLIC_KEY"
           SUBDOMAIN=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
             | jq -r '.result.subdomain')

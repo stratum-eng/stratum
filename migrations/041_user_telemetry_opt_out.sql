@@ -1,0 +1,11 @@
+-- Per-user telemetry opt-out (#257).
+--
+-- 0 = telemetry on (current behavior), 1 = the user has opted out. The NOT NULL
+-- DEFAULT 0 backfills every existing row in place, so no account changes
+-- behavior and hosted event volume is unaffected until someone acts.
+--
+-- The flag deliberately lives on `users` rather than a preferences table: the
+-- auth middleware already loads this row on every authenticated request, so
+-- honoring the preference on the request hot path costs no extra D1 read
+-- (same trick as `deleting_at` in migration 026).
+ALTER TABLE users ADD COLUMN telemetry_opt_out INTEGER NOT NULL DEFAULT 0;

@@ -7,6 +7,7 @@ import { ImportProgressCard } from "../components/import-progress";
 import { ProjectHeader } from "../components/project-header";
 import { buildFileTree } from "../file-tree";
 import { Layout } from "../layout";
+import { BranchSwitcher } from "./branches";
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -87,6 +88,12 @@ interface RepoProps {
     autoSyncEnabled?: boolean;
   };
   files: string[];
+  /**
+   * True when the repository listing could not be read (clone/auth/API failure)
+   * rather than genuinely being empty. Both cases arrive as `files: []`, but
+   * only the second means "this project has no content".
+   */
+  filesUnavailable?: boolean;
   log: Array<{ sha: string; message: string; author: string; timestamp: number }>;
   readme?: string | null;
   user?: { id: string; email: string; username: string } | null;
@@ -103,6 +110,16 @@ interface RepoProps {
   canWrite?: boolean;
   /** Per-request CSP nonce, threaded to every script-rendering child. */
   nonce: string;
+  /** Branch this tree and log were read from, or `undefined` for the default
+   * branch — whose links stay bare, see `refQuery`. Threaded into every file
+   * link so browsing does not silently drop back to the default branch. */
+  refName?: string;
+  /** The project's default branch, so the switcher can show what `refName:
+   * undefined` actually means. */
+  defaultBranch?: string;
+  /** Branch names for the switcher. Empty hides it — the listing is best-effort
+   * and its failure must not take the repo page down. */
+  branchNames?: string[];
 }
 
 function getProviderIcon(provider?: GitProvider): string {
@@ -152,9 +169,20 @@ function truncateCommit(sha?: string): string {
   return sha.slice(0, 7);
 }
 
+/**
+ * The project overview: file tree, recent commits, README, and the import and
+ * sync cards.
+ *
+ * Branch-aware (#181): `refName` names the branch being browsed and is absent
+ * on the default branch, so the common URL is unchanged. `branchNames` feeds
+ * the switcher and may hold only the current branch — the listing is
+ * best-effort and is deliberately skipped when the page was served from the KV
+ * snapshot, which is the path that must stay free of git work.
+ */
 export const RepoPage: FC<RepoProps> = ({
   project,
   files,
+  filesUnavailable,
   log,
   readme,
   user,
@@ -164,8 +192,17 @@ export const RepoPage: FC<RepoProps> = ({
   isOwner,
   canWrite,
   nonce,
+  refName,
+  defaultBranch,
+  branchNames = [],
 }) => {
   const hasSource = !!project.sourceUrl;
+  const currentRef = refName ?? defaultBranch;
+  // #304: an empty repo offered a live "Sync Now" button beside "Not synced"
+  // and an in-progress import badge — three claims that could not all be true.
+  // A failed listing also yields no files, but that is the one moment a user
+  // most needs Sync Now, so it must not be mistaken for an empty repo.
+  const hasContent = files.length > 0 || filesUnavailable === true;
   const isSyncing = project.lastSyncStatus === "in_progress";
   const hasUpdates = syncStatus?.hasUpdates;
   const syncFailed = project.lastSyncStatus === "failed";
@@ -173,7 +210,7 @@ export const RepoPage: FC<RepoProps> = ({
   return (
     <Layout title={project.name} user={user}>
       <ProjectHeader project={project} active="code" canWrite={canWrite ?? isOwner}>
-        {hasSource && canSync && (
+        {hasSource && canSync && hasContent && (
           <form
             method="post"
             action={`/api/projects/${project.namespace}/${project.slug}/sync`}
@@ -200,6 +237,13 @@ export const RepoPage: FC<RepoProps> = ({
               )}
             </button>
           </form>
+        )}
+        {currentRef !== undefined && (
+          <BranchSwitcher
+            action={`/${project.namespace}/${project.slug}`}
+            branchNames={branchNames}
+            currentRef={currentRef}
+          />
         )}
       </ProjectHeader>
 
@@ -323,6 +367,7 @@ export const RepoPage: FC<RepoProps> = ({
               namespace={project.namespace}
               slug={project.slug}
               nonce={nonce}
+              refName={refName}
             />
           </div>
         </div>

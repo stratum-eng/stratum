@@ -1,10 +1,10 @@
 # Workspaces API
 
 ## List Workspaces
-`GET /api/projects/{namespace}/{slug}/workspaces`
+`GET /api/workspaces/{namespace}/{slug}/workspaces`
 
 ## Create Workspace
-`POST /api/projects/{namespace}/{slug}/workspaces`
+`POST /api/workspaces/{namespace}/{slug}/workspaces`
 
 ## Commit Changes
 `POST /api/workspaces/{name}/commit`

@@ -1,4 +1,4 @@
-import { createPostHogClient } from "../analytics/posthog";
+import { trackerForEventActor, trackerForSystem } from "../analytics/tracker";
 import {
   type EventRecord,
   getEvent,
@@ -11,6 +11,7 @@ import {
 import type { Env, Message, MessageBatch } from "../types";
 import type { Logger } from "../utils/logger";
 import { createLogger } from "../utils/logger";
+import { forwardDeployRequest, isInternalEventType } from "./deploy-queue";
 import type { EventQueueMessage } from "./events";
 import { autoCloseLinkedIssues } from "./issue-autoclose";
 import { deliverEventToWebhooks } from "./webhook-delivery";
@@ -29,13 +30,34 @@ export interface EventHandler {
 
 const analyticsHandler: EventHandler = {
   name: "analytics",
-  async handle(env, event) {
-    const posthog = createPostHogClient(env);
-    await posthog.capture({
-      event: `stratum.${event.type}`,
-      distinctId: event.actorId ?? "system",
-      properties: { project: event.project, actorType: event.actorType },
-    });
+  async handle(env, event, logger) {
+    // Resolving the actor's telemetry preference (#257) is the tracker's job,
+    // and it fails closed: an unresolvable lookup yields a tracker that sends
+    // nothing. A queue consumer has no request and no auth context, so unlike
+    // the request path it must read the preference from D1 — one lookup for a
+    // user-authored event, two for an agent-authored one, against the 4+ D1
+    // operations `consumeOne` already performs per message.
+    //
+    // Neither the lookup nor the send may fail the message: analytics is
+    // best-effort, and throwing here would stop issue-autoclose and webhooks
+    // from ever running.
+    //
+    // Suppression and delivery are alike TERMINAL, not deferred. Returning
+    // normally lets `processEvent` record "analytics" in `completed_handlers`,
+    // so a later retry of the same message skips this handler rather than
+    // re-attempting the export. A transient D1 error therefore drops one
+    // analytics event permanently. That is the deliberate trade: retrying
+    // would either re-run the export for a user who may have opted out in the
+    // meantime, or block the handlers that are not best-effort.
+    try {
+      const tracker = await trackerForEventActor(env, event, logger);
+      await tracker.captureDomainEvent(event);
+    } catch (error) {
+      logger.warn("Analytics handler threw; dropping event export", {
+        eventId: event.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   },
 };
 
@@ -53,6 +75,13 @@ const issueAutoCloseHandler: EventHandler = {
   },
 };
 
+const deployForwardHandler: EventHandler = {
+  name: "deploy-forward",
+  async handle(env, event, logger) {
+    await forwardDeployRequest(env, event, logger);
+  },
+};
+
 /**
  * Ordered handler registry. Every handler runs for every event and decides
  * internally whether the event type concerns it. Issue auto-close runs
@@ -60,15 +89,26 @@ const issueAutoCloseHandler: EventHandler = {
  */
 const handlers: EventHandler[] = [analyticsHandler, issueAutoCloseHandler, webhookHandler];
 
+/**
+ * Handlers for an *internal* outbox row — one that carries work rather than a
+ * domain notification, and whose only job is to reach the queue that owns that
+ * work. The registry above is deliberately not consulted for these: a webhook
+ * subscribed to `*` would otherwise receive a recovery record as though it were
+ * something that happened to the project, and analytics would count it as a
+ * product event.
+ */
+const internalHandlers: EventHandler[] = [deployForwardHandler];
+
 /** Exported for tests. Runs the ordered handlers, resuming past completed ones. */
 export async function processEvent(env: Env, event: EventRecord, logger: Logger): Promise<void> {
+  const active = isInternalEventType(event.type) ? internalHandlers : handlers;
   // Resume from where a prior attempt left off: skip handlers already recorded as
   // completed, and persist progress after each success so a later failure doesn't
   // re-run (and re-emit) the ones that already ran. On failure, stop — running a
   // later handler on an inconsistent earlier state would defeat the ordering.
   const completed = [...(event.completedHandlers ?? [])];
   const completedSet = new Set(completed);
-  for (const handler of handlers) {
+  for (const handler of active) {
     if (completedSet.has(handler.name)) continue;
     await handler.handle(env, event, logger);
     completed.push(handler.name);
@@ -124,6 +164,18 @@ async function consumeOne(
     );
     if (attempts >= MAX_EVENT_ATTEMPTS) {
       await markEventFailed(env.DB, logger, eventId);
+      // An abandoned event is a durable notification that will never be
+      // delivered — a webhook subscriber silently missing a merge. It is the
+      // one queue outcome worth a metric, and it is reported personless
+      // against the instance rather than against whoever happened to trigger
+      // it: this describes the instance failing, not something a user did.
+      // Awaited, not scheduled: a queue consumer has no `waitUntil`, so an
+      // unawaited fetch can be cancelled when the handler returns.
+      await trackerForSystem(env).capture("background_job_completed", {
+        job: "event-consumer",
+        outcome: "abandoned",
+        attempts,
+      });
       msg.ack();
     } else {
       msg.retry();

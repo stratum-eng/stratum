@@ -1,12 +1,21 @@
 import git from "isomorphic-git";
 import { describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_INSTALL_TIMEOUT_MS,
+  DEFAULT_TIMEOUT_MS,
+  DEFAULT_TOTAL_BUDGET_MS,
+  MAX_PHASE_TIMEOUT_MS,
+  MAX_TOTAL_BUDGET_MS,
+} from "../src/evaluation/limits";
+import {
   BINARY_DECODE_COMMAND,
   type RepoFilesReader,
   SandboxEvaluator,
   type SandboxRepoAccess,
+  budgetExceededReason,
   encodeForSandboxWrite,
   installCommandFor,
+  startBudget,
 } from "../src/evaluation/sandbox-evaluator";
 import type { EvalPolicy } from "../src/evaluation/types";
 import { buildEvaluators } from "../src/services/change-flow";
@@ -189,7 +198,7 @@ describe("SandboxEvaluator — workspace tree materialization", () => {
     expect(writeCalls.some(([path]) => path === ".stratum-binary-decode.cjs")).toBe(true);
     const commands = runCalls.map((c) => c.command);
     expect(commands[0]).toBe(BINARY_DECODE_COMMAND);
-    expect(commands.slice(1)).toEqual(["npm ci --no-audit --no-fund", "npm test"]);
+    expect(commands.slice(1)).toEqual(["npm ci --no-audit --no-fund --ignore-scripts", "npm test"]);
   });
 
   it("never clobbers tracked files sitting at the decode helper paths (#271)", async () => {
@@ -362,7 +371,10 @@ describe("SandboxEvaluator — dependency install", () => {
 
     await evaluator.evaluate("", makePolicy(), mockLogger);
 
-    expect(runCalls.map((c) => c.command)).toEqual(["npm ci --no-audit --no-fund", "npm test"]);
+    expect(runCalls.map((c) => c.command)).toEqual([
+      "npm ci --no-audit --no-fund --ignore-scripts",
+      "npm test",
+    ]);
   });
 
   it("runs `npm install` when package.json exists without a lockfile", async () => {
@@ -374,7 +386,7 @@ describe("SandboxEvaluator — dependency install", () => {
     await evaluator.evaluate("", makePolicy(), mockLogger);
 
     expect(runCalls.map((c) => c.command)).toEqual([
-      "npm install --no-audit --no-fund",
+      "npm install --no-audit --no-fund --ignore-scripts",
       "npm test",
     ]);
   });
@@ -389,7 +401,7 @@ describe("SandboxEvaluator — dependency install", () => {
     expect(runCalls.map((c) => c.command)).toEqual(["npm test"]);
   });
 
-  it("uses the install timeout (default 120s) for install and timeoutMs for the command", async () => {
+  it("uses the install timeout default for install and timeoutMs for the command", async () => {
     const { binding, runCalls } = makeMockSandbox({ exitCode: 0 });
     const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles());
     const policy = makePolicy({
@@ -399,29 +411,35 @@ describe("SandboxEvaluator — dependency install", () => {
     await evaluator.evaluate("", policy, mockLogger);
 
     expect(runCalls[0]).toEqual({
-      command: "npm ci --no-audit --no-fund",
-      opts: { timeout: 120_000 },
+      command: "npm ci --no-audit --no-fund --ignore-scripts",
+      opts: { timeout: DEFAULT_INSTALL_TIMEOUT_MS },
     });
     expect(runCalls[1]).toEqual({ command: "npm test", opts: { timeout: 30_000 } });
   });
 
-  it("honors a configured installTimeoutMs", async () => {
+  it("clamps a configured installTimeoutMs down to what the budget has left", async () => {
+    // This policy is built directly rather than loaded, which is exactly the
+    // case load-time clamping cannot cover: `evaluate` is reachable from a KV
+    // policy cache and from callers that never went through `policy-loader`,
+    // so the evaluator has to bound the grant itself.
     const { binding, runCalls } = makeMockSandbox({ exitCode: 0 });
-    const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles());
+    // Frozen clock: the grant is then exactly the budget, with no wall-clock
+    // drift between starting the budget and reaching the install.
+    const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles(), () => 1_000);
     const policy = makePolicy({
       evaluators: [{ type: "sandbox", installTimeoutMs: 300_000 }],
     });
 
     await evaluator.evaluate("", policy, mockLogger);
 
-    expect(runCalls[0]?.opts).toEqual({ timeout: 300_000 });
+    expect(runCalls[0]?.opts).toEqual({ timeout: DEFAULT_TOTAL_BUDGET_MS });
   });
 
   it("install failure → score 0, failed, reason names the install command, test never runs", async () => {
     const { binding, runCalls } = makeMockSandbox({
       exitCode: 0,
       runResults: {
-        "npm ci --no-audit --no-fund": {
+        "npm ci --no-audit --no-fund --ignore-scripts": {
           exitCode: 1,
           stderr: "ERESOLVE unable to resolve dependency tree",
         },
@@ -436,12 +454,14 @@ describe("SandboxEvaluator — dependency install", () => {
       expect(result.data.score).toBe(0);
       expect(result.data.passed).toBe(false);
       expect(result.data.reason).toContain(
-        "Dependency install (npm ci --no-audit --no-fund) failed",
+        "Dependency install (npm ci --no-audit --no-fund --ignore-scripts) failed",
       );
       expect(result.data.reason).toContain("ERESOLVE");
       expect(result.data.costs?.[0]?.kind).toBe("sandbox_ms");
     }
-    expect(runCalls.map((c) => c.command)).toEqual(["npm ci --no-audit --no-fund"]);
+    expect(runCalls.map((c) => c.command)).toEqual([
+      "npm ci --no-audit --no-fund --ignore-scripts",
+    ]);
   });
 });
 
@@ -449,7 +469,7 @@ describe("installCommandFor", () => {
   it("maps manifest/lockfile presence to the right command", () => {
     expect(installCommandFor(new Map())).toBeNull();
     expect(installCommandFor(encodeTree([["package.json", "{}"]]))).toBe(
-      "npm install --no-audit --no-fund",
+      "npm install --no-audit --no-fund --ignore-scripts",
     );
     expect(
       installCommandFor(
@@ -458,7 +478,7 @@ describe("installCommandFor", () => {
           ["package-lock.json", "{}"],
         ]),
       ),
-    ).toBe("npm ci --no-audit --no-fund");
+    ).toBe("npm ci --no-audit --no-fund --ignore-scripts");
     expect(installCommandFor(encodeTree([["package-lock.json", "{}"]]))).toBeNull();
   });
 
@@ -473,7 +493,7 @@ describe("installCommandFor", () => {
           ["npm-shrinkwrap.json", "{}"],
         ]),
       ),
-    ).toBe("npm ci --no-audit --no-fund");
+    ).toBe("npm ci --no-audit --no-fund --ignore-scripts");
     // Both present is still a frozen install (npm prefers the shrinkwrap).
     expect(
       installCommandFor(
@@ -483,7 +503,7 @@ describe("installCommandFor", () => {
           ["package-lock.json", "{}"],
         ]),
       ),
-    ).toBe("npm ci --no-audit --no-fund");
+    ).toBe("npm ci --no-audit --no-fund --ignore-scripts");
     // A lockfile alone is still not an npm project.
     expect(installCommandFor(encodeTree([["npm-shrinkwrap.json", "{}"]]))).toBeNull();
   });
@@ -691,7 +711,9 @@ describe("SandboxEvaluator — destroy lifecycle", () => {
   it("destroy() is called when the install step fails", async () => {
     const { binding, instance } = makeMockSandbox({
       exitCode: 0,
-      runResults: { "npm ci --no-audit --no-fund": { exitCode: 1, stderr: "boom" } },
+      runResults: {
+        "npm ci --no-audit --no-fund --ignore-scripts": { exitCode: 1, stderr: "boom" },
+      },
     });
     const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles());
 
@@ -809,5 +831,364 @@ describe("buildEvaluators — sandbox wiring", () => {
       repo,
     );
     expect(findSandbox(evaluators)).toBeInstanceOf(SandboxEvaluator);
+  });
+});
+
+describe("sandbox limits", () => {
+  it("keeps the per-phase defaults summing inside the total budget", () => {
+    // The point of lowering the install default: an unconfigured project must
+    // be able to spend its full install AND its full test timeout without the
+    // budget truncating either. If a future bump breaks this, truncation
+    // silently becomes the norm rather than the exception.
+    expect(DEFAULT_INSTALL_TIMEOUT_MS + DEFAULT_TIMEOUT_MS).toBeLessThanOrEqual(
+      DEFAULT_TOTAL_BUDGET_MS,
+    );
+  });
+
+  it("keeps the phase ceiling below the total ceiling", () => {
+    // Otherwise a policy could grant one phase the entire evaluation's budget.
+    expect(MAX_PHASE_TIMEOUT_MS).toBeLessThan(MAX_TOTAL_BUDGET_MS);
+  });
+
+  it("keeps the default budget within the configurable ceiling", () => {
+    expect(DEFAULT_TOTAL_BUDGET_MS).toBeLessThanOrEqual(MAX_TOTAL_BUDGET_MS);
+  });
+});
+
+describe("startBudget", () => {
+  /** A clock the test advances by hand, so exhaustion needs no real waiting. */
+  function fakeClock(start = 0) {
+    let current = start;
+    return {
+      now: () => current,
+      advance: (ms: number) => {
+        current += ms;
+      },
+    };
+  }
+
+  it("counts down as the clock advances and never reports negative", () => {
+    const clock = fakeClock();
+    const budget = startBudget(1_000, clock.now);
+
+    expect(budget.remaining()).toBe(1_000);
+    clock.advance(400);
+    expect(budget.remaining()).toBe(600);
+    clock.advance(5_000);
+    expect(budget.remaining()).toBe(0);
+    expect(budget.expired()).toBe(true);
+  });
+
+  it("grants the smaller of the request and what is left", () => {
+    const clock = fakeClock();
+    const budget = startBudget(1_000, clock.now);
+
+    expect(budget.allow(500)).toBe(500);
+    clock.advance(800);
+    expect(budget.allow(500)).toBe(200);
+  });
+
+  it("never grants a timeout of zero once exhausted", () => {
+    // `sandbox.run`'s reading of `timeout: 0` is undocumented and "no timeout"
+    // is a plausible one — the exact opposite of an exhausted budget. Callers
+    // check `expired()` first, but this floor is what makes that safe to get
+    // wrong.
+    const clock = fakeClock();
+    const budget = startBudget(1_000, clock.now);
+    clock.advance(2_000);
+
+    expect(budget.allow(5_000)).toBeGreaterThan(0);
+  });
+
+  it("reports the total it started with", () => {
+    expect(startBudget(1_234, () => 0).totalMs).toBe(1_234);
+  });
+
+  it("falls back to the default for a non-finite total", () => {
+    // `Math.max(0, NaN)` is NaN, so a NaN total would make `expired()` always
+    // false and hand `timeout: NaN` to the sandbox — undefined behaviour on the
+    // one code path this whole mechanism exists to bound. `startBudget` is
+    // exported, so the guard has to live here, not only at the call sites.
+    for (const bogus of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const budget = startBudget(bogus, () => 0);
+      expect(budget.totalMs).toBe(DEFAULT_TOTAL_BUDGET_MS);
+      expect(budget.remaining()).toBe(DEFAULT_TOTAL_BUDGET_MS);
+      expect(budget.expired()).toBe(false);
+      expect(budget.allow(1_000)).toBe(1_000);
+    }
+  });
+
+  it("treats a zero or negative total as immediately exhausted", () => {
+    expect(startBudget(0, () => 0).expired()).toBe(true);
+    expect(startBudget(-1, () => 0).expired()).toBe(true);
+    // Even exhausted, a grant is never 0 — see the floor test above.
+    expect(startBudget(0, () => 0).allow(60_000)).toBeGreaterThan(0);
+  });
+});
+
+describe("SandboxEvaluator — total budget", () => {
+  /**
+   * A clock that holds `held` until `trigger()` is called, then jumps to
+   * `after`.
+   *
+   * Scripted rather than free-running because `evaluate` reads the clock many
+   * times per phase — every `expired()` check is itself a read — so a clock
+   * that advanced on each read would drain the budget at a phase nobody chose,
+   * and a test could assert the right reason while exercising the wrong path.
+   */
+  function scriptedClock(held: number, after: number) {
+    let fired = false;
+    return {
+      now: () => (fired ? after : held),
+      trigger: () => {
+        fired = true;
+      },
+    };
+  }
+
+  it("returns a verdict, not an error, when the budget is gone by the end of the tree read", async () => {
+    const { binding, runCalls } = makeMockSandbox({ exitCode: 0 });
+    const clock = scriptedClock(0, DEFAULT_TOTAL_BUDGET_MS + 1);
+    const readFiles = vi.fn().mockImplementation(async () => {
+      // The read is what consumed the budget, so the gate right after it is the
+      // first to see an empty budget.
+      clock.trigger();
+      return ok(FULL_TREE);
+    });
+    const evaluator = new SandboxEvaluator(binding, repo, readFiles, clock.now);
+
+    const result = await evaluator.evaluate("", makePolicy(), mockLogger);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.passed).toBe(false);
+      expect(result.data.score).toBe(0);
+      expect(result.data.reason).toContain("sandbox budget exceeded (tree-read)");
+      // No sandbox was created, so there is no sandbox time to report — and
+      // clone time is `git_ops`, never `sandbox_ms`.
+      expect(result.data.costs).toBeUndefined();
+    }
+    // Nothing ran, and the sandbox was never even created.
+    expect(runCalls).toEqual([]);
+    expect(binding.create).not.toHaveBeenCalled();
+  });
+
+  it("stops before the scored command once install has drained the budget", async () => {
+    const { binding, runCalls, instance } = makeMockSandbox({ exitCode: 0 });
+    const clock = scriptedClock(0, DEFAULT_TOTAL_BUDGET_MS + 1);
+    // Burn the budget during the install, so the gate before the scored command
+    // is the one that trips — the install itself must have run.
+    (instance.run as ReturnType<typeof vi.fn>).mockImplementation(async (command: string) => {
+      runCalls.push({ command });
+      if (command.startsWith("npm ci")) clock.trigger();
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles(), clock.now);
+
+    const result = await evaluator.evaluate("", makePolicy(), mockLogger);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.passed).toBe(false);
+      expect(result.data.reason).toContain("sandbox budget exceeded (command)");
+      expect(result.data.costs?.[0]?.kind).toBe("sandbox_ms");
+    }
+    // The install ran; the scored command did not.
+    expect(runCalls.map((c) => c.command)).toEqual([
+      "npm ci --no-audit --no-fund --ignore-scripts",
+    ]);
+  });
+
+  it("classifies a budget-shortened phase that throws as a verdict, via the catch", async () => {
+    // The grant here is capped by the budget rather than by the project's own
+    // timeout, so the timeout that fires is the budget's — a verdict, and it has
+    // to be reached through the catch block, not a phase gate.
+    const { binding, instance, runCalls } = makeMockSandbox({ exitCode: 0 });
+    // Jumps to exactly the grant: a timeout fires when the grant is spent, not
+    // a millisecond before it.
+    const clock = scriptedClock(0, DEFAULT_TOTAL_BUDGET_MS);
+    (instance.run as ReturnType<typeof vi.fn>).mockImplementation(
+      async (command: string, opts?: { timeout?: number }) => {
+        runCalls.push({ command, opts });
+        clock.trigger();
+        throw new Error("Timeout");
+      },
+    );
+    const policy = makePolicy({
+      // Larger than the budget, so `allow()` must cap it.
+      evaluators: [{ type: "sandbox", installTimeoutMs: 300_000 }],
+    });
+    const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles(), clock.now);
+
+    const result = await evaluator.evaluate("", policy, mockLogger);
+
+    expect(runCalls[0]?.opts?.timeout).toBe(DEFAULT_TOTAL_BUDGET_MS);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.passed).toBe(false);
+      expect(result.data.reason).toContain("sandbox budget exceeded (install)");
+      // The time the throwing phase burned is still charged.
+      expect(result.data.costs?.[0]?.quantity).toBe(DEFAULT_TOTAL_BUDGET_MS);
+    }
+  });
+
+  it("keeps err for a phase that hits the project's own timeout, not the budget", async () => {
+    // The grant was the configured value, so this is the project's timeout
+    // firing, not the budget's. Relabelling it would silently change what every
+    // pre-existing sandbox timeout reports.
+    const { binding } = makeMockSandbox({ runThrows: true });
+    const clock = scriptedClock(0, 30_000);
+    const policy = makePolicy({ evaluators: [{ type: "sandbox", installTimeoutMs: 10_000 }] });
+    const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles(), clock.now);
+
+    const result = await evaluator.evaluate("", policy, mockLogger);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.message).toContain("Timeout");
+    }
+  });
+
+  it("keeps err for a transient failure part-way through a budget-shortened phase", async () => {
+    // The grant is capped by the budget, but the throw arrives long before the
+    // grant is spent — a Sandbox API blip, not a timeout. Reporting it as a
+    // verdict would turn a retryable infrastructure error into a definitive
+    // judgement that fails the merge gate.
+    const { binding, instance, runCalls } = makeMockSandbox({ exitCode: 0 });
+    let elapsed = 0;
+    const clock = () => elapsed;
+    (instance.run as ReturnType<typeof vi.fn>).mockImplementation(
+      async (command: string, opts?: { timeout?: number }) => {
+        runCalls.push({ command, opts });
+        // Fails 200ms into a grant far larger than that.
+        elapsed += 200;
+        throw new Error("Sandbox API unavailable");
+      },
+    );
+    const policy = makePolicy({
+      evaluators: [{ type: "sandbox", installTimeoutMs: 300_000 }],
+    });
+    const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles(), clock);
+
+    const result = await evaluator.evaluate("", policy, mockLogger);
+
+    // The grant really was budget-capped, so only the elapsed-time check
+    // separates this from the timeout case.
+    expect(runCalls[0]?.opts?.timeout).toBe(DEFAULT_TOTAL_BUDGET_MS);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.message).toContain("Sandbox API unavailable");
+    }
+  });
+
+  it("still returns err for a throw with budget left, so infra failure is not a verdict", async () => {
+    // A sandbox that broke for its own reasons must not be scored as if the
+    // change were too slow.
+    const { binding } = makeMockSandbox({ runThrows: true });
+    const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles(), () => 0);
+
+    const result = await evaluator.evaluate("", makePolicy(), mockLogger);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.message).toContain("Timeout");
+    }
+  });
+
+  it("clamps a bogus totalBudgetMs that never went through the policy loader", async () => {
+    // `evaluate` is reachable from a KV policy cache and from callers that never
+    // loaded a file, so a cached `totalBudgetMs: 0` must not make every change
+    // on the project fail before a sandbox is created.
+    const { binding, runCalls } = makeMockSandbox({ exitCode: 0 });
+    const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles(), () => 0);
+    const policy = makePolicy({ evaluators: [{ type: "sandbox", totalBudgetMs: 0 }] });
+
+    const result = await evaluator.evaluate("", policy, mockLogger);
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.passed).toBe(true);
+    expect(runCalls.map((c) => c.command)).toContain("npm test");
+  });
+
+  it("honors a policy-supplied totalBudgetMs", async () => {
+    const { binding, runCalls } = makeMockSandbox({ exitCode: 0 });
+    const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles(), () => 1_000);
+    const policy = makePolicy({
+      evaluators: [{ type: "sandbox", totalBudgetMs: 20_000, installTimeoutMs: 90_000 }],
+    });
+
+    await evaluator.evaluate("", policy, mockLogger);
+
+    expect(runCalls[0]?.opts).toEqual({ timeout: 20_000 });
+  });
+
+  it("does not let a rejecting destroy() replace the verdict", async () => {
+    // An `await` that rejects inside `finally` overrides the return value and
+    // propagates — which would reject the `Promise.all` in `runEvaluation` and
+    // discard every other evaluator's result.
+    const { binding, instance } = makeMockSandbox({ exitCode: 0 });
+    instance.destroy = vi.fn().mockRejectedValue(new Error("sandbox stuck"));
+    const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles());
+
+    const result = await evaluator.evaluate("", makePolicy(), mockLogger);
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.passed).toBe(true);
+  });
+
+  it("names the phase in a stable, greppable reason", () => {
+    expect(budgetExceededReason("install", 150_000)).toContain("sandbox budget exceeded (install)");
+    expect(budgetExceededReason("install", 150_000)).toContain("150000ms");
+  });
+});
+
+describe("installCommandFor — lifecycle script policy", () => {
+  const npmProject = encodeTree([
+    ["package.json", "{}"],
+    ["package-lock.json", "{}"],
+  ]);
+  const noLockfile = encodeTree([["package.json", "{}"]]);
+
+  it("ignores lifecycle scripts by default", () => {
+    // The tree is authored by whoever can push; a postinstall must not run
+    // before anyone has reviewed the change.
+    expect(installCommandFor(npmProject)).toBe("npm ci --no-audit --no-fund --ignore-scripts");
+    expect(installCommandFor(noLockfile)).toBe("npm install --no-audit --no-fund --ignore-scripts");
+  });
+
+  it("ignores lifecycle scripts when the flag is explicitly false", () => {
+    expect(installCommandFor(npmProject, { allowInstallScripts: false })).toBe(
+      "npm ci --no-audit --no-fund --ignore-scripts",
+    );
+  });
+
+  it("ignores lifecycle scripts when opts is present but the flag is absent", () => {
+    // Safe by omission: forgetting the field must not silently opt in.
+    expect(installCommandFor(npmProject, {})).toBe("npm ci --no-audit --no-fund --ignore-scripts");
+  });
+
+  it("runs lifecycle scripts only on an explicit opt-in", () => {
+    expect(installCommandFor(npmProject, { allowInstallScripts: true })).toBe(
+      "npm ci --no-audit --no-fund",
+    );
+    expect(installCommandFor(noLockfile, { allowInstallScripts: true })).toBe(
+      "npm install --no-audit --no-fund",
+    );
+  });
+
+  it("still returns null for a non-npm tree regardless of the flag", () => {
+    expect(installCommandFor(new Map(), { allowInstallScripts: true })).toBeNull();
+  });
+
+  it("threads allowInstallScripts from policy through evaluate()", async () => {
+    const { binding, runCalls } = makeMockSandbox({ exitCode: 0 });
+    const evaluator = new SandboxEvaluator(binding, repo, makeReadFiles());
+    const policy = makePolicy({
+      evaluators: [{ type: "sandbox", allowInstallScripts: true }],
+    });
+
+    await evaluator.evaluate("", policy, mockLogger);
+
+    expect(runCalls.map((c) => c.command)).toEqual(["npm ci --no-audit --no-fund", "npm test"]);
   });
 });

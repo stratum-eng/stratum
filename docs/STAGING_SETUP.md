@@ -68,24 +68,55 @@ migrations_dir = "migrations"
 
 ### Automatic Deployment
 
-Staging is automatically deployed when you open or update a Pull Request:
+Staging is deployed from `main` only, and not from every push to it: a push to
+`main` in `stratum-eng/stratum` deploys staging once the `test` job passes.
+Production then follows, gated on both the staging deploy and manual approval.
+Forks are skipped — they hold none of the secrets, so a deploy there could only
+fail, while the tests above still run and are still useful.
 
 ```yaml
-# .github/workflows/pr-checks.yml
-- name: Deploy to Cloudflare Staging
-  run: npx wrangler deploy --env=staging
+# .github/workflows/ci.yml
+deploy-staging:
+  needs: test
+  if: >
+    github.repository == 'stratum-eng/stratum' &&
+    github.event_name == 'push' && github.ref == 'refs/heads/main'
+  steps:
+    - name: Deploy to Cloudflare Staging
+      run: npx wrangler deploy --env=staging
 ```
 
-### Manual Deployment
+Pull requests get their own isolated `stratum-pr-<number>` Worker instead
+(`.github/workflows/pr-preview.yml`). They deliberately do not publish over this
+shared Worker — see [Why PRs don't deploy here](#why-prs-dont-deploy-here).
 
-To deploy to staging manually:
+### Manual Deployment — emergency recovery only
+
+Deploying to this Worker by hand is **not** a normal workflow. It publishes
+whatever is in your working tree over the environment the whole team shares, and
+if that tree carries a Durable Object migration `main` does not have, it leaves
+staging a tag ahead and blocks the `main` pipeline — see
+[Why PRs don't deploy here](#why-prs-dont-deploy-here). Route changes through
+`main` and let `ci.yml` deploy them.
+
+When you genuinely need to recover the environment out of band, deploy from a
+clean checkout of `main` so the configuration you publish matches what CI would
+publish. Refuse to deploy if the worktree has any modified, staged, or untracked
+files — including changes to `wrangler.toml` or migrations:
 
 ```bash
-# Deploy current branch to staging
-npx wrangler deploy --env=staging
-
-# Deploy with specific vars
-npx wrangler deploy --env=staging --var KEY=value
+# `origin` is whatever you configured it to be. Deploying a fork's main over
+# shared staging can advance its migration tag past canonical main, which is the
+# drift this whole procedure exists to avoid.
+git remote get-url origin | grep -qE '[/:]stratum-eng/stratum(\.git)?$' || {
+  echo "Refusing staging deployment: origin is not stratum-eng/stratum." >&2
+  exit 1
+}
+test -z "$(git status --porcelain)" || {
+  echo "Refusing staging deployment: use a clean worktree or fresh clone." >&2
+  exit 1
+}
+git fetch origin main && git checkout origin/main && npx wrangler deploy --env=staging
 ```
 
 ### Local Development with Staging Services
@@ -303,29 +334,60 @@ If staging is processing production jobs:
 
 ## CI/CD Integration
 
-The staging environment is integrated into the PR workflow:
+Staging is deployed by the `main` pipeline, and gates the production deploy:
 
 ```yaml
-# .github/workflows/pr-checks.yml
+# .github/workflows/ci.yml
 jobs:
   deploy-staging:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
+      - name: Apply D1 Migrations (Staging)
+        run: npx wrangler d1 migrations apply stratum-staging --remote --env=staging
+
       - name: Deploy to Cloudflare Staging
         run: npx wrangler deploy --env=staging
 
-      - name: Smoke test
-        run: curl -sfS "$STAGING_URL/health"
+      - name: Smoke test - Health endpoint
+        run: curl -sfS "$STAGING_URL/api/health"
 
-      - name: Comment PR with staging URL
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              body: `🚀 Staging: ${process.env.STAGING_URL}`
-            });
+  deploy-production:
+    needs: [test, deploy-staging]
 ```
+
+### Why PRs don't deploy here
+
+PR branches used to run `wrangler deploy --env=staging`, publishing over this
+shared Worker. Cloudflare records the last-applied Durable Object migration tag
+**on the script itself**, not in `wrangler.toml`, so a PR that added a migration
+left staging one tag ahead of `main`. Wrangler could not find that tag in `main`'s
+config, assumed it had been deleted, and replayed the entire chain from `v1`:
+
+```text
+▲ [WARNING] The published script stratum-staging has a migration tag "v3",
+  which was not found in your wrangler.toml file. [...] Applying all available
+  migrations to the script...
+✘ [ERROR] Cannot apply new-class migration to class 'MergeQueue' that is
+  already depended on by existing Durable Objects [code: 10074]
+```
+
+A tag cannot be un-applied from a deployed script, so this does not clear on a
+re-run: every push to `main` stayed red, and with it the production deploy that
+gates on staging.
+
+Two things keep it from recurring:
+
+1. Only `main` deploys to staging and production, so their migration tags are a
+   function of `main`'s `wrangler.toml` alone.
+2. `tests/wrangler-migration-chain.test.ts` fails any PR that removes, renames,
+   reorders, or rewrites a migration `main` already carries. Migrations may only
+   be appended.
+
+If staging and `main` do drift apart anyway (a manual `wrangler deploy
+--env=staging` from a laptop will do it), the fix is to land the config that
+defines the missing tag. Deleting tags from `wrangler.toml` to "match" only
+widens the gap. Recreating the Worker script is the last resort: it destroys the
+`RepoDO` ref authority and `MergeQueue` state for every staging project.
 
 ## Related Documentation
 

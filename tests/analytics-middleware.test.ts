@@ -9,11 +9,14 @@ interface CapturedEvent {
   properties: Record<string, string | number | boolean>;
 }
 
-function makeApp(vars: { userId?: string; agentId?: string } = {}) {
+function makeApp(vars: { userId?: string; agentId?: string; agentOwnerId?: string } = {}) {
   const app = new Hono<{ Bindings: Env }>();
   app.use("*", async (c, next) => {
     if (vars.userId) c.set("userId", vars.userId);
     if (vars.agentId) c.set("agentId", vars.agentId);
+    // `authMiddleware` publishes the owner alongside the agent, because it has
+    // to load the owner anyway to read their telemetry preference.
+    if (vars.agentOwnerId) c.set("agentOwnerId", vars.agentOwnerId);
     await next();
   });
   app.use("*", analyticsMiddleware);
@@ -166,7 +169,22 @@ describe("analyticsMiddleware", () => {
     expect(captured[0]?.distinct_id).toBe("user-123");
   });
 
-  it("attributes events to the agent when no user is set", async () => {
+  // An agent is a credential, not a person. Attributing it to itself would mint
+  // a person profile per token, splitting one human's history across several.
+  it("attributes an agent's request to its owner, keeping the agent as a property", async () => {
+    const captured = stubCapture();
+    await makeApp({ agentId: "agent-42", agentOwnerId: "user-123" }).fetch(
+      new Request("https://api.example.com/api/changes"),
+      env,
+    );
+    await flushCapture();
+
+    expect(captured[0]?.distinct_id).toBe("user-123");
+    expect(captured[0]?.properties.agent_id).toBe("agent-42");
+    expect(captured[0]?.properties.actor_type).toBe("agent");
+  });
+
+  it("captures an agent personless when its owner cannot be resolved", async () => {
     const captured = stubCapture();
     await makeApp({ agentId: "agent-42" }).fetch(
       new Request("https://api.example.com/api/changes"),
@@ -174,7 +192,10 @@ describe("analyticsMiddleware", () => {
     );
     await flushCapture();
 
-    expect(captured[0]?.distinct_id).toBe("agent-42");
+    // No person to attribute to, so no profile is minted for the credential.
+    expect(captured[0]?.distinct_id).toBe("server");
+    expect(captured[0]?.properties.$process_person_profile).toBe(false);
+    expect(captured[0]?.properties.agent_id).toBe("agent-42");
   });
 
   it("captures unattributed events personless under the server id", async () => {
@@ -184,5 +205,84 @@ describe("analyticsMiddleware", () => {
 
     expect(captured[0]?.distinct_id).toBe("server");
     expect(captured[0]?.properties.$process_person_profile).toBe(false);
+  });
+});
+
+describe("analyticsMiddleware — segmentation properties", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("labels the surface that served the request", async () => {
+    const captured = stubCapture();
+    await makeApp().fetch(new Request("https://api.example.com/api/changes"), env);
+    await flushCapture();
+
+    expect(captured[0]?.properties.surface).toBe("api");
+  });
+
+  it("labels a UI page distinctly from the API", async () => {
+    const captured = stubCapture();
+    await makeApp().fetch(
+      new Request("https://api.example.com/@acme/secret-repo/blob/src/a.ts"),
+      env,
+    );
+    await flushCapture();
+
+    expect(captured[0]?.properties.surface).toBe("ui");
+  });
+
+  it("records how the caller was identified", async () => {
+    const captured = stubCapture();
+    await makeApp({ userId: "user-123" }).fetch(
+      new Request("https://api.example.com/api/changes"),
+      env,
+    );
+    await flushCapture();
+    expect(captured[0]?.properties.actor_type).toBe("user");
+
+    const agentCaptured = stubCapture();
+    await makeApp({ agentId: "agent-42", agentOwnerId: "user-123" }).fetch(
+      new Request("https://api.example.com/api/changes"),
+      env,
+    );
+    await flushCapture();
+    expect(agentCaptured[0]?.properties.actor_type).toBe("agent");
+
+    const anonCaptured = stubCapture();
+    await makeApp().fetch(new Request("https://api.example.com/api/changes"), env);
+    await flushCapture();
+    expect(anonCaptured[0]?.properties.actor_type).toBe("anonymous");
+  });
+
+  it("stamps the operator's environment label", async () => {
+    const captured = stubCapture();
+    await makeApp().fetch(new Request("https://api.example.com/api/changes"), {
+      ...env,
+      STRATUM_ENVIRONMENT: "production",
+    } as Env);
+    await flushCapture();
+
+    expect(captured[0]?.properties.environment).toBe("production");
+  });
+
+  // The per-user opt-out now lives in the tracker rather than in this
+  // middleware. Pinned here because the middleware is where it used to live,
+  // and a refactor that loses it would otherwise fail no test in this file.
+  it("still honours the caller's opt-out", async () => {
+    const captured = stubCapture();
+    const app = new Hono<{ Bindings: Env }>();
+    app.use("*", async (c, next) => {
+      c.set("userId", "user-123");
+      c.set("telemetryOptOut", true);
+      await next();
+    });
+    app.use("*", analyticsMiddleware);
+    app.get("/api/changes", (c) => c.json({ ok: true }));
+
+    await app.fetch(new Request("https://api.example.com/api/changes"), env);
+    await flushCapture();
+
+    expect(captured).toHaveLength(0);
   });
 });

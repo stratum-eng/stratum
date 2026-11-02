@@ -146,6 +146,13 @@ vi.mock("../src/queue/events", () => ({
   emitEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The default matches what the real module does for the policies these tests
+// use — no postMergeCommand, so nothing runs. Tests of the deploy trigger
+// override it, because that trigger keys off this result.
+vi.mock("../src/merge/post-merge", () => ({
+  runPostMergeCheck: vi.fn(async () => ({ status: "skipped" })),
+}));
+
 vi.mock("../src/storage/users", () => ({
   getUserByToken: vi.fn(),
   // Agent auth resolves the agent's owner via getUser (fail-closed on the
@@ -177,6 +184,7 @@ import {
   loadPolicy,
 } from "../src/evaluation";
 import { resetCircuitBreakersForTests } from "../src/github/client";
+import { runPostMergeCheck } from "../src/merge/post-merge";
 import { emitEvent } from "../src/queue/events";
 import { getAgent, getAgentByToken } from "../src/storage/agents";
 import { recordAudit } from "../src/storage/audit";
@@ -382,6 +390,7 @@ describe("POST /api/projects/:name/changes", () => {
         workspaceOid: "ws_tip_sha",
         workspaceTreeOid: "ws_tree_oid",
         workspaceSha: "ws_tip_sha",
+        baseOid: "base_sha_from_diff_clone",
       },
     });
     vi.mocked(updateChangeStatus).mockResolvedValue({
@@ -1658,6 +1667,107 @@ describe("POST /api/changes/:id/merge", () => {
     );
     expect(res.status).toBe(200);
   });
+
+  /**
+   * The deploy trigger hangs off the post-merge RESULT, not the change.merged
+   * event, because a failed post-merge check auto-reverts the merge. Anyone who
+   * "simplifies" this onto the event reintroduces deploying reverted code.
+   */
+  describe("post-merge deploy trigger", () => {
+    let send: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      send = vi.fn(async () => {});
+      env.DEPLOY_QUEUE = { send } as unknown as Env["DEPLOY_QUEUE"];
+      vi.mocked(getChange).mockResolvedValue({
+        success: true,
+        data: { ...mockChange, status: "accepted" },
+      });
+      vi.mocked(runPostMergeCheck).mockResolvedValue({ status: "skipped" });
+    });
+
+    afterEach(() => {
+      // Restore the module default for the rest of the file.
+      vi.mocked(runPostMergeCheck).mockResolvedValue({ status: "skipped" });
+    });
+
+    it("enqueues the merged commit after a clean post-merge check", async () => {
+      vi.mocked(runPostMergeCheck).mockResolvedValue({ status: "passed" });
+
+      const res = await app.fetch(
+        request("POST", "/api/changes/chg_abc123/merge", undefined, USER_AUTH),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      // `mergedAt` is the merge time the route just stamped on the change. The
+      // deployment row is ordered by it rather than by when the queue delivers
+      // the message, because the queue promises no ordering.
+      expect(send).toHaveBeenCalledWith({
+        kind: "merge",
+        projectId: mockProject.id,
+        changeId: "chg_abc123",
+        commitSha: "sha_merged",
+        mergedAt: expect.any(String),
+      });
+    });
+
+    it("does not enqueue when the post-merge check reverted the merge", async () => {
+      vi.mocked(runPostMergeCheck).mockResolvedValue({
+        status: "reverted",
+        reason: "smoke test failed",
+        revertCommit: "sha_revert",
+      });
+
+      const res = await app.fetch(
+        request("POST", "/api/changes/chg_abc123/merge", undefined, USER_AUTH),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("does not enqueue when the post-merge check failed", async () => {
+      vi.mocked(runPostMergeCheck).mockResolvedValue({
+        status: "failed",
+        reason: "smoke test failed",
+      });
+
+      await app.fetch(request("POST", "/api/changes/chg_abc123/merge", undefined, USER_AUTH), env);
+
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("enqueues only after the post-merge check has run", async () => {
+      const order: string[] = [];
+      vi.mocked(runPostMergeCheck).mockImplementation(async () => {
+        order.push("post-merge");
+        return { status: "passed" };
+      });
+      send.mockImplementation(async () => {
+        order.push("enqueue");
+      });
+
+      await app.fetch(request("POST", "/api/changes/chg_abc123/merge", undefined, USER_AUTH), env);
+
+      expect(order).toEqual(["post-merge", "enqueue"]);
+    });
+
+    it("still reports the merge when the queue send fails", async () => {
+      send.mockRejectedValue(new Error("queue unavailable"));
+
+      const res = await app.fetch(
+        request("POST", "/api/changes/chg_abc123/merge", undefined, USER_AUTH),
+        env,
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { merged: boolean; commit: string };
+      expect(body.merged).toBe(true);
+      expect(body.commit).toBe("sha_merged");
+    });
+  });
 });
 
 describe("POST /api/changes/:id/reject", () => {
@@ -2201,7 +2311,7 @@ describe("POST /api/changes/:id/github-pr", () => {
       expect.anything(),
       // #181: the fork copies the parent's default branch under the same name,
       // so a `develop`-default project has no `main` for the clone to find.
-      { ref: "develop", fullHistory: true },
+      { ref: "develop", fullHistory: true, timeoutMs: 120_000 },
     );
     // …and its tip is pushed to the Stratum-owned head ref on GitHub. The
     // pushed LOCAL ref has to be the same branch the clone above asked for:
@@ -2361,7 +2471,7 @@ describe("POST /api/changes/:id/github-pr", () => {
         mockWorkspace.remote,
         "artifacts-token",
         expect.anything(),
-        { ref: "release-2026", fullHistory: true },
+        { ref: "release-2026", fullHistory: true, timeoutMs: 120_000 },
       );
       expect(resolveLocalTip).toHaveBeenCalledWith({}, "/", "release-2026");
     });
@@ -2413,7 +2523,7 @@ describe("POST /api/changes/:id/github-pr", () => {
       mockWorkspace.remote,
       "artifacts-token",
       expect.anything(),
-      { ref: "trunk", fullHistory: true },
+      { ref: "trunk", fullHistory: true, timeoutMs: 120_000 },
     );
   });
 
@@ -2434,7 +2544,7 @@ describe("POST /api/changes/:id/github-pr", () => {
       mockWorkspace.remote,
       "artifacts-token",
       expect.anything(),
-      { ref: "develop", fullHistory: true },
+      { ref: "develop", fullHistory: true, timeoutMs: 120_000 },
     );
     // `release/2026-08` is not in the fork, and neither is `main`.
     expect(pushBranchToRemote).toHaveBeenCalledWith(
@@ -3328,6 +3438,7 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceOid: "new_sha",
         workspaceTreeOid: "new_tree",
         workspaceSha: "new_sha",
+        baseOid: "base_sha_from_diff_clone",
       },
     });
     vi.mocked(updateChangeStatus).mockResolvedValue({ success: true, data: undefined });
@@ -3388,6 +3499,10 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         dismissedReviewerIds: ["user_1", "user_2"],
         previousEvaluatedSha: "old_sha",
         evaluatedSha: "new_sha",
+        // The fixture change carries no baseSha, so only the tip moved here.
+        previousBaseSha: undefined,
+        baseSha: "base_sha_from_diff_clone",
+        dismissedFor: "tip",
       },
     });
     // The audit entry is only recorded once the batch itself has succeeded.
@@ -3432,6 +3547,7 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceOid: "new_sha",
         workspaceTreeOid: "new_tree",
         workspaceSha: "new_sha",
+        baseOid: "base_sha_from_diff_clone",
       },
     });
     vi.mocked(diffTouchesProtectedConfig).mockReturnValue(true);
@@ -3454,6 +3570,26 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
       "chg_abc123",
       expect.any(String),
       expect.objectContaining({ touchesProtectedConfig: true }),
+    );
+  });
+
+  it("#274: re-pins the recorded base to the one the re-evaluation ran against", async () => {
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/evaluate", {}, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
+
+    // Without this the merge gate keeps comparing `change.baseSha` — the base at
+    // CREATION — against the current project head, so a change whose base moved
+    // stays STALE_BASE no matter how often it is re-evaluated, and re-evaluation
+    // (the documented remedy) reports a fresh pass that can never be merged.
+    expect(dismissApprovalsAndUpdateStatus).toHaveBeenCalledWith(
+      env.DB,
+      expect.anything(),
+      "chg_abc123",
+      expect.any(String),
+      expect.objectContaining({ baseSha: "base_sha_from_diff_clone" }),
     );
   });
 
@@ -3487,6 +3623,7 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceOid: "old_sha",
         workspaceTreeOid: "old_tree",
         workspaceSha: "old_sha",
+        baseOid: "base_sha_from_diff_clone",
       },
     });
 
@@ -3498,6 +3635,84 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
     expect(dismissApprovalsAndUpdateStatus).not.toHaveBeenCalled();
     expect(recordAudit).not.toHaveBeenCalled();
     // No approvals at risk here, so the plain single-write path is used.
+    expect(updateChangeStatus).toHaveBeenCalled();
+  });
+
+  it("dismisses approvals when the BASE moved even though the tip did not", async () => {
+    // The bypass this closes is one this PR opened. `baseSha` used to be frozen
+    // at creation, so a change whose base advanced stayed permanently
+    // STALE_BASE and could not merge on an old approval at all. Re-pinning the
+    // base (#274) makes re-evaluation the remedy for staleness — and without
+    // this, an unchanged workspace tip would clear the merge gate carrying
+    // approvals given for a diff against the OLD base. Reviewers approve a
+    // diff, not a tip, so either endpoint moving invalidates the verdict.
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...evaluatedChange, baseSha: "base_at_creation" },
+    });
+    vi.mocked(getDiffBetweenRepos).mockResolvedValue({
+      success: true,
+      data: {
+        diff: "diff --git a/src/index.ts b/src/index.ts\n+new line",
+        workspaceOid: "old_sha",
+        workspaceTreeOid: "old_tree",
+        workspaceSha: "old_sha",
+        baseOid: "base_sha_from_diff_clone",
+      },
+    });
+
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/evaluate", {}, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(dismissApprovalsAndUpdateStatus).toHaveBeenCalledWith(
+      env.DB,
+      expect.anything(),
+      "chg_abc123",
+      expect.any(String),
+      expect.objectContaining({ baseSha: "base_sha_from_diff_clone" }),
+    );
+    expect(recordAudit).toHaveBeenCalledWith(
+      env.DB,
+      expect.anything(),
+      expect.objectContaining({
+        action: "review.approvals_dismissed",
+        // The audit has to name WHICH endpoint moved: a reader otherwise
+        // cannot tell a re-push from a base advance, and the causes differ.
+        detail: expect.objectContaining({
+          dismissedFor: "base",
+          previousBaseSha: "base_at_creation",
+          baseSha: "base_sha_from_diff_clone",
+        }),
+      }),
+    );
+  });
+
+  it("keeps approvals when neither the tip nor the base moved", async () => {
+    // The paired negative: without it, the test above would also pass against
+    // an implementation that dismissed on every re-evaluation.
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...evaluatedChange, baseSha: "base_sha_from_diff_clone" },
+    });
+    vi.mocked(getDiffBetweenRepos).mockResolvedValue({
+      success: true,
+      data: {
+        diff: "diff --git a/src/index.ts b/src/index.ts\n+new line",
+        workspaceOid: "old_sha",
+        workspaceTreeOid: "old_tree",
+        workspaceSha: "old_sha",
+        baseOid: "base_sha_from_diff_clone",
+      },
+    });
+
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/evaluate", {}, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(dismissApprovalsAndUpdateStatus).not.toHaveBeenCalled();
     expect(updateChangeStatus).toHaveBeenCalled();
   });
 

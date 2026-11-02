@@ -73,7 +73,7 @@ export const NewProjectPage: FC<NewProjectProps> = ({ user, error, nonce }) => {
   const username = user?.username || "";
 
   return (
-    <Layout title="New Project" user={user}>
+    <Layout title="New Project" user={user} active="new">
       {/* Username for the import endpoint path — read by the form script. */}
       <div data-username={username} style="display:none" id="user-data" />
 

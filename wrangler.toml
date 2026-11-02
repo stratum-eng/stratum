@@ -98,6 +98,13 @@ queue = "stratum-events"
 binding = "IMPORT_QUEUE"
 queue = "stratum-imports"
 
+# Post-merge deployments. Create both queues before the first deploy:
+#   wrangler queues create stratum-deploys
+#   wrangler queues create stratum-deploys-dlq
+[[queues.producers]]
+binding = "DEPLOY_QUEUE"
+queue = "stratum-deploys"
+
 [[queues.consumers]]
 queue = "stratum-events"
 
@@ -107,10 +114,37 @@ max_batch_size = 1  # Process imports one at a time for resource management
 max_retries = 3     # Retry failed imports up to 3 times
 retry_delay = 30    # Wait 30 seconds between retries
 
+# Every knob is set explicitly because the defaults are wrong for a deploy:
+# a batch of 10 would share one invocation's subrequest budget between ten
+# provider uploads, and 3 retries on a message the consumer only ever retries
+# for an *indeterminate* failure just delays the DLQ.
+#
+# visibility_timeout_ms bounds one deployment: MAX_SUBREQUESTS provider requests
+# for a tree of up to MAX_TOTAL_BYTES, both in `src/deploy/limits.ts`. Raise
+# those limits and this MUST rise with them — a run that outlives its lease is
+# redelivered while still uploading, and the second copy races the first.
+#
+# max_concurrency is 1, and must stay 1: concurrent invocations share one
+# isolate's 128 MiB, one Vercel deploy peaks near 92 MiB of that (the tree, its
+# base64 copy, and the request body), and an OOM kill happens *before* the
+# runner's `finally` can write a terminal status. See MAX_DEPLOY_CONCURRENCY in
+# `src/deploy/limits.ts` for the arithmetic and for the price — this serializes
+# Cloudflare deploys too.
+[[queues.consumers]]
+queue = "stratum-deploys"
+max_batch_size = 1
+max_concurrency = 1
+max_retries = 2
+retry_delay = 60
+visibility_timeout_ms = 900000  # 15 min; see src/deploy/limits.ts
+dead_letter_queue = "stratum-deploys-dlq"
+
 # "0 4 * * *"   — daily backup, on its OWN trigger so the ~15-min invocation
 #                 budget is never shared with (and starved by) the sync/TTL work
-# "0 6 * * *"   — daily housekeeping: workspace TTL sweep + auto-sync
-# "*/5 * * * *" — event outbox sweep: re-enqueue stale pending events
+# "0 6 * * *"   — daily housekeeping: workspace TTL sweep + auto-sync +
+#                 pruning import jobs that finished outside the retention window
+# "*/5 * * * *" — event outbox sweep (re-enqueue stale pending events) and the
+#                 import stall sweep (move wedged import jobs to a terminal state)
 [triggers]
 crons = ["0 4 * * *", "0 6 * * *", "*/5 * * * *"]
 
@@ -123,7 +157,18 @@ name = "EMAIL"
 # binding = "SANDBOX"
 
 [vars]
+# Browser analytics: PostHog's project token (`phc_…`), loaded in users' browsers.
+# A plain var, NOT a secret — it ships in every page of HTML, and calling it a
+# secret is how a personal API key (`phx_…`) ends up published. Deliberately
+# separate from POSTHOG_API_KEY: enabling server-side telemetry must never
+# silently start running third-party JS in your users' browsers. Unset = no
+# analytics script is served to anyone.
+# POSTHOG_PUBLIC_KEY = "phc_..."
 POSTHOG_HOST = "https://app.posthog.com"
+# Labels this deployment on every analytics event, so staging traffic can be
+# told apart from production's in one PostHog project. Any string; events from
+# an instance that leaves it unset report `environment: "unknown"`.
+STRATUM_ENVIRONMENT = "development"
 # Enables the /dev-login session backdoor for local `wrangler dev` only. Named
 # envs do NOT inherit top-level vars, so staging/production (which re-declare
 # their own [vars]) leave this unset and the route stays inert there.
@@ -138,12 +183,28 @@ OAUTH_REDIRECT_URI = "http://localhost:8787/auth/github/callback"
 # GOOGLE_REDIRECT_URI = "https://your-app.example.com/auth/google/callback"
 # Closed-beta gate (hosted-only; leave unset/commented for ungated self-hosting).
 # The gate turns ON only when BETA_GATE = "1" AND REFERRAL_SERVICE_URL is set.
+#
+# The referral service must serve three endpoints:
+#   POST /api/referral/validate  {code}                 -> {valid, referrerUserId}
+#   POST /api/referral/admit     {userId,email,code,source} -> {codes[], referrerUserId}
+#   GET  /api/referral/codes?userId=…                   -> {codes: [{code, redeemedAt, redeemedBy}]}
+# The last two authenticate with `Authorization: Bearer $REFERRAL_SERVICE_SECRET`.
+# `/codes` backs the invite list on /profile; a bare string per entry is also
+# accepted, matching what /admit returns. REFERRAL_SERVICE_URL alone (without
+# BETA_GATE) still enables that listing, so codes minted while the gate was on
+# stay visible to their owners after it is switched off.
 # BETA_GATE = "1"
 # REFERRAL_SERVICE_URL = "https://your-referral-service.example.com"
 
+# Instance-wide telemetry kill switch. Not a secret — a plain var, listed here
+# next to POSTHOG_API_KEY because they are read together. Named envs do NOT
+# inherit top-level vars, so uncommenting this alone only affects a bare
+# `wrangler deploy`; to disable telemetry on a named env you MUST also uncomment
+# it in that env's own [env.<name>.vars] block below.
+# STRATUM_TELEMETRY_DISABLED = "true"
+
 # Secrets — set via: wrangler secret put <NAME>
 # POSTHOG_API_KEY =  # telemetry sends route patterns only, never concrete paths
-# STRATUM_TELEMETRY_DISABLED = "true"  # uncomment to disable telemetry for self-hosted
 # GITHUB_CLIENT_ID =
 # GITHUB_CLIENT_SECRET =
 # GOOGLE_CLIENT_ID =
@@ -151,6 +212,7 @@ OAUTH_REDIRECT_URI = "http://localhost:8787/auth/github/callback"
 # EMAIL_FROM_ADDRESS = "noreply@yourdomain.com"  # for magic link emails
 # REFERRAL_SERVICE_SECRET =  # closed-beta gate shared secret (must match the referral service)
 # SSO_ENCRYPTION_SECRET =  # encrypts org SSO client secrets at rest; unset → SSO endpoints 501
+# DEPLOY_SECRET_KEY =  # master key for per-project deploy secrets; rotating it makes every stored secret undecryptable
 
 # =============================================================================
 # [env.production] — the maintainer's hosted instance (app.usestratum.dev).
@@ -226,6 +288,10 @@ queue = "stratum-events"
 binding = "IMPORT_QUEUE"
 queue = "stratum-imports"
 
+[[env.production.queues.producers]]
+binding = "DEPLOY_QUEUE"
+queue = "stratum-deploys"
+
 [[env.production.queues.consumers]]
 queue = "stratum-events"
 
@@ -235,6 +301,18 @@ max_batch_size = 1
 max_retries = 3
 retry_delay = 30
 
+# See the top-level stratum-deploys consumer for why each knob is set:
+# visibility_timeout_ms is tied to the bounds in `src/deploy/limits.ts`, and
+# max_concurrency = 1 is the isolate-memory bound (MAX_DEPLOY_CONCURRENCY).
+[[env.production.queues.consumers]]
+queue = "stratum-deploys"
+max_batch_size = 1
+max_concurrency = 1
+max_retries = 2
+retry_delay = 60
+visibility_timeout_ms = 900000  # 15 min; see src/deploy/limits.ts
+dead_letter_queue = "stratum-deploys-dlq"
+
 [env.production.triggers]
 crons = ["0 4 * * *", "0 6 * * *", "*/5 * * * *"]
 
@@ -242,7 +320,22 @@ crons = ["0 4 * * *", "0 6 * * *", "*/5 * * * *"]
 name = "EMAIL"
 
 [env.production.vars]
+# Browser analytics: PostHog's project token (`phc_…`), loaded in users' browsers.
+# A plain var, NOT a secret — it ships in every page of HTML, and calling it a
+# secret is how a personal API key (`phx_…`) ends up published. Deliberately
+# separate from POSTHOG_API_KEY: enabling server-side telemetry must never
+# silently start running third-party JS in your users' browsers. Unset = no
+# analytics script is served to anyone.
+# POSTHOG_PUBLIC_KEY = "phc_..."
 POSTHOG_HOST = "https://app.posthog.com"
+# Segments this environment's analytics (see top-level [vars]). Declared per-env
+# because named envs don't inherit top-level vars — the same footgun as the
+# telemetry kill switch below.
+STRATUM_ENVIRONMENT = "production"
+# Telemetry kill switch. Must be declared here, not only at top level — named
+# envs don't inherit top-level vars, so a top-level-only setting never reaches
+# `wrangler deploy --env=production`.
+# STRATUM_TELEMETRY_DISABLED = "true"
 # The /dev-login session backdoor is local-only. Declare it "false" explicitly
 # here (named envs don't inherit the top-level "true") so the route is provably
 # inert in production — and so wrangler stops warning about the missing override.
@@ -353,6 +446,10 @@ queue = "stratum-events-staging"
 binding = "IMPORT_QUEUE"
 queue = "stratum-imports-staging"
 
+[[env.staging.queues.producers]]
+binding = "DEPLOY_QUEUE"
+queue = "stratum-deploys-staging"
+
 [[env.staging.queues.consumers]]
 queue = "stratum-events-staging"
 
@@ -362,11 +459,39 @@ max_batch_size = 1
 max_retries = 3
 retry_delay = 30
 
+# Suffixed like the queues above, and for the same reason: a shared
+# "stratum-deploys" would hand staging's deploy messages to the production
+# consumer, whose D1 has no matching deployments row. Its DLQ is suffixed too.
+# See the top-level consumer for the knobs; visibility_timeout_ms is tied to
+# the bounds in `src/deploy/limits.ts`, and max_concurrency = 1 is the
+# isolate-memory bound (MAX_DEPLOY_CONCURRENCY).
+[[env.staging.queues.consumers]]
+queue = "stratum-deploys-staging"
+max_batch_size = 1
+max_concurrency = 1
+max_retries = 2
+retry_delay = 60
+visibility_timeout_ms = 900000  # 15 min; see src/deploy/limits.ts
+dead_letter_queue = "stratum-deploys-dlq-staging"
+
 [[env.staging.send_email]]
 name = "EMAIL"
 
 [env.staging.vars]
+# Browser analytics: PostHog's project token (`phc_…`), loaded in users' browsers.
+# A plain var, NOT a secret — it ships in every page of HTML, and calling it a
+# secret is how a personal API key (`phx_…`) ends up published. Deliberately
+# separate from POSTHOG_API_KEY: enabling server-side telemetry must never
+# silently start running third-party JS in your users' browsers. Unset = no
+# analytics script is served to anyone.
+# POSTHOG_PUBLIC_KEY = "phc_..."
 POSTHOG_HOST = "https://app.posthog.com"
+# Segments this environment's analytics (see top-level [vars]). Declared per-env
+# because named envs don't inherit top-level vars — the same footgun as the
+# telemetry kill switch below.
+STRATUM_ENVIRONMENT = "staging"
+# Telemetry kill switch; must be declared per-env (see env.production.vars).
+# STRATUM_TELEMETRY_DISABLED = "true"
 # Local-only session backdoor; explicitly off on staging (see env.production.vars).
 DEV_LOGIN_ENABLED = "false"
 # RepoDO + R2 merge path (ADR 004). "true" on staging: workspace commits stage to

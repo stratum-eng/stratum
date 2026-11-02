@@ -14,3 +14,20 @@ export function getWaitUntil(c: Context): ((promise: Promise<unknown>) => void) 
     return undefined;
   }
 }
+
+/**
+ * The ExecutionContext itself, or undefined when there is none.
+ *
+ * Same defensive read as `getWaitUntil`, for callers that must PASS the context
+ * on rather than schedule against it — `dispatchApiRequest` hands it to a
+ * sub-request so background writes inside the routers still reach `waitUntil`.
+ * Reading `c.executionCtx` directly there would throw in every
+ * `app.fetch(request, env)` test.
+ */
+export function getExecutionCtx(c: Context): ExecutionContext | undefined {
+  try {
+    return c.executionCtx;
+  } catch {
+    return undefined;
+  }
+}

@@ -490,6 +490,45 @@ describe("getDiffBetweenRepos", () => {
     expect(result.data.workspaceSha).toBe(wsTip);
   });
 
+  it("#274: returns the base commit the diff was computed against, pinned to that clone", async () => {
+    const baseServer: { branch: string; commits: Record<string, string>[] } = {
+      branch: "trunk",
+      commits: [{ "a.txt": "line1\n" }],
+    };
+    h.servers.set("https://r/base.git", baseServer);
+    h.servers.set("https://r/fork.git", {
+      branch: "trunk",
+      commits: [{ "a.txt": "line1\nline2\n" }],
+    });
+
+    const result = await getDiffBetweenRepos(
+      "https://r/base.git",
+      "btok",
+      "https://r/fork.git",
+      "wtok",
+      logger,
+      "trunk",
+    );
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    const [baseTipAtDiffTime] = await precomputeShas({
+      branch: "trunk",
+      commits: [{ "a.txt": "line1\n" }],
+    });
+    expect(result.data.baseOid).toBe(baseTipAtDiffTime);
+
+    // The receiver's failure mode (#274): the default branch advances after the
+    // diff was generated. The base carried with the diff must still name the
+    // commit the hunks apply to, not whatever the branch has since become —
+    // applying them to the newer tree would produce a verdict for a combination
+    // no change ever proposed.
+    baseServer.commits.push({ "unrelated.txt": "landed after evaluation\n" });
+    const [, advancedTip] = await precomputeShas(baseServer);
+    expect(advancedTip).not.toBe(baseTipAtDiffTime);
+    expect(result.data.baseOid).toBe(baseTipAtDiffTime);
+  });
+
   it("errs when either side lacks the requested branch", async () => {
     h.servers.set("https://r/base.git", { branch: "trunk", commits: [{ "a.txt": "x\n" }] });
     h.servers.set("https://r/fork.git", { branch: "trunk", commits: [{ "a.txt": "x\n" }] });

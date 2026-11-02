@@ -33,11 +33,45 @@ jobs:
           npx wrangler d1 migrations apply stratum --remote --env=production
           echo "✓ Migrations applied successfully"
 
+      # Mirrors ci.yml. This is the manual redeploy path, so it hits the same
+      # wall: `wrangler deploy` fails outright on a bound queue that does not
+      # exist, and a redeploy is exactly what someone reaches for when
+      # production is already unhappy.
+      - name: Ensure Production Queues Exist
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          node scripts/wrangler-queues.mjs production > /tmp/queues-production.txt
+          # Redirect, not a pipe: a `while ... | read` loop runs in a subshell,
+          # where `exit 1` would end the subshell and let the step pass.
+          while read -r queue; do
+            [ -z "$queue" ] && continue
+            if out=$(npx wrangler queues create "$queue" 2>&1); then
+              echo "✓ Created queue $queue"
+            elif echo "$out" | grep -qiE "already (exists|taken)|11009"; then
+              echo "✓ Queue $queue already exists"
+            else
+              echo "$out"
+              exit 1
+            fi
+          done < /tmp/queues-production.txt
+
       - name: Deploy to Cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy --env=production
+          POSTHOG_PUBLIC_KEY: ${{ vars.POSTHOG_PUBLIC_KEY }}
+        run: |
+          # The app's half of browser analytics. `POSTHOG_PUBLIC_KEY` is a
+          # `[vars]` entry that ships commented out, because a self-hoster who
+          # deployed this repo must not inherit our project token — so the
+          # value can only come from here, and until it did, the Worker served
+          # every page without the SDK while the docs site (deploy-docs.yml,
+          # which has passed it since day one) reported browser events. Empty
+          # when the repository variable is unset, which `webAnalyticsConfig`
+          # reads as off.
+          npx wrangler deploy --env=production --var POSTHOG_PUBLIC_KEY:"$POSTHOG_PUBLIC_KEY"
 
       - name: Smoke test
         env:

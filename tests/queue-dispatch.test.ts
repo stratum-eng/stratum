@@ -9,7 +9,12 @@ vi.mock("../src/queue/event-consumer", () => ({
 vi.mock("../src/queue/import-queue", () => ({
   handleImportQueue: vi.fn(async () => {}),
 }));
+vi.mock("../src/queue/deploy-queue", () => ({
+  handleDeployQueue: vi.fn(async () => {}),
+  enqueueMergeDeploy: vi.fn(async () => {}),
+}));
 
+import { handleDeployQueue } from "../src/queue/deploy-queue";
 import { handleEventQueue } from "../src/queue/event-consumer";
 import { handleImportQueue } from "../src/queue/import-queue";
 
@@ -57,11 +62,36 @@ describe("worker queue dispatch", () => {
     },
   );
 
+  it.each(["stratum-deploys", "stratum-deploys-staging"])(
+    "routes %s to the deploy consumer, leaving the events consumer untouched",
+    async (name) => {
+      const batch = makeBatch(name);
+      await worker.queue(batch, env);
+      expect(handleDeployQueue).toHaveBeenCalledWith(batch, env);
+      expect(handleEventQueue).not.toHaveBeenCalled();
+      expect(handleImportQueue).not.toHaveBeenCalled();
+      expect(batch.ackAll).not.toHaveBeenCalled();
+    },
+  );
+
+  // The event queue predates deploys and must keep behaving identically; a
+  // prefix that also matched "stratum-events" would silently reroute it.
+  it.each(["stratum-events", "stratum-events-staging"])(
+    "never hands %s to the deploy consumer",
+    async (name) => {
+      const batch = makeBatch(name);
+      await worker.queue(batch, env);
+      expect(handleEventQueue).toHaveBeenCalledWith(batch, env);
+      expect(handleDeployQueue).not.toHaveBeenCalled();
+    },
+  );
+
   it("acks batches from unknown queues without invoking a consumer", async () => {
     const batch = makeBatch("some-other-queue");
     await worker.queue(batch, env);
     expect(handleEventQueue).not.toHaveBeenCalled();
     expect(handleImportQueue).not.toHaveBeenCalled();
+    expect(handleDeployQueue).not.toHaveBeenCalled();
     expect(batch.ackAll).toHaveBeenCalled();
   });
 });

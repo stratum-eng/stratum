@@ -1,0 +1,104 @@
+{
+  "specVersion": "1.0",
+  "host": {
+    "identifier": "urn:air:docs.usestratum.dev",
+    "domain": "docs.usestratum.dev",
+    "displayName": "Stratum",
+    "description": "The open-source, agent-first code forge — evaluation-gated merges, provenance, and agent identities, built on Cloudflare Workers.",
+    "url": "https://docs.usestratum.dev/",
+    "license": "AGPL-3.0-or-later",
+    "repository": "https://github.com/stratum-eng/stratum"
+  },
+  "entries": [
+    {
+      "identifier": "urn:air:docs.usestratum.dev:mcp:stratum",
+      "displayName": "Stratum MCP server",
+      "description": "Remote MCP server at app.usestratum.dev/mcp, over streamable HTTP with OAuth 2.1 and dynamic client registration, exposing the full evaluation-gated change flow: read files, fork workspaces, commit, open changes with each gate's verdict returned, review, merge, and track issues.",
+      "type": "application/mcp-server-card+json",
+      "url": "https://docs.usestratum.dev/.well-known/mcp/server-card.json",
+      "representativeQueries": [
+        "connect my coding agent to Stratum over MCP",
+        "which MCP tools can open and merge a Stratum change",
+        "MCP server for evaluation-gated code review",
+        "let Claude commit to a Stratum workspace",
+        "authorize an MCP client against Stratum with OAuth"
+      ]
+    },
+    {
+      "identifier": "urn:air:docs.usestratum.dev:api:openapi",
+      "displayName": "Stratum REST API",
+      "description": "Complete OpenAPI 3.1 contract for the Stratum REST API: projects, workspaces, commits, changes, evaluations, reviews, merges, issues, and orgs.",
+      "type": "application/vnd.oai.openapi+yaml",
+      "url": "https://docs.usestratum.dev/openapi.yml",
+      "representativeQueries": [
+        "Stratum REST API endpoint reference",
+        "how do I create a change via the Stratum API",
+        "OpenAPI schema for merging a change",
+        "list Stratum projects with curl"
+      ]
+    },
+    {
+      "identifier": "urn:air:docs.usestratum.dev:api:catalog",
+      "displayName": "Stratum API catalogue",
+      "description": "RFC 9727 linkset naming the API's service description, human documentation, and machine-readable metadata.",
+      "type": "application/linkset+json",
+      "url": "https://docs.usestratum.dev/.well-known/api-catalog",
+      "representativeQueries": [
+        "where is Stratum's API catalogue",
+        "RFC 9727 linkset for Stratum",
+        "discover Stratum service description documents"
+      ]
+    },
+    {
+      "identifier": "urn:air:docs.usestratum.dev:auth:registration",
+      "displayName": "Agent registration contract",
+      "description": "auth.md describing how an agent obtains a Stratum credential, how it is transported and revoked, and the human-approval invariant it cannot route around.",
+      "type": "text/markdown",
+      "url": "https://docs.usestratum.dev/auth.md",
+      "representativeQueries": [
+        "how does an AI agent authenticate to Stratum",
+        "register an agent identity and get a token",
+        "does Stratum support OAuth client credentials",
+        "what bearer methods does the Stratum API accept",
+        "revoke a Stratum agent token"
+      ]
+    },
+    {
+      "identifier": "urn:air:docs.usestratum.dev:skills:index",
+      "displayName": "Stratum agent skills",
+      "description": "Agent Skills Discovery index listing the SKILL.md artifacts for driving Stratum: merge gates, MCP, and agent identity.",
+      "type": "application/json",
+      "url": "https://docs.usestratum.dev/.well-known/agent-skills/index.json",
+      "representativeQueries": [
+        "agent skills published by Stratum",
+        "SKILL.md for getting a change merged",
+        "download Stratum skills with sha256 digests"
+      ]
+    },
+    {
+      "identifier": "urn:air:docs.usestratum.dev:docs:llms-txt",
+      "displayName": "Documentation index for language models",
+      "description": "llms.txt index of the Stratum documentation sets, with llms-full.txt carrying the complete corpus as plain text.",
+      "type": "text/plain",
+      "url": "https://docs.usestratum.dev/llms.txt",
+      "representativeQueries": [
+        "Stratum documentation for language models",
+        "llms.txt for Stratum",
+        "full Stratum docs corpus as plain text"
+      ]
+    },
+    {
+      "identifier": "urn:air:docs.usestratum.dev:docs:getting-started",
+      "displayName": "Getting started with Stratum",
+      "description": "From zero to a merged, evaluation-gated change: project setup, .stratum/policy.yaml merge gates, agent identities, and the workspace → commit → change → review → merge flow.",
+      "type": "text/html",
+      "url": "https://docs.usestratum.dev/guides/getting-started/",
+      "representativeQueries": [
+        "how do I set up Stratum merge gates",
+        "write a .stratum/policy.yaml evaluation policy",
+        "stop an AI agent from merging unreviewed code",
+        "self-host Stratum on Cloudflare Workers"
+      ]
+    }
+  ]
+}

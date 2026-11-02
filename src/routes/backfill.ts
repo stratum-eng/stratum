@@ -63,10 +63,13 @@ app.get("/plan", async (c) => {
 // `remainingNullRows` is reported because it is the step-2 verification for
 // issue #235 — it should read 0 after a clean run.
 //
-// This is step 1-2 of a 3-step coordinated fix (issue #235); the name-based
-// fallback in webhookBelongsToProject/listWebhooks intentionally stays in
-// place until this has actually run in production and the remaining NULL
-// count is verified at zero.
+// This is step 1-2 of the 3-step coordinated fix for issue #235. Step 3 has
+// since landed: `webhookBelongsToProject` and `listWebhooks` scope on
+// project_id alone, so a row this run leaves NULL (ambiguous or unresolved) is
+// no longer reachable by name — it is invisible to management and receives no
+// deliveries. `remainingNullRows` is therefore the count of webhooks that were
+// orphaned, and resolving them means giving the colliding projects distinct
+// names and re-running, or deleting the rows.
 app.post("/webhooks/apply", async (c) => {
   const auth = await requireAdmin(c);
   if (!auth.ok) return forbidden("Administrator access required");

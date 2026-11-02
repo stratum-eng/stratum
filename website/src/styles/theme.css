@@ -3,17 +3,32 @@
  *
  * These map Starlight's own custom properties onto the colours the app already
  * uses (src/ui/styles.ts): #0a0a0a page, #0d0d0d chrome, #1e1e1e hairlines,
- * #f0f0f0 text, #7ca9f7 accent. We deliberately do NOT import the app's
- * stylesheet — it is written for app chrome (nav, tables, diffs) and would
- * fight Starlight's layout and break on upgrades.
+ * #f0f0f0 text, #7ca9f7 accent. Apart from the header, we deliberately do NOT
+ * import the app's stylesheet — it is written for app chrome (tables, diffs)
+ * and would fight Starlight's layout and break on upgrades.
+ *
+ * The header is the exception, and is shared outright: header.css is generated
+ * from the app's own rules (see scripts/mirror-header.mjs) and loaded before
+ * this file, so the two sites cannot drift into different headers.
  *
  * Prose stays in Starlight's readable sans; JetBrains Mono is used for code,
- * the site title, and headings, matching the app's character without making
+ * the header, and headings, matching the app's character without making
  * long-form guides harder to read.
  */
 
 :root {
   --sl-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Starlight positions its fixed header from this, so it has to match what
+     header.css lays out: 0.75rem of padding around the tallest nav item, plus
+     the hairline. Starlight's own default is taller (4rem at >=50rem). */
+  --sl-nav-height: 3.5rem;
+}
+
+@media (max-width: 600px) {
+  :root {
+    /* header.css tightens the nav's padding to 0.6rem at this width. */
+    --sl-nav-height: 3.2rem;
+  }
 }
 
 /* Dark theme — mirrors the app exactly. */
@@ -40,23 +55,29 @@
   --sl-color-hairline-shade: #1e1e1e;
 }
 
-/* Light theme — same hue family, darkened for contrast on white. */
+/*
+ * Light theme — same hue family, darkened for contrast on white. The header's
+ * own tokens arrive from header.css carrying the app's dark values; the app is
+ * dark-only and this site is not, so here the same rules are pointed at
+ * Starlight's light palette.
+ */
 :root[data-theme="light"] {
   --sl-color-accent-low: #d3e2fb;
   --sl-color-accent: #2a5aae;
   --sl-color-accent-high: #16305e;
   --sl-color-text-accent: #2a5aae;
+
+  --bg-panel: var(--sl-color-bg-nav);
+  --border: var(--sl-color-hairline-shade);
+  --text-primary: var(--sl-color-white);
+  --text-muted: var(--sl-color-gray-3);
+  --accent: var(--sl-color-accent-low);
+  --accent-text: var(--sl-color-text-accent);
 }
 
-/* Wordmark and headings pick up the app's monospace character. */
-.site-title,
+/* Headings pick up the app's monospace character. */
 .sl-markdown-content :is(h1, h2, h3, h4, h5, h6),
 h1[id="_top"] {
   font-family: var(--sl-font-mono);
   letter-spacing: -0.01em;
-}
-
-.site-title {
-  font-weight: 700;
-  letter-spacing: 0.05em;
 }

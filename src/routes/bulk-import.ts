@@ -11,9 +11,14 @@ import {
   resolveDefaultBranch,
 } from "../storage/git-providers";
 import { createImportJob, updateImportStatus } from "../storage/imports";
+import {
+  claimNamespace,
+  confirmOwnerNamespace,
+  releaseNamespaceClaim,
+} from "../storage/project-namespace";
 import { getProjectByPath, setProject } from "../storage/state";
 import type { ArtifactsCreateResult, BulkImportJob, Env, ProjectEntry } from "../types";
-import { getArtifactsRepoName } from "../types";
+import { getArtifactsRepoName, getUserNamespace } from "../types";
 import { createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 import { badRequest, created, forbidden, notFound, ok, unauthorized } from "../utils/response";
@@ -51,13 +56,6 @@ interface RepoImportRequest {
  */
 function generateProjectId(): string {
   return crypto.randomUUID();
-}
-
-/**
- * Helper to get user's namespace
- */
-function getUserNamespace(username: string): string {
-  return username.startsWith("@") ? username : `@${username}`;
 }
 
 /**
@@ -209,10 +207,26 @@ export async function processRepoImport(
       visibility,
     };
 
+    // Claim before the KV write, as project creation does.
+    const claimed = await claimNamespace(env.DB, { ownerId, namespace, slug }, logger);
+    if (!claimed.success) {
+      job && job.failedRepos++;
+      return { success: false, error: claimed.error.message, repo: url };
+    }
+
     const setResult = await setProject(env.STATE, project, logger);
     if (!setResult.success) {
       job && job.failedRepos++;
+      await releaseNamespaceClaim(env.DB, namespace, slug, logger);
       return { success: false, error: setResult.error.message, repo: url };
+    }
+
+    // The owner's username was read when the bulk job started; see
+    // confirmOwnerNamespace for the rename it may have crossed since.
+    const confirmed = await confirmOwnerNamespace(env, ownerId, project, logger);
+    if (!confirmed.success) {
+      job && job.failedRepos++;
+      return { success: false, error: confirmed.error.message, repo: url };
     }
 
     // Enqueue the clone FIRST, then mark "queued" only once it's accepted — so a

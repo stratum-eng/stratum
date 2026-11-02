@@ -11,6 +11,9 @@
 #   /openapi.yml                       REST API contract (OpenAPI 3.1)
 #   /.well-known/api-catalog           API catalogue (RFC 9727 linkset)
 #   /.well-known/mcp/server-card.json  MCP server discovery card
+#   /.well-known/ai-catalog.json       ARD capability manifest
+#   /.well-known/agent-skills/index.json  Agent Skills discovery index
+#   /auth.md                           How an agent obtains a credential
 
 User-agent: *
 Content-Signal: search=yes, ai-input=yes, ai-train=yes
@@ -30,3 +33,4 @@ User-agent: Applebot-Extended
 Allow: /
 
 Sitemap: https://docs.usestratum.dev/sitemap-index.xml
+Agentmap: https://docs.usestratum.dev/.well-known/ai-catalog.json

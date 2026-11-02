@@ -123,6 +123,22 @@ vi.mock("../src/storage/sync", async (importOriginal) => {
 // ---------------------------------------------------------------------------
 
 vi.mock("../src/storage/git-ops", () => ({
+  // The repo view mints one read token for ref resolution, the branch listing
+  // behind the switcher, and the clone fallback, so all three must be stubbed
+  // here or the page 500s before it reaches the props under test.
+  freshRepoToken: vi.fn(async () => ({ success: true, data: "mock-read-token" })),
+  listRepoBranches: vi.fn(async () => ({
+    success: true,
+    data: {
+      branches: [{ name: "main", oid: "abc1234" }],
+      truncated: false,
+      totalBranchCount: 1,
+    },
+  })),
+  resolveBranchRef: vi.fn(async () => ({
+    success: true,
+    data: { name: "main", oid: "abc1234" },
+  })),
   initAndPush: vi.fn(async () => ({ success: true, data: "sha_init" })),
   cloneRepo: vi.fn(async () => ({ fs: {}, dir: "/" })),
   commitAndPush: vi.fn(async () => "sha_commit"),
@@ -159,7 +175,27 @@ vi.mock("../src/storage/provenance", () => ({
   listProvenance: vi.fn(async () => ({ success: true, data: [] })),
 }));
 
+// Give the page content: "Sync Now" is gated on the repo actually having files
+// (#304), so a project with an empty tree would hide the button for a reason
+// unrelated to the canSync plumbing these tests cover.
+vi.mock("../src/storage/repo-snapshot", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/storage/repo-snapshot")>();
+  return {
+    ...actual,
+    readRepoSnapshot: vi.fn(async () => ({
+      success: true,
+      data: {
+        files: ["src/index.ts"],
+        commits: [],
+        readme: null,
+        capturedAt: "2026-01-01T00:00:00.000Z",
+      },
+    })),
+  };
+});
+
 vi.mock("../src/storage/imports", () => ({
+  STALLED_THRESHOLD_MS: 5 * 60 * 1000,
   getImportProgress: vi.fn(async () => ({ success: true, data: null })),
   createImportJob: vi.fn(async () => ({ success: true, data: { id: "import-001" } })),
   updateImportStatus: vi.fn(async () => ({ success: true, data: undefined })),

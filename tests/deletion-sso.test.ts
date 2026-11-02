@@ -6,7 +6,7 @@ import { makeKvStub } from "./helpers/deletion-stubs";
 import { makeSqliteD1 } from "./helpers/sqlite-d1";
 
 /**
- * Zero-orphan coverage for the SSO/SCIM tables (migration 041) in the deletion
+ * Zero-orphan coverage for the SSO/SCIM tables (migration 049) in the deletion
  * cascades, against the REAL schema (FK enforcement on) so a wrong delete
  * order fails here instead of in production.
  */

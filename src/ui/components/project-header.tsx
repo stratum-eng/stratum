@@ -1,6 +1,14 @@
 import type { FC } from "hono/jsx";
 
-export type ProjectTab = "code" | "changes" | "issues" | "activity" | "tags" | "settings";
+export type ProjectTab =
+  | "code"
+  | "changes"
+  | "issues"
+  | "activity"
+  | "branches"
+  | "tags"
+  | "deployments"
+  | "settings";
 
 export interface ProjectRef {
   name: string;
@@ -31,7 +39,14 @@ export const ProjectHeader: FC<ProjectHeaderProps> = ({ project, active, canWrit
     { key: "changes", label: "Changes", href: `${base}/changes` },
     { key: "issues", label: "Issues", href: `${base}/issues` },
     { key: "activity", label: "Activity", href: `${base}/activity` },
+    // Next to Tags: both list refs, and grouping them keeps the ref-shaped
+    // sections together rather than burying branches under Code.
+    { key: "branches", label: "Branches", href: `${base}/branches` },
     { key: "tags", label: "Tags", href: `${base}/tags` },
+    // Deploy history follows the same read rules as Activity, so it is a tab
+    // rather than a Settings sub-page — only the credentials it uses are
+    // admin-only, and those live under Settings.
+    { key: "deployments", label: "Deploys", href: `${base}/deployments` },
     ...(canWrite
       ? [{ key: "settings" as const, label: "Settings", href: `${base}/settings` }]
       : []),
@@ -43,7 +58,7 @@ export const ProjectHeader: FC<ProjectHeaderProps> = ({ project, active, canWrit
         <div class="project-crumb">
           <span class="project-crumb-namespace">{project.namespace}</span>
           <span class="project-crumb-sep">/</span>
-          <a class="project-crumb-name" href={base}>
+          <a class="project-crumb-name" href={base} data-ph="project-crumb">
             {project.slug}
           </a>
           {project.visibility === "public" && <span class="badge badge-public">public</span>}
@@ -56,6 +71,11 @@ export const ProjectHeader: FC<ProjectHeaderProps> = ({ project, active, canWrit
             key={tab.key}
             href={tab.href}
             class={`project-tab ${active === tab.key ? "project-tab-active" : ""}`}
+            // The one interpolated `data-ph` in the app, and safe by
+            // construction: `tab.key` is the ProjectTab union, so every value
+            // it can produce is a literal a few lines above. Nothing here can
+            // become a project or file name.
+            data-ph={`project-tab-${tab.key}`}
             {...(active === tab.key ? { "aria-current": "page" } : {})}
           >
             {tab.label}

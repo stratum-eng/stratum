@@ -123,13 +123,24 @@ export function makeIssuesD1(): {
       },
       first: async <T>() => {
         if (upper.startsWith("INSERT INTO ISSUES")) {
-          // VALUES (?1, ?2, ?9, (SELECT MAX(number)+1 WHERE project_id=?9 OR
-          // (project_id IS NULL AND project=?2)), ...) RETURNING *
+          // Bind order mirrors `createIssue`'s statement, which uses anonymous
+          // `?` placeholders throughout (#340) — so values needed twice are bound
+          // twice, and positions 3/4 are the numbering subquery's own copies of
+          // project_id/project:
+          //
+          //   VALUES (?, ?, ?, (SELECT MAX(number)+1 WHERE project_id = ?
+          //           OR (project_id IS NULL AND project = ?)), ...) RETURNING *
+          //    0: id            1: project      2: project_id
+          //    3: project_id    4: project      (numbering subquery)
+          //    5: title         6: body         7: author_type
+          //    8: author_id     9: linked_change_id
+          //   10: created_at   11: updated_at
           const project = bindings[1] as string;
-          const projectId = (bindings[8] as string | null) ?? null;
+          const projectId = (bindings[2] as string | null) ?? null;
           // Mirror migration 035: number by project_id, with a legacy name fallback.
-          // `project_id = ?9` is never true when ?9 is NULL (SQL NULL comparison),
-          // so a projectId-less create numbers purely by the name fallback.
+          // `project_id = ?` is never true when the bound id is NULL (SQL NULL
+          // comparison), so a projectId-less create numbers purely by the name
+          // fallback.
           const number =
             issues
               .filter(
@@ -141,21 +152,19 @@ export function makeIssuesD1(): {
           const row: IssueTableRow = {
             id: bindings[0] as string,
             project,
-            // project_id is bound as ?9 (the trailing positional param) to keep
-            // the existing ?1..?8 indices stable.
-            project_id: (bindings[8] as string | null) ?? null,
+            project_id: projectId,
             number,
-            title: bindings[2] as string,
-            body: bindings[3] as string | null,
+            title: bindings[5] as string,
+            body: bindings[6] as string | null,
             status: "open",
-            author_type: bindings[4] as string,
-            author_id: bindings[5] as string,
+            author_type: bindings[7] as string,
+            author_id: bindings[8] as string,
             assignee: null,
-            linked_change_id: bindings[6] as string | null,
+            linked_change_id: bindings[9] as string | null,
             closed_at: null,
             closed_by: null,
-            created_at: bindings[7] as string,
-            updated_at: bindings[7] as string,
+            created_at: bindings[10] as string,
+            updated_at: bindings[11] as string,
           };
           issues.push(row);
           return row as T;
