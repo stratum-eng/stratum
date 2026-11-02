@@ -5,7 +5,7 @@
  * site is a hole an account can be steered through. So these tests drive the
  * real routes and services and read the rows out of a real SQLite D1 with the
  * production migrations applied, rather than asserting on a spy's arguments —
- * a `recordCosts` mock would pass whether or not migration 048's columns
+ * a `recordCosts` mock would pass whether or not migration 049's columns
  * accept what the call site sends.
  *
  * The conflict-resolution path is the reason this file exists at all: it ran

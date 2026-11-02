@@ -69,7 +69,7 @@
 - **Every cost record now names who pays for it, and LLM token counts are the
   real ones.** `cost_records` gains `owner_id`, `owner_type` and `source`
   (`platform` or `byok`), and a new `usage_periods` table keeps the owner-scoped
-  monthly totals those roll up into — migrations 048 and 049, applied like any
+  monthly totals those roll up into — migrations 049 and 050, applied like any
   other. Attribution is **always on**, self-hosted included, because it is a
   ledger rather than a paywall: expect a small number of additional D1 writes per
   evaluated change, and a `USAGE_METER` Durable Object binding in `wrangler.toml`

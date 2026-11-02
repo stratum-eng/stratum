@@ -157,7 +157,7 @@ What import does **not** do yet:
 
 Bidirectional GitHub sync — inbound webhooks and outbound PR promotion, i.e.
 **layer mode** — is covered in
-[Getting started](getting-started.md#choose-your-level-of-buy-in-layer-mode-vs-alternative-mode).
+[Getting started](getting-started.md#choose-your-level-of-buy-in-layer-mode-vs-forge-mode).
 
 ## Unsupported content
 

@@ -27,7 +27,7 @@ const ogCard = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630
   </g>
   <text x="100" y="221" font-family="${MONO}" font-size="76" font-weight="700"
         fill="${TEXT}" letter-spacing="4" dy="120">stratum</text>
-  <text x="100" y="420" font-family="${MONO}" font-size="31" fill="${MUTED}">The governance layer for AI-written code</text>
+  <text x="100" y="420" font-family="${MONO}" font-size="31" fill="${MUTED}">The open-source, agent-first code forge</text>
   <text x="100" y="470" font-family="${MONO}" font-size="31" fill="${MUTED}">Evaluation-gated merges. Provenance. Agent identities.</text>
   <text x="100" y="552" font-family="${MONO}" font-size="27" fill="${ACCENT}">docs.usestratum.dev</text>
 </svg>`;

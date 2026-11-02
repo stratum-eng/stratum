@@ -1,7 +1,7 @@
 {
   "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
   "name": "Stratum",
-  "description": "Skills for driving Stratum — the governance layer that decides what agent output is allowed to merge.",
+  "description": "Skills for driving Stratum — the open-source, agent-first code forge.",
   "homepage": "https://docs.usestratum.dev/",
   "license": "MIT",
   "skills": [
@@ -23,7 +23,7 @@
       "name": "stratum-merge-gate",
       "type": "skill-md",
       "description": "Get a change through Stratum's evaluation gates and merged, and read the verdict when a gate blocks it.",
-      "digest": "sha256:ace75ea8b95503b50381093e6466835c76c506a5fb629afffa603ff5f50a64b9",
+      "digest": "sha256:3d6a733973e34bc10f0f40b176d2e3ddaaef73a1022415344cf7eb755e4e6d6f",
       "url": "https://docs.usestratum.dev/.well-known/agent-skills/stratum-merge-gate/SKILL.md"
     }
   ]

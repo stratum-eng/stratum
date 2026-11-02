@@ -511,7 +511,7 @@ export async function deleteProjectCascade(
     // ENFORCEMENT subject (a user, or a paid org) and never on a project, so a
     // project deletion must not touch it. Purging it here would refund the
     // month by deleting a project — exactly what keeping `usage_periods` out of
-    // PROJECT_SCOPED_TABLES prevents (migration 049). The ACCOUNT cascade
+    // PROJECT_SCOPED_TABLES prevents (migration 050). The ACCOUNT cascade
     // erases it, and nothing else does.
 
     // 5) KV last, project entry very last: as long as the entry exists, the
@@ -909,7 +909,7 @@ export async function deleteAccountCascade(
     // erasure request is itself a retention bug.
     await db.prepare("DELETE FROM agents WHERE owner_id = ?").bind(userId).run();
     await db.prepare("DELETE FROM api_tokens WHERE user_id = ?").bind(userId).run();
-    // The owner-scoped usage aggregate (migration 049). Erasing the account is
+    // The owner-scoped usage aggregate (migration 050). Erasing the account is
     // the ONLY event that may clear it: `usage_periods` is deliberately outside
     // `PROJECT_SCOPED_TABLES` because an allowance a user can reset by deleting
     // the project that burned it is not an allowance. Here the subject itself is

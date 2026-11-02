@@ -200,7 +200,7 @@ environment (`wrangler.toml:84-85`), so it works out of the box.
   the deploy DLQ has no consumer.
 - Phase 4 operational items remain: load testing at 1000+ concurrent workspaces,
   D1 hot/cold rotation, SSO/SAML, and the rest of multi-tenancy/billing for
-  Stratum Cloud — the metering, entitlement and enforcement machinery above is
+  a managed offering — the metering, entitlement and enforcement machinery above is
   in the tree, but plan definitions, checkout and subscription state are not,
   and there is no org billing UI, no seat model, and no retention or storage
   limit.

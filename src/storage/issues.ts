@@ -121,22 +121,41 @@ export async function createIssue(
     // project_id (migration 035), with a legacy name fallback so a project that
     // already has pre-migration (NULL project_id) issues keeps counting up from
     // its highest existing number instead of restarting at 1.
+    //
+    // Three values are needed twice: project_id and project inside the
+    // numbering subquery, and `now` for both timestamps. Numbered parameters
+    // (?1, ?9) express that reuse directly, but `node:sqlite` — which backs the
+    // D1 shim the test suite runs on — cannot bind them positionally on every
+    // supported 22.x: on 22.14.0 this exact statement throws "column index out
+    // of range", which took 43 tests red on a clean checkout while CI's
+    // floating `node-version: "22"` stayed green (#340). D1 itself binds either
+    // form, so the portable one wins: anonymous `?`, with the repeated values
+    // bound twice from a single local so the two bindings cannot drift apart.
+    const projectId = opts.projectId ?? null;
     const row = await db
       .prepare(
         `INSERT INTO issues (id, project, project_id, number, title, body, status, author_type, author_id, linked_change_id, created_at, updated_at)
-         VALUES (?1, ?2, ?9, (SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE (project_id = ?9 OR (project_id IS NULL AND project = ?2))), ?3, ?4, 'open', ?5, ?6, ?7, ?8, ?8)
+         VALUES (?, ?, ?,
+                 (SELECT COALESCE(MAX(number), 0) + 1 FROM issues
+                   WHERE (project_id = ? OR (project_id IS NULL AND project = ?))),
+                 ?, ?, 'open', ?, ?, ?, ?, ?)
          RETURNING *`,
       )
       .bind(
         id,
+        opts.project,
+        projectId,
+        // Numbering subquery: same project scope as the columns above.
+        projectId,
         opts.project,
         opts.title,
         opts.body ?? null,
         opts.authorType,
         opts.authorId,
         opts.linkedChangeId ?? null,
+        // created_at, updated_at.
         now,
-        opts.projectId ?? null,
+        now,
       )
       .first<IssueRow>();
 

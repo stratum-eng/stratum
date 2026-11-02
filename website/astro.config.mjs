@@ -68,7 +68,7 @@ const analyticsHead = POSTHOG_KEY
     ]
   : [];
 const DESCRIPTION =
-  "The governance layer for AI-written code — evaluation-gated merges, provenance, and agent identities, built on Cloudflare Workers.";
+  "The open-source, agent-first code forge — evaluation-gated merges, provenance, and agent identities, built on Cloudflare Workers.";
 
 export default defineConfig({
   site: SITE,
@@ -94,10 +94,10 @@ export default defineConfig({
           projectName: "Stratum",
           description: DESCRIPTION,
           details: [
-            "Stratum is the control plane that decides what agent output is allowed to merge.",
+            "Stratum is the open-source, agent-first code forge: git hosting where every change proves itself before it merges.",
             "Humans and AI agents are both first-class identities; agents can never approve a change.",
             "Merge gates are policy-as-code in .stratum/policy.yaml and a malformed policy fails closed.",
-            "It runs either as a layer over GitHub or as a standalone forge on Cloudflare Workers.",
+            "It runs in layer mode over GitHub or in forge mode as the source of truth, on Cloudflare Workers.",
           ].join(" "),
           optionalLinks: [
             {
@@ -108,7 +108,7 @@ export default defineConfig({
             {
               label: "Source repository",
               url: "https://github.com/stratum-eng/stratum",
-              description: "MIT-licensed, self-hostable on your own Cloudflare account",
+              description: "AGPL-3.0-or-later, self-hostable on your own Cloudflare account",
             },
           ],
         }),

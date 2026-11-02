@@ -207,7 +207,7 @@ export async function buildEvaluators(
         case "diff":
           return [{ type: "diff", evaluator: new DiffEvaluator() }];
         case "webhook":
-          return [{ type: "webhook", evaluator: new WebhookEvaluator() }];
+          return [{ type: "webhook", evaluator: new WebhookEvaluator(cfg) }];
         case "llm": {
           // Every failure to resolve a project-supplied credential lands here,
           // and NONE of them falls back to `env.AI`. Falling back would move

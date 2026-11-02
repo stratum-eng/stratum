@@ -37,6 +37,8 @@ interface EvalRunRow {
   reason: string;
   issues: string | null;
   ran_at: string;
+  /** Written since migration 048. Omitted here to stand for a legacy row. */
+  round_id?: string;
 }
 
 /** Stub D1 answering the eval_runs and change_reviews queries protection issues. */
@@ -143,6 +145,162 @@ describe("checkMergeProtection", () => {
       ],
     });
     const policy: EvalPolicy = { evaluators: [], merge: { requiredEvaluators: ["diff"] } };
+
+    const result = await checkMergeProtection(db, mockLogger, change, policy);
+    expect(result.success && result.data.allowed).toBe(true);
+  });
+
+  it("#336: a passing duplicate in the same round can't mask a failing sibling", async () => {
+    // Two webhook receivers, one round. Both rows carry the batch's single
+    // `ran_at`, and both say `webhook` — so a last-write-wins read of the type
+    // saw only whichever row came second and let the gate open on a receiver
+    // that had rejected the change.
+    const db = makeProtectionD1({
+      runs: [
+        makeRun({
+          id: "run_1",
+          evaluator_type: "webhook",
+          passed: 0,
+          ran_at: "2026-01-02T00:00:00.000Z",
+        }),
+        makeRun({
+          id: "run_2",
+          evaluator_type: "webhook",
+          passed: 1,
+          ran_at: "2026-01-02T00:00:00.000Z",
+        }),
+      ],
+    });
+    const policy: EvalPolicy = { evaluators: [], merge: { requiredEvaluators: ["webhook"] } };
+
+    const result = await checkMergeProtection(db, mockLogger, change, policy);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.allowed).toBe(false);
+    expect(result.data.reasons[0]).toContain("'webhook' failed");
+  });
+
+  it("#336: two rounds sharing a ran_at are not folded — the newer round decides", async () => {
+    // Two evaluation passes that landed in the same millisecond: the earlier one
+    // had a receiver fail, the later one passed both. Grouping by `ran_at` read
+    // them as one round and ANDed the superseded failure in, leaving the change
+    // blocked until someone re-evaluated again; `round_id` keeps them apart.
+    const sameMs = "2026-01-02T00:00:00.000Z";
+    const db = makeProtectionD1({
+      runs: [
+        makeRun({
+          id: "run_1",
+          evaluator_type: "webhook",
+          passed: 0,
+          ran_at: sameMs,
+          round_id: `${sameMs}#evr_aaa`,
+        }),
+        makeRun({
+          id: "run_2",
+          evaluator_type: "webhook",
+          passed: 1,
+          ran_at: sameMs,
+          round_id: `${sameMs}#evr_bbb`,
+        }),
+        makeRun({
+          id: "run_3",
+          evaluator_type: "webhook",
+          passed: 1,
+          ran_at: sameMs,
+          round_id: `${sameMs}#evr_bbb`,
+        }),
+      ],
+    });
+    const policy: EvalPolicy = { evaluators: [], merge: { requiredEvaluators: ["webhook"] } };
+
+    const result = await checkMergeProtection(db, mockLogger, change, policy);
+    expect(result.success && result.data.allowed).toBe(true);
+  });
+
+  it("#336: within one round a failing receiver still blocks, round id or not", async () => {
+    const sameMs = "2026-01-02T00:00:00.000Z";
+    const db = makeProtectionD1({
+      runs: [
+        makeRun({
+          id: "run_1",
+          evaluator_type: "webhook",
+          passed: 0,
+          ran_at: sameMs,
+          round_id: `${sameMs}#evr_aaa`,
+        }),
+        makeRun({
+          id: "run_2",
+          evaluator_type: "webhook",
+          passed: 1,
+          ran_at: sameMs,
+          round_id: `${sameMs}#evr_aaa`,
+        }),
+      ],
+    });
+    const policy: EvalPolicy = { evaluators: [], merge: { requiredEvaluators: ["webhook"] } };
+
+    const result = await checkMergeProtection(db, mockLogger, change, policy);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.allowed).toBe(false);
+    expect(result.data.reasons[0]).toContain("'webhook' failed");
+  });
+
+  it("#336: a round id beats a legacy row at the same instant, and loses to a later one", async () => {
+    // Mixed rows across migration 048: ordering must stay consistent, since the
+    // fallback key is the bare timestamp and a round id carries it as a prefix.
+    const db = makeProtectionD1({
+      runs: [
+        // Legacy failing row, no round.
+        makeRun({
+          id: "run_1",
+          evaluator_type: "diff",
+          passed: 0,
+          ran_at: "2026-01-01T00:00:00.000Z",
+        }),
+        // Same instant, but written after the migration: this is the newer round.
+        makeRun({
+          id: "run_2",
+          evaluator_type: "diff",
+          passed: 1,
+          ran_at: "2026-01-01T00:00:00.000Z",
+          round_id: "2026-01-01T00:00:00.000Z#evr_aaa",
+        }),
+      ],
+    });
+    const policy: EvalPolicy = { evaluators: [], merge: { requiredEvaluators: ["diff"] } };
+
+    const result = await checkMergeProtection(db, mockLogger, change, policy);
+    expect(result.success && result.data.allowed).toBe(true);
+  });
+
+  it("#336: folding duplicates does not resurrect a failure an earlier round left", async () => {
+    // The AND fold is scoped to the newest round: two receivers that both pass
+    // on re-evaluation clear a failure from the round before, which a fold
+    // across all rows would block forever.
+    const db = makeProtectionD1({
+      runs: [
+        makeRun({
+          id: "run_1",
+          evaluator_type: "webhook",
+          passed: 0,
+          ran_at: "2026-01-01T00:00:00.000Z",
+        }),
+        makeRun({
+          id: "run_2",
+          evaluator_type: "webhook",
+          passed: 1,
+          ran_at: "2026-01-02T00:00:00.000Z",
+        }),
+        makeRun({
+          id: "run_3",
+          evaluator_type: "webhook",
+          passed: 1,
+          ran_at: "2026-01-02T00:00:00.000Z",
+        }),
+      ],
+    });
+    const policy: EvalPolicy = { evaluators: [], merge: { requiredEvaluators: ["webhook"] } };
 
     const result = await checkMergeProtection(db, mockLogger, change, policy);
     expect(result.success && result.data.allowed).toBe(true);

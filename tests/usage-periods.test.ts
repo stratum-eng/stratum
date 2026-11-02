@@ -1,5 +1,5 @@
 /**
- * The owner-scoped usage aggregate (migration 049) and what may erase it.
+ * The owner-scoped usage aggregate (migration 050) and what may erase it.
  *
  * The first describe block is the reason the table exists: `cost_records` is
  * project-scoped and hard-deleted by the project cascade, so an allowance summed

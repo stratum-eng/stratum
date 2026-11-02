@@ -1,5 +1,5 @@
 /**
- * Cost attribution: migration 048's columns, and the one function allowed to
+ * Cost attribution: migration 049's columns, and the one function allowed to
  * decide who a cost row is billed to.
  *
  * D1 is real SQLite with the production migrations applied, so these assertions
@@ -229,7 +229,7 @@ describe("recordCosts attribution columns", () => {
     expect(byKind.llm_tokens?.owner_type).toBe("org");
   });
 
-  it("backfills pre-048 rows as platform spend", async () => {
+  it("backfills pre-049 rows as platform spend", async () => {
     // The NOT NULL DEFAULT is correct by construction: BYOK did not exist when
     // these rows were written, so every one of them was the operator's spend.
     const { db, raw } = makeSqliteD1();

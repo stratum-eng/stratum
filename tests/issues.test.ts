@@ -1118,6 +1118,46 @@ describe("issue comments + labels storage", () => {
     expect(escapeLike("plain")).toBe("plain");
   });
 
+  it("#340: numbers per project against the real engine, not just the stub", async () => {
+    // createIssue allocates `number` inside the INSERT, from a subquery that
+    // needs project_id and project a second time. The hand-rolled stub mirrors
+    // that bind layout by hand, so it cannot catch the layout being wrong — only
+    // the real SQL engine can. Numbered parameters (?1, ?9) expressed the reuse
+    // directly but do not bind on every supported 22.x (#340); this is the same
+    // reuse through anonymous `?`, checked end to end.
+    const { db } = makeSqliteD1();
+    const a1 = await createIssue(db, mockLogger, {
+      project: "acme",
+      projectId: "proj_A",
+      title: "one",
+      authorType: "user",
+      authorId: "user_1",
+    });
+    const b1 = await createIssue(db, mockLogger, {
+      project: "acme",
+      projectId: "proj_B",
+      title: "two",
+      authorType: "user",
+      authorId: "user_1",
+    });
+    const a2 = await createIssue(db, mockLogger, {
+      project: "acme",
+      projectId: "proj_A",
+      title: "three",
+      authorType: "user",
+      authorId: "user_1",
+    });
+
+    // Same name, different canonical ids: each project counts from 1.
+    expect(a1.success && a1.data.number).toBe(1);
+    expect(b1.success && b1.data.number).toBe(1);
+    expect(a2.success && a2.data.number).toBe(2);
+    // Every other reused binding landed in the right column too.
+    expect(a2.success && a2.data.title).toBe("three");
+    expect(a2.success && a2.data.projectId).toBe("proj_A");
+    expect(a2.success && a2.data.createdAt).toBe(a2.success ? a2.data.updatedAt : "");
+  });
+
   it("orders comments chronologically and honors offset without a limit", async () => {
     const { db } = makeSqliteD1();
     const issue = await seedRealIssue(db);

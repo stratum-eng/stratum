@@ -30,7 +30,7 @@ export const METER_KEYS: readonly MeterKey[] = [
  * Whether a string read out of D1 (or out of KV, or off the wire) is a meter
  * this build knows.
  *
- * The `meter` column carries no CHECK on purpose (migration 049), so the type
+ * The `meter` column carries no CHECK on purpose (migration 050), so the type
  * is a claim about what we write, never a guarantee about what we read. A cast
  * where that matters is how a row written by a future meter — or by a rollback
  * to an older build — reaches `setFloor` and gets written into a counter under
@@ -48,7 +48,7 @@ export interface UsageDelta {
    * Whose provider account paid. Omitted means `"platform"` — the operator's,
    * and so the only kind an allowance limits. Kept as a separate total rather
    * than summed in, because a limit applies to one of the two and not the
-   * other; see migration 049.
+   * other; see migration 050.
    */
   source?: CostSource;
 }
@@ -177,7 +177,7 @@ export async function upsertUsage(
     // refund the month, through the single statement that exists to stop the
     // month being refundable. Wall-clock arithmetic makes that reachable
     // without malice (`Date.now() - startedAt` under a backwards clock step).
-    // Drop either and keep the meter usable; migration 049's CHECK is the
+    // Drop either and keep the meter usable; migration 050's CHECK is the
     // backstop if one ever gets past here.
     if (!Number.isFinite(delta.quantity) || delta.quantity < 0) {
       logger.warn("Usage delta skipped: quantity is not a usable increment", {
@@ -273,7 +273,7 @@ export async function getOwnerUsageSummary(
     return ok(
       result.results.map((row) => ({
         // Cast, not validated: the column carries no CHECK on purpose (see
-        // migration 049), so a row written by a future meter this build does
+        // migration 050), so a row written by a future meter this build does
         // not know about reads through rather than failing the whole summary.
         meter: row.meter as MeterKey,
         source: row.source as CostSource,
@@ -302,7 +302,7 @@ export async function getOwnerUsageSummary(
  *
  * Separate from {@link getOwnerUsageSummary}, which reports every source so a
  * usage page can show what BYOK covered, because an enforcement read must not.
- * Migration 049 put `source` in the primary key precisely so hosted and
+ * Migration 050 put `source` in the primary key precisely so hosted and
  * bring-your-own spend accumulate apart; a limit check that summed both would
  * charge a project's own provider bill against the operator's allowance and
  * contradict Goal 5. Callers checking a limit pass `"platform"`, always.

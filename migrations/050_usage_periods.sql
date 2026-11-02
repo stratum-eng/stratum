@@ -1,4 +1,4 @@
--- Migration 049: the owner-scoped usage aggregate a limit is compared against.
+-- Migration 050: the owner-scoped usage aggregate a limit is compared against.
 --
 -- `cost_records` cannot be that aggregate, and this is the whole reason for a
 -- second table. It is in PROJECT_SCOPED_TABLES (src/storage/deletion.ts) and
@@ -34,7 +34,7 @@
 CREATE TABLE IF NOT EXISTS usage_periods (
   -- The subject `resolveBillingSubject` named: a user or an org, never a
   -- project and never an agent. NOT NULL, unlike `cost_records.owner_id`,
-  -- which 048 deliberately left nullable so an unattributable sample is still
+  -- which 049 deliberately left nullable so an unattributable sample is still
   -- recorded. There is no such thing here: a quantity nobody can be billed for
   -- cannot be enforced against anyone, so `recordCosts` drops those samples
   -- rather than accumulating a bucket no limit could ever apply to.
@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS usage_periods (
   -- 'YYYY-MM', UTC (PRD Open Question 1). Zero-padded, so lexical order is
   -- chronological order and a period range is a plain TEXT comparison.
   period TEXT NOT NULL,
-  -- Deliberately NOT CHECK'd — the one place this table departs from 048's
+  -- Deliberately NOT CHECK'd — the one place this table departs from 049's
   -- shape, and a decision rather than an omission. `cost_records.kind` carries
   -- a closed CHECK from 021, and the bill for it is already recorded in this
   -- feature's own scope: `storage_bytes` is a Non-Goal partly because adding a

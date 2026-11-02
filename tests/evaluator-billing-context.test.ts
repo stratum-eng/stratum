@@ -395,8 +395,9 @@ describe("the billing subject stays inside the Worker", () => {
     const original = globalThis.fetch;
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     try {
-      const policy: EvalPolicy = { evaluators: [{ type: "webhook", url: "https://hook.test" }] };
-      await new WebhookEvaluator().evaluate("a diff", policy, logger, {
+      const entry = { type: "webhook", url: "https://hook.test" } as const;
+      const policy: EvalPolicy = { evaluators: [entry] };
+      await new WebhookEvaluator(entry).evaluate("a diff", policy, logger, {
         baseSha: "base",
         billing: billingContextFor({ ownerId: "user_alice", ownerType: "user" }, "proj_abc"),
       });

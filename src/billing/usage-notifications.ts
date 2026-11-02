@@ -97,7 +97,7 @@ export function noticeUsageThresholds(env: Env, logger: Logger, input: UsageNoti
 }
 
 async function deliver(env: Env, logger: Logger, input: UsageNoticeInput): Promise<void> {
-  // BYOK spend is not under the allowance at all (migration 049, Goal 5), so a
+  // BYOK spend is not under the allowance at all (migration 050, Goal 5), so a
   // `byok` row can never approach a hosted limit and must not warn about one.
   const platform = input.totals.filter((total) => total.source === "platform" && total.added > 0);
   if (platform.length === 0) return;

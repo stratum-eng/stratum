@@ -266,7 +266,7 @@ export class UsageMeter extends DurableObject<Env> {
    * Applies the real cost of a spend that was already reserved.
    *
    * **A negative delta is legitimate here**, and that reads as a contradiction
-   * next to `upsertUsage`, which drops one, and migration 049, whose CHECK
+   * next to `upsertUsage`, which drops one, and migration 050, whose CHECK
    * forbids one. Both are right, because they hold different things. A
    * `usage_periods` row is the month's accumulated total, and a negative there
    * REFUNDS THE MONTH through the one statement that exists to make the month
@@ -337,7 +337,7 @@ export class UsageMeter extends DurableObject<Env> {
    * WHICH rows the caller summed is a decision this object cannot make or
    * check, and getting it wrong is silent. It must be the ENFORCEMENT
    * subject's rows — the actor's, not the project owner's, since that is what
-   * this instance counts — and `source = 'platform'` alone: migration 049 put
+   * this instance counts — and `source = 'platform'` alone: migration 050 put
    * `source` in the primary key so that a project paying its own provider bill
    * is not charged against the hosted allowance, and a sum that omits the
    * filter hands that distinction straight back.
@@ -398,7 +398,7 @@ export class UsageMeter extends DurableObject<Env> {
    * so the ACCOUNT cascade calls this to drop the counters of a subject that no
    * longer exists. Deliberately not called by the project cascade — an
    * allowance a user can reset by deleting a project is not an allowance
-   * (`src/storage/deletion.ts`, and migration 049's header).
+   * (`src/storage/deletion.ts`, and migration 050's header).
    */
   async purge(): Promise<void> {
     // Clears the cleanup alarm along with the counters: `deleteAll` deletes an

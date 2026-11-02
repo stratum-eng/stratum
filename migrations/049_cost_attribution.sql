@@ -1,4 +1,4 @@
--- Migration 048: name who pays for each cost sample.
+-- Migration 049: name who pays for each cost sample.
 --
 -- `cost_records` (021, given `project_id` by 025) has recorded what a change
 -- consumed since it existed, but never who owes for it. A project name is not a
