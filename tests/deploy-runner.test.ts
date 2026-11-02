@@ -311,10 +311,12 @@ describe("the happy path", () => {
 
     await run();
 
-    const events = raw
-      .prepare("SELECT type FROM events ORDER BY created_at ASC, id ASC")
-      .all() as unknown as Array<{ type: string }>;
-    expect(events.map((event) => event.type)).toEqual([
+    // Both events carry the same frozen clock, and same-millisecond rows fall
+    // back to random ids, so order is not defined: compare as a set.
+    const events = raw.prepare("SELECT type FROM events").all() as unknown as Array<{
+      type: string;
+    }>;
+    expect(events.map((event) => event.type).sort()).toEqual([
       "deployment.requested",
       "deployment.succeeded",
     ]);
@@ -787,8 +789,7 @@ describe("a terminal event follows only a terminal write that landed", () => {
     await run(MERGE_MESSAGE, { fetch: vercelRejectsEchoingTheToken() });
 
     expect(onlyRow().status).toBe("failed");
-    // Both events carry the same frozen clock, so compare as a set.
-    expect([...eventTypes()].sort()).toEqual(["deployment.failed", "deployment.requested"]);
+    expect(eventTypes()).toEqual(["deployment.failed", "deployment.requested"]);
   });
 });
 
