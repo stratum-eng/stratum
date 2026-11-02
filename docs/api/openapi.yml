@@ -3561,6 +3561,15 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >-
+            A scoped API token or OAuth grant cannot create agents
+            (`SESSION_REQUIRED`). A read-only one is refused earlier by the
+            scope check, with `TOKEN_SCOPE_INSUFFICIENT`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
     get:

@@ -33,6 +33,10 @@ vi.mock("../src/storage/orgs", () => ({
   isOrgMember: vi.fn(),
 }));
 
+vi.mock("../src/storage/project-namespace", () => ({
+  usernameNamespaceTaken: vi.fn(),
+}));
+
 vi.mock("../src/storage/teams", () => ({
   createTeam: vi.fn(),
   getTeam: vi.fn(),
@@ -52,6 +56,7 @@ import {
   listOrgsForUser,
   removeOrgMember,
 } from "../src/storage/orgs";
+import { usernameNamespaceTaken } from "../src/storage/project-namespace";
 import { createTeam, deleteTeam, getTeam, listTeams } from "../src/storage/teams";
 import { getUserByToken } from "../src/storage/users";
 
@@ -134,6 +139,7 @@ describe("POST /api/orgs", () => {
       success: true,
       data: undefined,
     });
+    vi.mocked(usernameNamespaceTaken).mockResolvedValue({ success: true, data: false });
   });
 
   it("creates org and auto-adds owner as admin", async () => {
@@ -182,6 +188,31 @@ describe("POST /api/orgs", () => {
   it("returns 400 when name is missing", async () => {
     const res = await app.fetch(request("POST", "/api/orgs", { slug: "my-org" }, authHeader), env);
     expect(res.status).toBe(400);
+  });
+
+  // `@slug` is shared with users: a namespace still holding another account's
+  // projects or a live claim must not become an org.
+  it("refuses a slug whose namespace still holds projects or a claim", async () => {
+    vi.mocked(usernameNamespaceTaken).mockResolvedValue({ success: true, data: true });
+    const res = await app.fetch(
+      request("POST", "/api/orgs", { name: "My Org", slug: "my-org" }, authHeader),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect(createOrg).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the namespace cannot be checked", async () => {
+    vi.mocked(usernameNamespaceTaken).mockResolvedValue({
+      success: false,
+      error: new Error("d1") as never,
+    });
+    const res = await app.fetch(
+      request("POST", "/api/orgs", { name: "My Org", slug: "my-org" }, authHeader),
+      env,
+    );
+    expect(res.status).toBe(500);
+    expect(createOrg).not.toHaveBeenCalled();
   });
 });
 

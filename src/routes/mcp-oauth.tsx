@@ -28,6 +28,7 @@ import {
   SUPPORTED_SCOPES,
   claimAuthorizationCode,
   getClient,
+  isAllowedRedirectUri,
   isValidCodeChallenge,
   issueAuthorizationCode,
   issueTokens,
@@ -277,9 +278,14 @@ interface AuthorizeParams {
  *    cannot trust the redirect target, so the error is RENDERED here. Bouncing
  *    it to an unverified URI is precisely the open redirect that turns this
  *    endpoint into a phishing gadget.
- *  - Anything else is redirected back to the (now verified) URI as an OAuth
- *    error, which is what lets the client show a real message instead of
- *    hanging.
+ *  - Anything else is ALSO rendered, even though the URI is now verified.
+ *    "Verified" only means the client registered it, and registration is open
+ *    (RFC 7591), so anyone can register a client whose redirect is their own
+ *    site. Bouncing a malformed request there before the user has seen the
+ *    consent screen would make this endpoint an open redirect on our domain
+ *    (RFC 9700 §4.11.2). The page offers a "Return to <host>" link carrying
+ *    the error and state, so a legitimate client still gets its answer once
+ *    the user chooses to go back.
  */
 async function validateAuthorizeRequest(
   c: Context<{ Bindings: Env }>,
@@ -324,34 +330,39 @@ async function validateAuthorizeRequest(
     };
   }
 
-  // From here the redirect target is trusted, so failures go back to the client.
-  const fail = (error: string, description: string): { response: Response } => {
-    const url = new URL(redirectUri);
-    url.searchParams.set("error", error);
-    url.searchParams.set("error_description", description);
-    if (state !== undefined) url.searchParams.set("state", state);
-    return { response: c.redirect(url.toString()) };
+  // Rendered, not redirected: see the doc comment above. The OAuth error code
+  // stays in the title so a developer debugging their client can still see it.
+  const fail = async (error: string, description: string): Promise<{ response: Response }> => {
+    logger.warn("Authorization rejected", { clientId, error });
+    return {
+      response: await renderAuthorizeError(c, `Invalid request (${error})`, description, {
+        redirectUri,
+        error,
+        description,
+        state,
+      }),
+    };
   };
 
   if ((params.get("response_type") ?? "") !== "code") {
-    return fail("unsupported_response_type", "Only response_type=code is supported");
+    return await fail("unsupported_response_type", "Only response_type=code is supported");
   }
 
   const codeChallenge = params.get("code_challenge") ?? "";
   const challengeMethod = params.get("code_challenge_method") ?? "";
   if (codeChallenge === "") {
-    return fail("invalid_request", "PKCE is required: code_challenge is missing");
+    return await fail("invalid_request", "PKCE is required: code_challenge is missing");
   }
   if (challengeMethod !== "S256") {
-    return fail("invalid_request", "code_challenge_method must be S256");
+    return await fail("invalid_request", "code_challenge_method must be S256");
   }
   if (!isValidCodeChallenge(codeChallenge)) {
-    return fail("invalid_request", "code_challenge is not a base64url SHA-256 digest");
+    return await fail("invalid_request", "code_challenge is not a base64url SHA-256 digest");
   }
 
   const scopeResult = parseScope(params.get("scope") ?? undefined);
   if (!scopeResult.success) {
-    return fail("invalid_scope", scopeResult.error.message);
+    return await fail("invalid_scope", scopeResult.error.message);
   }
 
   // RFC 8707. A client that names a resource must name THIS one; a token minted
@@ -368,7 +379,7 @@ async function validateAuthorizeRequest(
       matches = false;
     }
     if (!matches) {
-      return fail("invalid_target", `This server only issues tokens for ${expected}`);
+      return await fail("invalid_target", `This server only issues tokens for ${expected}`);
     }
   }
 
@@ -386,11 +397,36 @@ async function validateAuthorizeRequest(
 
 /** A dead-end error page for the cases where redirecting would itself be the
  * vulnerability. Deliberately offers no link onward to the client. */
+/**
+ * Where the user MAY go back to, with the OAuth error the client is waiting
+ * for. Offered as a link, never followed automatically: the URI is only as
+ * trustworthy as open registration makes it, so the user sees the host and
+ * chooses (RFC 9700 §4.11.2).
+ */
+interface AuthorizeReturn {
+  redirectUri: string;
+  error: string;
+  description: string;
+  state: string | undefined;
+}
+
+function returnUrl(back: AuthorizeReturn): URL {
+  const url = new URL(back.redirectUri);
+  url.searchParams.set("error", back.error);
+  url.searchParams.set("error_description", back.description);
+  if (back.state !== undefined) url.searchParams.set("state", back.state);
+  return url;
+}
+
 async function renderAuthorizeError(
   c: Context<{ Bindings: Env }>,
   title: string,
   detail: string,
+  back?: AuthorizeReturn,
 ): Promise<Response> {
+  // Registration already admits only https and loopback http; re-checked here
+  // because this lands in an href, where a `javascript:` URI would execute.
+  const backUrl = back && isAllowedRedirectUri(back.redirectUri) ? returnUrl(back) : undefined;
   return c.html(
     <html lang="en">
       <head>
@@ -405,6 +441,13 @@ async function renderAuthorizeError(
           <div class="consent-card">
             <h1 class="consent-title">{title}</h1>
             <p class="consent-detail">{detail}</p>
+            {backUrl && (
+              <p class="consent-detail">
+                <a href={backUrl.toString()} rel="noreferrer">
+                  Return to {backUrl.host}
+                </a>
+              </p>
+            )}
             <p class="consent-detail">
               <a href="/">Return to Stratum</a>
             </p>
@@ -642,10 +685,20 @@ app.post("/oauth/authorize", async (c) => {
   if (params.state !== undefined) redirect.searchParams.set("state", params.state);
 
   if (form.get("decision") !== "allow") {
+    // Not redirected either: a phishing client registered with its own URI
+    // would otherwise get the user back even after they said no. They choose.
     logger.info("MCP consent declined", { clientId: params.clientId, userId });
-    redirect.searchParams.set("error", "access_denied");
-    redirect.searchParams.set("error_description", "The user declined the request");
-    return c.redirect(redirect.toString());
+    return renderAuthorizeError(
+      c,
+      "Request declined",
+      "Nothing has been shared with the application.",
+      {
+        redirectUri: params.redirectUri,
+        error: "access_denied",
+        description: "The user declined the request",
+        state: params.state,
+      },
+    );
   }
 
   const code = await issueAuthorizationCode(c.env.DB, logger, {

@@ -33,7 +33,7 @@ import { listIssueComments } from "../storage/issue-comments";
 import { getLabelsForIssues, listIssueLabels } from "../storage/issue-labels";
 import { getIssueByNumber, listIssues } from "../storage/issues";
 import { type OAuthGrantSummary, listGrantsForUser, revokeGrantForUser } from "../storage/oauth";
-import { ownerHasClaims } from "../storage/project-namespace";
+import { ownerHasClaims, usernameNamespaceTaken } from "../storage/project-namespace";
 import { listSecretNames } from "../storage/project-secrets";
 import { getProvenance } from "../storage/provenance";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
@@ -591,6 +591,21 @@ app.post("/settings/username", async (c) => {
     );
   }
 
+  // The checks above are about the name being given up; this one is about the
+  // name being taken. `@name` is shared with org slugs, and a namespace can
+  // still hold projects (or a live claim) from an account that has since moved
+  // off it — renaming onto either would hand this account a namespace it does
+  // not own. A user row with the name is left to renameUser's UNIQUE index.
+  const target = await usernameNamespaceTaken(c.env, requested, logger);
+  if (!target.success) {
+    logger.error("Could not check the requested namespace before a rename", target.error);
+    return c.html(issuePageError(500, user), 500);
+  }
+  if (target.data) {
+    logger.warn("Rename refused - requested namespace is held by an org or projects", {});
+    return refuse("That username is already taken.", 409);
+  }
+
   const renamed = await renameUser(c.env.DB, user.id, requested, logger);
   if (!renamed.success) {
     // 403: a claim landed between the check above and the UPDATE — the race
@@ -931,9 +946,9 @@ app.post("/settings/rotate-token", async (c) => {
 // Behind `requireAccountSession` for the same reason as `/settings/tokens`: an
 // agent token is a long-lived credential that outlives the credential that
 // minted it, so letting a scoped `read_write` token mint one would leave
-// "revoke the lost laptop" incomplete. Note this closes the browser form only —
-// `POST /api/agents` still accepts any authenticated caller, so the capability
-// is not gone, just no longer reachable by two doors with different rules.
+// "revoke the lost laptop" incomplete. `POST /api/agents` refuses delegated
+// credentials too (via `cannotMintLegacyCredential`, so the legacy key still
+// works there for existing automation).
 app.post("/settings/agents", async (c) => {
   const logger = createLogger({ path: c.req.path, userId: c.get("userId") });
   const access = await requireAccountSession(c, logger);

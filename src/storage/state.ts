@@ -270,6 +270,28 @@ export async function listProjects(
   }
 }
 
+/**
+ * Whether KV holds any project under `namespace`. A single-key list rather than
+ * `listProjectsByNamespace`, because availability checks only need a yes/no.
+ */
+export async function namespaceHasProjects(
+  kv: KVNamespace,
+  namespace: string,
+  logger: Logger,
+): Promise<Result<boolean, AppError>> {
+  try {
+    const page = await kv.list({ prefix: `${PROJECT_PREFIX}${namespace}:`, limit: 1 });
+    return ok(page.keys.length > 0);
+  } catch (error) {
+    logger.error(
+      "Failed to check a namespace for projects",
+      error instanceof Error ? error : undefined,
+      { namespace },
+    );
+    return err(new AppError("Failed to list projects", "STORAGE_ERROR", 500, { namespace }));
+  }
+}
+
 // List projects by namespace (for user/org dashboard)
 export async function listProjectsByNamespace(
   kv: KVNamespace,

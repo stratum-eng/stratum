@@ -17,6 +17,12 @@ import { makeMagicLinkLimiters } from "./helpers/magic-link-limiter";
 const mockUsers = new Map<string, User>();
 let mockUserIdCounter = 0;
 
+// The shared `@name` namespace check has its own tests; here every name is free.
+vi.mock("../src/storage/project-namespace", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/storage/project-namespace")>()),
+  usernameNamespaceTaken: vi.fn(async () => ({ success: true, data: false })),
+}));
+
 vi.mock("../src/storage/users", () => {
   // Use a function to get the mockUsers map lazily to avoid issues with test isolation
   const getMockUsers = () => {
@@ -613,6 +619,26 @@ describe("Auth Signup/Login Integration Tests", () => {
 
         expect(res.status).toBe(302);
         expect(res.headers.get("location")).toContain("error=username_taken");
+        expect(env.EMAIL?.send).not.toHaveBeenCalled();
+      });
+
+      it("reports a failed namespace lookup as a failure, not as a taken name", async () => {
+        const { usernameNamespaceTaken } = await import("../src/storage/project-namespace");
+        vi.mocked(usernameNamespaceTaken).mockResolvedValueOnce({
+          success: false,
+          error: new Error("kv down") as never,
+        });
+
+        const res = await app.fetch(
+          request("/auth/email/send-signup", {
+            method: "POST",
+            body: createFormData({ email: "newemail@example.com", username: "freshname" }),
+          }),
+          env,
+        );
+
+        expect(res.status).toBe(302);
+        expect(res.headers.get("location")).toContain("error=signup_failed");
         expect(env.EMAIL?.send).not.toHaveBeenCalled();
       });
 
