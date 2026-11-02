@@ -52,7 +52,16 @@ export type AuditAction =
   | "scim.user.provisioned"
   | "scim.user.updated"
   | "scim.user.deactivated"
-  | "scim.user.reactivated";
+  | "scim.user.reactivated"
+  // Passkeys as a second factor (#256).
+  | "passkey.registered"
+  | "passkey.renamed"
+  | "passkey.removed"
+  | "second_factor.succeeded"
+  | "second_factor.failed"
+  | "recovery_code.used"
+  | "recovery_codes.regenerated"
+  | "org.second_factor_policy_changed";
 
 export interface AuditEntry {
   id: string;

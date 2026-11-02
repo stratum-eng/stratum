@@ -34,6 +34,12 @@ vi.mock("../src/storage/users", () => ({
   signInGitHubUser: vi.fn(),
 }));
 
+// No passkeys: this suite exercises primary sign-in, not the second factor
+// (#256), and its DB is a stub the passkey lookup cannot read.
+vi.mock("../src/storage/webauthn", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/storage/webauthn")>()),
+  countPasskeys: vi.fn(async () => ({ success: true, data: 0 })),
+}));
 vi.mock("../src/storage/sessions", () => ({
   createSession: vi.fn(),
   deleteSession: vi.fn(),

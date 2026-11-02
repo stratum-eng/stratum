@@ -12,6 +12,7 @@
 - [Deployments](https://docs.usestratum.dev/guides/deployments/)
 - [CLI](https://docs.usestratum.dev/guides/cli/)
 - [MCP server](https://docs.usestratum.dev/guides/mcp/)
+- [Passkeys and two-factor sign-in](https://docs.usestratum.dev/guides/passkeys/)
 - [Troubleshooting](https://docs.usestratum.dev/guides/troubleshooting/)
 - [FAQ](https://docs.usestratum.dev/guides/faq/)
 - [Authentication](https://docs.usestratum.dev/reference/authentication/)

@@ -180,6 +180,7 @@ export default defineConfig({
             { label: "Deployments", slug: "guides/deployments" },
             { label: "CLI", slug: "guides/cli" },
             { label: "MCP server", slug: "guides/mcp" },
+            { label: "Passkeys and 2FA", slug: "guides/passkeys" },
             { label: "Troubleshooting", slug: "guides/troubleshooting" },
             { label: "FAQ", slug: "guides/faq" },
           ],

@@ -622,6 +622,28 @@ cannot be revoked individually, so letting a scoped token rotate it would mean
 revoking that token contained nothing — it could have issued itself a permanent
 replacement on the way out.
 
+### Passkeys
+
+Passkeys (WebAuthn) are the second factor of browser sign-in. See
+[Passkeys and two-factor sign-in](/guides/passkeys/). Every endpoint
+below accepts the **browser session cookie only** (`403 SESSION_REQUIRED` for a
+token). Registering, removing, and regenerating recovery codes also need a
+session from the last 15 minutes that used the account's existing passkey, if it
+has one. Otherwise they return `403 REAUTHENTICATION_REQUIRED`.
+
+- `GET /api/users/me/passkeys` — the passkeys (name, created, last used) and
+  `recoveryCodesRemaining`
+- `POST /api/users/me/passkeys/registration/options` — WebAuthn creation options
+  for `navigator.credentials.create()`; the challenge is single-use and expires
+  after 5 minutes
+- `POST /api/users/me/passkeys/registration/verify` —
+  `{ "name": "Laptop", "response": <RegistrationResponseJSON> }`; on the first
+  passkey the `201` also carries ten one-time `recoveryCodes`, shown once
+- `PATCH /api/users/me/passkeys/{id}` — `{ "name": "…" }`
+- `DELETE /api/users/me/passkeys/{id}` — `409 LAST_PASSKEY_REQUIRED_BY_ORG` for
+  the last passkey while an org requires a second factor
+- `POST /api/users/me/passkeys/recovery-codes` — replace the recovery codes
+
 ### Delete Account
 `DELETE /api/users/me`
 
@@ -661,6 +683,17 @@ mismatched `confirm` returns `400`.
 
 See the [OpenAPI specification](/reference/openapi/) for full request/response
 shapes, and [Authentication](/reference/authentication/) for the SCIM token class.
+
+### Security policy
+
+- `GET /api/orgs/:slug/security` — read the policy (any member)
+- `PUT /api/orgs/:slug/security` — `{ "requireSecondFactor": true }` (admins/owner)
+
+With `requireSecondFactor` on, every member's browser session must have passed a
+passkey check, or have signed in through this org's own SSO. See
+[Passkeys and two-factor sign-in](/guides/passkeys/) for how it is
+enforced. Turning it on returns `409 ADMIN_SECOND_FACTOR_REQUIRED` until you
+have a passkey yourself. API tokens are not affected.
 
 ### Members and teams
 

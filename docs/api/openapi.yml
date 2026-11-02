@@ -24,6 +24,12 @@ info:
       `git-upload-pack`, `git-receive-pack`) — documented separately in
       `docs/adr/005`.
 
+    Second factor: browser sign-in may require a passkey (WebAuthn) after the
+    primary factor; that HTML flow lives at `/auth/2fa` and is not covered
+    here. An org that requires a second factor can answer any session request
+    with `403 SECOND_FACTOR_ENROLLMENT_REQUIRED` or `401 SECOND_FACTOR_REQUIRED`.
+    API tokens, agent tokens and OAuth grants are never asked for one.
+
     Authentication: most endpoints accept a Stratum API token (user or agent)
     as a `Authorization: Bearer <token>` header. Browser requests may instead be
     authenticated by the `stratum_session` cookie. Read endpoints on projects
@@ -3216,6 +3222,66 @@ paths:
         "501":
           $ref: "#/components/responses/SsoNotConfigured"
 
+  /api/orgs/{slug}/security:
+    parameters:
+      - $ref: "#/components/parameters/OrgSlug"
+    get:
+      operationId: getOrgSecurityPolicy
+      tags: [orgs]
+      summary: Read the org's security policy (any member)
+      responses:
+        "200":
+          description: The policy
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrgSecurityPolicy" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: setOrgSecurityPolicy
+      tags: [orgs]
+      summary: Require (or stop requiring) a second factor for members (admins/owner only)
+      description: >
+        When `requireSecondFactor` is true, every member's browser session must
+        have passed a passkey check — or have signed in through THIS org's SSO,
+        whose IdP MFA is trusted. Enforced on every session request: a member
+        with no passkey is confined to `/settings/security` and
+        `/api/users/me/passkeys*` (`403 SECOND_FACTOR_ENROLLMENT_REQUIRED`); a
+        member whose session skipped their passkey is signed out
+        (`401 SECOND_FACTOR_REQUIRED`). API tokens, agent tokens and OAuth
+        grants are not affected. Turning the policy on is refused with
+        `409 ADMIN_SECOND_FACTOR_REQUIRED` until the acting admin has a passkey
+        (unless their session signed in through this org's SSO). Changes are
+        audited as `org.second_factor_policy_changed`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrgSecurityPolicy" }
+      responses:
+        "200":
+          description: The policy now in force
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrgSecurityPolicy" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The acting admin has no passkey (code ADMIN_SECOND_FACTOR_REQUIRED)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/users/me:
     get:
       operationId: getMe
@@ -3534,6 +3600,233 @@ paths:
           $ref: "#/components/responses/SessionRequired"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/users/me/passkeys:
+    get:
+      operationId: listPasskeys
+      tags: [users]
+      summary: List the caller's passkeys and unused recovery-code count
+      description: >
+        Passkeys (WebAuthn credentials) are the second factor of interactive
+        sign-in. Every `/api/users/me/passkeys*` endpoint requires a browser
+        session; an API token gets `403 SESSION_REQUIRED`. Key material is
+        never returned.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The caller's passkeys
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [passkeys, recoveryCodesRemaining]
+                properties:
+                  passkeys:
+                    type: array
+                    items: { $ref: "#/components/schemas/Passkey" }
+                  recoveryCodesRemaining: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/SessionRequired"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/users/me/passkeys/registration/options:
+    post:
+      operationId: beginPasskeyRegistration
+      tags: [users]
+      summary: Begin a passkey registration ceremony
+      description: >
+        Returns `PublicKeyCredentialCreationOptionsJSON` for
+        `navigator.credentials.create()`. The challenge is single-use and
+        expires after 5 minutes. Requires a session minted in the last 15
+        minutes and — once the account has a passkey — one that used it;
+        otherwise `403 REAUTHENTICATION_REQUIRED`.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: WebAuthn creation options (JSON-serialized, base64url fields)
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReauthenticationRequired"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/users/me/passkeys/registration/verify:
+    post:
+      operationId: finishPasskeyRegistration
+      tags: [users]
+      summary: Verify the registration and save the passkey
+      description: >
+        Verifies the authenticator's response against the challenge issued by
+        `registration/options` (consuming it). On the account's FIRST passkey
+        the response also carries ten one-time `recoveryCodes` — shown exactly
+        once, stored only as hashes — and the calling session is marked as
+        second-factor verified. Audited as `passkey.registered`.
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [response]
+              properties:
+                name: { type: string, maxLength: 64 }
+                response:
+                  type: object
+                  description: The `RegistrationResponseJSON` from the browser
+                  additionalProperties: true
+      responses:
+        "201":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [passkey]
+                properties:
+                  passkey: { $ref: "#/components/schemas/Passkey" }
+                  recoveryCodes:
+                    type: array
+                    items: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReauthenticationRequired"
+        "409":
+          description: This authenticator is already registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/users/me/passkeys/recovery-codes:
+    post:
+      operationId: regenerateRecoveryCodes
+      tags: [users]
+      summary: Replace the caller's recovery codes
+      description: >
+        Issues ten new one-time recovery codes (returned once) and invalidates
+        the previous set. Same fresh-session rule as registration. `409
+        NO_PASSKEY` when the account has no passkey.
+      security:
+        - sessionCookie: []
+      responses:
+        "201":
+          description: New codes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recoveryCodes]
+                properties:
+                  recoveryCodes:
+                    type: array
+                    items: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReauthenticationRequired"
+        "409":
+          description: No passkey registered (code NO_PASSKEY)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/users/me/passkeys/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: Passkey id
+    patch:
+      operationId: renamePasskey
+      tags: [users]
+      summary: Rename a passkey
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+      responses:
+        "200":
+          description: Renamed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  renamed: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/SessionRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: removePasskey
+      tags: [users]
+      summary: Remove a passkey
+      description: >
+        Same fresh-session rule as registration. Removing the LAST passkey is
+        refused with `409 LAST_PASSKEY_REQUIRED_BY_ORG` while any org the user
+        belongs to requires a second factor; otherwise it also deletes the
+        recovery codes. Audited as `passkey.removed`.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: string }
+                  remaining: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ReauthenticationRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Last passkey, and an org requires a second factor (code LAST_PASSKEY_REQUIRED_BY_ORG)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      orgs:
+                        type: array
+                        items: { type: string }
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -4854,6 +5147,14 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    ReauthenticationRequired:
+      description: >
+        Not a browser session (code SESSION_REQUIRED), or the session is older
+        than 15 minutes or skipped the account's existing passkey (code
+        REAUTHENTICATION_REQUIRED) — sign in again.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     SessionRequired:
       description: >
         The caller authenticated with an API token, but this endpoint requires a
@@ -4946,6 +5247,21 @@ components:
           example: invalid_grant
         error_description: { type: string }
 
+    Passkey:
+      type: object
+      required: [id, name, createdAt, lastUsedAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+        lastUsedAt: { type: [string, "null"], format: date-time }
+    OrgSecurityPolicy:
+      type: object
+      required: [requireSecondFactor]
+      properties:
+        requireSecondFactor:
+          type: boolean
+          description: Members must sign in with a second factor (passkey, or this org's SSO)
     Error:
       type: object
       required: [error]

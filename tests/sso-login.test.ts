@@ -493,6 +493,28 @@ describe("OIDC SSO login", () => {
       expect(member).toBeUndefined();
     });
 
+    it("parks a returning user who has a passkey behind the second factor (#256)", async () => {
+      const first = await startLogin();
+      setIdToken(await signIdToken({ nonce: first.nonce }));
+      await app.fetch(callbackRequest(first.state, first.cookie), env);
+      const user = userRow(`alice@${EMAIL_DOMAIN}`);
+      raw
+        .prepare(
+          "INSERT INTO webauthn_credentials (id, user_id, credential_id, public_key, counter, name, created_at) VALUES ('pk_1', ?, 'cred', 'key', 0, 'k', ?)",
+        )
+        .run(user?.id, new Date().toISOString());
+      raw.prepare("DELETE FROM sessions").run();
+
+      const second = await startLogin(ORG_SLUG, "?redirect_to=%2Fprojects%2Ffoo");
+      setIdToken(await signIdToken({ nonce: second.nonce }));
+      const res = await app.fetch(callbackRequest(second.state, second.cookie), env);
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toBe("/auth/2fa");
+      expect(res.headers.get("Set-Cookie")).toContain("stratum_2fa=");
+      expect(res.headers.get("Set-Cookie")).not.toContain("stratum_session=");
+      expect(raw.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 0 });
+    });
+
     it("adopts an existing account by email: links identity + scim_members + membership", async () => {
       const created = await createUser(db, `bob@${EMAIL_DOMAIN}`, logger, "bob");
       if (!created.success) throw new Error("seed user failed");

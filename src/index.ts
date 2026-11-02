@@ -35,18 +35,22 @@ import { mcpRouter } from "./routes/mcp";
 import { mcpOAuthRouter } from "./routes/mcp-oauth";
 import { metricsRouter } from "./routes/metrics";
 import { oauthSignupRouter } from "./routes/oauth-signup";
+import { orgSecurityRouter } from "./routes/org-security";
 import { orgSsoRouter } from "./routes/org-sso";
 import { orgsRouter } from "./routes/orgs";
+import { passkeysRouter } from "./routes/passkeys";
 import { posthogProxyRouter } from "./routes/posthog-proxy";
 import { projectsRouter } from "./routes/projects";
 import { restoreRouter } from "./routes/restore";
 import { reviewsRouter } from "./routes/reviews";
 import { scimRouter } from "./routes/scim";
+import { securitySettingsRouter } from "./routes/security-settings";
 import { sessionRouter } from "./routes/sessions";
 import { signupRouter } from "./routes/signup";
 import { ssoRouter } from "./routes/sso";
 import { syncRouter } from "./routes/sync";
 import { syncManagementRouter } from "./routes/sync-management";
+import { twoFactorRouter } from "./routes/two-factor";
 import { uiRouter } from "./routes/ui";
 import { usersRouter } from "./routes/users";
 import { webhooksRouter } from "./routes/webhooks";
@@ -225,6 +229,8 @@ app.route("/auth/login", loginRouter);
 app.route("/auth/signup", signupRouter);
 app.route("/auth/signup/complete", oauthSignupRouter);
 app.route("/auth/sessions", sessionRouter);
+// Second step of browser sign-in: passkey assertion or recovery code (#256).
+app.route("/auth/2fa", twoFactorRouter);
 app.route("/api/projects", webhooksRouter);
 app.route("/api/projects", issuesRouter);
 // Ahead of projectsRouter: both claim /api/projects, and Hono matches in mount
@@ -234,6 +240,8 @@ app.route("/api/projects", projectDeploymentsRouter);
 app.route("/api/projects", projectsRouter);
 app.route("/api/deployments", deploymentsRouter);
 app.route("/api/workspaces", workspacesRouter);
+// Ahead of usersRouter, which also claims /api/users (#256).
+app.route("/api/users/me/passkeys", passkeysRouter);
 app.route("/api/users", usersRouter);
 app.route("/api/agents", agentsRouter);
 app.route("/api", changesRouter);
@@ -241,6 +249,8 @@ app.route("/api", reviewsRouter);
 app.route("/api/orgs", orgsRouter);
 // Org SSO admin API (/api/orgs/:slug/sso) — same authMiddleware chain as /api/orgs.
 app.route("/api/orgs", orgSsoRouter);
+// Org security policy (/api/orgs/:slug/security) — require a second factor (#256).
+app.route("/api/orgs", orgSecurityRouter);
 app.route("/api", syncRouter);
 app.route("/api", syncManagementRouter);
 app.route("/api/bulk-import", bulkImportRouter);
@@ -262,6 +272,9 @@ app.route("/", cspReportRouter);
 // Git smart-HTTP proxy (clone/fetch). Mount before the UI catch-all so its
 // /@ns/slug/{info/refs,git-upload-pack,git-receive-pack} paths resolve here.
 app.route("/", gitHttpRouter);
+
+// Passkey settings page (#256), ahead of uiRouter and its catch-alls.
+app.route("/settings/security", securitySettingsRouter);
 
 // Mount the UI router last: its /:namespace/:slug catch-all would otherwise
 // shadow two-segment API paths like GET /api/projects.

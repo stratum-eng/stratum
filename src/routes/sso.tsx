@@ -2,11 +2,10 @@ import { type Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { readBodyCapped } from "../services/oidc-discovery";
+import { completeBrowserSignIn } from "../services/second-factor";
 import { deriveUsernameBase, findAvailableUsername, randomHex } from "../services/sso-usernames";
-import { recordAudit } from "../storage/audit";
 import { getIdentityByIssuerSubject, upsertIdentity } from "../storage/identities";
 import { ensureOrgMember, getOrg } from "../storage/orgs";
-import { createSession } from "../storage/sessions";
 import {
   OIDC_STATE_TTL_SECONDS,
   type OidcLoginState,
@@ -45,7 +44,6 @@ const SSO_START_IP_RATE_LIMIT = 30;
 const SSO_START_RATE_WINDOW_SECONDS = 60 * 60;
 const TOKEN_EXCHANGE_TIMEOUT_MS = 10_000;
 const MAX_TOKEN_RESPONSE_BYTES = 64 * 1024;
-const SESSION_COOKIE_MAX_AGE_SECONDS = 2592000;
 // Asymmetric signatures only: accepting HS256 would let anyone holding the
 // (shared) client secret forge id_tokens.
 const ID_TOKEN_ALGORITHMS = ["RS256", "ES256"];
@@ -911,30 +909,27 @@ app.get("/callback", async (c) => {
   const { userId } = resolution;
 
   const sessionLogger = logger.child({ userId });
-  const sessionResult = await createSession(c.env.DB, userId, sessionLogger);
-  if (!sessionResult.success) {
-    sessionLogger.error("Failed to create session");
+  // The session records which org's IdP authenticated it: that org's own
+  // "require a second factor" policy is delegated to its IdP (#256). A user who
+  // has enrolled a passkey is still asked for it — the passkey protects the
+  // whole account, not only this org's resources.
+  const signedIn = await completeBrowserSignIn(c, sessionLogger, {
+    userId,
+    method: "oidc",
+    // Matches the 30-day cookie this flow has always set.
+    rememberMe: true,
+    // Re-validate on read: the stored value went through validateRedirectTo at
+    // /start, but a DB value must not be trusted as a redirect target.
+    redirectTo: validateRedirectTo(loginState.redirectTo) ?? "/",
+    ssoOrgId: connection.orgId,
+    auditDetail: { orgId: connection.orgId },
+  });
+  if (!signedIn.success) {
+    sessionLogger.error("Failed to create session", signedIn.error);
     return c.json({ error: "Failed to create session" }, 500);
   }
-  await recordAudit(c.env.DB, sessionLogger, {
-    action: "session.created",
-    actorType: "user",
-    actorId: userId,
-    detail: { method: "oidc", orgId: connection.orgId },
-  });
-
-  setCookie(c, "stratum_session", sessionResult.data.id, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "Lax",
-    maxAge: SESSION_COOKIE_MAX_AGE_SECONDS,
-    path: "/",
-  });
-
   sessionLogger.info("OIDC SSO sign-in successful", { orgId: connection.orgId });
-  // Re-validate on read: the stored value went through validateRedirectTo at
-  // /start, but a DB value must not be trusted as a redirect target.
-  return c.redirect(validateRedirectTo(loginState.redirectTo) ?? "/");
+  return signedIn.data;
 });
 
 export { app as ssoRouter };

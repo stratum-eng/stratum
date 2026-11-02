@@ -119,6 +119,7 @@ const mockOrg = {
   slug: "acme",
   ownerId: "usr_owner",
   createdAt: "2026-01-01T00:00:00.000Z",
+  requireSecondFactor: false,
 };
 
 const SECRET_CIPHERTEXT = "CIPHERTEXT_NEVER_ECHOED";

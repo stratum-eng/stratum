@@ -248,6 +248,14 @@ export interface Env {
   ENVIRONMENT?: string;
   /** Comma-separated extra CORS origin allowlist (beyond same-origin). Optional. */
   ALLOWED_ORIGINS?: string;
+  /**
+   * The canonical public URL of this instance (e.g. `https://app.usestratum.dev`).
+   * Optional. When set, passkeys (#256) are bound to its origin and hostname
+   * (the WebAuthn RP ID) instead of the request's own — pin it in an
+   * environment that is reachable under more than one hostname, so a passkey
+   * registered on one is not silently unusable on another.
+   */
+  APP_URL?: string;
   /** Master key for the per-project deploy secret store: provider credentials
    * are AES-GCM encrypted under a key derived from it. Optional because a
    * self-hoster who never deploys never needs one — but a project that HAS

@@ -177,6 +177,21 @@ applications**, and by the client itself at `POST /oauth/revoke`
 immediate and covers both halves of the pair — revoking either the access token
 or the refresh token ends the grant.
 
+## Second factor (passkeys)
+
+Browser sign-in can require a passkey after the first step (magic link, GitHub,
+Google, or SSO). Stratum issues the `stratum_session` cookie only after the
+passkey or a recovery code is verified at `/auth/2fa`. An org can require this
+for its members (`PUT /api/orgs/{slug}/security`). A non-compliant session then
+gets `403 SECOND_FACTOR_ENROLLMENT_REQUIRED` (no passkey yet) or
+`401 SECOND_FACTOR_REQUIRED` (signed out; sign in again with the passkey).
+
+**Non-interactive credentials are not subject to a second factor.** This
+includes API tokens, the legacy key, agent tokens, OAuth grants, SCIM tokens,
+and git over HTTPS. Each is a credential you already hold, and each is scoped
+and revocable. Treat them like passwords. See
+[Passkeys and two-factor sign-in](../user-guide/passkeys.md).
+
 ## Anonymous access
 
 Read endpoints on projects with `visibility: public` accept anonymous

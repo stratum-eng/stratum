@@ -28,6 +28,12 @@ vi.mock("../src/storage/users", () => ({
   signInGitHubUser: vi.fn(),
 }));
 
+// No passkeys: this suite exercises primary sign-in, not the second factor
+// (#256), and its DB is a stub the passkey lookup cannot read.
+vi.mock("../src/storage/webauthn", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/storage/webauthn")>()),
+  countPasskeys: vi.fn(async () => ({ success: true, data: 0 })),
+}));
 vi.mock("../src/storage/sessions", () => ({
   createSession: vi.fn(),
   deleteSession: vi.fn(),
@@ -719,7 +725,7 @@ describe("OAuth signup: choosing a username", () => {
         "Octo_Cat",
         expect.anything(),
       );
-      expect(createSession).toHaveBeenCalledWith(env.DB, "usr_new", expect.anything(), true);
+      expect(createSession).toHaveBeenCalledWith(env.DB, "usr_new", expect.anything(), true, {});
       expect(cookieLine(res, "stratum_session")).toContain("stratum_session=sess_1");
       expect(cookieLine(res, "stratum_session")).toContain("Max-Age=2592000");
       // The parked record is spent, on both sides.
@@ -750,7 +756,7 @@ describe("OAuth signup: choosing a username", () => {
       expect(linkGitHub).not.toHaveBeenCalled();
       // No "keep me signed in": a one-day cookie, as with a magic link.
       expect(cookieLine(res, "stratum_session")).toContain("Max-Age=86400");
-      expect(createSession).toHaveBeenCalledWith(env.DB, "usr_new", expect.anything(), false);
+      expect(createSession).toHaveBeenCalledWith(env.DB, "usr_new", expect.anything(), false, {});
     });
 
     it("prefers the remembered post-login destination when no `next` was carried", async () => {
@@ -844,7 +850,7 @@ describe("OAuth signup: choosing a username", () => {
         "Octo_Cat",
         expect.anything(),
       );
-      expect(createSession).toHaveBeenCalledWith(env.DB, "usr_1", expect.anything(), false);
+      expect(createSession).toHaveBeenCalledWith(env.DB, "usr_1", expect.anything(), false, {});
       expect(kvOf(env).store.has(`pending_signup:${token}`)).toBe(false);
     });
 

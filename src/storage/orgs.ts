@@ -9,6 +9,8 @@ export interface Org {
   slug: string;
   ownerId: string;
   createdAt: string;
+  /** Members must use a second factor (passkey) to reach the app (#256). */
+  requireSecondFactor: boolean;
 }
 
 export interface OrgMember {
@@ -24,6 +26,7 @@ interface OrgRow {
   slug: string;
   owner_id: string;
   created_at: string;
+  require_second_factor?: number | null;
 }
 
 interface OrgMemberRow {
@@ -40,6 +43,7 @@ function rowToOrg(row: OrgRow): Org {
     slug: row.slug,
     ownerId: row.owner_id,
     createdAt: row.created_at,
+    requireSecondFactor: row.require_second_factor === 1,
   };
 }
 
@@ -70,7 +74,7 @@ export async function createOrg(
       return err(new AppError("slug is already taken", "CONFLICT", 409, { slug }));
     }
 
-    const org: Org = { id, name, slug, ownerId, createdAt };
+    const org: Org = { id, name, slug, ownerId, createdAt, requireSecondFactor: false };
     logger.info("Org created successfully", { orgId: id, slug });
     return ok(org);
   } catch (error) {
@@ -341,6 +345,68 @@ export async function isOrgAdmin(
       orgId,
       userId,
     });
+    return err(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
+/**
+ * Turn the org's "require a second factor" policy on or off (#256). Returns
+ * whether a row changed, so a caller can tell a no-op toggle from a real one.
+ */
+export async function setOrgRequireSecondFactor(
+  db: D1Database,
+  logger: Logger,
+  orgId: string,
+  required: boolean,
+): Promise<Result<boolean, Error>> {
+  try {
+    const result = await db
+      .prepare(
+        "UPDATE orgs SET require_second_factor = ? WHERE id = ? AND require_second_factor != ?",
+      )
+      .bind(required ? 1 : 0, orgId, required ? 1 : 0)
+      .run();
+    return ok((result.meta?.changes ?? 0) > 0);
+  } catch (error) {
+    logger.error(
+      "Failed to set org second-factor policy",
+      error instanceof Error ? error : undefined,
+      {
+        orgId,
+      },
+    );
+    return err(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
+/**
+ * Slugs of every org that requires a second factor and that this user belongs
+ * to (as a member or as the owner). Used to refuse removing a user's last
+ * passkey while a policy still depends on it.
+ */
+export async function listOrgsRequiringSecondFactor(
+  db: D1Database,
+  logger: Logger,
+  userId: string,
+): Promise<Result<string[], Error>> {
+  try {
+    const { results } = await db
+      .prepare(
+        `SELECT o.slug FROM orgs o
+         WHERE o.require_second_factor = 1
+           AND (o.owner_id = ?
+                OR EXISTS (SELECT 1 FROM org_members m WHERE m.org_id = o.id AND m.user_id = ?))
+         ORDER BY o.slug`,
+      )
+      .bind(userId, userId)
+      .all<{ slug: string }>();
+    return ok((results ?? []).map((row) => row.slug));
+  } catch (error) {
+    logger.error(
+      "Failed to list orgs requiring a second factor",
+      error instanceof Error ? error : undefined,
+      { userId },
+    );
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }

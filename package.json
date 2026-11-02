@@ -8,7 +8,10 @@
   "private": true,
   "license": "AGPL-3.0-or-later",
   "description": "The open-source, agent-first code forge — evaluation-gated merges, provenance, and agent identities, built on Cloudflare Workers.",
-  "repository": { "type": "git", "url": "https://github.com/stratum-eng/stratum.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stratum-eng/stratum.git"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -31,6 +34,7 @@
   },
   "dependencies": {
     "@isomorphic-git/lightning-fs": "^4.6.2",
+    "@simplewebauthn/server": "^14.0.3",
     "diff": "^9.0.0",
     "hono": "^4.7.7",
     "isomorphic-git": "^1.27.1",

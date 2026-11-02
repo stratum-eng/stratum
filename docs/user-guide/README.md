@@ -21,6 +21,7 @@ Welcome to Stratum! This guide helps you get started.
 - [Deployments](deployments.md) — publishing the merged tree after a change lands
 - [The CLI](cli.md) — the change flow from the terminal
 - [The MCP server](mcp.md) — the change flow for any MCP-capable agent or editor
+- [Passkeys and two-factor sign-in](passkeys.md) — passkeys, recovery codes, and the org policy
 - [Troubleshooting](troubleshooting.md) — symptoms and fixes
 - [FAQ](faq.md) — including honest current limitations
 

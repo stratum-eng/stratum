@@ -1,9 +1,8 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { captureAuthCompleted } from "../analytics/auth";
-import { recordAudit } from "../storage/audit";
+import { completeBrowserSignIn } from "../services/second-factor";
 import { getIdentityByIssuerSubject, upsertIdentity } from "../storage/identities";
-import { createSession, deleteSession, getSession } from "../storage/sessions";
+import { deleteSession, getSession } from "../storage/sessions";
 import { getUser, getUserByEmail, getUserByGitHubId, signInGitHubUser } from "../storage/users";
 import type { Env } from "../types";
 import { constantTimeEqual } from "../utils/crypto";
@@ -338,42 +337,24 @@ app.get("/github/callback", async (c) => {
     email: signInEmail,
   });
 
-  const sessionResult = await createSession(c.env.DB, user.id, sessionLogger);
-  if (sessionResult.success) {
-    await recordAudit(c.env.DB, sessionLogger, {
-      action: "session.created",
-      actorType: "user",
-      actorId: user.id,
-      detail: { method: "github-oauth" },
-    });
-    // `signin`, never `signup`: a first-time GitHub identity was diverted to
-    // the username step above and is counted there, once the account exists.
-    await captureAuthCompleted(c, sessionLogger, {
-      kind: "signin",
-      provider: "github",
-      userId: user.id,
-    });
-  }
-  if (!sessionResult.success) {
-    sessionLogger.error("Failed to create session");
-    return c.json({ error: "Failed to create session" }, 500);
-  }
-
-  const session = sessionResult.data;
-  setCookie(c, "stratum_session", session.id, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "Lax",
-    maxAge: 2592000,
-    path: "/",
-  });
-
-  sessionLogger.info("GitHub OAuth successful, session created");
-
   // Consumed unconditionally, even when `next` won, so a stale destination is
   // never left in the jar for the next sign-in to pick up.
   const remembered = consumePostLoginRedirect(c, "/");
-  return c.redirect(nextPath ?? remembered);
+  const signedIn = await completeBrowserSignIn(c, sessionLogger, {
+    userId: user.id,
+    method: "github-oauth",
+    rememberMe: true,
+    redirectTo: nextPath ?? remembered,
+    // `signin`, never `signup`: a first-time GitHub identity was diverted to
+    // the username step above and is counted there, once the account exists.
+    analytics: { kind: "signin", provider: "github" },
+  });
+  if (!signedIn.success) {
+    sessionLogger.error("Failed to create session", signedIn.error);
+    return c.json({ error: "Failed to create session" }, 500);
+  }
+  sessionLogger.info("GitHub OAuth successful");
+  return signedIn.data;
 });
 
 app.get("/google", async (c) => {
@@ -564,38 +545,24 @@ app.get("/google/callback", async (c) => {
   });
 
   const sessionLogger = logger.child({ userId });
-  const sessionResult = await createSession(c.env.DB, userId, sessionLogger);
-  if (!sessionResult.success) {
-    sessionLogger.error("Failed to create session");
-    return c.json({ error: "Failed to create session" }, 500);
-  }
-  await recordAudit(c.env.DB, sessionLogger, {
-    action: "session.created",
-    actorType: "user",
-    actorId: userId,
-    detail: { method: "google-oauth" },
-  });
-  // Reached only for an email that already has an account; a new Google
-  // identity is diverted to the username step and counted there.
-  await captureAuthCompleted(c, sessionLogger, {
-    kind: "signin",
-    provider: "google",
-    userId,
-  });
-
-  setCookie(c, "stratum_session", sessionResult.data.id, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "Lax",
-    maxAge: 2592000,
-    path: "/",
-  });
-
-  sessionLogger.info("Google OAuth successful, session created");
   // As for GitHub: a `next` carried on the state wins, and the post-login
   // cookie is consumed regardless so it cannot outlive this sign-in.
   const remembered = consumePostLoginRedirect(c, "/");
-  return c.redirect(consumed.next ?? remembered);
+  const signedIn = await completeBrowserSignIn(c, sessionLogger, {
+    userId,
+    method: "google-oauth",
+    rememberMe: true,
+    redirectTo: consumed.next ?? remembered,
+    // Reached only for an email that already has an account; a new Google
+    // identity is diverted to the username step and counted there.
+    analytics: { kind: "signin", provider: "google" },
+  });
+  if (!signedIn.success) {
+    sessionLogger.error("Failed to create session", signedIn.error);
+    return c.json({ error: "Failed to create session" }, 500);
+  }
+  sessionLogger.info("Google OAuth successful");
+  return signedIn.data;
 });
 
 // Logout is state-changing, so it happens on POST (the nav renders a form and

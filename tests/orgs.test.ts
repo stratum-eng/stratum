@@ -106,6 +106,7 @@ const mockOrg = {
   slug: "my-org",
   ownerId: "usr_owner",
   createdAt: "2026-01-01T00:00:00.000Z",
+  requireSecondFactor: false,
 };
 
 const mockTeam = {
