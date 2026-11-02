@@ -91,7 +91,7 @@ app.get("/me/usage", async (c) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  const report = await buildUsageReport(c.env, logger, { actorUserId });
+  const report = await buildUsageReport(c.env, logger, { actorUserId, includeByok: true });
   if (!report.success) {
     logger.error("Failed to build usage report", report.error);
     return internalError("Usage could not be read");
