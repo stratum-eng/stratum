@@ -94,18 +94,22 @@ jobs:
           echo "Deleting KV namespace: $KV_NAME"
           # The list endpoint pages (20 per page by default); reading only the
           # first page misses this PR's namespace once the account has more.
+          # Stops on a short page (the documented contract), fails on any
+          # response that is not a successful JSON listing, and caps the walk.
           find_kv() {
-            local page=1 resp id total
-            while :; do
+            local page=1 per_page=100 resp id count
+            while [ "$page" -le 50 ]; do
               resp=$(curl -sf -X GET \
-                "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces?per_page=100&page=${page}" \
+                "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces?per_page=${per_page}&page=${page}" \
                 -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || return 1
-              id=$(echo "$resp" | jq -r --arg t "$1" '[.result[]? | select(.title == $t) | .id] | first // empty')
+              echo "$resp" | jq -e '.success == true and (.result | type == "array")' >/dev/null 2>&1 || return 1
+              id=$(echo "$resp" | jq -r --arg t "$1" '[.result[] | select(.title == $t) | .id] | first // empty')
               if [ -n "$id" ]; then echo "$id"; return 0; fi
-              total=$(echo "$resp" | jq -r '.result_info.total_pages // 1')
-              [ "$page" -ge "$total" ] && return 0
+              count=$(echo "$resp" | jq -r '.result | length')
+              [ "$count" -lt "$per_page" ] && return 0
               page=$((page + 1))
             done
+            return 1
           }
           KV_ID=$(find_kv "$KV_NAME") || { echo "❌ Could not list KV namespaces"; exit 1; }
           if [ -n "$KV_ID" ] && [ "$KV_ID" != "null" ]; then
@@ -261,18 +265,22 @@ jobs:
           
           # The list endpoint pages (20 per page by default); reading only the
           # first page misses this PR's namespace once the account has more.
+          # Stops on a short page (the documented contract), fails on any
+          # response that is not a successful JSON listing, and caps the walk.
           find_kv() {
-            local page=1 resp id total
-            while :; do
+            local page=1 per_page=100 resp id count
+            while [ "$page" -le 50 ]; do
               resp=$(curl -sf -X GET \
-                "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces?per_page=100&page=${page}" \
+                "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces?per_page=${per_page}&page=${page}" \
                 -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || return 1
-              id=$(echo "$resp" | jq -r --arg t "$1" '[.result[]? | select(.title == $t) | .id] | first // empty')
+              echo "$resp" | jq -e '.success == true and (.result | type == "array")' >/dev/null 2>&1 || return 1
+              id=$(echo "$resp" | jq -r --arg t "$1" '[.result[] | select(.title == $t) | .id] | first // empty')
               if [ -n "$id" ]; then echo "$id"; return 0; fi
-              total=$(echo "$resp" | jq -r '.result_info.total_pages // 1')
-              [ "$page" -ge "$total" ] && return 0
+              count=$(echo "$resp" | jq -r '.result | length')
+              [ "$count" -lt "$per_page" ] && return 0
               page=$((page + 1))
             done
+            return 1
           }
           KV_ID=$(find_kv "$KV_NAME") || { echo "❌ Could not list KV namespaces"; exit 1; }
           
