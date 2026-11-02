@@ -50,6 +50,15 @@ info:
     below can return it. Sessions and agent tokens are unaffected. Token
     management (`/api/users/me/tokens*`) is session-only.
 
+    Token binding: a user token may also be bound to one project or one
+    organization. A bound token reaches only `/api/projects/...`,
+    `/api/changes/...`, `/api/workspaces/...`, `/api/deployments/...`,
+    `GET /api/users/me`, the health checks, `/mcp` and git; every other
+    endpoint answers `403`
+    with code `TOKEN_BINDING_EXCLUDES_ROUTE` before routing. Within those, a
+    project outside the binding answers exactly as a missing private project
+    does (usually `404`).
+
     Several form-friendly endpoints return a `302` redirect instead of JSON when
     the request body is form-encoded rather than `application/json`; this spec
     documents the JSON behaviour.
@@ -3585,6 +3594,21 @@ paths:
                   minimum: 1
                   maximum: 365
                   description: Omit for a token that never expires.
+                project:
+                  type: string
+                  example: "@alice/web"
+                  description: >
+                    Bind the token to this one project (`@namespace/slug`). The
+                    caller must be able to read it, or the request is a 404.
+                    Mutually exclusive with `org`; omit both for an
+                    account-wide token.
+                org:
+                  type: string
+                  example: acme
+                  description: >
+                    Bind the token to the projects owned by this organization
+                    (its slug). The caller must be a member, or the request is a
+                    404. Mutually exclusive with `project`.
       responses:
         "201":
           description: The token, plus its plaintext (shown only here)
@@ -3608,6 +3632,13 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/SessionRequired"
+        "404":
+          description: >
+            The requested `project` or `org` does not exist, or the caller
+            cannot reach it — the two are deliberately indistinguishable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: >
             The caller already holds the maximum of 20 active tokens
@@ -5208,6 +5239,14 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    TokenBindingExcludesRoute:
+      description: >
+        The request was authenticated by an API token bound to one project or
+        organization, and this endpoint is not one a bound token may use (code
+        TOKEN_BINDING_EXCLUDES_ROUTE). Enforced before routing.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     TokenScopeInsufficient:
       description: >
         The request was authenticated by a `read` API token and is not a GET or
@@ -5321,8 +5360,8 @@ components:
             Machine-readable code present on some errors (e.g. TARGET_DELETING,
             STALE_BASE, STALE_WORKSPACE, WORKSPACE_UNVERIFIABLE, MERGE_CONFLICT,
             PROTECTION_BLOCKED, NOT_REDRIVABLE, GONE, INVALID_PATH,
-            TOKEN_SCOPE_INSUFFICIENT, TOKEN_LIMIT_REACHED, SESSION_REQUIRED,
-            DOMAIN_VERIFICATION_FAILED)
+            TOKEN_SCOPE_INSUFFICIENT, TOKEN_BINDING_EXCLUDES_ROUTE,
+            TOKEN_LIMIT_REACHED, SESSION_REQUIRED, DOMAIN_VERIFICATION_FAILED)
 
     SsoConnectionEnvelope:
       type: object
@@ -5456,6 +5495,25 @@ components:
           type: string
           format: date-time
           description: Present on a revoked token; the row is kept for the audit trail
+        binding:
+          description: >
+            Present only on a token bound to one project or organization;
+            absent means account-wide. `label` is the project path or `@org`
+            as it is now, or a note that the target no longer exists (the
+            token then reaches nothing).
+          oneOf:
+            - type: object
+              required: [kind, projectId, label]
+              properties:
+                kind: { type: string, enum: [project] }
+                projectId: { type: string }
+                label: { type: string, example: "@alice/web" }
+            - type: object
+              required: [kind, orgId, label]
+              properties:
+                kind: { type: string, enum: [org] }
+                orgId: { type: string }
+                label: { type: string, example: "@acme" }
 
     Project:
       type: object

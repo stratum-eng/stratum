@@ -11,7 +11,7 @@ import type {
 import { Hono } from "hono";
 import { contextStorage } from "hono/context-storage";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { authMiddleware } from "../src/middleware/auth";
+import { authMiddleware, boundTokenMayReach } from "../src/middleware/auth";
 import { csrfMiddleware } from "../src/middleware/csrf";
 import { orgSecondFactorMiddleware } from "../src/middleware/org-second-factor";
 import { securityHeadersMiddleware } from "../src/middleware/security-headers";
@@ -35,7 +35,7 @@ import {
 import { createSession } from "../src/storage/sessions";
 import { getPasskeyByCredentialId, insertPasskey, listPasskeys } from "../src/storage/webauthn";
 import type { Env, ProjectEntry } from "../src/types";
-import { canReadProject } from "../src/utils/authz";
+import { canReadProject, credentialBindingFrom } from "../src/utils/authz";
 import { hashToken } from "../src/utils/crypto";
 import type { Logger } from "../src/utils/logger";
 import { makeFakeKV } from "./helpers/fake-kv";
@@ -126,7 +126,13 @@ describe("passkeys as a second factor", () => {
         createdAt: "",
         visibility: c.req.query("public") ? "public" : "private",
       } as ProjectEntry;
-      return (await canReadProject(c.env.DB, project, c.get("userId"), c.get("agentOwnerId")))
+      return (await canReadProject(
+        c.env.DB,
+        project,
+        credentialBindingFrom(c),
+        c.get("userId"),
+        c.get("agentOwnerId"),
+      ))
         ? c.json({ ok: true })
         : c.json({ error: "Not found" }, 404);
     });
@@ -867,6 +873,24 @@ describe("passkeys as a second factor", () => {
       expect((await req("/test/project/org/org_1", { cookie })).status).toBe(200);
       const row = raw.prepare("SELECT sso_org_id FROM sessions").get() as { sso_org_id: string };
       expect(row.sso_org_id).toBe("org_1");
+    });
+
+    it("keeps every new account/org-admin route out of reach of bound tokens (#323)", () => {
+      for (const [method, path] of [
+        ["GET", "/api/orgs/acme/security"],
+        ["PUT", "/api/orgs/acme/security"],
+        ["GET", "/api/users/me/passkeys"],
+        ["POST", "/api/users/me/passkeys/registration/options"],
+        ["POST", "/api/users/me/passkeys/registration/verify"],
+        ["POST", "/api/users/me/passkeys/recovery-codes"],
+        ["PATCH", "/api/users/me/passkeys/pk_1"],
+        ["DELETE", "/api/users/me/passkeys/pk_1"],
+        ["DELETE", `/api/orgs/acme/members/${USER}`],
+        ["GET", "/settings/security"],
+        ["POST", "/auth/2fa/verify"],
+      ] as const) {
+        expect(boundTokenMayReach(method, path), `${method} ${path}`).toBe(false);
+      }
     });
 
     it("does not apply to API tokens", async () => {

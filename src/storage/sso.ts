@@ -903,53 +903,129 @@ function rowToScimScopedUser(row: ScimScopedUserRow): ScimScopedUser {
   };
 }
 
-function inScimScope(connection: SsoConnection, user: ScimScopedUser): boolean {
-  if (user.managed) return true;
-  const domain = user.email.split("@").pop() ?? "";
-  return connection.emailDomains.includes(domain);
+/**
+ * Shared FROM/WHERE for the connection's SCIM scope: every user with a
+ * scim_members row for this connection, plus every member of the connection's
+ * org whose email domain is one of the connection's email domains ("visible
+ * for adoption"). Soft-deleting users are excluded outright: deletion
+ * dominates disable, and a mid-erasure account must not resurface to the IdP
+ * or accept a reactivation.
+ *
+ * The domain test is a suffix match on `'@' || domain`. Connection domains
+ * are validated hostnames (normalizeEmailDomains: non-empty, never containing
+ * '@'), so this is exactly "the text after the email's last '@' is one of the
+ * domains". The domain list binds once as JSON (json_each), so the bind count
+ * stays constant (at most 7, with LIMIT/OFFSET) however many domains the connection has.
+ *
+ * `extraClause` is AND-ed in ahead of the scope test; positional binds follow
+ * textual order, so its binds sit between the join bind and the scope binds.
+ * Without one (the unfiltered list), a logically redundant membership IN-list
+ * is added instead: it lets SQLite drive the query from the scim_members /
+ * org_members primary keys rather than scanning every user. A selective
+ * extraClause (email, externalId, id) already drives from its own index, and
+ * the IN-list would only add a full read of the membership set.
+ */
+function scimScopeFrom(
+  connection: SsoConnection,
+  extraClause = "",
+  extraBinds: unknown[] = [],
+): { sql: string; binds: unknown[] } {
+  const driver =
+    extraClause === ""
+      ? `AND u.id IN (SELECT user_id FROM scim_members WHERE connection_id = ?
+                      UNION ALL
+                      SELECT user_id FROM org_members WHERE org_id = ?)`
+      : extraClause;
+  const driverBinds = extraClause === "" ? [connection.id, connection.orgId] : extraBinds;
+  return {
+    sql: `FROM users u
+     LEFT JOIN scim_members sm ON sm.user_id = u.id AND sm.connection_id = ?
+     WHERE u.deleting_at IS NULL ${driver}
+       AND (sm.user_id IS NOT NULL
+            OR (EXISTS (SELECT 1 FROM org_members om WHERE om.org_id = ? AND om.user_id = u.id)
+                AND EXISTS (SELECT 1 FROM json_each(?) d
+                            WHERE substr(u.email, -length(d.value) - 1) = '@' || d.value)))`,
+    binds: [
+      connection.id,
+      ...driverBinds,
+      connection.orgId,
+      JSON.stringify(connection.emailDomains),
+    ],
+  };
+}
+
+const SCIM_SCOPED_USER_COLUMNS = `u.id, u.email, u.username, u.created_at, u.disabled_at,
+            sm.scim_external_id, sm.active AS scim_active`;
+
+/** A parsed SCIM list filter: the two forms Okta/Entra send. */
+export interface ScimUserFilter {
+  attribute: "username" | "externalid";
+  value: string;
+}
+
+export interface ScimUserListQuery {
+  filter?: ScimUserFilter;
+  /** 1-based index of the first result. */
+  startIndex: number;
+  /** Page size; 0 returns only the total. */
+  count: number;
+}
+
+export interface ScimUserPage {
+  /** Every match, independent of the page. */
+  totalResults: number;
+  users: ScimScopedUser[];
+}
+
+function scimFilterClause(filter: ScimUserFilter | undefined): {
+  clause: string;
+  binds: unknown[];
+} {
+  if (!filter) return { clause: "", binds: [] };
+  if (filter.attribute === "username") {
+    // userName is the email. The value is trimmed and lowercased (SCIM
+    // userName is case-insensitive; stored emails are lowercase) and compared
+    // exactly, so the users.email UNIQUE index serves the lookup.
+    return { clause: "AND u.email = ?", binds: [filter.value.trim().toLowerCase()] };
+  }
+  // externalId is case-exact (RFC 7643 §3.1); served by
+  // idx_scim_members_external_id (connection_id, scim_external_id).
+  return { clause: "AND sm.scim_external_id = ?", binds: [filter.value] };
 }
 
 /**
- * Candidate rows for the connection's SCIM scope: every user with a
- * scim_members row for this connection, plus every member of the connection's
- * org (the JS-side domain filter narrows those to the verified email domains —
- * "visible for adoption"). Soft-deleting users are excluded outright: deletion
- * dominates disable, and a mid-erasure account must not resurface to the IdP
- * or accept a reactivation.
+ * One page of the connection's SCIM scope, filtered and paged in D1 and
+ * ordered by (created_at, id), plus the total match count.
  */
-async function queryScimScope(
-  db: D1Database,
-  connection: SsoConnection,
-  userId?: string,
-): Promise<ScimScopedUser[]> {
-  const userClause = userId === undefined ? "" : "AND u.id = ?";
-  const stmt = db.prepare(
-    `SELECT u.id, u.email, u.username, u.created_at, u.disabled_at,
-            sm.scim_external_id, sm.active AS scim_active
-     FROM users u
-     LEFT JOIN scim_members sm ON sm.user_id = u.id AND sm.connection_id = ?
-     WHERE u.deleting_at IS NULL ${userClause}
-       AND (sm.user_id IS NOT NULL
-            OR EXISTS (SELECT 1 FROM org_members om WHERE om.org_id = ? AND om.user_id = u.id))
-     ORDER BY u.created_at, u.id`,
-  );
-  // Positional binds follow the placeholders' textual order: join, optional
-  // user pin, org membership probe.
-  const bound =
-    userId === undefined
-      ? stmt.bind(connection.id, connection.orgId)
-      : stmt.bind(connection.id, userId, connection.orgId);
-  const { results } = await bound.all<ScimScopedUserRow>();
-  return results.map(rowToScimScopedUser).filter((user) => inScimScope(connection, user));
-}
-
 export async function listScimScopedUsers(
   db: D1Database,
   logger: Logger,
   connection: SsoConnection,
-): Promise<Result<ScimScopedUser[], AppError>> {
+  query: ScimUserListQuery,
+): Promise<Result<ScimUserPage, AppError>> {
   try {
-    return ok(await queryScimScope(db, connection));
+    const { clause, binds: filterBinds } = scimFilterClause(query.filter);
+    const scope = scimScopeFrom(connection, clause, filterBinds);
+    const countStmt = db.prepare(`SELECT COUNT(*) AS n ${scope.sql}`).bind(...scope.binds);
+    if (query.count <= 0) {
+      const row = await countStmt.first<{ n: number }>();
+      return ok({ totalResults: row?.n ?? 0, users: [] });
+    }
+    // OFFSET must fit an int64: an absurd startIndex is clamped, and still
+    // yields an empty page just as slicing past the end did.
+    const offset = Math.min(Math.max(query.startIndex - 1, 0), Number.MAX_SAFE_INTEGER);
+    const pageStmt = db
+      .prepare(
+        `SELECT ${SCIM_SCOPED_USER_COLUMNS} ${scope.sql}
+     ORDER BY u.created_at, u.id
+     LIMIT ? OFFSET ?`,
+      )
+      .bind(...scope.binds, query.count, offset);
+    // One batch: a single round-trip, and count + page read the same snapshot.
+    const [countResult, pageResult] = await db.batch<unknown>([countStmt, pageStmt]);
+    const total = (countResult?.results[0] as { n: number } | undefined)?.n ?? 0;
+    const rows = (pageResult?.results ?? []) as ScimScopedUserRow[];
+    return ok({ totalResults: total, users: rows.map(rowToScimScopedUser) });
   } catch (error) {
     logger.error("Failed to list SCIM-scoped users", error instanceof Error ? error : undefined, {
       connectionId: connection.id,
@@ -965,10 +1041,13 @@ export async function getScimScopedUser(
   userId: string,
 ): Promise<Result<ScimScopedUser, NotFoundError | AppError>> {
   try {
-    const users = await queryScimScope(db, connection, userId);
-    const user = users[0];
-    if (!user) return err(new NotFoundError("User", userId));
-    return ok(user);
+    const scope = scimScopeFrom(connection, "AND u.id = ?", [userId]);
+    const row = await db
+      .prepare(`SELECT ${SCIM_SCOPED_USER_COLUMNS} ${scope.sql}`)
+      .bind(...scope.binds)
+      .first<ScimScopedUserRow>();
+    if (!row) return err(new NotFoundError("User", userId));
+    return ok(rowToScimScopedUser(row));
   } catch (error) {
     logger.error("Failed to get SCIM-scoped user", error instanceof Error ? error : undefined, {
       connectionId: connection.id,

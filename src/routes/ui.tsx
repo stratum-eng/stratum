@@ -5,6 +5,12 @@ import { type UsageBannerNotice, loadUsageBanner } from "../billing/usage-banner
 import { buildUsageReport } from "../billing/usage-report";
 import { cannotMintLegacyCredential } from "../middleware/auth";
 import { NO_ANALYTICS_HEADER } from "../middleware/web-analytics";
+import {
+  type BindingRequest,
+  describeTokenBindings,
+  parseBindingRequest,
+  resolveBindingRequest,
+} from "../services/token-binding";
 import { createAgent, deleteAgent, getAgent, listAgents } from "../storage/agents";
 import {
   type ApiTokenSummary,
@@ -39,7 +45,13 @@ import { ownerHasClaims, usernameNamespaceTaken } from "../storage/project-names
 import { listSecretNames } from "../storage/project-secrets";
 import { getProvenance } from "../storage/provenance";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
-import { readRepoViewCache, writeRepoViewCache } from "../storage/repo-view-cache";
+import {
+  type RepoViewCacheProject,
+  claimRepoViewRefresh,
+  readRepoViewCache,
+  releaseRepoViewRefresh,
+  writeRepoViewCache,
+} from "../storage/repo-view-cache";
 import {
   getProject,
   getProjectByPath,
@@ -86,7 +98,13 @@ import { TagsPage } from "../ui/pages/tags";
 import { UsagePage } from "../ui/pages/usage";
 import { WebhooksPage } from "../ui/pages/webhooks";
 import { WorkspacesPage } from "../ui/pages/workspaces";
-import { canReadProject, canWriteProject, filterMemberProjects } from "../utils/authz";
+import {
+  type BindingContext,
+  canReadProject,
+  canWriteProject,
+  credentialBindingFrom,
+  filterMemberProjects,
+} from "../utils/authz";
 import { MAX_DISPLAY_NAME_LENGTH, normalizeDisplayName } from "../utils/display-name";
 import type { AppError } from "../utils/errors";
 import { getWaitUntil } from "../utils/execution-ctx";
@@ -217,6 +235,7 @@ app.get("/", async (c) => {
   const memberProjects = await filterMemberProjects(
     c.env.DB,
     allProjectsResult.data,
+    credentialBindingFrom(c),
     userId,
     agentOwnerId,
   );
@@ -366,14 +385,24 @@ async function requireAccountSession(
  * tokens yet" over a D1 error would tell someone their credentials are gone.
  */
 async function loadApiTokens(
-  db: D1Database,
+  env: Env,
   userId: string,
   logger: ReturnType<typeof createLogger>,
-): Promise<{ tokens: ApiTokenSummary[]; notice?: SettingsNotice }> {
-  const result = await listApiTokens(db, logger, userId);
-  if (result.success) return { tokens: result.data };
+): Promise<{
+  tokens: ApiTokenSummary[];
+  bindingLabels: ReadonlyMap<string, string>;
+  notice?: SettingsNotice;
+}> {
+  const result = await listApiTokens(env.DB, logger, userId);
+  if (result.success) {
+    return {
+      tokens: result.data,
+      bindingLabels: await describeTokenBindings(env, logger, result.data),
+    };
+  }
   return {
     tokens: [],
+    bindingLabels: new Map(),
     notice: { kind: "error", message: "Your API tokens could not be loaded. Try again shortly." },
   };
 }
@@ -441,7 +470,7 @@ async function renderSettings(
 ) {
   const [agents, tokens, grants, usernameChange, invites, usageNotice] = await Promise.all([
     loadAgentSummaries(c.env.DB, user.id, logger),
-    loadApiTokens(c.env.DB, user.id, logger),
+    loadApiTokens(c.env, user.id, logger),
     loadOAuthGrants(c.env.DB, user.id, logger),
     usernameChangeState(c.env, user, logger),
     // Keyed off the service URL alone, not `betaGateEnabled`: codes minted while
@@ -465,6 +494,7 @@ async function renderSettings(
         : {})}
       agents={agents}
       apiTokens={tokens.tokens}
+      tokenBindingLabels={tokens.bindingLabels}
       oauthGrants={grants.grants}
       // A failed read and an empty list are the same empty array, so the flag
       // is what keeps them from rendering identically — see `loadOAuthGrants`.
@@ -726,7 +756,9 @@ app.post("/settings/username", async (c) => {
 /** Same bounds as `POST /api/users/me/tokens`, applied to form fields. */
 function parseTokenForm(
   form: Record<string, string | File>,
-): { name: string; scope: ApiTokenScope; expiresInDays?: number } | { error: string } {
+):
+  | { name: string; scope: ApiTokenScope; expiresInDays?: number; binding: BindingRequest }
+  | { error: string } {
   const rawName = typeof form.name === "string" ? form.name.trim() : "";
   if (rawName.length === 0 || rawName.length > 100) {
     return { error: "Give the token a name of 1 to 100 characters." };
@@ -737,8 +769,17 @@ function parseTokenForm(
     return { error: "Scope must be read-only or read & write." };
   }
 
+  // A File in either field is not a path or slug; treating it as absent would
+  // mint an account-wide token from a form that asked for a narrower one.
+  if (form.project instanceof File || form.org instanceof File) {
+    return { error: "Limit the token with a project path or an organization slug." };
+  }
+  const bindingRequest = parseBindingRequest(form.project, form.org);
+  if (!bindingRequest.success) return { error: `${bindingRequest.error.message}.` };
+  const binding = bindingRequest.data;
+
   const rawExpiry = typeof form.expiresInDays === "string" ? form.expiresInDays.trim() : "";
-  if (rawExpiry.length === 0) return { name: rawName, scope: rawScope };
+  if (rawExpiry.length === 0) return { name: rawName, scope: rawScope, binding };
   // Digits only: `Number("1e3")` and `Number(" 5 ")` are both integers, and
   // neither is what a user typed into a day count.
   const expiresInDays = /^\d+$/.test(rawExpiry) ? Number(rawExpiry) : Number.NaN;
@@ -751,7 +792,7 @@ function parseTokenForm(
       error: `Expiry must be a whole number of days between ${MIN_TOKEN_EXPIRY_DAYS} and ${MAX_TOKEN_EXPIRY_DAYS}, or blank for no expiry.`,
     };
   }
-  return { name: rawName, scope: rawScope, expiresInDays };
+  return { name: rawName, scope: rawScope, expiresInDays, binding };
 }
 
 // POST /settings/tokens — Mint a named API token; renders the plaintext once
@@ -769,11 +810,41 @@ app.post("/settings/tokens", async (c) => {
     return c.html(page, 400);
   }
 
+  // Same check as `POST /api/users/me/tokens`: the creator must reach the
+  // project or org they are binding to (#323).
+  const resolvedBinding = await resolveBindingRequest(c.env, logger, {
+    userId: user.id,
+    creatorBinding: credentialBindingFrom(c),
+    request: parsed.binding,
+  });
+  if (!resolvedBinding.success) {
+    const status =
+      resolvedBinding.error.statusCode === 400
+        ? 400
+        : resolvedBinding.error.statusCode === 404
+          ? 404
+          : 500;
+    if (status === 500) logger.error("Failed to resolve token binding", resolvedBinding.error);
+    const page = await renderSettings(c, user, access.telemetryOptOut, logger, {
+      notice: {
+        kind: "error",
+        message:
+          status === 500
+            ? "Could not check the project or organization to limit the token to."
+            : status === 404
+              ? "No project or organization you can access matches that name."
+              : resolvedBinding.error.message,
+      },
+    });
+    return c.html(page, status);
+  }
+
   const createResult = await createApiToken(c.env.DB, logger, {
     userId: user.id,
     name: parsed.name,
     scope: parsed.scope,
     ...(parsed.expiresInDays !== undefined ? { expiresInDays: parsed.expiresInDays } : {}),
+    ...(resolvedBinding.data !== null ? { binding: resolvedBinding.data.binding } : {}),
   });
   if (!createResult.success) {
     logger.error("Failed to create API token", createResult.error);
@@ -799,7 +870,12 @@ app.post("/settings/tokens", async (c) => {
     actorType: "user",
     actorId: user.id,
     subject: createResult.data.token.id,
-    detail: { scope: createResult.data.token.scope },
+    detail: {
+      scope: createResult.data.token.scope,
+      ...(createResult.data.token.binding !== undefined
+        ? { binding: createResult.data.token.binding }
+        : {}),
+    },
   });
 
   const page = await renderSettings(c, user, access.telemetryOptOut, logger, {
@@ -1104,7 +1180,7 @@ app.get("/p/:name", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     logger.warn("Project not found or access denied", { name, userId });
     return c.html(errorPage(404, `Project '${name}' not found.`, userResult), 404);
   }
@@ -1151,7 +1227,7 @@ app.get("/p/:name", async (c) => {
       project.importCompleted !== false;
   }
   const isOwner = !!userId && project.ownerType === "user" && project.ownerId === userId;
-  const canWrite = await canWriteProject(c.env.DB, project, userId);
+  const canWrite = await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId);
 
   const snapshotResult = await readRepoSnapshot(c.env.STATE, project, logger);
   if (snapshotResult.success && snapshotResult.data) {
@@ -1245,7 +1321,7 @@ app.get("/p/:name/changes", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     logger.warn("Project not found or access denied", { name, userId });
     return c.html(errorPage(404, `Project '${name}' not found.`, userResult), 404);
   }
@@ -1268,7 +1344,7 @@ app.get("/p/:name/changes", async (c) => {
     createdAt: change.createdAt,
   }));
 
-  const canWrite = await canWriteProject(c.env.DB, project, userId);
+  const canWrite = await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId);
   logger.debug("Rendering changes page", { name, changeCount: view.length });
   return c.html(
     <ChangesPage
@@ -1309,7 +1385,15 @@ app.get("/changes/:id", async (c) => {
     return c.html(errorPage(500, "Project not found.", userResult), 500);
   }
 
-  if (!(await canReadProject(c.env.DB, projectResult.data, userId, agentOwnerId))) {
+  if (
+    !(await canReadProject(
+      c.env.DB,
+      projectResult.data,
+      credentialBindingFrom(c),
+      userId,
+      agentOwnerId,
+    ))
+  ) {
     logger.warn("Change not found or access denied", { id, userId });
     return c.html(errorPage(404, undefined, userResult), 404);
   }
@@ -1378,7 +1462,9 @@ app.get("/changes/:id", async (c) => {
       }))
     : [];
 
-  const canReview = !!userResult && (await canWriteProject(c.env.DB, projectResult.data, userId));
+  const canReview =
+    !!userResult &&
+    (await canWriteProject(c.env.DB, projectResult.data, credentialBindingFrom(c), userId));
   logger.debug("Rendering change detail page", { id });
   return c.html(
     <ChangeDetailPage
@@ -1429,7 +1515,15 @@ app.get("/p/:name/workspaces", async (c) => {
     return c.html(errorPage(404, `Project '${name}' not found.`, userResult), 404);
   }
 
-  if (!(await canReadProject(c.env.DB, projectResult.data, userId, agentOwnerId))) {
+  if (
+    !(await canReadProject(
+      c.env.DB,
+      projectResult.data,
+      credentialBindingFrom(c),
+      userId,
+      agentOwnerId,
+    ))
+  ) {
     logger.warn("Project not found or access denied", { name, userId });
     return c.html(errorPage(404, undefined, userResult), 404);
   }
@@ -1447,7 +1541,7 @@ app.get("/p/:name/workspaces", async (c) => {
     createdAt: ws.createdAt,
   }));
 
-  const canWrite = await canWriteProject(c.env.DB, project, userId);
+  const canWrite = await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId);
   logger.debug("Rendering workspaces page", { name, workspaceCount: view.length });
   return c.html(
     <WorkspacesPage
@@ -1480,7 +1574,7 @@ app.get("/:namespace/:slug/changes", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, userResult), 404);
   }
 
@@ -1502,7 +1596,7 @@ app.get("/:namespace/:slug/changes", async (c) => {
     createdAt: change.createdAt,
   }));
 
-  const canWrite = await canWriteProject(c.env.DB, project, userId);
+  const canWrite = await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId);
   return c.html(
     <ChangesPage
       project={projectRef(project)}
@@ -1535,7 +1629,7 @@ app.get("/:namespace/:slug/activity", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, userResult), 404);
   }
 
@@ -1545,7 +1639,7 @@ app.get("/:namespace/:slug/activity", async (c) => {
     return c.html(errorPage(500, "Error loading activity. Please try again.", userResult), 500);
   }
 
-  const canWrite = await canWriteProject(c.env.DB, project, userId);
+  const canWrite = await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId);
   return c.html(
     <ActivityPage
       project={projectRef(project)}
@@ -1577,7 +1671,7 @@ app.get("/:namespace/:slug/tags", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, userResult), 404);
   }
 
@@ -1592,7 +1686,7 @@ app.get("/:namespace/:slug/tags", async (c) => {
     return c.html(errorPage(500, "Error loading tags. Please try again.", userResult), 500);
   }
 
-  const canWrite = await canWriteProject(c.env.DB, project, userId);
+  const canWrite = await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId);
   return c.html(
     <TagsPage
       project={projectRef(project)}
@@ -1732,16 +1826,23 @@ type RepoPageData = {
   filesUnavailable: boolean;
   log: CommitLogEntry[];
   readme: string | null;
+  /**
+   * Set when the page is a cached view of an earlier commit, served while a
+   * background read catches it up: the commit the view was taken at.
+   */
+  behindAt?: string;
 };
 
 /**
  * The repo overview's files, log and README when the KV snapshot can't serve them.
  *
  * With `liveHead` (the branch tip from a ref advertisement the caller already
- * made), a view cached at that exact commit is served without touching git;
- * otherwise the repository is cloned once and the result cached for the next
- * reader. Without it, the clone always runs and nothing is cached — an entry
- * can only be trusted when checked against the live tip.
+ * made), the per-branch view cache is served stale-while-revalidate: an entry at
+ * `liveHead` is served as is; an entry at an older commit is served too —
+ * flagged with `behindAt` — while a background clone (via `waitUntil`) replaces
+ * it. Only a branch with no entry, or a caller without `waitUntil`, waits for
+ * the clone. Without `liveHead`, the clone always runs and nothing is cached —
+ * an entry can only be judged current against the live tip.
  *
  * Never fails: an unreachable or empty repository renders as an empty page.
  */
@@ -1754,17 +1855,22 @@ async function loadRepoPageData(
   waitUntil: ((promise: Promise<unknown>) => void) | undefined,
   logger: Logger,
 ): Promise<RepoPageData> {
-  const cacheable = liveHead !== undefined && !!project.namespace && !!project.slug;
-  const cacheProject = { namespace: project.namespace ?? "", slug: project.slug ?? "" };
+  const cacheable = liveHead !== undefined && !!project.id;
+  const cacheProject = { id: project.id };
 
   if (cacheable) {
-    const cached = await readRepoViewCache(kv, cacheProject, branch, liveHead, logger);
-    if (cached) {
+    const cached = await readRepoViewCache(kv, cacheProject, branch, logger);
+    const current = cached?.headSha === liveHead;
+    if (cached && (current || waitUntil)) {
+      if (!current && waitUntil) {
+        waitUntil(refreshRepoView(kv, cacheProject, project.remote, readToken, branch, logger));
+      }
       return {
         files: cached.files,
         filesUnavailable: false,
         log: cached.commits,
         readme: cached.readme,
+        ...(current ? {} : { behindAt: cached.headSha }),
       };
     }
   }
@@ -1794,6 +1900,44 @@ async function loadRepoPageData(
   };
 }
 
+/**
+ * Background half of {@link loadRepoPageData}'s stale-while-revalidate: reads
+ * the branch once and replaces its cached view. Skipped when another viewer
+ * already claimed the refresh. Never throws — it runs under `waitUntil`, after
+ * the response is gone, so a failure can only be logged.
+ */
+async function refreshRepoView(
+  kv: Env["STATE"],
+  cacheProject: RepoViewCacheProject,
+  remote: string,
+  readToken: string,
+  branch: string,
+  logger: Logger,
+): Promise<void> {
+  try {
+    if (!(await claimRepoViewRefresh(kv, cacheProject, branch, logger))) return;
+    const viewResult = await loadRepoView(remote, readToken, logger, branch);
+    if (!viewResult.success) {
+      logger.warn("Background repo view refresh failed", {
+        branch,
+        error: viewResult.error.message,
+      });
+      return;
+    }
+    // Released only once the view is stored. A view that cannot be stored
+    // (incomplete, or over the size cap) keeps the claim until its TTL, or every
+    // viewer of the still-behind page would start another clone.
+    if (await writeRepoViewCache(kv, cacheProject, branch, viewResult.data, logger)) {
+      await releaseRepoViewRefresh(kv, cacheProject, branch, logger);
+    }
+  } catch (error) {
+    logger.warn("Background repo view refresh threw", {
+      branch,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 // GET /:namespace/:slug/branches — Branch listing (registered before the
 // catch-all repo view at the bottom of this file, which would otherwise swallow
 // it as a slug).
@@ -1818,7 +1962,7 @@ app.get("/:namespace/:slug/branches", async (c) => {
   const project = projectResult.data;
 
   // A private project must be indistinguishable from a missing one.
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return c.html(uiErrorBody(`Project '${namespace}/${slug}' not found.`), 404);
   }
 
@@ -1863,11 +2007,13 @@ app.get("/:namespace/:slug/branches", async (c) => {
  * Returns `{ errorStatus }` instead of throwing so each caller renders the
  * error in its own page shell.
  */
-async function loadIssuePageContext(c: {
-  env: Env;
-  get(key: "userId" | "agentOwnerId"): string | undefined;
-  req: { param(key: string): string; path: string; query(key: string): string | undefined };
-}): Promise<
+async function loadIssuePageContext(
+  c: {
+    env: Env;
+    get(key: "userId" | "agentOwnerId"): string | undefined;
+    req: { param(key: string): string; path: string; query(key: string): string | undefined };
+  } & BindingContext,
+): Promise<
   | {
       project: ProjectEntry;
       user: { id: string; email: string; username: string } | null;
@@ -1890,7 +2036,8 @@ async function loadIssuePageContext(c: {
   ]);
   if (!projectResult.success) return { errorStatus: 404 };
   const project = projectResult.data;
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) return { errorStatus: 404 };
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
+    return { errorStatus: 404 };
 
   return { project, user, userId, logger };
 }
@@ -1965,7 +2112,7 @@ app.get("/:namespace/:slug/issues", async (c) => {
   ];
   const [authors, canWrite] = await Promise.all([
     resolveIssueAuthors(c.env.DB, authorRefs, logger),
-    canWriteProject(c.env.DB, project, userId),
+    canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId),
   ]);
 
   return c.html(
@@ -1991,7 +2138,7 @@ app.get("/:namespace/:slug/issues/new", async (c) => {
   if ("errorStatus" in ctx) return c.notFound();
   const { project, user, userId } = ctx;
 
-  if (!(await canWriteProject(c.env.DB, project, userId))) {
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId))) {
     return c.html(issuePageError(404, user), 404);
   }
 
@@ -2041,7 +2188,7 @@ app.get("/:namespace/:slug/issues/:number", async (c) => {
   ];
   const [authors, canWrite] = await Promise.all([
     resolveIssueAuthors(c.env.DB, authorRefs, logger),
-    canWriteProject(c.env.DB, project, userId),
+    canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId),
   ]);
 
   return c.html(
@@ -2080,7 +2227,7 @@ app.get("/:namespace/:slug/webhooks", async (c) => {
   const project = projectResult.data;
 
   // Webhook URLs and secrets are sensitive: writers only.
-  if (!(await canWriteProject(c.env.DB, project, userId))) {
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId))) {
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, userResult), 404);
   }
 
@@ -2131,7 +2278,7 @@ app.get("/:namespace/:slug/workspaces", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, userResult), 404);
   }
 
@@ -2146,7 +2293,7 @@ app.get("/:namespace/:slug/workspaces", async (c) => {
     createdAt: ws.createdAt,
   }));
 
-  const canWrite = await canWriteProject(c.env.DB, project, userId);
+  const canWrite = await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId);
   return c.html(
     <WorkspacesPage
       project={projectRef(project)}
@@ -2182,7 +2329,7 @@ app.get("/:namespace/:slug/sync", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, userResult), 404);
   }
 
@@ -2270,10 +2417,16 @@ app.get("/:namespace/:slug/deployments", async (c) => {
   if ("response" in loaded) return loaded.response;
   const { project, user } = loaded;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, user), 404);
   }
-  const canWrite = await canWriteProject(c.env.DB, project, userId, agentOwnerId);
+  const canWrite = await canWriteProject(
+    c.env.DB,
+    project,
+    credentialBindingFrom(c),
+    userId,
+    agentOwnerId,
+  );
 
   const result = await listDeployments(c.env.DB, logger, { projectId: project.id });
   if (!result.success) {
@@ -2304,10 +2457,16 @@ app.get("/:namespace/:slug/deployments/:id", async (c) => {
   if ("response" in loaded) return loaded.response;
   const { project, user } = loaded;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, user), 404);
   }
-  const canWrite = await canWriteProject(c.env.DB, project, userId, agentOwnerId);
+  const canWrite = await canWriteProject(
+    c.env.DB,
+    project,
+    credentialBindingFrom(c),
+    userId,
+    agentOwnerId,
+  );
 
   const result = await getDeployment(c.env.DB, logger, { projectId: project.id, deploymentId: id });
   if (!result.success) {
@@ -2348,7 +2507,7 @@ app.get("/:namespace/:slug/settings", async (c) => {
   const project = projectResult.data;
 
   // Same 404 as a missing project — settings must not leak project existence.
-  if (!(await canWriteProject(c.env.DB, project, userId))) {
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId))) {
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, userResult), 404);
   }
 
@@ -2362,6 +2521,7 @@ app.get("/:namespace/:slug/settings", async (c) => {
   const showSecrets = await canManageSecrets(c.env.DB, project, {
     userId,
     agentId: c.get("agentId"),
+    binding: credentialBindingFrom(c),
   });
   const secretsResult = showSecrets ? await listSecretNames(c.env.DB, logger, project.id) : null;
   if (secretsResult && !secretsResult.success) {
@@ -2418,7 +2578,7 @@ app.get("/:namespace/:slug/blob/*", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, userResult), 404);
   }
 
@@ -2467,7 +2627,7 @@ app.get("/:namespace/:slug/blob/*", async (c) => {
     defaultBranch,
     logger,
   );
-  const canWrite = await canWriteProject(c.env.DB, project, userId);
+  const canWrite = await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId);
   return c.html(
     <FileViewerPage
       project={projectRef(project)}
@@ -2516,7 +2676,7 @@ app.get("/:namespace/:slug", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     logger.warn("Project not found or access denied", { namespace, slug, userId });
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, userResult), 404);
   }
@@ -2564,10 +2724,22 @@ app.get("/:namespace/:slug", async (c) => {
   let filesUnavailable = false;
   let log: Array<{ sha: string; message: string; author: string; timestamp: number }> = [];
   let readme: string | null = null;
+  let behindAt: string | undefined;
   let importProgress = null;
 
-  // Check for active import — hide the card once it has completed
-  const importResult = await getImportProgress(c.env.DB, namespace, slug, logger);
+  // Independent of each other, so read together rather than one round trip
+  // after another. The snapshot is keyed `repo_snapshot:<ns>:<slug>` with no
+  // branch component and only ever describes the default branch, so a
+  // non-default ref must not read it at all — serving it would show the default
+  // branch's tree under a URL naming another branch (PRD edge case 15).
+  const [importResult, syncStatusResult, canWrite, snapshotResult2] = await Promise.all([
+    getImportProgress(c.env.DB, namespace, slug, logger),
+    getSyncStatus(c.env.STATE, namespace, slug, logger),
+    canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId),
+    isDefaultBranch ? readRepoSnapshot(c.env.STATE, project, logger) : Promise.resolve(null),
+  ]);
+
+  // Hide the import card once the import has completed
   if (importResult.success && importResult.data && importResult.data.status !== "completed") {
     importProgress = importResult.data;
   }
@@ -2579,22 +2751,13 @@ app.get("/:namespace/:slug", async (c) => {
     latestCommit?: string;
     lastCheckedAt?: string;
   } | null = null;
-  const syncStatusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);
   if (syncStatusResult.success && syncStatusResult.data) {
     syncStatus = syncStatusResult.data;
   }
 
   const isOwner = !!userId && project.ownerType === "user" && project.ownerId === userId;
   const canSync = !!getProjectSourceUrl(project) && isOwner && project.importCompleted !== false;
-  const canWrite = await canWriteProject(c.env.DB, project, userId);
 
-  // The snapshot is keyed `repo_snapshot:<ns>:<slug>` with no branch component
-  // and only ever describes the default branch, so a non-default ref must not
-  // read it at all — serving it would show the default branch's tree under a URL
-  // naming another branch (PRD edge case 15).
-  const snapshotResult2 = isDefaultBranch
-    ? await readRepoSnapshot(c.env.STATE, project, logger)
-    : null;
   const snapshotServedThePage = Boolean(snapshotResult2?.success && snapshotResult2.data);
   // Minted only when the snapshot cannot serve the page — a hit does no git work.
   const cloneToken = snapshotServedThePage ? null : await getReadToken();
@@ -2637,6 +2800,7 @@ app.get("/:namespace/:slug", async (c) => {
     filesUnavailable = data.filesUnavailable;
     log = data.log;
     readme = data.readme;
+    behindAt = data.behindAt;
   }
 
   logger.debug("Rendering project page", {
@@ -2679,6 +2843,7 @@ app.get("/:namespace/:slug", async (c) => {
       refName={isDefaultBranch ? undefined : branch}
       defaultBranch={defaultBranch}
       branchNames={branchNames}
+      behindAt={behindAt}
     />,
   );
 });

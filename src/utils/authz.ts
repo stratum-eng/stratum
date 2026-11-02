@@ -1,16 +1,132 @@
 import { orgBlockedBySecondFactor } from "../services/org-second-factor";
 import { type OrgAccessLevel, getOrgAccessLevel } from "../storage/orgs";
-import type { ProjectEntry, WorkspaceEntry } from "../types";
+import type {
+  BoundCredentialBinding,
+  CredentialBinding,
+  ProjectEntry,
+  WorkspaceEntry,
+} from "../types";
 import { createLogger } from "./logger";
+import { forbidden } from "./response";
 
 const logger = createLogger({ component: "Authz" });
 
-/** Direct ownership: the project belongs to this user (or this agent's owner). */
+/*
+ * Credential binding (#323).
+ *
+ * Every helper in this module that answers "may this caller touch this
+ * project?" takes the caller's {@link CredentialBinding} as a REQUIRED
+ * positional argument, ahead of the optional principal ids. That ordering is
+ * load-bearing: the old signature was `(db, project, userId?, agentOwnerId?)`,
+ * so a call site nobody updated passes a `string | undefined` where a binding
+ * is expected and fails to COMPILE. A defaulted or trailing optional parameter
+ * would have turned each missed call site into a silent bypass instead — the
+ * exact failure a reviewer cannot see in a diff.
+ *
+ * A binding only narrows. It is checked before, and in addition to, the
+ * principal's own access, so a bound token never reaches more than its owner
+ * could, and out-of-binding projects are refused even when public: the token's
+ * holder was handed "this project", not "this project plus the public web".
+ * Anonymous access to a public project is a different request (no credential)
+ * and is unaffected.
+ */
+
+/** The binding of every credential that is not a bound scoped token. */
+export const UNBOUND: CredentialBinding = Object.freeze({ kind: "unbound" });
+
+/**
+ * The slice of a Hono context {@link credentialBindingFrom} reads. Route
+ * helpers that accept a narrowed context intersect this into it, so a helper
+ * that authorizes cannot be handed a context that has no binding to give.
+ */
+export type BindingContext = {
+  get: (key: "credentialBinding") => CredentialBinding | undefined;
+};
+
+/**
+ * The binding the request authenticated with. `authMiddleware` publishes it
+ * for scoped tokens; every other credential kind (session, agent, OAuth grant,
+ * legacy key, anonymous) is {@link UNBOUND}.
+ */
+export function credentialBindingFrom(c: BindingContext): CredentialBinding {
+  return c.get("credentialBinding") ?? UNBOUND;
+}
+
+/** Narrows to a binding that actually restricts something. */
+export function isBound(binding: CredentialBinding): binding is BoundCredentialBinding {
+  return binding.kind !== "unbound";
+}
+
+/**
+ * Whether the binding admits this project at all, before any question of the
+ * principal's own access. An org binding covers projects OWNED by that org —
+ * read from the project as it is now, so a project transferred out of the org
+ * leaves the binding with it.
+ */
+export function bindingCoversProject(binding: CredentialBinding, project: ProjectEntry): boolean {
+  switch (binding.kind) {
+    case "unbound":
+      return true;
+    case "project":
+      return project.id === binding.projectId;
+    case "org":
+      return project.ownerType === "org" && project.ownerId === binding.orgId;
+  }
+}
+
+/**
+ * The response for a caller an authz helper just refused, on a route that
+ * answers non-writers with `403`.
+ *
+ * A `403` confirms the project exists, which a stranger may learn on those
+ * routes but a bound token must not: its holder was handed one project or org,
+ * and a `403`/`404` split would let it enumerate the rest of the account's
+ * private projects. So outside the binding the route answers with `hidden` —
+ * whatever it gives for a target that does not exist — and only inside the
+ * binding is the refusal a `403`. Every "Project access denied" in the routes
+ * goes through here so the rule has one home.
+ */
+export function refuseProjectAccess(
+  binding: CredentialBinding,
+  project: ProjectEntry,
+  hidden: () => Response,
+): Response {
+  if (!bindingCoversProject(binding, project)) return hidden();
+  return forbidden("Project access denied");
+}
+
+/**
+ * Whether the binding admits creating a project owned by `owner`. A project
+ * binding never does — it names one EXISTING project — and an org binding only
+ * inside its own org.
+ */
+export function bindingAllowsCreateIn(
+  binding: CredentialBinding,
+  owner: { type: "user" | "org"; id: string },
+): boolean {
+  switch (binding.kind) {
+    case "unbound":
+      return true;
+    case "project":
+      return false;
+    case "org":
+      return owner.type === "org" && owner.id === binding.orgId;
+  }
+}
+
+/** Direct ownership: the project belongs to this user (or this agent's owner),
+ * and the caller's binding admits it. */
 export function isDirectOwner(
   project: ProjectEntry,
+  binding: CredentialBinding,
   userId?: string,
   agentOwnerId?: string,
 ): boolean {
+  if (!bindingCoversProject(binding, project)) return false;
+  return ownsDirectly(project, userId, agentOwnerId);
+}
+
+function ownsDirectly(project: ProjectEntry, userId?: string, agentOwnerId?: string): boolean {
   if (!project.ownerId) return false;
   return project.ownerId === userId || project.ownerId === agentOwnerId;
 }
@@ -42,16 +158,18 @@ function levelAllowsWrite(level: OrgAccessLevel): boolean {
 export async function canReadProject(
   db: D1Database,
   project: ProjectEntry,
+  binding: CredentialBinding,
   userId?: string,
   agentOwnerId?: string,
 ): Promise<boolean> {
+  if (!bindingCoversProject(binding, project)) return false;
   // Incomplete imports are only visible to writers — the repo has no content yet.
   // importCompleted is absent on legacy projects; treat absence as completed.
   if (project.importCompleted === false) {
-    return canWriteProject(db, project, userId, agentOwnerId);
+    return canWriteProject(db, project, binding, userId, agentOwnerId);
   }
   if (project.visibility === "public") return true;
-  if (isDirectOwner(project, userId, agentOwnerId)) return true;
+  if (ownsDirectly(project, userId, agentOwnerId)) return true;
 
   if (project.ownerType === "org") {
     const actor = userId ?? agentOwnerId;
@@ -69,10 +187,12 @@ export async function canReadProject(
 export async function canWriteProject(
   db: D1Database,
   project: ProjectEntry,
+  binding: CredentialBinding,
   userId?: string,
   agentOwnerId?: string,
 ): Promise<boolean> {
-  if (isDirectOwner(project, userId, agentOwnerId)) return true;
+  if (!bindingCoversProject(binding, project)) return false;
+  if (ownsDirectly(project, userId, agentOwnerId)) return true;
 
   if (project.ownerType === "org") {
     const actor = userId ?? agentOwnerId;
@@ -91,10 +211,12 @@ export async function canWriteProject(
 export async function isProjectAdmin(
   db: D1Database,
   project: ProjectEntry,
+  binding: CredentialBinding,
   userId?: string,
   agentOwnerId?: string,
 ): Promise<boolean> {
-  if (isDirectOwner(project, userId, agentOwnerId)) return true;
+  if (!bindingCoversProject(binding, project)) return false;
+  if (ownsDirectly(project, userId, agentOwnerId)) return true;
 
   if (project.ownerType === "org") {
     const actor = userId ?? agentOwnerId;
@@ -122,17 +244,19 @@ export async function canWriteWorkspace(
   db: D1Database,
   project: ProjectEntry,
   workspace: WorkspaceEntry,
+  binding: CredentialBinding,
   userId?: string,
   agentOwnerId?: string,
 ): Promise<boolean> {
+  if (!bindingCoversProject(binding, project)) return false;
   const effectiveUser = userId ?? agentOwnerId;
   if (workspace.createdByUserId !== undefined) {
     if (effectiveUser !== undefined && workspace.createdByUserId === effectiveUser) return true;
     // Not the creator, but an admin may still override.
-    return isProjectAdmin(db, project, userId, agentOwnerId);
+    return isProjectAdmin(db, project, binding, userId, agentOwnerId);
   }
   // Legacy (no recorded creator) OR admin-override path: admins only.
-  return isProjectAdmin(db, project, userId, agentOwnerId);
+  return isProjectAdmin(db, project, binding, userId, agentOwnerId);
 }
 
 /**
@@ -141,10 +265,12 @@ export async function canWriteWorkspace(
  */
 export async function filterReadableProjects(
   db: D1Database,
-  projects: ProjectEntry[],
+  allProjects: ProjectEntry[],
+  binding: CredentialBinding,
   userId?: string,
   agentOwnerId?: string,
 ): Promise<ProjectEntry[]> {
+  const projects = allProjects.filter((project) => bindingCoversProject(binding, project));
   const actor = userId ?? agentOwnerId;
   const orgLevels = new Map<string, OrgAccessLevel>();
 
@@ -159,11 +285,11 @@ export async function filterReadableProjects(
   return projects.filter((project) => {
     if (project.importCompleted === false) {
       // Same write-only rule as canReadProject for incomplete imports.
-      if (isDirectOwner(project, userId, agentOwnerId)) return true;
+      if (ownsDirectly(project, userId, agentOwnerId)) return true;
       return project.ownerType === "org" && levelAllowsWrite(orgLevel(project.ownerId));
     }
     if (project.visibility === "public") return true;
-    if (isDirectOwner(project, userId, agentOwnerId)) return true;
+    if (ownsDirectly(project, userId, agentOwnerId)) return true;
     if (project.ownerType === "org") return orgLevel(project.ownerId) !== "none";
     return false;
   });
@@ -180,12 +306,14 @@ export async function filterReadableProjects(
  */
 export async function filterMemberProjects(
   db: D1Database,
-  projects: ProjectEntry[],
+  allProjects: ProjectEntry[],
+  binding: CredentialBinding,
   userId?: string,
   agentOwnerId?: string,
 ): Promise<ProjectEntry[]> {
   const actor = userId ?? agentOwnerId;
   if (!actor) return [];
+  const projects = allProjects.filter((project) => bindingCoversProject(binding, project));
 
   const orgLevels = new Map<string, OrgAccessLevel>();
   const orgIds = new Set(projects.filter((p) => p.ownerType === "org").map((p) => p.ownerId));
@@ -196,10 +324,10 @@ export async function filterMemberProjects(
 
   return projects.filter((project) => {
     if (project.importCompleted === false) {
-      if (isDirectOwner(project, userId, agentOwnerId)) return true;
+      if (ownsDirectly(project, userId, agentOwnerId)) return true;
       return project.ownerType === "org" && levelAllowsWrite(orgLevel(project.ownerId));
     }
-    if (isDirectOwner(project, userId, agentOwnerId)) return true;
+    if (ownsDirectly(project, userId, agentOwnerId)) return true;
     if (project.ownerType === "org") return orgLevel(project.ownerId) !== "none";
     return false;
   });

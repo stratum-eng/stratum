@@ -65,8 +65,69 @@ remote — including the `info/refs?service=git-receive-pack` advertisement that
 precedes it.
 
 Read-only bounds *damage*, not *exposure*: a `read` token still reads every
-private project its owner can read. Sessions and agent tokens are unaffected by
-scopes.
+private project its owner can read — to bound exposure, limit the token to a
+project or organization as well ([below](#project-and-organization-binding)).
+Sessions and agent tokens are unaffected by scopes.
+
+### Project and organization binding
+
+A user token can additionally be **bound** to one project or one organization
+when it is created. Binding is the second scope dimension, independent of
+`read` / `read_write`: the scope says *what* the token may do, the binding says
+*where*.
+
+| Binding | What it reaches |
+|---|---|
+| none (default) | Every project its owner can reach — the behaviour of every token created before bindings existed. |
+| `project` | That one project, by its stable id (renaming it does not break the token). |
+| `org` | Every project currently **owned by** that organization. Not the owner's personal projects, and not other organizations' projects. |
+
+A binding only ever narrows: inside it, the token can still do no more than its
+owner can, under its scope. One project *or* one organization per token, not a
+set — create another token for another project.
+
+Outside its binding a token learns nothing about what exists: every route
+answers an out-of-binding project exactly as it answers one that does not
+exist — `404` almost everywhere, even when the project is public. That holds on
+the routes that refuse a non-writer with `403` too (webhooks, deploy secrets,
+change merges and reviews, issue edits): a stranger gets `403` there, but a
+bound token gets the not-found answer, so it cannot tell another private
+project from a missing one. (The `/api/projects/{namespace}/{slug}/sync/*`
+routes answer `403` for missing and inaccessible projects alike, and so for an
+out-of-binding one.) Over git, clone and push to an out-of-binding remote are
+the same `404`. `GET /api/projects` lists only the bound project (or
+the bound organization's projects).
+
+A bound token can reach only the project surfaces of the API:
+`/api/projects/...`, `/api/changes/...`, `/api/workspaces/...`,
+`/api/deployments/...`, `GET /api/users/me`, the MCP endpoint at `/mcp` (whose
+tools are held to the same binding), git over HTTPS, and the public health
+checks (`/health`, `/api/health`). **Everything else** —
+the rest of `/api/users/me/*` (usage, token management, key rotation, account
+deletion), `/api/agents`, `/api/orgs` (including SSO and SCIM administration),
+`/api/bulk-import`, `/api/admin/*`, session management and the web UI — answers
+`403` with the code `TOKEN_BINDING_EXCLUDES_ROUTE`, before routing. In
+particular a bound token can never mint a broader credential: not a token, not
+an agent, not the legacy key.
+
+The [read-only rule](#scopes) is checked first. A **`read`** bound token
+calling any non-`GET`/`HEAD` endpoint — including one outside its surfaces, such
+as `POST /api/agents` — gets `403 TOKEN_SCOPE_INSUFFICIENT`, not
+`TOKEN_BINDING_EXCLUDES_ROUTE`. Both are refusals before routing; only the code
+differs.
+
+Within its surfaces a bound token also cannot create anything outside its
+binding: a project-bound token cannot create or import projects at all, and an
+organization-bound token can create projects only in that organization
+(`POST /api/projects` with `"org"` set to it).
+
+A token whose bound project or organization is later deleted stops reaching
+anything; it is not widened back to account-wide. Revoke it as usual.
+
+To bind a token, pass **one** of `project` (a path such as `"@alice/web"`) or
+`org` (an organization slug) when creating it. You must be able to read the
+project, or be a member of the organization; otherwise the request is a `404`,
+the same as for one that does not exist. Sending both is a `400`.
 
 ### Expiry and limits
 
@@ -103,6 +164,11 @@ to recognise a credential sitting in a CI config.
 curl -X POST https://your-instance.workers.dev/api/users/me/tokens \
   -b "stratum_session=..." -H "Content-Type: application/json" \
   -d '{"name":"buildkite","scope":"read","expiresInDays":90}'
+
+# Create a read & write token that can reach only one project
+curl -X POST https://your-instance.workers.dev/api/users/me/tokens \
+  -b "stratum_session=..." -H "Content-Type: application/json" \
+  -d '{"name":"deploy-bot","scope":"read_write","project":"@alice/web"}'
 ```
 
 ### The legacy token

@@ -110,6 +110,32 @@ export async function getOrg(
   }
 }
 
+/**
+ * An org's slug by id, telling "no such org" (`ok(null)`) apart from "could
+ * not ask" (`err`). `getOrg` cannot: it reports a D1 failure as not-found,
+ * which is fine for an authorization path that fails closed either way but
+ * wrong for anything that tells a person the org is gone.
+ */
+export async function findOrgSlugById(
+  db: D1Database,
+  logger: Logger,
+  id: string,
+): Promise<Result<string | null, AppError>> {
+  try {
+    const row = await db
+      .prepare("SELECT slug FROM orgs WHERE id = ?")
+      .bind(id)
+      .first<{ slug: string }>();
+    return ok(row?.slug ?? null);
+  } catch (error) {
+    logger.warn("Failed to look up org slug", {
+      orgId: id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return err(new AppError("Failed to look up org", "DATABASE_ERROR", 500, { orgId: id }));
+  }
+}
+
 export async function getOrgBySlug(
   db: D1Database,
   logger: Logger,
