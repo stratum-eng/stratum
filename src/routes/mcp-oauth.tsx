@@ -28,6 +28,7 @@ import {
   SUPPORTED_SCOPES,
   claimAuthorizationCode,
   getClient,
+  isAllowedRedirectUri,
   isValidCodeChallenge,
   issueAuthorizationCode,
   issueTokens,
@@ -423,7 +424,9 @@ async function renderAuthorizeError(
   detail: string,
   back?: AuthorizeReturn,
 ): Promise<Response> {
-  const backUrl = back ? returnUrl(back) : undefined;
+  // Registration already admits only https and loopback http; re-checked here
+  // because this lands in an href, where a `javascript:` URI would execute.
+  const backUrl = back && isAllowedRedirectUri(back.redirectUri) ? returnUrl(back) : undefined;
   return c.html(
     <html lang="en">
       <head>
