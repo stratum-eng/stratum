@@ -2105,6 +2105,7 @@ app.get("/:namespace/:slug/webhooks", async (c) => {
       webhooks={webhooks}
       subscribableEvents={SUBSCRIBABLE_EVENTS}
       user={userResult}
+      nonce={c.get("cspNonce") ?? ""}
     />,
   );
 });
