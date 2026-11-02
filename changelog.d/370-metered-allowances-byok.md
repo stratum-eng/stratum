@@ -66,7 +66,10 @@
   exception is an organization whose plan is positively known to pool usage:
   its projects draw on the organization's allowance instead. A private project
   you create in an organization that does not pool counts against your own
-  limit; organizations you are merely a member of never do.
+  limit; organizations you are merely a member of never do. No backfill is
+  needed or possible: nothing before this release recorded who was charged for
+  an organization's private project, so those count only toward an organization
+  that pools, and personal private projects count as before.
 
 ### Changed
 

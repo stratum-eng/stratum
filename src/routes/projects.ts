@@ -134,12 +134,15 @@ function generateProjectId(): string {
  */
 export const MAX_GAUGE_CHARGES = 100;
 
-/** What counting a subject's private projects produced. */
-export type GaugeCount =
-  /** `complete: false` — a read faulted, so `count` is a lower bound. */
-  | { kind: "counted"; count: number; complete: boolean }
-  /** At least {@link MAX_GAUGE_CHARGES} verified charges, with more unchecked. */
-  | { kind: "over_cap" };
+/**
+ * What counting a subject's private projects produced. `complete: false` means
+ * `count` is a lower bound — a read faulted, or verification stopped at
+ * {@link MAX_GAUGE_CHARGES} — and never that it could be above the truth.
+ */
+export interface GaugeCount {
+  count: number;
+  complete: boolean;
+}
 
 /**
  * Count the private projects already charged to `subject`'s gauge.
@@ -160,10 +163,10 @@ export type GaugeCount =
  * billing machinery must not block a customer's work. Only what could not be
  * read is dropped — the rest is a lower bound, and a lower bound already over
  * the limit refuses, because that is an answer, not a fault.
- * Past {@link MAX_GAUGE_CHARGES} verification stops and the count is that
- * floor: it still refuses any limit it already meets, and the work per creation
- * stays bounded. Reaching it takes the subject's own creations, so no one else
- * can move it.
+ * Past {@link MAX_GAUGE_CHARGES} verification stops: the verified charges are
+ * added on top of the personal count, so the floor is never below anything
+ * already counted, and the work per creation stays bounded. Reaching it takes
+ * the subject's own creations, so no one else can move it.
  */
 async function countGaugedPrivateProjects(
   env: Env,
@@ -196,8 +199,11 @@ async function countGaugedPrivateProjects(
       max: MAX_GAUGE_CHARGES,
     });
     if (charged.success) {
-      if (charged.data.overflow) return { kind: "over_cap" };
+      // On overflow `charged.data.count` is MAX_GAUGE_CHARGES verified entries,
+      // so personal + that is a true floor, not a substitute for the personal
+      // count.
       count += charged.data.count;
+      if (charged.data.overflow) complete = false;
     } else {
       complete = false;
       logger.warn("Private project gauge: charge index unreadable; count is a lower bound", {
@@ -205,7 +211,7 @@ async function countGaugedPrivateProjects(
       });
     }
   }
-  return { kind: "counted", count, complete };
+  return { count, complete };
 }
 
 // POST /projects - Create a new project
@@ -304,13 +310,12 @@ app.post("/", async (c) => {
         personalNamespace: getUserNamespace(username),
         targetNamespace: namespace,
       });
-      // Over the cap the verified charges alone reach MAX_GAUGE_CHARGES, which
-      // is a true floor: passing it refuses exactly the limits it already
-      // exceeds, and an unlimited plan or observe-only behaves as usual.
+      // A lower bound is passed as-is: it refuses exactly the limits it already
+      // meets, and an unlimited plan or observe-only behaves as usual.
       const decision = await checkGauge(c.env, logger, {
         subject: gaugeSubject,
         count: "private_projects",
-        current: counted.kind === "over_cap" ? MAX_GAUGE_CHARGES : counted.count,
+        current: counted.count,
         what: "Creating another private project",
       });
       if (!decision.admitted) {
@@ -412,23 +417,27 @@ app.post("/", async (c) => {
     if (!claimed.success) return appError(claimed.error);
   }
 
-  const setResult = await setProject(c.env.STATE, project, logger);
-  if (!setResult.success) {
-    logger.error("Failed to set project", setResult.error);
-    if (owner.type === "user") await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
-    return internalError(setResult.error.message);
-  }
-
   // Charged to the actor but stored under an org: index it under the actor so
-  // the gauge can find it without walking their memberships. A failed write is
-  // logged inside and only under-counts — the fail-open direction.
+  // the gauge can find it without walking their memberships. Written BEFORE the
+  // project entry and fatal on failure, so a project charged to someone can
+  // never exist without its index entry — a missing entry would be a silent,
+  // repeatable under-count. The reverse order is harmless: an entry whose
+  // project never lands is pruned as NOT_FOUND on the next count.
   if (owner.type === "org" && gaugeSubjectId !== undefined && gaugeSubjectId !== owner.id) {
-    await recordGaugeCharge(c.env.STATE, logger, {
+    const indexed = await recordGaugeCharge(c.env.STATE, logger, {
       subjectId: gaugeSubjectId,
       namespace,
       slug,
       projectId,
     });
+    if (!indexed.success) return internalError("Failed to record the private project charge");
+  }
+
+  const setResult = await setProject(c.env.STATE, project, logger);
+  if (!setResult.success) {
+    logger.error("Failed to set project", setResult.error);
+    if (owner.type === "user") await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
+    return internalError(setResult.error.message);
   }
 
   // The username on this request was read at auth time, before the repository

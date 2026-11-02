@@ -852,6 +852,53 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
     expect(projectReads.length).toBeLessThanOrEqual(MAX_GAUGE_CHARGES);
   });
 
+  it("keeps the personal count under the overflow floor", async () => {
+    // Overflow used to report MAX_GAUGE_CHARGES alone, dropping the personal
+    // projects already counted; the floor must be personal + cap.
+    const userId = createUser(nextUserId());
+    seedOrg(userId);
+    cachePlan("user", userId, plan({ counts: { private_projects: MAX_GAUGE_CHARGES + 2 } }));
+    for (const slug of ["one", "two", "three"]) {
+      await seedProject("@alice", slug, { ownerId: userId, ownerType: "user" });
+    }
+    for (let i = 0; i < MAX_GAUGE_CHARGES + 10; i++) await seedChargedOrgProject(`p${i}`, userId);
+
+    const response = await projectApp(userId, "alice")({ name: "x", visibility: "private" });
+
+    expect(response.status).toBe(403);
+  });
+
+  it("does not create a charged org project when its index entry cannot be written", async () => {
+    const userId = createUser(nextUserId());
+    seedOrg(userId);
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    const realPut = kv.put.bind(kv);
+    vi.spyOn(kv, "put").mockImplementation(async (key, value) => {
+      if (String(key).startsWith("gauge-charge:")) throw new Error("kv down");
+      return realPut(key, value as string);
+    });
+    const artifacts = {
+      create: async (name: string) => ({
+        name,
+        remote: `https://artifacts.test/${name}.git`,
+        token: "tok",
+      }),
+    } as unknown as Env["ARTIFACTS"];
+
+    const response = await projectApp(
+      userId,
+      "alice",
+      artifacts,
+    )({
+      name: "fresh",
+      visibility: "private",
+      org: "acme",
+    });
+
+    expect(response.status).toBe(500);
+    expect(await kv.get("project:@acme:fresh")).toBeNull();
+  });
+
   it("prunes a charge whose project is gone, so it never over-counts", async () => {
     const userId = createUser(nextUserId());
     seedOrg(userId);
