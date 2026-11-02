@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import app from "../src/index";
 import {
   freshRepoToken,
-  listFilesInRepo,
   listRepoBranches,
+  loadRepoView,
   resolveBranchRef,
 } from "../src/storage/git-ops";
 import { readRepoSnapshot } from "../src/storage/repo-snapshot";
@@ -45,9 +45,10 @@ vi.mock("../src/storage/git-ops", async (importActual) => {
         data: { name, oid: "b".repeat(40) },
       }),
     ),
-    listFilesInRepo: vi.fn(async () => ({ success: true, data: ["src/index.ts"] })),
-    getCommitLog: vi.fn(async () => ({ success: true, data: [] })),
-    readFileFromRepo: vi.fn(async () => ({ success: false, error: new Error("no readme") })),
+    loadRepoView: vi.fn(async () => ({
+      success: true,
+      data: { headSha: "b".repeat(40), files: ["src/index.ts"], commits: [], readme: null },
+    })),
   };
 });
 
@@ -323,7 +324,7 @@ describe("UI GET /:namespace/:slug — ?ref=", () => {
 
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("SNAPSHOT_ONLY.md");
-    expect(vi.mocked(listFilesInRepo)).not.toHaveBeenCalled();
+    expect(vi.mocked(loadRepoView)).not.toHaveBeenCalled();
   });
 
   it("does no git work at all when the snapshot serves the default branch", async () => {
@@ -367,7 +368,7 @@ describe("UI GET /:namespace/:slug — ?ref=", () => {
     // branch, so it must not be read at all for another ref.
     expect(vi.mocked(readRepoSnapshot)).not.toHaveBeenCalled();
     expect(html).not.toContain("SNAPSHOT_ONLY.md");
-    expect(vi.mocked(listFilesInRepo)).toHaveBeenCalledWith(
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledWith(
       expect.any(String),
       "mock-token",
       expect.anything(),
@@ -414,7 +415,7 @@ describe("UI GET /:namespace/:slug — ?ref=", () => {
 
     expect(res.status).toBe(404);
     expect(await res.text()).toContain("nope");
-    expect(vi.mocked(listFilesInRepo)).not.toHaveBeenCalled();
+    expect(vi.mocked(loadRepoView)).not.toHaveBeenCalled();
   });
 
   it("409s a ref that names both a branch and a tag, naming both namespaces", async () => {
@@ -503,5 +504,133 @@ describe("RepoPage branches link", () => {
     const html = await res.text();
     expect(html).toContain('href="/@owner/repo/branches"');
     expect(html).toContain('href="/@owner/repo/tags"');
+  });
+});
+
+describe("UI GET /:namespace/:slug — view cache on a snapshot miss", () => {
+  // Production had no `repo_snapshot:` entries at all, so every overview fell
+  // through to the clone path — three clones and ~24s of CPU per view. These
+  // pin that a miss clones once, and that the view cache it fills is only ever
+  // served for the exact commit it was read at.
+
+  function missSnapshot(): void {
+    vi.mocked(readRepoSnapshot).mockResolvedValue({ success: true, data: null });
+  }
+
+  function cloneReads(headSha: string, files: string[] = ["CLONED.md"]): void {
+    vi.mocked(loadRepoView).mockResolvedValue({
+      success: true,
+      data: { headSha, files, commits: [], readme: null },
+    });
+  }
+
+  function advertise(mainTip: string): void {
+    vi.mocked(listRepoBranches).mockResolvedValue({
+      success: true,
+      data: {
+        branches: [
+          { name: "main", oid: mainTip },
+          { name: "release/2.x", oid: FEATURE_TIP },
+        ],
+        truncated: false,
+        totalBranchCount: 2,
+      },
+    });
+  }
+
+  beforeEach(() => {
+    vi.mocked(readRepoSnapshot).mockReset();
+    vi.mocked(loadRepoView).mockReset();
+    vi.mocked(listRepoBranches).mockReset();
+    missSnapshot();
+    advertise(DEFAULT_TIP);
+    cloneReads(DEFAULT_TIP);
+  });
+
+  it("clones once, then serves the next view of the same commit from the cache", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+
+    const first = await app.fetch(req("/@owner/repo"), env);
+    expect(first.status).toBe(200);
+    expect(await first.text()).toContain("CLONED.md");
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(1);
+
+    const second = await app.fetch(req("/@owner/repo"), env);
+    expect(second.status).toBe(200);
+    expect(await second.text()).toContain("CLONED.md");
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-reads the repository once the branch has moved", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    await app.fetch(req("/@owner/repo"), env);
+
+    const movedTip = "c".repeat(40);
+    advertise(movedTip);
+    cloneReads(movedTip, ["AFTER_MERGE.md"]);
+    const res = await app.fetch(req("/@owner/repo"), env);
+
+    const html = await res.text();
+    expect(html).toContain("AFTER_MERGE.md");
+    expect(html).not.toContain("CLONED.md");
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache a view whose file listing failed", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    vi.mocked(loadRepoView).mockResolvedValueOnce({
+      success: true,
+      data: { headSha: DEFAULT_TIP, files: null, commits: [], readme: null },
+    });
+
+    await app.fetch(req("/@owner/repo"), env);
+    const res = await app.fetch(req("/@owner/repo"), env);
+
+    expect(await res.text()).toContain("CLONED.md");
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
+  });
+
+  it("keys the cache by branch, so another ref never sees the default branch's view", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    await app.fetch(req("/@owner/repo"), env);
+
+    cloneReads(FEATURE_TIP, ["FEATURE_ONLY.md"]);
+    const feature = await app.fetch(req("/@owner/repo?ref=release/2.x"), env);
+    expect(await feature.text()).toContain("FEATURE_ONLY.md");
+
+    const featureAgain = await app.fetch(req("/@owner/repo?ref=release/2.x"), env);
+    expect(await featureAgain.text()).toContain("FEATURE_ONLY.md");
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
+  });
+
+  it("clones without caching when the advertisement failed and there is no tip to check", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    vi.mocked(listRepoBranches).mockResolvedValue(
+      err(new AppError("Failed to read remote refs", "EXTERNAL_SERVICE_ERROR", 502)),
+    );
+
+    await app.fetch(req("/@owner/repo"), env);
+    const res = await app.fetch(req("/@owner/repo"), env);
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders an empty page when the clone fails", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    vi.mocked(loadRepoView).mockResolvedValue(
+      err(new AppError("Failed to clone", "EXTERNAL_SERVICE_ERROR", 502)),
+    );
+
+    const res = await app.fetch(req("/@owner/repo"), env);
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).not.toContain("CLONED.md");
   });
 });

@@ -82,6 +82,23 @@ vi.mock("../src/storage/git-ops", () => ({
     ],
   })),
   readFileFromRepo: vi.fn(async () => ({ success: true, data: "# README" })),
+  // The repo view reads files, log and README from one clone (loadRepoView).
+  loadRepoView: vi.fn(async () => ({
+    success: true,
+    data: {
+      headSha: "abc123",
+      files: ["src/index.ts", "README.md"],
+      commits: [
+        {
+          sha: "abc123",
+          message: "Initial commit",
+          author: "Stratum <system@usestratum.dev>",
+          timestamp: 1000,
+        },
+      ],
+      readme: "# README",
+    },
+  })),
   freshRepoToken: vi.fn(async (_artifacts: unknown, _remote: string, _scope: string) => ({
     success: true,
     data: "mock-token",
@@ -370,10 +387,15 @@ describe("Namespace Routes", () => {
     });
 
     it("handles projects with README.md correctly", async () => {
-      const { readFileFromRepo } = await import("../src/storage/git-ops");
-      vi.mocked(readFileFromRepo).mockResolvedValueOnce({
+      const { loadRepoView } = await import("../src/storage/git-ops");
+      vi.mocked(loadRepoView).mockResolvedValueOnce({
         success: true,
-        data: "# My Project\n\nThis is the README",
+        data: {
+          headSha: "abc123",
+          files: ["README.md"],
+          commits: [],
+          readme: "# My Project\n\nThis is the README",
+        },
       });
 
       await createTestProject(env, "@testuser", "project-with-readme", "user_test", "public");
@@ -381,6 +403,7 @@ describe("Namespace Routes", () => {
       const res = await app.fetch(request("GET", "/@testuser/project-with-readme"), env);
 
       expect(res.status).toBe(200);
+      expect(await res.text()).toContain("This is the README");
     });
   });
 

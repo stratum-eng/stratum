@@ -117,6 +117,7 @@ import {
   getCommitParent,
   getDiffBetweenRepos,
   listFilesInRepo,
+  loadRepoView,
   mergeWorkspaceIntoProject,
   pushMain,
   readFileFromRepo,
@@ -254,6 +255,49 @@ describe("read helpers honor the branch parameter", () => {
     const [c1, c2] = await precomputeShas(h.servers.get(remote) as never);
     const result = await getCommitParent(remote, "tok", c2 as string, logger, "master");
     expect(result.success && result.data).toBe(c1);
+  });
+});
+
+describe("loadRepoView", () => {
+  const remote = "https://r/view.git";
+  const server: { branch: string; commits: Record<string, string>[] } = {
+    branch: "master",
+    commits: [{ "a.txt": "v1\n" }, { "README.md": "# Title\n", "src/b.txt": "b\n" }],
+  };
+  beforeEach(() => {
+    h.servers.set(remote, server);
+  });
+
+  it("reads files, log, README and the head sha from a single clone", async () => {
+    const [, tip] = await precomputeShas(server);
+    const result = await loadRepoView(remote, "tok", logger, "master");
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.headSha).toBe(tip);
+    expect(result.data.files?.sort()).toEqual(["README.md", "a.txt", "src/b.txt"]);
+    expect(result.data.commits.map((c) => c.message)).toEqual(["seed 1", "seed 0"]);
+    expect(result.data.commits[0]?.sha).toBe(tip);
+    expect(result.data.readme).toBe("# Title\n");
+    // The whole point: one clone per page view, not one per piece of the view.
+    expect(h.calls.clone).toHaveLength(1);
+    expect(h.calls.clone[0]).toMatchObject({ ref: "master" });
+  });
+
+  it("caps the log at the requested depth", async () => {
+    const result = await loadRepoView(remote, "tok", logger, "master", 1);
+    expect(result.success && result.data.commits).toHaveLength(1);
+  });
+
+  it("has no README when the repo has none", async () => {
+    h.servers.set(remote, { branch: "master", commits: [{ "a.txt": "v1\n" }] });
+    const result = await loadRepoView(remote, "tok", logger, "master");
+    expect(result.success && result.data.readme).toBeNull();
+  });
+
+  it("errs when the clone fails", async () => {
+    const result = await loadRepoView(remote, "tok", logger, "main");
+    expect(result.success).toBe(false);
   });
 });
 
