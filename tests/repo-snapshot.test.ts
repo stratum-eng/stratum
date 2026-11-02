@@ -125,6 +125,24 @@ describe("repo snapshot capture", () => {
     expect(snap.manifest.objectCount).toBe(walk.data.objects.length);
   });
 
+  it("fails, rather than snapshotting tags only, when HEAD resolves but a commit is missing", async () => {
+    // A gap in the history makes git.log throw NotFoundError too. Read as an
+    // unborn HEAD, it would drop the default branch and still report success.
+    const { fs, tipSha } = await buildRepo([{ "a.txt": "1" }, { "a.txt": "2" }]);
+    // biome-ignore lint/suspicious/noExplicitAny: isomorphic-git fs shape
+    const gfs = fs as any;
+    const { commit } = await git.readCommit({ fs: gfs, dir: DIR, oid: tipSha });
+    const parent = commit.parent[0] as string;
+    await gfs.promises.unlink(`${DIR}/.git/objects/${parent.slice(0, 2)}/${parent.slice(2)}`);
+    await git.tag({ fs: gfs, dir: DIR, ref: "v1", object: tipSha });
+
+    const walk = await walkRepoObjects(fs, DIR, 1_000_000, logger);
+
+    expect(walk.success).toBe(false);
+    if (walk.success) return;
+    expect(walk.error.code).toBe("GIT_ERROR");
+  });
+
   it("still reports empty when HEAD is unborn and no tag resolves", async () => {
     const fs = new MemoryFS().toNodeFS() as unknown as NodeFS;
     // biome-ignore lint/suspicious/noExplicitAny: isomorphic-git fs shape

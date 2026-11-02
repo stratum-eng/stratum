@@ -123,6 +123,18 @@ export async function walkRepoObjects(
       logger.error("Failed to read repo log", error instanceof Error ? error : undefined, { dir });
       return err(new AppError("Failed to read repo log", "GIT_ERROR", 500));
     }
+    // NotFoundError also comes from a MISSING COMMIT OBJECT while HEAD still
+    // resolves (a gap in the history). Only a HEAD that does not resolve is
+    // unborn; anything else would be recorded as a tag-only snapshot that
+    // silently drops the default branch, and reported as success.
+    const headResolves = await git
+      .resolveRef({ fs, dir, ref: "HEAD" })
+      .then(() => true)
+      .catch(() => false);
+    if (headResolves) {
+      logger.error("Repo log is missing a commit while HEAD resolves", error, { dir });
+      return err(new AppError("Failed to read repo log: missing commit", "GIT_ERROR", 500));
+    }
   }
 
   try {
