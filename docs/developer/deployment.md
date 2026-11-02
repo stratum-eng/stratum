@@ -280,9 +280,22 @@ npx wrangler d1 execute stratum --remote --command "<rollback SQL>"
 
 **Production:**
 ```bash
-# GitHub OAuth
+# GitHub OAuth — an OAuth App (Settings -> Developer settings -> OAuth Apps),
+# NOT a GitHub App. Its "Authorization callback URL" must equal this env's
+# OAUTH_REDIRECT_URI exactly. GitHub allows one callback per app, so production,
+# staging, and local each need their own app.
 npx wrangler secret put GITHUB_CLIENT_ID
 npx wrangler secret put GITHUB_CLIENT_SECRET
+
+# Google OAuth — a Web application client in Google Cloud console (APIs &
+# Services -> Credentials), with this env's GOOGLE_REDIRECT_URI listed under
+# "Authorized redirect URIs". Google's OAuth policies ask for a separate Cloud
+# project per deployment tier, so give production, staging, and local each
+# their own client rather than sharing one. The requested scopes are
+# openid/email/profile only, which keeps the consent screen in the
+# non-sensitive tier.
+npx wrangler secret put GOOGLE_CLIENT_ID
+npx wrangler secret put GOOGLE_CLIENT_SECRET
 
 # Email
 npx wrangler secret put EMAIL_FROM_ADDRESS
@@ -319,7 +332,25 @@ npx wrangler secret put BACKUP_ENCRYPTION_SECRET
 ```bash
 npx wrangler secret put GITHUB_CLIENT_ID --env=staging
 npx wrangler secret put GITHUB_CLIENT_SECRET --env=staging
+npx wrangler secret put GOOGLE_CLIENT_ID --env=staging
+npx wrangler secret put GOOGLE_CLIENT_SECRET --env=staging
 ```
+
+Each provider is independent, and neither blocks magic-link sign-in.
+`/auth/github` answers `501 {"error": "GitHub OAuth is not configured"}` until
+its pair of secrets is present; `/auth/google` answers the same until its pair
+of secrets *and* `GOOGLE_REDIRECT_URI` are present.
+
+A first-time GitHub or Google identity (one matching neither an existing GitHub
+id nor an account's email) creates nothing at the callback: it is sent to a
+username step, and the account is created when that form is submitted. Staging
+runs with `BETA_GATE = "1"`, where that form also demands an invite code —
+signing in to staging with a brand-new Google or GitHub account and being asked
+for one is the invite gate doing its job, not a misconfigured provider.
+Production sets `BETA_GATE = "0"`, where the username alone is enough.
+
+For local `wrangler dev`, put the four secrets in a gitignored `.dev.vars`
+rather than in `wrangler.toml`.
 
 ### Viewing Secrets
 
@@ -501,14 +532,23 @@ Set in `wrangler.toml`:
 [vars]
 POSTHOG_HOST = "https://app.posthog.com"
 OAUTH_REDIRECT_URI = "https://your-instance.workers.dev/auth/github/callback"
+GOOGLE_REDIRECT_URI = "https://your-instance.workers.dev/auth/google/callback"
 STRATUM_TELEMETRY_DISABLED = "false"
 STRATUM_ENVIRONMENT = "production"
 
 [env.staging.vars]
 OAUTH_REDIRECT_URI = "https://your-instance-staging.workers.dev/auth/github/callback"
+GOOGLE_REDIRECT_URI = "https://your-instance-staging.workers.dev/auth/google/callback"
 STRATUM_TELEMETRY_DISABLED = "true"
 STRATUM_ENVIRONMENT = "staging"
 ```
+
+`OAUTH_REDIRECT_URI` is the **GitHub** callback and `GOOGLE_REDIRECT_URI` the
+Google one; the names are asymmetric for backwards compatibility. Because named
+environments replace top-level `[vars]` rather than inheriting them, each
+`[env.<name>.vars]` block you deploy must declare both — a missing
+`GOOGLE_REDIRECT_URI` disables Google sign-in in that environment even when the
+secrets are set.
 
 > **Named environments do not inherit top-level `[vars]` — they replace them.**
 > Setting `STRATUM_TELEMETRY_DISABLED` only under `[vars]` has no effect on
