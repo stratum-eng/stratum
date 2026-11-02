@@ -46,17 +46,21 @@ const TAG = process.env.GIT_SMOKE_TAG || ""; // must exist in GIT_SMOKE_REPO
 const BRANCH = process.env.GIT_SMOKE_BRANCH || "main";
 
 const configured = Boolean(TARGET_URL && REPO);
-let reachable = false;
 
+/** Per-test budgets: above the git operations' own timeouts, so those fire first. */
+const ONE_OP_TEST_MS = 90_000;
+const TWO_OP_TEST_MS = 150_000;
+
+// Absent configuration skips (below); present configuration with an endpoint
+// that is down FAILS. Skipping on an outage would report a green smoke run
+// while the thing it smokes is broken.
 beforeAll(async () => {
   if (!configured) return;
-  try {
-    // `RequestInit.timeout` is non-standard and ignored by the runtime's fetch;
-    // use an abort signal so an unresponsive endpoint fails promptly.
-    const response = await fetch(`${TARGET_URL}/health`, { signal: AbortSignal.timeout(5000) });
-    reachable = response.status === 200;
-  } catch {
-    reachable = false;
+  // `RequestInit.timeout` is non-standard and ignored by the runtime's fetch;
+  // use an abort signal so an unresponsive endpoint fails promptly.
+  const response = await fetch(`${TARGET_URL}/health`, { signal: AbortSignal.timeout(5000) });
+  if (response.status !== 200) {
+    throw new Error(`Smoke target ${TARGET_URL}/health answered ${response.status}, not 200`);
   }
 });
 
@@ -70,12 +74,8 @@ afterAll(() => {
   for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
 });
 
-// `configured` is known at load time (env vars); `reachable` is only set in
-// beforeAll, after describe-level skip conditions were already evaluated, so
-// each test skips on it at run time instead.
 describe.skipIf(!configured)(`Git clone smoke — ${cloneBase}`, () => {
-  it("advertises git-upload-pack with the correct content-type and pkt-line preamble", async (ctx) => {
-    if (!reachable) ctx.skip();
+  it("advertises git-upload-pack with the correct content-type and pkt-line preamble", async () => {
     const res = await fetch(`${cloneBase}/info/refs?service=git-upload-pack`, {
       headers: TOKEN ? { Authorization: `Basic ${btoa(`x:${TOKEN}`)}` } : {},
     });
@@ -86,40 +86,45 @@ describe.skipIf(!configured)(`Git clone smoke — ${cloneBase}`, () => {
     expect(body).toContain("# service=git-upload-pack");
   });
 
-  it("refuses git-receive-pack (push) with 403", async (ctx) => {
-    if (!reachable) ctx.skip();
+  it("refuses git-receive-pack (push) with 403", async () => {
     const res = await fetch(`${cloneBase}/info/refs?service=git-receive-pack`, {
       headers: TOKEN ? { Authorization: `Basic ${btoa(`x:${TOKEN}`)}` } : {},
     });
     expect(res.status).toBe(403);
   });
 
-  it("clones the repo end-to-end with stock git", (ctx) => {
-    if (!reachable) ctx.skip();
-    const dir = mkdtempSync(join(tmpdir(), "stratum-clone-"));
-    tmpDirs.push(dir);
-    execFileSync("git", ["clone", "--depth", "1", authedBase, dir], {
-      stdio: "pipe",
-      timeout: 60_000,
-    });
-    const entries = readdirSync(dir);
-    expect(entries).toContain(".git");
-    expect(entries.length).toBeGreaterThan(1);
-  });
+  it(
+    "clones the repo end-to-end with stock git",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "stratum-clone-"));
+      tmpDirs.push(dir);
+      execFileSync("git", ["clone", "--depth", "1", authedBase, dir], {
+        stdio: "pipe",
+        timeout: 60_000,
+      });
+      const entries = readdirSync(dir);
+      expect(entries).toContain(".git");
+      expect(entries.length).toBeGreaterThan(1);
+    },
+    ONE_OP_TEST_MS,
+  );
 
-  it("fetches again without error", (ctx) => {
-    if (!reachable) ctx.skip();
-    const dir = mkdtempSync(join(tmpdir(), "stratum-fetch-"));
-    tmpDirs.push(dir);
-    execFileSync("git", ["clone", "--depth", "1", authedBase, dir], {
-      stdio: "pipe",
-      timeout: 60_000,
-    });
-    execFileSync("git", ["-C", dir, "fetch", "--depth", "1", "origin"], {
-      stdio: "pipe",
-      timeout: 60_000,
-    });
-  });
+  it(
+    "fetches again without error",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "stratum-fetch-"));
+      tmpDirs.push(dir);
+      execFileSync("git", ["clone", "--depth", "1", authedBase, dir], {
+        stdio: "pipe",
+        timeout: 60_000,
+      });
+      execFileSync("git", ["-C", dir, "fetch", "--depth", "1", "origin"], {
+        stdio: "pipe",
+        timeout: 60_000,
+      });
+    },
+    TWO_OP_TEST_MS,
+  );
 });
 
 // Uses the REAL isomorphic-git client and Stratum's own http client through
@@ -128,26 +133,29 @@ describe.skipIf(!configured)(`Git clone smoke — ${cloneBase}`, () => {
 // `git.fetch`. Fails if that fetch stops creating the local tag ref, e.g. if
 // its load-bearing `tags: true` option is removed (#285).
 describe.skipIf(!configured || !TAG)(`isomorphic-git tag fetch smoke — ${REPO} ${TAG}`, () => {
-  it("fetches the configured tag and creates the local refs/tags/<name> ref", async (ctx) => {
-    if (!reachable) ctx.skip();
-    // Same sequence as `cloneRepo({ includeTags: true })`: a singleBranch clone
-    // (which never brings tags down), then the per-tag fetch. Calling
-    // `fetchRemoteTag` directly fetches exactly GIT_SMOKE_TAG, independent of
-    // MAX_TAGS truncation.
-    const cloned = await cloneRepo(cloneBase, TOKEN, defaultLogger, {
-      ref: BRANCH,
-      timeoutMs: 60_000,
-    });
-    if (!cloned.success) throw cloned.error;
-    const { fs, dir } = cloned.data;
+  it(
+    "fetches the configured tag and creates the local refs/tags/<name> ref",
+    async () => {
+      // Same sequence as `cloneRepo({ includeTags: true })`: a singleBranch clone
+      // (which never brings tags down), then the per-tag fetch. Calling
+      // `fetchRemoteTag` directly fetches exactly GIT_SMOKE_TAG, independent of
+      // MAX_TAGS truncation.
+      const cloned = await cloneRepo(cloneBase, TOKEN, defaultLogger, {
+        ref: BRANCH,
+        timeoutMs: 60_000,
+      });
+      if (!cloned.success) throw cloned.error;
+      const { fs, dir } = cloned.data;
 
-    await fetchRemoteTag(fs, cloneBase, TOKEN, TAG, { timeoutMs: 60_000 });
+      await fetchRemoteTag(fs, cloneBase, TOKEN, TAG, { timeoutMs: 60_000 });
 
-    const tagRefs = await git.listRefs({ fs, dir, filepath: "refs/tags" });
-    expect(tagRefs, `local refs/tags/${TAG} was not created by the tag fetch`).toContain(TAG);
-    const oid = await git.resolveRef({ fs, dir, ref: `refs/tags/${TAG}` });
-    // The ref must point at an object the fetch actually brought down.
-    const { type } = await git.readObject({ fs, dir, oid, format: "parsed" });
-    expect(["tag", "commit"]).toContain(type);
-  });
+      const tagRefs = await git.listRefs({ fs, dir, filepath: "refs/tags" });
+      expect(tagRefs, `local refs/tags/${TAG} was not created by the tag fetch`).toContain(TAG);
+      const oid = await git.resolveRef({ fs, dir, ref: `refs/tags/${TAG}` });
+      // The ref must point at an object the fetch actually brought down.
+      const { type } = await git.readObject({ fs, dir, oid, format: "parsed" });
+      expect(["tag", "commit"]).toContain(type);
+    },
+    TWO_OP_TEST_MS,
+  );
 });
