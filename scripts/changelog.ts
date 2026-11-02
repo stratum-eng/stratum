@@ -121,6 +121,83 @@ export function setPackageVersion(raw: string, version: string): Result<string> 
   return { success: true, data: updated };
 }
 
+/** The two places a v2/v3 `package-lock.json` records the root package's version. */
+interface LockfileShape {
+  version?: unknown;
+  packages: { "": { version?: unknown } };
+}
+
+/** Parse a lockfile, or explain why it is not one this tooling can edit. */
+function parseLockfile(raw: string): Result<LockfileShape> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return { success: false, error: `package-lock.json is not valid JSON: ${error}` };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { success: false, error: "package-lock.json is not a JSON object" };
+  }
+  const root = (parsed as { packages?: { ""?: unknown } }).packages?.[""];
+  if (typeof root !== "object" || root === null) {
+    return {
+      success: false,
+      error:
+        'package-lock.json has no `packages[""]` entry (lockfileVersion 2 or later is required)',
+    };
+  }
+  return { success: true, data: parsed as LockfileShape };
+}
+
+/**
+ * Set the root package's version in `package-lock.json` (the top-level
+ * `version` and `packages[""].version`) so the lockfile follows the manifest
+ * through a release instead of drifting one release behind it.
+ *
+ * Unlike {@link setPackageVersion} this re-serialises: npm itself writes the
+ * lockfile as `JSON.stringify(lock, null, indent)` plus a trailing newline, so
+ * doing the same keeps every other byte identical while editing exactly the two
+ * fields npm would. `npm install --package-lock-only` would get the same two
+ * fields right but also re-resolve the dependency tree against the registry,
+ * which a version bump has no business doing.
+ */
+export function setLockfileVersion(raw: string, version: string): Result<string> {
+  const parsed = parseLockfile(raw);
+  if (!parsed.success) return parsed;
+  const lock = parsed.data;
+
+  lock.version = version;
+  lock.packages[""].version = version;
+
+  const indent = /^\{\r?\n([ \t]+)"/.exec(raw)?.[1] ?? "  ";
+  const newline = raw.endsWith("\n") ? "\n" : "";
+  return { success: true, data: `${JSON.stringify(lock, null, indent)}${newline}` };
+}
+
+/**
+ * Every way `package-lock.json` disagrees with the manifest's `version`. An
+ * empty list means the two are in sync.
+ */
+export function lockfileVersionProblems(raw: string, packageVersion: string): string[] {
+  const parsed = parseLockfile(raw);
+  if (!parsed.success) return [parsed.error];
+  const top = parsed.data.version;
+  const root = parsed.data.packages[""].version;
+
+  const problems: string[] = [];
+  if (top !== packageVersion) {
+    problems.push(
+      `package-lock.json version is ${JSON.stringify(top)} but package.json is ${packageVersion}`,
+    );
+  }
+  if (root !== packageVersion) {
+    problems.push(
+      `package-lock.json packages[""].version is ${JSON.stringify(root)} but package.json is ${packageVersion}`,
+    );
+  }
+  return problems;
+}
+
 export interface ChangelogSection {
   /** `Unreleased`, or a semver string such as `0.1.0`. */
   version: string;
