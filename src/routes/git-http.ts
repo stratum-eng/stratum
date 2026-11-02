@@ -14,7 +14,9 @@ import { deleteWorkspace, getProjectByPath, getWorkspace } from "../storage/stat
 import { getUser, getUserByToken } from "../storage/users";
 import type { ApiTokenScope, Env, ProjectEntry, WorkspaceEntry } from "../types";
 import { projectDefaultBranch } from "../types";
+import { type AuthFailure, recordAuthFailure } from "../utils/auth-audit";
 import { canReadProject, canWriteProject, canWriteWorkspace } from "../utils/authz";
+import { RejectedCredentialError } from "../utils/errors";
 import { getWaitUntil } from "../utils/execution-ctx";
 import {
   ZERO_OID,
@@ -166,6 +168,25 @@ interface GitAuthContext {
 }
 
 /**
+ * Audit a git credential that identified an account but was refused (#255).
+ * `authenticate` promises never to 500, so a failed audit is swallowed here
+ * (recordAudit has already logged it).
+ */
+async function auditGitAuthFailure(
+  db: D1Database,
+  logger: ReturnType<typeof createLogger>,
+  failure: AuthFailure,
+): Promise<void> {
+  try {
+    await recordAuthFailure(db, logger, { ...failure, detail: { ...failure.detail, via: "git" } });
+  } catch (error) {
+    logger.warn("Failed to audit git authentication failure", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
  * Resolve the caller's identity from Basic credentials. Returns `null` for
  * anonymous *or* unrecognized/invalid credentials — both collapse to "no
  * identity" for the access truth table, never a 500.
@@ -193,12 +214,31 @@ async function authenticate(
       c.set?.("telemetryOptOut", scoped.data.user.telemetryOptOut === true);
       return { userId: scoped.data.user.id, tokenScope: scoped.data.scope };
     }
+    if (scoped.error instanceof RejectedCredentialError) {
+      await auditGitAuthFailure(c.env.DB, logger, {
+        method: "api_token",
+        reason: scoped.error.reason,
+        actorType: "user",
+        actorId: scoped.error.userId,
+        subject: scoped.error.credentialId,
+      });
+    }
     const result = await getUserByToken(c.env.DB, token, logger);
     // A soft-deleting or disabled account's credentials stop working
     // immediately over git too — the HTTP middleware rejects them, but git
     // smart-HTTP owns its own auth and must apply the same gate, or a
     // deprovisioned user keeps clone/push access to private code.
-    if (!result.success || result.data.deletingAt || result.data.disabledAt) return null;
+    if (!result.success) return null;
+    if (result.data.deletingAt || result.data.disabledAt) {
+      await auditGitAuthFailure(c.env.DB, logger, {
+        method: "legacy_token",
+        reason: result.data.deletingAt ? "owner-deleting" : "owner-disabled",
+        actorType: "user",
+        actorId: result.data.id,
+        subject: result.data.id,
+      });
+      return null;
+    }
     c.set?.("telemetryOptOut", result.data.telemetryOptOut === true);
     // The legacy credential predates scopes and carries full account power.
     return { userId: result.data.id, tokenScope: "read_write" };
@@ -221,7 +261,21 @@ async function authenticate(
     });
     return null;
   }
-  if (!owner.success || owner.data.deletingAt || owner.data.disabledAt) return null;
+  if (!owner.success || owner.data.deletingAt || owner.data.disabledAt) {
+    await auditGitAuthFailure(c.env.DB, logger, {
+      method: "agent_token",
+      reason: !owner.success
+        ? "owner-missing"
+        : owner.data.deletingAt
+          ? "owner-deleting"
+          : "owner-disabled",
+      actorType: "agent",
+      actorId: result.data.id,
+      subject: result.data.id,
+      detail: { ownerId: result.data.ownerId },
+    });
+    return null;
+  }
   // An agent's git traffic inherits its owner's telemetry choice, matching the
   // way it inherits the owner's access.
   c.set?.("telemetryOptOut", owner.data.telemetryOptOut === true);

@@ -236,6 +236,7 @@ async function writeSecret(
     actorType: "user",
     actorId: access.userId,
     subject: `${access.project.id}:${name}`,
+    project: access.project,
     detail: { project: access.project.name, name },
   });
   return result;
@@ -266,6 +267,7 @@ async function removeSecret(
     actorType: "user",
     actorId: access.userId,
     subject: `${access.project.id}:${name}`,
+    project: access.project,
     detail: { project: access.project.name, name },
   });
   return result;
@@ -616,6 +618,7 @@ deploymentApp.post("/:id/approve", async (c) => {
     actorType: "user",
     actorId: userId,
     subject: approved.id,
+    project,
     detail: {
       project: project.name,
       name: approved.name,
@@ -739,6 +742,7 @@ deploymentApp.post("/:id/retry", async (c) => {
     actorType: agentId ? "agent" : "user",
     actorId: agentId ?? userId,
     subject: retry.id,
+    project,
     detail: {
       project: project.name,
       name: retry.name,

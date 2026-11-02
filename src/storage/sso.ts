@@ -1054,6 +1054,31 @@ async function upsertScimMemberActive(
 }
 
 /**
+ * The org a connection belongs to, spread into a recordAudit call so SCIM
+ * lifecycle rows land in that org's trail (#255). Best-effort: a failed
+ * lookup records the row unscoped rather than failing a completed transition.
+ */
+async function connectionOrgId(
+  db: D1Database,
+  logger: Logger,
+  connectionId: string,
+): Promise<{ orgId?: string }> {
+  try {
+    const row = await db
+      .prepare("SELECT org_id FROM org_sso_connections WHERE id = ?")
+      .bind(connectionId)
+      .first<{ org_id: string }>();
+    return row ? { orgId: row.org_id } : {};
+  } catch (error) {
+    logger.warn("Failed to resolve SSO connection org for audit", {
+      connectionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return {};
+  }
+}
+
+/**
  * SCIM deactivation: record who disabled whom (scim_members.active = 0), set
  * the enforced flag (users.disabled_at), then purge sessions. Any storage
  * failure fails the whole request — deprovision must never report success
@@ -1089,16 +1114,19 @@ export async function deprovisionUser(
   const agentsResult = await listAgents(db, userId, logger);
   const agentIds = agentsResult.success ? agentsResult.data.map((agent) => agent.id) : [];
   const detail = { via: "scim", connectionId, agentIds };
+  const orgId = await connectionOrgId(db, logger, connectionId);
   await recordAudit(db, logger, {
     action: "scim.user.deactivated",
     actorType: "system",
     subject: userId,
+    ...orgId,
     detail,
   });
   await recordAudit(db, logger, {
     action: "user.disabled",
     actorType: "system",
     subject: userId,
+    ...orgId,
     detail,
   });
 
@@ -1150,10 +1178,12 @@ export async function reactivateUser(
   }
 
   const detail = { via: "scim", connectionId };
+  const orgId = await connectionOrgId(db, logger, connectionId);
   await recordAudit(db, logger, {
     action: "scim.user.reactivated",
     actorType: "system",
     subject: userId,
+    ...orgId,
     detail,
   });
   if (!blocked) {
@@ -1161,6 +1191,7 @@ export async function reactivateUser(
       action: "user.enabled",
       actorType: "system",
       subject: userId,
+      ...orgId,
       detail,
     });
   }

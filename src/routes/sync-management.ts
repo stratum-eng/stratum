@@ -905,6 +905,7 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
       actorType: "user",
       actorId: manualResolutionAudit.resolvedByUserId,
       subject: commitSha,
+      project,
       detail: {
         conflictId: manualResolutionAudit.conflictId,
         project: `${conflictCtx.namespace}/${conflictCtx.slug}`,

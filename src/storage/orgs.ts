@@ -218,6 +218,32 @@ export async function ensureOrgMember(
   }
 }
 
+/**
+ * A member's stored role, or null when they are not a member. Lets the
+ * membership routes tell an add from a role change from a no-op, so the audit
+ * trail records what actually happened (#255).
+ */
+export async function getOrgMemberRole(
+  db: D1Database,
+  logger: Logger,
+  orgId: string,
+  userId: string,
+): Promise<Result<string | null, Error>> {
+  try {
+    const row = await db
+      .prepare("SELECT role FROM org_members WHERE org_id = ? AND user_id = ?")
+      .bind(orgId, userId)
+      .first<{ role: string }>();
+    return ok(row?.role ?? null);
+  } catch (error) {
+    logger.error("Failed to read org member role", error instanceof Error ? error : undefined, {
+      orgId,
+      userId,
+    });
+    return err(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
 export async function removeOrgMember(
   db: D1Database,
   logger: Logger,

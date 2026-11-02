@@ -79,3 +79,30 @@ export async function consumeMagicLink(
     return err(new AppError("Failed to consume magic link", "DATABASE_ERROR", 500));
   }
 }
+
+/**
+ * Read a magic link's payload WITHOUT consuming it, whatever its state. Only
+ * for auditing a failed verify (#255): an already-used or expired link that
+ * still exists names the account someone tried to sign in to, which an
+ * unknown token does not. Never used to authenticate — `consumeMagicLink` is
+ * the only gate. Returns null for an unknown token or a lookup failure.
+ */
+export async function inspectMagicLink(
+  db: D1Database,
+  token: string,
+  logger: Logger,
+): Promise<{ payload: MagicLinkPayload; consumed: boolean } | null> {
+  try {
+    const row = await db
+      .prepare("SELECT payload, consumed FROM magic_links WHERE token_hash = ?")
+      .bind(await hashToken(token))
+      .first<{ payload: string; consumed: number }>();
+    if (!row) return null;
+    return { payload: JSON.parse(row.payload) as MagicLinkPayload, consumed: row.consumed === 1 };
+  } catch (error) {
+    logger.warn("Failed to inspect magic link for audit", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}

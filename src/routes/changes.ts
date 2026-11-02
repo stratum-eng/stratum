@@ -665,6 +665,7 @@ app.post("/changes/:id/merge", async (c) => {
         actorType: "user",
         actorId: userId,
         subject: id,
+        project,
         detail: { project: change.project },
       });
       if (!auditResult.success) {
@@ -863,6 +864,7 @@ app.post("/changes/:id/merge", async (c) => {
       actorType: "user",
       actorId: userId,
       subject: id,
+      project,
       detail: { project: change.project },
     });
     if (!auditResult.success) {
@@ -1237,6 +1239,7 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
           actorType: "user",
           actorId: userId,
           subject: changeId,
+          project,
           detail: { project: projectName, batch: true },
         });
         if (!auditResult.success) {
@@ -1539,6 +1542,7 @@ app.post("/changes/:id/evaluate", async (c) => {
         actorType: "user",
         actorId: userId,
         subject: id,
+        project,
         detail: {
           project: change.project,
           dismissed: dismissedReviewerIds.length,

@@ -176,6 +176,7 @@ app.post("/:namespace/:slug/webhooks", async (c) => {
     actorType: "user",
     actorId: userId,
     subject: webhookResult.data.id,
+    project,
     detail: { project: project.name, url: webhookResult.data.url },
   });
 
@@ -319,6 +320,7 @@ app.post("/:namespace/:slug/webhooks/:id/toggle", async (c) => {
     actorType: "user",
     actorId: c.get("userId"),
     subject: id,
+    project,
     detail: { project: project.name, active: !webhookResult.data.active },
   });
 
@@ -360,6 +362,7 @@ app.delete("/:namespace/:slug/webhooks/:id", async (c) => {
     actorType: "user",
     actorId: c.get("userId"),
     subject: id,
+    project,
     detail: { project: project.name },
   });
 
@@ -397,6 +400,7 @@ app.post("/:namespace/:slug/webhooks/:id/delete", async (c) => {
     actorType: "user",
     actorId: c.get("userId"),
     subject: id,
+    project,
     detail: { project: project.name },
   });
 

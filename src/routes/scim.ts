@@ -573,6 +573,7 @@ app.post("/Users", async (c) => {
     action: "scim.user.provisioned",
     actorType: "system",
     subject: userId,
+    orgId: connection.orgId,
     detail: { via: "scim", connectionId: connection.id, adopted },
   });
 
@@ -642,6 +643,7 @@ app.put("/Users/:id", async (c) => {
         action: "scim.user.updated",
         actorType: "system",
         subject: user.userId,
+        orgId: connection.orgId,
         detail: { via: "scim", connectionId: connection.id, externalId: body.externalId },
       });
     }
@@ -764,6 +766,7 @@ app.patch("/Users/:id", async (c) => {
       action: "scim.user.updated",
       actorType: "system",
       subject: user.userId,
+      orgId: connection.orgId,
       detail: { via: "scim", connectionId: connection.id, externalId: externalIdUpdate },
     });
   }
