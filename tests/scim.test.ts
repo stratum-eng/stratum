@@ -667,7 +667,8 @@ describe("GET /Users (list, filters, pagination)", () => {
       throw new Error("seed failed");
     }
     for (const u of [sub, guest, leaving]) {
-      await addOrgMember(db, logger, "org_1", u.data.user.id, "member");
+      const added = await addOrgMember(db, logger, "org_1", u.data.user.id, "member");
+      expect(added.success).toBe(true);
     }
     raw
       .prepare("UPDATE users SET deleting_at = datetime('now') WHERE id = ?")
