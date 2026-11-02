@@ -126,8 +126,22 @@ function generateProjectId(): string {
 }
 
 /**
- * How many private projects already count against `subject`'s gauge, or null
- * when the listing failed (the caller fails open).
+ * The most namespaces (personal + orgs) the private-project gauge will list for
+ * one user. Each listing is a KV list plus a read per project, and orgs are
+ * free to create and join, so without a bound one account decides how much KV
+ * work every private creation costs — and can push it until it faults.
+ */
+export const MAX_GAUGE_NAMESPACES = 20;
+
+/** What counting a subject's private projects produced. */
+export type GaugeCount =
+  /** `complete: false` — a listing faulted, so `count` is a lower bound. */
+  | { kind: "counted"; count: number; complete: boolean }
+  /** More namespaces than {@link MAX_GAUGE_NAMESPACES}; nothing was listed. */
+  | { kind: "too_many_namespaces"; namespaces: number };
+
+/**
+ * Count the private projects already charged to `subject`'s gauge.
  *
  * - **A pooled org** counts the private projects it owns, in its own namespace.
  * - **A user** counts what they own personally plus anything recorded as
@@ -135,37 +149,66 @@ function generateProjectId(): string {
  *   into an org that does not pool cannot sidestep the limit, and other
  *   members' projects in a busy org are never counted against them.
  *
+ * **Two failure directions, deliberately different.**
+ * A listing that *faults* (D1 or KV unavailable) fails OPEN, per the PRD's
+ * billing rule (docs/research/monetization-and-byok.md, "Fail direction"): an
+ * outage of the billing machinery must not block a customer's work. The fault
+ * still only removes what it could not read — whatever was counted is returned
+ * as a lower bound, and a lower bound already over the limit refuses, because
+ * that is an answer, not a fault.
+ * Too many namespaces fails CLOSED. That outage rationale does not cover it: the
+ * namespace count is in the user's hands (orgs cost nothing), so failing open
+ * there would hand them a switch that turns the limit off — the same reason an
+ * unknown org never pools (`resolveEnforcementSubject`).
+ *
  * Entries written before `gaugeSubjectId` existed carry none, and an org one
- * then counts for nobody but its owner. That under-count is the fail-open
- * direction this layer chooses everywhere else.
+ * then counts for nobody but its owner — the same fail-open under-count.
  */
 async function countGaugedPrivateProjects(
   env: Env,
   logger: Logger,
   opts: { subject: EnforcementSubject; personalNamespace: string; targetNamespace: string },
-): Promise<number | null> {
+): Promise<GaugeCount> {
   const { subject, personalNamespace, targetNamespace } = opts;
   const counts = (entry: ProjectEntry): boolean =>
     entry.visibility === "private" &&
     (entry.ownerId === subject.ownerId || entry.gaugeSubjectId === subject.ownerId);
 
+  const namespaces = new Set<string>();
+  let complete = true;
   if (subject.ownerType === "org") {
-    const listed = await listProjectsByNamespace(env.STATE, targetNamespace, logger);
-    return listed.success ? listed.data.filter(counts).length : null;
+    namespaces.add(targetNamespace);
+  } else {
+    namespaces.add(personalNamespace);
+    const orgs = await listOrgsForUser(env.DB, logger, subject.ownerId);
+    if (orgs.success) {
+      for (const org of orgs.data) namespaces.add(`@${org.slug}`);
+    } else {
+      complete = false;
+      logger.warn("Private project gauge: org memberships unreadable; counting personal only", {
+        subjectId: subject.ownerId,
+      });
+    }
   }
 
-  const namespaces = new Set([personalNamespace]);
-  const orgs = await listOrgsForUser(env.DB, logger, subject.ownerId);
-  if (!orgs.success) return null;
-  for (const org of orgs.data) namespaces.add(`@${org.slug}`);
+  if (namespaces.size > MAX_GAUGE_NAMESPACES) {
+    return { kind: "too_many_namespaces", namespaces: namespaces.size };
+  }
 
-  let total = 0;
+  let count = 0;
   for (const ns of namespaces) {
     const listed = await listProjectsByNamespace(env.STATE, ns, logger);
-    if (!listed.success) return null;
-    total += listed.data.filter(counts).length;
+    if (!listed.success) {
+      complete = false;
+      logger.warn("Private project gauge: namespace unreadable; count is a lower bound", {
+        subjectId: subject.ownerId,
+        namespace: ns,
+      });
+      continue;
+    }
+    count += listed.data.filter(counts).length;
   }
-  return total;
+  return { kind: "counted", count, complete };
 }
 
 // POST /projects - Create a new project
@@ -259,29 +302,37 @@ app.post("/", async (c) => {
     });
     gaugeSubjectId = gaugeSubject?.ownerId;
     if (gaugeSubject) {
-      const current = await countGaugedPrivateProjects(c.env, logger, {
+      const counted = await countGaugedPrivateProjects(c.env, logger, {
         subject: gaugeSubject,
         personalNamespace: getUserNamespace(username),
         targetNamespace: namespace,
       });
-      // A failed listing does not block a creation: the gauge is a limit, not a
-      // correctness rule, and this layer fails open by design.
-      if (current !== null) {
-        const decision = await checkGauge(c.env, logger, {
-          subject: gaugeSubject,
-          count: "private_projects",
-          current,
-          what: "Creating another private project",
+      // Too many namespaces to count is treated as "over any finite limit" and
+      // still goes through `checkGauge`, so an unlimited plan admits and
+      // observe-only records rather than refuses — only the reason differs.
+      const tooMany = counted.kind === "too_many_namespaces";
+      const decision = await checkGauge(c.env, logger, {
+        subject: gaugeSubject,
+        count: "private_projects",
+        current: tooMany ? Number.MAX_SAFE_INTEGER : counted.count,
+        what: "Creating another private project",
+      });
+      if (tooMany && decision.refused) {
+        logger.warn("Private project gauge: too many namespaces to count; refusing", {
+          subjectId: gaugeSubject.ownerId,
+          namespaces: counted.namespaces,
+          max: MAX_GAUGE_NAMESPACES,
         });
-        if (!decision.admitted) {
-          // A browser submitting the new-project form must land back on the
-          // form, not on a raw JSON 403. The redirect carries a fixed code,
-          // never the reason text, so the query string cannot inject copy.
-          if (!contentType.includes("application/json")) {
-            return c.redirect(`/new?error=${NEW_PROJECT_ERROR_PRIVATE_LIMIT}`, 303);
-          }
-          return forbidden(decision.reason ?? "Private project limit reached");
+        decision.reason = `Creating another private project is not allowed: this account belongs to more organizations than the private project allowance can be checked across (${MAX_GAUGE_NAMESPACES - 1}). Make the project public, leave an organization you no longer use, or raise this account's plan limits.`;
+      }
+      if (!decision.admitted) {
+        // A browser submitting the new-project form must land back on the
+        // form, not on a raw JSON 403. The redirect carries a fixed code,
+        // never the reason text, so the query string cannot inject copy.
+        if (!contentType.includes("application/json")) {
+          return c.redirect(`/new?error=${NEW_PROJECT_ERROR_PRIVATE_LIMIT}`, 303);
         }
+        return forbidden(decision.reason ?? "Private project limit reached");
       }
     }
   }

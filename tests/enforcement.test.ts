@@ -28,7 +28,7 @@ import { LLMEvaluator } from "../src/evaluation/llm-evaluator";
 import type { LlmProvider } from "../src/evaluation/llm-provider";
 import type { EvalPolicy, EvaluationContext } from "../src/evaluation/types";
 import { rateLimitMiddleware } from "../src/middleware/rate-limit";
-import { projectsRouter } from "../src/routes/projects";
+import { MAX_GAUGE_NAMESPACES, projectsRouter } from "../src/routes/projects";
 import { recordCosts } from "../src/storage/costs";
 import { insertDeployment } from "../src/storage/deployments";
 import { setProject } from "../src/storage/state";
@@ -789,6 +789,76 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
 
     expect(response.status).toBe(403);
     expect(await response.text()).toContain("plan allows 2");
+  });
+
+  it("fails closed, without listing anything, past the namespace cap", async () => {
+    // Orgs cost nothing, so a count that grows with membership is a switch the
+    // user holds. Over the cap the answer is a refusal, not an unbounded scan.
+    const userId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 5 } }));
+    for (let i = 0; i < MAX_GAUGE_NAMESPACES; i++) {
+      raw
+        .prepare("INSERT INTO orgs (id, name, slug, owner_id) VALUES (?, ?, ?, ?)")
+        .run(`org_${i}`, `Org ${i}`, `org-${i}`, userId);
+      raw
+        .prepare("INSERT INTO org_members (org_id, user_id, role) VALUES (?, ?, 'member')")
+        .run(`org_${i}`, userId);
+    }
+    const list = vi.spyOn(kv, "list");
+
+    const response = await projectApp(userId, "alice")({ name: "x", visibility: "private" });
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain("more organizations");
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("still refuses when a faulted listing leaves a lower bound already at the limit", async () => {
+    const userId = createUser(nextUserId());
+    seedOrg(userId);
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    await seedProject("@alice", "one", { ownerId: userId, ownerType: "user" });
+    await seedProject("@alice", "two", { ownerId: userId, ownerType: "user" });
+    const realList = kv.list.bind(kv);
+    vi.spyOn(kv, "list").mockImplementation(async (opts) => {
+      if (opts?.prefix?.startsWith("project:@acme:")) throw new Error("kv down");
+      return realList({ prefix: opts?.prefix ?? undefined });
+    });
+
+    const response = await projectApp(userId, "alice")({ name: "three", visibility: "private" });
+
+    expect(response.status).toBe(403);
+  });
+
+  it("fails open when a faulted listing leaves the count under the limit", async () => {
+    // The PRD's billing rule: an outage of the counting machinery must not
+    // block work. Admitted here means it got past the gauge to the repository.
+    const userId = createUser(nextUserId());
+    seedOrg(userId);
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    await seedProject("@acme", "one", { ownerId: ORG_ID, ownerType: "org" }, userId);
+    await seedProject("@acme", "two", { ownerId: ORG_ID, ownerType: "org" }, userId);
+    const realList = kv.list.bind(kv);
+    vi.spyOn(kv, "list").mockImplementation(async (opts) => {
+      if (opts?.prefix?.startsWith("project:@acme:")) throw new Error("kv down");
+      return realList({ prefix: opts?.prefix ?? undefined });
+    });
+
+    const response = await projectApp(userId, "alice")({ name: "three", visibility: "private" });
+
+    expect(response.status).not.toBe(403);
+  });
+
+  it("counts the personal namespace when org memberships cannot be read", async () => {
+    const userId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    await seedProject("@alice", "one", { ownerId: userId, ownerType: "user" });
+    await seedProject("@alice", "two", { ownerId: userId, ownerType: "user" });
+    raw.exec("DROP TABLE org_members");
+
+    const response = await projectApp(userId, "alice")({ name: "three", visibility: "private" });
+
+    expect(response.status).toBe(403);
   });
 
   it("records the charged subject on a private project created into an org", async () => {
