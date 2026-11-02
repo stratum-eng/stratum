@@ -60,7 +60,12 @@ For a deeper walkthrough see [`docs/developer/local-setup.md`](docs/developer/lo
 - **Unit:** `npm test` (`tests/*.test.ts`) — fast, hermetic, the default gate.
 - **Integration:** `npm run test:integration` (`tests/integration/`).
 - **Smoke:** `npm run test:smoke` hits a **live deployed instance** and needs `STAGING_URL` +
-  `TEST_AUTH_TOKEN`. It is not part of the offline gate.
+  `TEST_AUTH_TOKEN`. It is not part of the offline gate. The git smart-HTTP smoke tests
+  (`tests/smoke/git-clone.test.ts`) also need `GIT_SMOKE_REPO` (`@ns/slug`), and
+  `GIT_SMOKE_TAG` naming a tag that **must exist in that repo** — the isomorphic-git tag-fetch
+  check fetches exactly that tag and fails if the local `refs/tags/<name>` ref isn't created.
+  Set `GIT_SMOKE_BRANCH` if the repo's default branch isn't `main`. Each test is skipped when
+  its env vars are absent.
 
 ⚠️ **Benchmarks and write-heavy load tests run against staging only — never with a production
 token.**

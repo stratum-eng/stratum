@@ -45,7 +45,13 @@ import { ownerHasClaims, usernameNamespaceTaken } from "../storage/project-names
 import { listSecretNames } from "../storage/project-secrets";
 import { getProvenance } from "../storage/provenance";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
-import { readRepoViewCache, writeRepoViewCache } from "../storage/repo-view-cache";
+import {
+  type RepoViewCacheProject,
+  claimRepoViewRefresh,
+  readRepoViewCache,
+  releaseRepoViewRefresh,
+  writeRepoViewCache,
+} from "../storage/repo-view-cache";
 import {
   getProject,
   getProjectByPath,
@@ -1820,16 +1826,23 @@ type RepoPageData = {
   filesUnavailable: boolean;
   log: CommitLogEntry[];
   readme: string | null;
+  /**
+   * Set when the page is a cached view of an earlier commit, served while a
+   * background read catches it up: the commit the view was taken at.
+   */
+  behindAt?: string;
 };
 
 /**
  * The repo overview's files, log and README when the KV snapshot can't serve them.
  *
  * With `liveHead` (the branch tip from a ref advertisement the caller already
- * made), a view cached at that exact commit is served without touching git;
- * otherwise the repository is cloned once and the result cached for the next
- * reader. Without it, the clone always runs and nothing is cached — an entry
- * can only be trusted when checked against the live tip.
+ * made), the per-branch view cache is served stale-while-revalidate: an entry at
+ * `liveHead` is served as is; an entry at an older commit is served too —
+ * flagged with `behindAt` — while a background clone (via `waitUntil`) replaces
+ * it. Only a branch with no entry, or a caller without `waitUntil`, waits for
+ * the clone. Without `liveHead`, the clone always runs and nothing is cached —
+ * an entry can only be judged current against the live tip.
  *
  * Never fails: an unreachable or empty repository renders as an empty page.
  */
@@ -1842,17 +1855,22 @@ async function loadRepoPageData(
   waitUntil: ((promise: Promise<unknown>) => void) | undefined,
   logger: Logger,
 ): Promise<RepoPageData> {
-  const cacheable = liveHead !== undefined && !!project.namespace && !!project.slug;
-  const cacheProject = { namespace: project.namespace ?? "", slug: project.slug ?? "" };
+  const cacheable = liveHead !== undefined && !!project.id;
+  const cacheProject = { id: project.id };
 
   if (cacheable) {
-    const cached = await readRepoViewCache(kv, cacheProject, branch, liveHead, logger);
-    if (cached) {
+    const cached = await readRepoViewCache(kv, cacheProject, branch, logger);
+    const current = cached?.headSha === liveHead;
+    if (cached && (current || waitUntil)) {
+      if (!current && waitUntil) {
+        waitUntil(refreshRepoView(kv, cacheProject, project.remote, readToken, branch, logger));
+      }
       return {
         files: cached.files,
         filesUnavailable: false,
         log: cached.commits,
         readme: cached.readme,
+        ...(current ? {} : { behindAt: cached.headSha }),
       };
     }
   }
@@ -1880,6 +1898,44 @@ async function loadRepoPageData(
     log: view.commits,
     readme: view.readme,
   };
+}
+
+/**
+ * Background half of {@link loadRepoPageData}'s stale-while-revalidate: reads
+ * the branch once and replaces its cached view. Skipped when another viewer
+ * already claimed the refresh. Never throws — it runs under `waitUntil`, after
+ * the response is gone, so a failure can only be logged.
+ */
+async function refreshRepoView(
+  kv: Env["STATE"],
+  cacheProject: RepoViewCacheProject,
+  remote: string,
+  readToken: string,
+  branch: string,
+  logger: Logger,
+): Promise<void> {
+  try {
+    if (!(await claimRepoViewRefresh(kv, cacheProject, branch, logger))) return;
+    const viewResult = await loadRepoView(remote, readToken, logger, branch);
+    if (!viewResult.success) {
+      logger.warn("Background repo view refresh failed", {
+        branch,
+        error: viewResult.error.message,
+      });
+      return;
+    }
+    // Released only once the view is stored. A view that cannot be stored
+    // (incomplete, or over the size cap) keeps the claim until its TTL, or every
+    // viewer of the still-behind page would start another clone.
+    if (await writeRepoViewCache(kv, cacheProject, branch, viewResult.data, logger)) {
+      await releaseRepoViewRefresh(kv, cacheProject, branch, logger);
+    }
+  } catch (error) {
+    logger.warn("Background repo view refresh threw", {
+      branch,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 // GET /:namespace/:slug/branches — Branch listing (registered before the
@@ -2196,6 +2252,7 @@ app.get("/:namespace/:slug/webhooks", async (c) => {
       webhooks={webhooks}
       subscribableEvents={SUBSCRIBABLE_EVENTS}
       user={userResult}
+      nonce={c.get("cspNonce") ?? ""}
     />,
   );
 });
@@ -2667,10 +2724,22 @@ app.get("/:namespace/:slug", async (c) => {
   let filesUnavailable = false;
   let log: Array<{ sha: string; message: string; author: string; timestamp: number }> = [];
   let readme: string | null = null;
+  let behindAt: string | undefined;
   let importProgress = null;
 
-  // Check for active import — hide the card once it has completed
-  const importResult = await getImportProgress(c.env.DB, namespace, slug, logger);
+  // Independent of each other, so read together rather than one round trip
+  // after another. The snapshot is keyed `repo_snapshot:<ns>:<slug>` with no
+  // branch component and only ever describes the default branch, so a
+  // non-default ref must not read it at all — serving it would show the default
+  // branch's tree under a URL naming another branch (PRD edge case 15).
+  const [importResult, syncStatusResult, canWrite, snapshotResult2] = await Promise.all([
+    getImportProgress(c.env.DB, namespace, slug, logger),
+    getSyncStatus(c.env.STATE, namespace, slug, logger),
+    canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId),
+    isDefaultBranch ? readRepoSnapshot(c.env.STATE, project, logger) : Promise.resolve(null),
+  ]);
+
+  // Hide the import card once the import has completed
   if (importResult.success && importResult.data && importResult.data.status !== "completed") {
     importProgress = importResult.data;
   }
@@ -2682,22 +2751,13 @@ app.get("/:namespace/:slug", async (c) => {
     latestCommit?: string;
     lastCheckedAt?: string;
   } | null = null;
-  const syncStatusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);
   if (syncStatusResult.success && syncStatusResult.data) {
     syncStatus = syncStatusResult.data;
   }
 
   const isOwner = !!userId && project.ownerType === "user" && project.ownerId === userId;
   const canSync = !!getProjectSourceUrl(project) && isOwner && project.importCompleted !== false;
-  const canWrite = await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId);
 
-  // The snapshot is keyed `repo_snapshot:<ns>:<slug>` with no branch component
-  // and only ever describes the default branch, so a non-default ref must not
-  // read it at all — serving it would show the default branch's tree under a URL
-  // naming another branch (PRD edge case 15).
-  const snapshotResult2 = isDefaultBranch
-    ? await readRepoSnapshot(c.env.STATE, project, logger)
-    : null;
   const snapshotServedThePage = Boolean(snapshotResult2?.success && snapshotResult2.data);
   // Minted only when the snapshot cannot serve the page — a hit does no git work.
   const cloneToken = snapshotServedThePage ? null : await getReadToken();
@@ -2740,6 +2800,7 @@ app.get("/:namespace/:slug", async (c) => {
     filesUnavailable = data.filesUnavailable;
     log = data.log;
     readme = data.readme;
+    behindAt = data.behindAt;
   }
 
   logger.debug("Rendering project page", {
@@ -2782,6 +2843,7 @@ app.get("/:namespace/:slug", async (c) => {
       refName={isDefaultBranch ? undefined : branch}
       defaultBranch={defaultBranch}
       branchNames={branchNames}
+      behindAt={behindAt}
     />,
   );
 });

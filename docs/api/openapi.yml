@@ -1237,6 +1237,47 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/projects/{namespace}/{slug}/webhooks/{id}/regenerate-secret:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: regenerateWebhookSecret
+      tags: [webhooks]
+      summary: Regenerate a webhook's signing secret
+      description: |
+        Requires project write access. Replaces the webhook's HMAC signing
+        secret with a newly generated one and returns it — like creation, this
+        is the only time the new secret is shown. The webhook keeps its id,
+        configuration, and delivery history. The old secret stops working
+        immediately: every delivery from now on is signed with the new one, so
+        update your receivers to verify `X-Stratum-Signature` with it. Records a
+        `webhook.secret_rotated` audit entry. The response is sent with
+        `Cache-Control: no-store`. A request without a JSON `Content-Type` (the
+        management page's form post) gets an HTML page that shows the new
+        secret once instead of the JSON body.
+      responses:
+        "200":
+          description: Secret regenerated (includes the new secret, shown once)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhook: { $ref: "#/components/schemas/Webhook" }
+            text/html:
+              schema: { type: string }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/projects/{namespace}/{slug}/webhooks/{id}/delete:
     parameters:
       - $ref: "#/components/parameters/Namespace"

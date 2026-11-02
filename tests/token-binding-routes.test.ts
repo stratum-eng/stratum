@@ -235,6 +235,50 @@ describe("a project-bound token", () => {
     expect(res.status).toBe(404);
   });
 
+  describe("webhook secret regeneration (#387)", () => {
+    async function webhookOn(path: string): Promise<string> {
+      const res = await call("POST", `/api/projects/${path}/webhooks`, bearer(tokens.unbound), {
+        url: "https://hooks.example.com/stratum",
+        events: "*",
+      });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { webhook?: { id: string }; id?: string };
+      const id = body.webhook?.id ?? body.id;
+      if (id === undefined) throw new Error("no webhook id in create response");
+      return id;
+    }
+
+    it("is refused outside its project, exactly as for any non-writer, and rotates nothing", async () => {
+      const id = await webhookOn("@owner/other");
+      const before = await env.DB.prepare("SELECT secret FROM webhooks WHERE id = ?")
+        .bind(id)
+        .first<{ secret: string }>();
+      const res = await call(
+        "POST",
+        `/api/projects/@owner/other/webhooks/${id}/regenerate-secret`,
+        bearer(tokens.project),
+        {},
+      );
+      // The same answer every webhook route gives a caller without write access.
+      expect(res.status).toBe(403);
+      const after = await env.DB.prepare("SELECT secret FROM webhooks WHERE id = ?")
+        .bind(id)
+        .first<{ secret: string }>();
+      expect(after?.secret).toBe(before?.secret);
+    });
+
+    it("still regenerates on its own project", async () => {
+      const id = await webhookOn("@owner/mine");
+      const res = await call(
+        "POST",
+        `/api/projects/@owner/mine/webhooks/${id}/regenerate-secret`,
+        bearer(tokens.project),
+        {},
+      );
+      expect(res.status).toBe(200);
+    });
+  });
+
   it("is a 404 on the namespace-authorized sync route for another project", async () => {
     const res = await call("POST", "/api/projects/@owner/other/sync", bearer(tokens.project), {});
     expect(res.status).toBe(404);
@@ -654,6 +698,9 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   "POST /api/projects/:namespace/:slug/webhooks",
   "POST /api/projects/:namespace/:slug/webhooks/:id/delete",
   "POST /api/projects/:namespace/:slug/webhooks/:id/toggle",
+  // #387: authorizes through webhooks.ts `requireProjectAdmin` (canWriteProject
+  // with the request's binding), like every other webhook route.
+  "POST /api/projects/:namespace/:slug/webhooks/:id/regenerate-secret",
   "POST /api/projects/conflicts/:id/resolve",
   "POST /api/workspaces/:name/commit",
   "POST /api/workspaces/:namespace/:slug/workspaces",

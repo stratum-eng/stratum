@@ -52,9 +52,9 @@ export function makeSqliteD1(): { db: D1Database; raw: DatabaseSync } {
         meta: {},
       }),
       batchResult: () => {
-        // A RETURNING statement yields rows, like D1; anything else reports
-        // its change count with an empty result set.
-        if (/\bRETURNING\b/i.test(sql)) {
+        // A SELECT or RETURNING statement yields rows, like D1; anything else
+        // reports its change count with an empty result set.
+        if (/^\s*SELECT\b/i.test(sql) || /\bRETURNING\b/i.test(sql)) {
           const rows = raw.prepare(sql).all(...binds);
           return { results: rows, success: true, meta: { changes: rows.length } };
         }
