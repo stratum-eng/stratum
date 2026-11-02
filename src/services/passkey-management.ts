@@ -1,7 +1,6 @@
 import type { Context } from "hono";
 import { getCookie } from "hono/cookie";
 import { recordAudit } from "../storage/audit";
-import { listOrgsRequiringSecondFactor } from "../storage/orgs";
 import { markSessionSecondFactor } from "../storage/sessions";
 import { getUser } from "../storage/users";
 import {
@@ -17,7 +16,7 @@ import {
   toPasskeySummary,
 } from "../storage/webauthn";
 import type { Env } from "../types";
-import { AppError } from "../utils/errors";
+import type { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 import { SESSION_COOKIE, isFreshSession, issueRecoveryCodes } from "./second-factor";
@@ -245,15 +244,16 @@ export type RemoveOutcome =
   | { kind: "removed"; remaining: number }
   | { kind: "not_found" }
   | { kind: "refused"; refusal: SensitiveRefusal }
-  /** It is the last passkey and these orgs require a second factor. */
-  | { kind: "required_by_org"; orgs: string[] }
   | { kind: "error"; error: AppError };
 
 /**
- * Remove a passkey. Removing the LAST one is refused while any org the user
- * belongs to requires a second factor — warning and proceeding would leave the
- * account immediately out of policy, and every session it holds would be
- * blocked the moment it is used. The user adds a replacement first.
+ * Remove a passkey.
+ *
+ * Removing the LAST one is allowed even while an org the user belongs to
+ * requires a second factor: that org's policy then denies its own resources to
+ * the user until they enroll again, and nothing else. Refusing instead would
+ * let any org — membership needs no consent — pin a passkey onto a user's
+ * account.
  *
  * Removing the last passkey also deletes the recovery codes: they exist only
  * to stand in for a passkey, and leaving them behind would make the next
@@ -270,17 +270,6 @@ export async function removeUserPasskey(
   const refusal = checkSensitiveSession(c, all.data.length > 0);
   if (refusal) return { kind: "refused", refusal };
   if (!all.data.some((p) => p.id === passkeyId)) return { kind: "not_found" };
-
-  if (all.data.length === 1) {
-    const orgs = await listOrgsRequiringSecondFactor(c.env.DB, logger, userId);
-    if (!orgs.success) {
-      return {
-        kind: "error",
-        error: new AppError(orgs.error.message, "STORAGE_ERROR", 500),
-      };
-    }
-    if (orgs.data.length > 0) return { kind: "required_by_org", orgs: orgs.data };
-  }
 
   const deleted = await deletePasskey(c.env.DB, logger, userId, passkeyId);
   if (!deleted.success) return { kind: "error", error: deleted.error };

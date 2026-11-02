@@ -7,10 +7,15 @@
   be renamed and removed. Managing them requires a recent sign-in. The JSON API is
   at `/api/users/me/passkeys`.
 - **Organizations can require a second factor.** An org admin sets
-  `PUT /api/orgs/{slug}/security` `{"requireSecondFactor": true}`. Members
-  without a passkey can then reach only the passkey setup page. A session that
-  skipped a member's passkey is signed out. A session that signed in through the
+  `PUT /api/orgs/{slug}/security` `{"requireSecondFactor": true}`. A member's
+  session that has not passed a second factor then gets
+  `403 SECOND_FACTOR_REQUIRED` on **that org's** projects and org endpoints, with
+  a link to set up a passkey. Members' personal projects, other organizations,
+  and account settings are never affected. A session that signed in through the
   org's own SSO satisfies that org's requirement (the IdP's MFA is trusted).
+- **Members can leave an organization.** `DELETE /api/orgs/{slug}/members/{own
+  id}` works for any member, including when the org's policy blocks them. The
+  owner cannot leave.
 - New audit events: `passkey.registered`, `passkey.renamed`, `passkey.removed`,
   `second_factor.succeeded`, `second_factor.failed`, `recovery_code.used`,
   `recovery_codes.regenerated`, and `org.second_factor_policy_changed`.

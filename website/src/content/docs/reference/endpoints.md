@@ -640,8 +640,8 @@ has one. Otherwise they return `403 REAUTHENTICATION_REQUIRED`.
   `{ "name": "Laptop", "response": <RegistrationResponseJSON> }`; on the first
   passkey the `201` also carries ten one-time `recoveryCodes`, shown once
 - `PATCH /api/users/me/passkeys/{id}` — `{ "name": "…" }`
-- `DELETE /api/users/me/passkeys/{id}` — `409 LAST_PASSKEY_REQUIRED_BY_ORG` for
-  the last passkey while an org requires a second factor
+- `DELETE /api/users/me/passkeys/{id}` — removing the last passkey also deletes
+  the recovery codes
 - `POST /api/users/me/passkeys/recovery-codes` — replace the recovery codes
 
 ### Delete Account
@@ -689,13 +689,20 @@ shapes, and [Authentication](/reference/authentication/) for the SCIM token clas
 - `GET /api/orgs/:slug/security` — read the policy (any member)
 - `PUT /api/orgs/:slug/security` — `{ "requireSecondFactor": true }` (admins/owner)
 
-With `requireSecondFactor` on, every member's browser session must have passed a
-passkey check, or have signed in through this org's own SSO. See
-[Passkeys and two-factor sign-in](/guides/passkeys/) for how it is
-enforced. Turning it on returns `409 ADMIN_SECOND_FACTOR_REQUIRED` until you
-have a passkey yourself. API tokens are not affected.
+With `requireSecondFactor` on, a member's browser session reaches this org's
+projects and `/api/orgs/:slug/` endpoints only if it passed a passkey check or
+signed in through this org's own SSO. Otherwise those requests return
+`403 SECOND_FACTOR_REQUIRED`. The policy never affects members' personal
+projects, other orgs, or account settings. See
+[Passkeys and two-factor sign-in](/guides/passkeys/). Turning it on
+returns `409 ADMIN_SECOND_FACTOR_REQUIRED` until you have a passkey yourself.
+API tokens are not affected.
 
 ### Members and teams
+
+Any member can leave with `DELETE /api/orgs/:slug/members/<own user id>`, even
+when the org's second-factor policy blocks them. The owner cannot leave
+(`409 OWNER_CANNOT_LEAVE`). Removing anyone else requires an org admin.
 
 Members and teams are managed under `/api/orgs/{slug}/members` and
 `/api/orgs/{slug}/teams` — add and remove a member, create, list and delete a

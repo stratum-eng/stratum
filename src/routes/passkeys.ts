@@ -173,15 +173,6 @@ app.delete("/:id", async (c) => {
       return refused(c, outcome.refusal);
     case "not_found":
       return notFound("Passkey", id);
-    case "required_by_org":
-      return c.json(
-        {
-          error: `This is your last passkey, and ${outcome.orgs.join(", ")} require${outcome.orgs.length === 1 ? "s" : ""} a second factor. Add another passkey before removing this one.`,
-          code: "LAST_PASSKEY_REQUIRED_BY_ORG",
-          orgs: outcome.orgs,
-        },
-        409,
-      );
     case "error":
       return internalError(outcome.error.message);
     case "removed":

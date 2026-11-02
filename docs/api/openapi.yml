@@ -26,8 +26,9 @@ info:
 
     Second factor: browser sign-in may require a passkey (WebAuthn) after the
     primary factor; that HTML flow lives at `/auth/2fa` and is not covered
-    here. An org that requires a second factor can answer any session request
-    with `403 SECOND_FACTOR_ENROLLMENT_REQUIRED` or `401 SECOND_FACTOR_REQUIRED`.
+    here. An org that requires a second factor answers requests for ITS OWN
+    projects and `/api/orgs/{slug}/*` endpoints with `403 SECOND_FACTOR_REQUIRED`
+    when the session has not passed one; nothing else is affected.
     API tokens, agent tokens and OAuth grants are never asked for one.
 
     Authentication: most endpoints accept a Stratum API token (user or agent)
@@ -2804,7 +2805,11 @@ paths:
     delete:
       operationId: removeOrgMember
       tags: [orgs]
-      summary: Remove an organization member (admins only)
+      summary: Remove an organization member (admins), or leave the org (any member)
+      description: >
+        An org admin may remove any member. Any member may remove THEMSELVES
+        (`{uid}` = own user id), and this is never blocked by the org's
+        second-factor policy. The owner cannot leave (`409 OWNER_CANNOT_LEAVE`).
       responses:
         "200":
           description: Member removed
@@ -2822,6 +2827,11 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: The owner tried to leave (code OWNER_CANNOT_LEAVE)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -3244,14 +3254,15 @@ paths:
       tags: [orgs]
       summary: Require (or stop requiring) a second factor for members (admins/owner only)
       description: >
-        When `requireSecondFactor` is true, every member's browser session must
-        have passed a passkey check — or have signed in through THIS org's SSO,
-        whose IdP MFA is trusted. Enforced on every session request: a member
-        with no passkey is confined to `/settings/security` and
-        `/api/users/me/passkeys*` (`403 SECOND_FACTOR_ENROLLMENT_REQUIRED`); a
-        member whose session skipped their passkey is signed out
-        (`401 SECOND_FACTOR_REQUIRED`). API tokens, agent tokens and OAuth
-        grants are not affected. Turning the policy on is refused with
+        When `requireSecondFactor` is true, a member's browser session reaches
+        this org's projects and `/api/orgs/{slug}/*` endpoints only if it passed
+        a passkey check — or signed in through THIS org's SSO, whose IdP MFA is
+        trusted. Otherwise those requests return `403 SECOND_FACTOR_REQUIRED`
+        (with `org` and an `enroll` link). The policy binds only this org's
+        resources: members' personal projects, other orgs and account settings
+        are never affected, because membership is granted without the member's
+        consent. `GET …/security` and leaving the org stay open. API tokens,
+        agent tokens and OAuth grants are not affected. Turning the policy on is refused with
         `409 ADMIN_SECOND_FACTOR_REQUIRED` until the acting admin has a passkey
         (unless their session signed in through this org's SSO). Changes are
         audited as `org.second_factor_policy_changed`.
@@ -3793,10 +3804,10 @@ paths:
       tags: [users]
       summary: Remove a passkey
       description: >
-        Same fresh-session rule as registration. Removing the LAST passkey is
-        refused with `409 LAST_PASSKEY_REQUIRED_BY_ORG` while any org the user
-        belongs to requires a second factor; otherwise it also deletes the
-        recovery codes. Audited as `passkey.removed`.
+        Same fresh-session rule as registration. Removing the LAST passkey
+        also deletes the recovery codes (and any org requiring a second factor
+        then withholds its own resources until the user enrolls again).
+        Audited as `passkey.removed`.
       security:
         - sessionCookie: []
       responses:
@@ -3815,18 +3826,6 @@ paths:
           $ref: "#/components/responses/ReauthenticationRequired"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          description: Last passkey, and an org requires a second factor (code LAST_PASSKEY_REQUIRED_BY_ORG)
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: "#/components/schemas/Error"
-                  - type: object
-                    properties:
-                      orgs:
-                        type: array
-                        items: { type: string }
         "500":
           $ref: "#/components/responses/InternalError"
 

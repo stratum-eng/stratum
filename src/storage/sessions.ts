@@ -24,11 +24,21 @@ export interface Session {
   /** The org whose IdP authenticated this session (OIDC SSO sign-in). */
   ssoOrgId?: string;
   /**
-   * Slug of an org that requires a second factor which this session does NOT
-   * satisfy — computed by `getSession` in the same query, so the policy check
-   * costs no extra round-trip. Absent when the session is compliant.
+   * Orgs the user belongs to that require a second factor this session does
+   * NOT satisfy — computed by `getSession` in the same query, so the policy
+   * costs no extra round-trip. Empty when the session is compliant.
+   *
+   * This is NOT a gate on the session: an org's policy binds only that org's
+   * own resources (see `src/utils/authz.ts`). Membership is granted by the org
+   * without the user's consent, so a session-wide gate would let any org lock
+   * any user out of everything they own.
    */
-  unmetSecondFactorOrg?: string;
+  unmetSecondFactorOrgs?: UnmetSecondFactorOrg[];
+}
+
+export interface UnmetSecondFactorOrg {
+  id: string;
+  slug: string;
 }
 
 interface SessionRow {
@@ -38,7 +48,20 @@ interface SessionRow {
   created_at?: string | null;
   second_factor?: string | null;
   sso_org_id?: string | null;
-  unmet_policy_org?: string | null;
+  unmet_policy_orgs?: string | null;
+}
+
+/** `id:slug,id:slug` (ids are `org_<hex>`, slugs are `[a-z0-9-]`, so both
+ * separators are unambiguous). */
+function parseUnmetOrgs(raw: string | null | undefined): UnmetSecondFactorOrg[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((pair) => {
+      const at = pair.indexOf(":");
+      return { id: pair.slice(0, at), slug: pair.slice(at + 1) };
+    })
+    .filter((org) => org.id.length > 0 && org.slug.length > 0);
 }
 
 function parseSecondFactor(value: string | null | undefined): SessionSecondFactor | undefined {
@@ -54,7 +77,9 @@ function rowToSession(row: SessionRow): Session {
     ...(row.created_at ? { createdAt: row.created_at } : {}),
     ...(secondFactor !== undefined ? { secondFactor } : {}),
     ...(row.sso_org_id ? { ssoOrgId: row.sso_org_id } : {}),
-    ...(row.unmet_policy_org ? { unmetSecondFactorOrg: row.unmet_policy_org } : {}),
+    ...(row.unmet_policy_orgs
+      ? { unmetSecondFactorOrgs: parseUnmetOrgs(row.unmet_policy_orgs) }
+      : {}),
   };
 }
 
@@ -130,23 +155,21 @@ export async function getSession(
 ): Promise<Result<Session, NotFoundError | AppError>> {
   logger.debug("Fetching session");
   try {
-    // The org-policy column (#256) rides on this lookup so the middleware's
-    // per-request check costs no extra round-trip. It is only evaluated for a
+    // The org-policy column (#256) rides on this lookup so the per-request
+    // org-resource check costs no extra round-trip. It is only evaluated for a
     // session without a second factor: a passkey-verified session satisfies
     // every org, and an SSO session satisfies the org whose IdP issued it.
     const row = await db
       .prepare(
         `SELECT s.id, s.user_id, s.expires_at, s.created_at, s.second_factor, s.sso_org_id,
                 CASE WHEN s.second_factor IS NULL THEN (
-                  SELECT o.slug FROM orgs o
+                  SELECT group_concat(o.id || ':' || o.slug, ',') FROM orgs o
                   WHERE o.require_second_factor = 1
                     AND (s.sso_org_id IS NULL OR o.id != s.sso_org_id)
                     AND (o.owner_id = s.user_id
                          OR EXISTS (SELECT 1 FROM org_members m
                                     WHERE m.org_id = o.id AND m.user_id = s.user_id))
-                  ORDER BY o.slug
-                  LIMIT 1
-                ) END AS unmet_policy_org
+                ) END AS unmet_policy_orgs
          FROM sessions s WHERE s.id = ?`,
       )
       .bind(await hashToken(id))

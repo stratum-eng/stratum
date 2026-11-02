@@ -1,5 +1,5 @@
 import type { MiddlewareHandler } from "hono";
-import { deleteCookie, getCookie } from "hono/cookie";
+import { getCookie } from "hono/cookie";
 import { warmEntitlements } from "../billing/entitlements";
 import { isGitHttpPath } from "../routes/git-http";
 import { isOAuthClientEndpoint } from "../routes/mcp-oauth";
@@ -7,14 +7,13 @@ import { getAgentByToken } from "../storage/agents";
 import { resolveApiToken, touchApiTokenLastUsed } from "../storage/api-tokens";
 import { SCOPE_WRITE, resolveOAuthAccessToken, touchOAuthTokenLastUsed } from "../storage/oauth";
 import {
-  type Session,
   type SessionSecondFactor,
+  type UnmetSecondFactorOrg,
   deleteSession,
   getSession,
 } from "../storage/sessions";
 import { getSsoConnectionByScimTokenHash } from "../storage/sso";
 import { getUser, getUserByToken } from "../storage/users";
-import { countPasskeys } from "../storage/webauthn";
 import type { ApiTokenScope, Env, User } from "../types";
 import { hashToken } from "../utils/crypto";
 import { getWaitUntil } from "../utils/execution-ctx";
@@ -68,35 +67,15 @@ declare module "hono" {
     sessionSecondFactor?: SessionSecondFactor;
     /** Session callers only: the org whose IdP authenticated the session. */
     sessionSsoOrgId?: string;
-    /** Set when an org the user belongs to requires a second factor that this
-     * session lacks, and the request is one of the enrollment paths it may
-     * still reach. Holds the org slug, for the enrollment page's notice. */
-    secondFactorEnrollmentRequired?: string;
+    /**
+     * Session callers only: orgs whose "require a second factor" policy this
+     * session does not satisfy. Consulted ONLY when the request reaches one of
+     * those orgs' resources (`src/middleware/org-second-factor.tsx` and
+     * `src/utils/authz.ts`); it never restricts the user's other access.
+     */
+    secondFactorUnmetOrgs?: UnmetSecondFactorOrg[];
     logger: Logger;
   }
-}
-
-/**
- * Paths a session that is out of compliance with an org's "require a second
- * factor" policy may still reach (#256): enough to enroll a passkey and to sign
- * out, plus the static assets those pages load. Everything else is refused.
- */
-function isSecondFactorEnrollmentPath(path: string): boolean {
-  return (
-    path === "/settings/security" ||
-    path.startsWith("/settings/security/") ||
-    path === "/api/users/me" ||
-    path === "/api/users/me/passkeys" ||
-    path.startsWith("/api/users/me/passkeys/") ||
-    path.startsWith("/auth/") ||
-    path === "/ui.css" ||
-    path === "/favicon.ico" ||
-    path === "/csp-report"
-  );
-}
-
-function wantsHtml(method: string, accept: string | undefined): boolean {
-  return (method === "GET" || method === "HEAD") && (accept ?? "").includes("text/html");
 }
 
 function sanitizeToken(token: string): string {
@@ -553,18 +532,13 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
           return c.json({ error: "Unauthorized" }, 401);
         }
 
-        // Org second-factor policy (#256). Enforced here, at the session, rather
-        // than in per-project authz: a member of a requiring org must not reach
-        // ANY page or API with a session that skipped the second factor —
-        // including org settings, membership and SSO endpoints that are not
-        // project-scoped. Tokens never reach this branch: the policy governs
-        // interactive sign-in, not possession-based credentials.
-        const unmetOrg = sessionResult.data.unmetSecondFactorOrg;
-        if (unmetOrg !== undefined) {
-          const refusal = await enforceOrgSecondFactor(c, logger, sessionId, sessionResult.data);
-          if (refusal) return refusal;
-          c.set("secondFactorEnrollmentRequired", unmetOrg);
-        }
+        // Org second-factor policy (#256): recorded, not enforced, here. An org
+        // grants membership without the member's consent, so its policy may
+        // bind only its OWN resources — enforced at org-resource access
+        // (authz + org routes), never as a gate on the whole session. Tokens
+        // never reach this branch: the policy governs interactive sign-in.
+        const unmetOrgs = sessionResult.data.unmetSecondFactorOrgs ?? [];
+        if (unmetOrgs.length > 0) c.set("secondFactorUnmetOrgs", unmetOrgs);
 
         c.set("userId", sessionResult.data.userId);
         c.set("authVia", "session");
@@ -597,64 +571,3 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
 
   await next();
 };
-
-/**
- * Decide what a session that does not satisfy an org's second-factor policy
- * may do. Returns the refusal to send, or null when the request may proceed
- * (an enrollment path, for a user who has no passkey yet).
- *
- * - The user HAS a passkey, but this session never presented it (it predates
- *   the passkey, or the policy): sign it out. Signing in again asks for the
- *   passkey, and the new session is compliant.
- * - The user has NO passkey: they may reach the enrollment page and its API,
- *   and nothing else, until they register one.
- *
- * Fails closed: if the passkey count cannot be read, the request is refused.
- */
-async function enforceOrgSecondFactor(
-  c: Parameters<MiddlewareHandler<{ Bindings: Env }>>[0],
-  logger: Logger,
-  rawSessionId: string,
-  session: Session,
-): Promise<Response | null> {
-  const org = session.unmetSecondFactorOrg ?? "";
-  const html = wantsHtml(c.req.method, c.req.header("Accept"));
-  const passkeys = await countPasskeys(c.env.DB, logger, session.userId);
-  if (!passkeys.success) {
-    return c.json({ error: "Could not verify sign-in policy. Try again shortly." }, 503);
-  }
-
-  if (passkeys.data > 0) {
-    logger.info("Session lacks the second factor an org requires; signing it out", {
-      userId: session.userId,
-      org,
-    });
-    await deleteSession(c.env.DB, rawSessionId, session.userId, logger);
-    deleteCookie(c, "stratum_session", { path: "/" });
-    if (html) return c.redirect("/auth/login?error=second_factor_required");
-    return c.json(
-      {
-        error: `The organization '${org}' requires a second factor. Sign in again and use your passkey.`,
-        code: "SECOND_FACTOR_REQUIRED",
-        org,
-      },
-      401,
-    );
-  }
-
-  if (isSecondFactorEnrollmentPath(c.req.path)) return null;
-
-  logger.info("Session blocked pending second-factor enrollment", {
-    userId: session.userId,
-    org,
-  });
-  if (html) return c.redirect(`/settings/security?required=${encodeURIComponent(org)}`);
-  return c.json(
-    {
-      error: `The organization '${org}' requires a second factor. Register a passkey at /settings/security.`,
-      code: "SECOND_FACTOR_ENROLLMENT_REQUIRED",
-      org,
-    },
-    403,
-  );
-}

@@ -9,11 +9,14 @@ import type {
  * assertions that `@simplewebauthn/server` checks end to end.
  */
 import { Hono } from "hono";
+import { contextStorage } from "hono/context-storage";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { authMiddleware } from "../src/middleware/auth";
 import { csrfMiddleware } from "../src/middleware/csrf";
+import { orgSecondFactorMiddleware } from "../src/middleware/org-second-factor";
 import { securityHeadersMiddleware } from "../src/middleware/security-headers";
 import { orgSecurityRouter } from "../src/routes/org-security";
+import { orgsRouter } from "../src/routes/orgs";
 import { passkeysRouter } from "../src/routes/passkeys";
 import { securitySettingsRouter } from "../src/routes/security-settings";
 import { twoFactorRouter } from "../src/routes/two-factor";
@@ -31,7 +34,8 @@ import {
 } from "../src/services/webauthn";
 import { createSession } from "../src/storage/sessions";
 import { getPasskeyByCredentialId, insertPasskey, listPasskeys } from "../src/storage/webauthn";
-import type { Env } from "../src/types";
+import type { Env, ProjectEntry } from "../src/types";
+import { canReadProject } from "../src/utils/authz";
 import { hashToken } from "../src/utils/crypto";
 import type { Logger } from "../src/utils/logger";
 import { makeFakeKV } from "./helpers/fake-kv";
@@ -87,9 +91,11 @@ describe("passkeys as a second factor", () => {
     env = { DB: db, STATE: kv } as unknown as Env;
 
     app = new Hono<{ Bindings: Env }>();
+    app.use("*", contextStorage());
     app.use("*", securityHeadersMiddleware);
     app.use("*", authMiddleware);
     app.use("*", csrfMiddleware);
+    app.use("*", orgSecondFactorMiddleware);
     // Stands in for every primary sign-in (magic link, OAuth, SSO): they all
     // end in completeBrowserSignIn, which is what is under test.
     app.get("/test/primary/:userId", async (c) => {
@@ -104,7 +110,26 @@ describe("passkeys as a second factor", () => {
     });
     app.route("/auth/2fa", twoFactorRouter);
     app.route("/api/users/me/passkeys", passkeysRouter);
+    app.route("/api/orgs", orgsRouter);
     app.route("/api/orgs", orgSecurityRouter);
+    // A private project owned by the given user or org, read through the real
+    // authz path every project route uses.
+    app.get("/test/project/:type/:owner", async (c) => {
+      const project = {
+        id: "p1",
+        name: "p",
+        slug: "p",
+        namespace: "@x",
+        ownerId: c.req.param("owner"),
+        ownerType: c.req.param("type") as "user" | "org",
+        remote: "",
+        createdAt: "",
+        visibility: "private",
+      } as ProjectEntry;
+      return (await canReadProject(c.env.DB, project, c.get("userId"), c.get("agentOwnerId")))
+        ? c.json({ ok: true })
+        : c.json({ error: "Not found" }, 404);
+    });
     app.route("/settings/security", securitySettingsRouter);
     app.get("/api/whoami", (c) =>
       c.get("userId") ? c.json({ userId: c.get("userId") }) : c.json({ error: "anon" }, 401),
@@ -518,7 +543,9 @@ describe("passkeys as a second factor", () => {
       expect(auditActions(raw)).toContain("passkey.removed");
     });
 
-    it("refuses to remove the last passkey while an org requires a second factor", async () => {
+    it("lets a user remove their last passkey even while an org requires one", async () => {
+      // Membership needs no consent, so an org must not be able to pin a passkey
+      // onto someone's account; it only loses its own resources to them.
       const cookie = await freshSession();
       const { body } = await enroll(cookie);
       raw
@@ -534,11 +561,7 @@ describe("passkeys as a second factor", () => {
         method: "DELETE",
         cookie,
       });
-      expect(res.status).toBe(409);
-      expect(await jsonOf(res)).toMatchObject({
-        code: "LAST_PASSKEY_REQUIRED_BY_ORG",
-        orgs: ["acme"],
-      });
+      expect(res.status).toBe(200);
     });
 
     it("regenerates recovery codes, invalidating the old set", async () => {
@@ -612,45 +635,103 @@ describe("passkeys as a second factor", () => {
       expect(await jsonOf(read)).toEqual({ requireSecondFactor: true });
     });
 
-    it("confines a member without a passkey to enrollment until they register one", async () => {
+    it("binds only the requiring org's resources, never the member's other access", async () => {
+      // The attack: an org adds someone (no consent needed) and turns the
+      // policy on. The member must keep everything that is not the org's.
+      raw
+        .prepare(
+          "INSERT INTO orgs (id, name, slug, owner_id, created_at) VALUES ('org_2', 'Other', 'other', 'usr_bob', '2026-01-01')",
+        )
+        .run();
+      raw
+        .prepare("INSERT INTO org_members (org_id, user_id, role) VALUES ('org_2', ?, 'member')")
+        .run(USER);
       requirePolicy();
       const cookie = await freshSession(USER);
 
-      const api = await req("/api/whoami", { cookie });
-      expect(api.status).toBe(403);
-      expect(await jsonOf(api)).toMatchObject({
-        code: "SECOND_FACTOR_ENROLLMENT_REQUIRED",
+      // Untouched: any authenticated route, personal projects, other orgs, settings.
+      expect((await req("/api/whoami", { cookie })).status).toBe(200);
+      expect((await req(`/test/project/user/${USER}`, { cookie })).status).toBe(200);
+      expect((await req("/test/project/org/org_2", { cookie })).status).toBe(200);
+      expect((await req("/api/orgs/other", { cookie })).status).toBe(200);
+      expect((await req("/settings/security", { cookie })).status).toBe(200);
+      expect((await req("/api/users/me/passkeys", { cookie })).status).toBe(200);
+      const listing = await req("/api/orgs", { cookie });
+      expect(listing.status).toBe(200);
+
+      // Refused, and said so: the requiring org's project and its org routes.
+      const project = await req("/test/project/org/org_1", { cookie });
+      expect(project.status).toBe(403);
+      expect(await jsonOf(project)).toMatchObject({
+        code: "SECOND_FACTOR_REQUIRED",
         org: "acme",
+        enroll: "/settings/security",
       });
+      const page = await req("/test/project/org/org_1", {
+        cookie,
+        headers: { Accept: "text/html" },
+      });
+      expect(page.status).toBe(403);
+      expect(await page.text()).toContain("/settings/security");
+      const orgRoute = await req("/api/orgs/acme", { cookie });
+      expect(orgRoute.status).toBe(403);
+      expect((await jsonOf(orgRoute)).code).toBe("SECOND_FACTOR_REQUIRED");
+      expect((await req("/api/orgs/acme/teams", { cookie })).status).toBe(403);
+      // Reading the policy itself stays open.
+      expect((await req("/api/orgs/acme/security", { cookie })).status).toBe(200);
 
-      const page = await req("/api/whoami", { cookie, headers: { Accept: "text/html" } });
-      expect(page.status).toBe(302);
-      expect(page.headers.get("Location")).toBe("/settings/security?required=acme");
+      // The settings page names the org.
+      expect(await (await req("/settings/security", { cookie })).text()).toContain("acme");
 
-      const settings = await req("/settings/security", { cookie });
-      expect(settings.status).toBe(200);
-      expect(await settings.text()).toContain("requires a second factor");
-
+      // Enrolling a passkey from this session satisfies the org.
       await enroll(cookie);
-      const after = await req("/api/whoami", { cookie });
-      expect(after.status).toBe(200);
+      expect((await req("/test/project/org/org_1", { cookie })).status).toBe(200);
+      expect((await req("/api/orgs/acme", { cookie })).status).toBe(200);
     });
 
-    it("signs out a member's session that skipped their passkey", async () => {
+    it("does not sign out or restrict a passkey holder's session that skipped it", async () => {
       await enroll(await freshSession(USER));
       requirePolicy();
       const unverified = await freshSession(USER);
-      const res = await req("/api/whoami", { cookie: unverified });
-      expect(res.status).toBe(401);
-      expect((await jsonOf(res)).code).toBe("SECOND_FACTOR_REQUIRED");
-      expect(cookieFrom(res, "stratum_session")).toBe("");
+      expect((await req("/api/whoami", { cookie: unverified })).status).toBe(200);
+      expect((await req(`/test/project/user/${USER}`, { cookie: unverified })).status).toBe(200);
+      const project = await req("/test/project/org/org_1", { cookie: unverified });
+      expect(project.status).toBe(403);
+      expect((await jsonOf(project)).code).toBe("SECOND_FACTOR_REQUIRED");
+      expect(raw.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 2 });
+    });
+
+    it("always lets a member remove themselves, even from an org that blocks them", async () => {
+      requirePolicy();
+      const cookie = await freshSession(USER);
+      const res = await req(`/api/orgs/acme/members/${USER}`, { method: "DELETE", cookie });
+      expect(res.status).toBe(200);
+      expect(
+        raw.prepare("SELECT COUNT(*) AS n FROM org_members WHERE user_id = ?").get(USER),
+      ).toEqual({ n: 0 });
+      // No longer a member, so the policy no longer applies to them at all.
+      expect((await req("/settings/security", { cookie })).status).toBe(200);
+      // Removing someone else still needs admin.
+      const other = await req("/api/orgs/acme/members/usr_bob", { method: "DELETE", cookie });
+      expect(other.status).not.toBe(200);
+    });
+
+    it("lets a member without a policy leave, but not the owner", async () => {
+      const cookie = await freshSession(USER);
+      expect(
+        (await req(`/api/orgs/acme/members/${USER}`, { method: "DELETE", cookie })).status,
+      ).toBe(200);
+      const owner = await freshSession("usr_bob");
+      const res = await req("/api/orgs/acme/members/usr_bob", { method: "DELETE", cookie: owner });
+      expect(res.status).toBe(409);
+      expect((await jsonOf(res)).code).toBe("OWNER_CANNOT_LEAVE");
     });
 
     it("trusts this org's own SSO sign-in as satisfying its policy", async () => {
       requirePolicy();
       const res = await req(`/test/primary/${USER}?sso=org_1`);
       const cookie = `stratum_session=${cookieFrom(res, "stratum_session")}`;
-      expect((await req("/api/whoami", { cookie })).status).toBe(200);
+      expect((await req("/test/project/org/org_1", { cookie })).status).toBe(200);
       const row = raw.prepare("SELECT sso_org_id FROM sessions").get() as { sso_org_id: string };
       expect(row.sso_org_id).toBe("org_1");
     });
@@ -658,7 +739,9 @@ describe("passkeys as a second factor", () => {
     it("does not apply to API tokens", async () => {
       requirePolicy();
       const res = await app.fetch(
-        new Request(`${BASE}/api/whoami`, { headers: { Authorization: `Bearer ${LEGACY_TOKEN}` } }),
+        new Request(`${BASE}/test/project/org/org_1`, {
+          headers: { Authorization: `Bearer ${LEGACY_TOKEN}` },
+        }),
         env,
       );
       expect(res.status).toBe(200);

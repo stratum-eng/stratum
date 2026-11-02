@@ -21,11 +21,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   // with this code before minting a session.
   account_disabled:
     "This account has been disabled. Contact your organization's administrator to restore access.",
-  // Second factor (#256): /auth/2fa and the org-policy check in authMiddleware.
+  // Second factor (#256): /auth/2fa.
   second_factor_expired: "Your sign-in timed out before it was verified. Please sign in again.",
   second_factor_failed: "Too many failed verification attempts. Please sign in again.",
-  second_factor_required:
-    "An organization you belong to requires a passkey. Sign in again and verify with your passkey.",
 };
 
 const SUCCESS_MESSAGES: Record<string, string> = {

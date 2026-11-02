@@ -76,7 +76,7 @@ async function render(
       500,
     );
   }
-  const required = c.get("secondFactorEnrollmentRequired");
+  const requiringOrgs = (c.get("secondFactorUnmetOrgs") ?? []).map((org) => org.slug);
   c.header("Cache-Control", "no-store");
   return c.html(
     <SecurityPage
@@ -85,7 +85,7 @@ async function render(
       recoveryCodesRemaining={overview.data.recoveryCodesRemaining}
       canChange={checkSensitiveSession(c, overview.data.passkeys.length > 0) === null}
       nonce={c.get("cspNonce") ?? ""}
-      {...(required !== undefined ? { requiredByOrg: required } : {})}
+      requiringOrgs={requiringOrgs}
       {...(extras.notice !== undefined ? { notice: extras.notice } : {})}
       {...(extras.freshRecoveryCodes !== undefined
         ? { freshRecoveryCodes: extras.freshRecoveryCodes }
@@ -155,18 +155,6 @@ app.post("/passkeys/:id/delete", async (c) => {
         access.user,
         { notice: error(sensitiveRefusalMessage(outcome.refusal)) },
         403,
-      );
-    case "required_by_org":
-      return render(
-        c,
-        logger,
-        access.user,
-        {
-          notice: error(
-            `This is your last passkey, and ${outcome.orgs.join(", ")} require${outcome.orgs.length === 1 ? "s" : ""} a second factor. Add another passkey before removing this one.`,
-          ),
-        },
-        409,
       );
     case "error":
       return render(

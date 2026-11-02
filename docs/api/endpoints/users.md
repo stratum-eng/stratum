@@ -95,8 +95,8 @@ has one. Otherwise they return `403 REAUTHENTICATION_REQUIRED`.
   `{ "name": "Laptop", "response": <RegistrationResponseJSON> }`; on the first
   passkey the `201` also carries ten one-time `recoveryCodes`, shown once
 - `PATCH /api/users/me/passkeys/{id}` — `{ "name": "…" }`
-- `DELETE /api/users/me/passkeys/{id}` — `409 LAST_PASSKEY_REQUIRED_BY_ORG` for
-  the last passkey while an org requires a second factor
+- `DELETE /api/users/me/passkeys/{id}` — removing the last passkey also deletes
+  the recovery codes
 - `POST /api/users/me/passkeys/recovery-codes` — replace the recovery codes
 
 ## Delete Account

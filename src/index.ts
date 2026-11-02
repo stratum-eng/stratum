@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { contextStorage } from "hono/context-storage";
 import { setCookie } from "hono/cookie";
 import { routePath } from "hono/route";
 import { trackerForRequest } from "./analytics/tracker";
@@ -8,6 +9,7 @@ import { analyticsMiddleware } from "./middleware/analytics";
 import { authMiddleware } from "./middleware/auth";
 import { configGuardMiddleware } from "./middleware/config-guard";
 import { csrfMiddleware } from "./middleware/csrf";
+import { orgSecondFactorMiddleware } from "./middleware/org-second-factor";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
 import { securityHeadersMiddleware, setHtmlSecurityHeaders } from "./middleware/security-headers";
 import { sourceOfferMiddleware } from "./middleware/source-offer";
@@ -88,6 +90,9 @@ function errorRoute(c: Context<{ Bindings: Env }>): string {
   }
 }
 
+// Request-scoped context for code with no handle on it — read by the org
+// second-factor check in src/utils/authz.ts (#256).
+app.use("*", contextStorage());
 app.use("*", securityHeadersMiddleware);
 // Registered early so its post-`next()` work sees the final response, after
 // every other middleware has had its say. It reads `userId`/`telemetryOptOut`,
@@ -100,6 +105,10 @@ app.use("*", configGuardMiddleware);
 app.use("*", analyticsMiddleware);
 app.use("*", authMiddleware);
 app.use("*", csrfMiddleware);
+// After auth: scopes each org's "require a second factor" policy to that org's
+// own resources (#256). Context storage (registered first, below) is how the
+// authz helpers read the request without a parameter at every call site.
+app.use("*", orgSecondFactorMiddleware);
 app.use("*", rateLimitMiddleware());
 
 app.get("/health", (c) => c.json({ status: "ok", service: "stratum" }));

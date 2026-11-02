@@ -18,8 +18,9 @@ interface SecurityPageProps {
   user: SettingsUser;
   passkeys: PasskeySummary[];
   recoveryCodesRemaining: number;
-  /** Set when an org's policy is blocking this session until a passkey exists. */
-  requiredByOrg?: string;
+  /** Orgs whose "require a second factor" policy this session does not meet.
+   * Only those orgs' resources are affected. */
+  requiringOrgs: string[];
   /** Whether this session may add or remove passkeys right now (fresh, and
    * second-factor-verified once the account has a passkey). */
   canChange: boolean;
@@ -96,7 +97,7 @@ export const SecurityPage: FC<SecurityPageProps> = ({
   user,
   passkeys,
   recoveryCodesRemaining,
-  requiredByOrg,
+  requiringOrgs,
   canChange,
   freshRecoveryCodes,
   notice,
@@ -112,11 +113,17 @@ export const SecurityPage: FC<SecurityPageProps> = ({
       </div>
     </div>
 
-    {requiredByOrg !== undefined && (
+    {requiringOrgs.length > 0 && (
       <div class="card card-error">
         <p class="settings-help settings-notice">
-          The organization <strong>{requiredByOrg}</strong> requires a second factor. Add a passkey
-          to continue using Stratum.
+          {requiringOrgs.length === 1 ? "The organization " : "The organizations "}
+          <strong>{requiringOrgs.join(", ")}</strong>{" "}
+          {requiringOrgs.length === 1 ? "requires" : "require"} a second factor for{" "}
+          {requiringOrgs.length === 1 ? "its" : "their"} projects and settings.{" "}
+          {passkeys.length === 0
+            ? "Add a passkey to reach them."
+            : "Sign out and sign in again with your passkey to reach them."}{" "}
+          Your own projects and other organizations are not affected.
         </p>
       </div>
     )}

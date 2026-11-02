@@ -7,6 +7,7 @@ import {
   releaseImportLock,
 } from "../middleware/rate-limit";
 import { emitEvent } from "../queue/events";
+import { orgBlockedFor } from "../services/org-second-factor";
 import { syncOrImportProject } from "../services/project-sync";
 import { recordAudit } from "../storage/audit";
 import { captureDeletionTarget, isTargetDeleting } from "../storage/deletion";
@@ -163,7 +164,11 @@ app.post("/", async (c) => {
     const orgResult = await getOrgBySlug(c.env.DB, logger, body.org);
     if (!orgResult.success) return notFound("Organization", body.org);
     const org = orgResult.data;
-    const accessLevel = await getOrgAccessLevel(c.env.DB, logger, org.id, userId);
+    // An org requiring a second factor this session lacks grants nothing (#256);
+    // orgSecondFactorMiddleware turns this 403 into SECOND_FACTOR_REQUIRED.
+    const accessLevel = orgBlockedFor(c, org.id)
+      ? "none"
+      : await getOrgAccessLevel(c.env.DB, logger, org.id, userId);
     if (accessLevel !== "write" && accessLevel !== "admin") {
       return forbidden("Creating projects in this organization requires write access");
     }

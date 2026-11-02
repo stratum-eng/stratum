@@ -186,9 +186,10 @@ or the refresh token ends the grant.
 Browser sign-in can require a passkey after the first step (magic link, GitHub,
 Google, or SSO). Stratum issues the `stratum_session` cookie only after the
 passkey or a recovery code is verified at `/auth/2fa`. An org can require this
-for its members (`PUT /api/orgs/{slug}/security`). A non-compliant session then
-gets `403 SECOND_FACTOR_ENROLLMENT_REQUIRED` (no passkey yet) or
-`401 SECOND_FACTOR_REQUIRED` (signed out; sign in again with the passkey).
+for its members (`PUT /api/orgs/{slug}/security`). The requirement covers only
+**that org's** projects and `/api/orgs/{slug}/` endpoints. A session without the
+second factor gets `403 SECOND_FACTOR_REQUIRED` there, and keeps all of its
+other access.
 
 **Non-interactive credentials are not subject to a second factor.** This
 includes API tokens, the legacy key, agent tokens, OAuth grants, SCIM tokens,

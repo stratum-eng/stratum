@@ -1,3 +1,4 @@
+import { orgBlockedBySecondFactor } from "../services/org-second-factor";
 import { type OrgAccessLevel, getOrgAccessLevel } from "../storage/orgs";
 import type { ProjectEntry, WorkspaceEntry } from "../types";
 import { createLogger } from "./logger";
@@ -12,6 +13,22 @@ export function isDirectOwner(
 ): boolean {
   if (!project.ownerId) return false;
   return project.ownerId === userId || project.ownerId === agentOwnerId;
+}
+
+/**
+ * The caller's access to an org's projects, after the org's own "require a
+ * second factor" policy (#256): a session that has not passed the factor the
+ * org requires gets none of the access the org granted. Only this org's
+ * resources are affected — see `orgBlockedBySecondFactor`.
+ */
+async function orgAccessLevel(
+  db: D1Database,
+  orgId: string,
+  actor: string,
+  record = true,
+): Promise<OrgAccessLevel> {
+  if (orgBlockedBySecondFactor(orgId, record)) return "none";
+  return getOrgAccessLevel(db, logger, orgId, actor);
 }
 
 function levelAllowsWrite(level: OrgAccessLevel): boolean {
@@ -39,7 +56,7 @@ export async function canReadProject(
   if (project.ownerType === "org") {
     const actor = userId ?? agentOwnerId;
     if (!actor) return false;
-    return (await getOrgAccessLevel(db, logger, project.ownerId, actor)) !== "none";
+    return (await orgAccessLevel(db, project.ownerId, actor)) !== "none";
   }
   return false;
 }
@@ -60,7 +77,7 @@ export async function canWriteProject(
   if (project.ownerType === "org") {
     const actor = userId ?? agentOwnerId;
     if (!actor) return false;
-    return levelAllowsWrite(await getOrgAccessLevel(db, logger, project.ownerId, actor));
+    return levelAllowsWrite(await orgAccessLevel(db, project.ownerId, actor));
   }
   return false;
 }
@@ -82,7 +99,7 @@ export async function isProjectAdmin(
   if (project.ownerType === "org") {
     const actor = userId ?? agentOwnerId;
     if (!actor) return false;
-    return (await getOrgAccessLevel(db, logger, project.ownerId, actor)) === "admin";
+    return (await orgAccessLevel(db, project.ownerId, actor)) === "admin";
   }
   return false;
 }
@@ -134,7 +151,7 @@ export async function filterReadableProjects(
   const orgIds = new Set(projects.filter((p) => p.ownerType === "org").map((p) => p.ownerId));
   if (actor) {
     for (const orgId of orgIds) {
-      orgLevels.set(orgId, await getOrgAccessLevel(db, logger, orgId, actor));
+      orgLevels.set(orgId, await orgAccessLevel(db, orgId, actor, false));
     }
   }
   const orgLevel = (orgId: string): OrgAccessLevel => orgLevels.get(orgId) ?? "none";
@@ -173,7 +190,7 @@ export async function filterMemberProjects(
   const orgLevels = new Map<string, OrgAccessLevel>();
   const orgIds = new Set(projects.filter((p) => p.ownerType === "org").map((p) => p.ownerId));
   for (const orgId of orgIds) {
-    orgLevels.set(orgId, await getOrgAccessLevel(db, logger, orgId, actor));
+    orgLevels.set(orgId, await orgAccessLevel(db, orgId, actor, false));
   }
   const orgLevel = (orgId: string): OrgAccessLevel => orgLevels.get(orgId) ?? "none";
 

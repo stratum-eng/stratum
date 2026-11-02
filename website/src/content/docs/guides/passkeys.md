@@ -57,8 +57,9 @@ On the Security page you can:
 - **Remove** a passkey. When you remove your last passkey, Stratum also deletes
   your recovery codes, and sign-in goes back to a single step.
 
-You cannot remove your **last** passkey while an organization you belong to
-requires a second factor. Add another passkey first.
+You can remove your last passkey even if an organization you belong to requires
+a second factor. You then lose access to that organization's resources until you
+add a passkey again. Nothing else changes.
 
 ## What a second factor does not cover
 
@@ -93,17 +94,34 @@ signed in through this org's SSO.
 
 ### How the policy is enforced
 
-Stratum checks the policy on **every browser request**, not only on the org's
-projects. While you belong to an org that requires a second factor:
+The policy applies **only to that organization's own resources**:
 
-- **You have no passkey yet:** you can reach only the Security page, its passkey
-  API, and sign-out. Pages redirect to `/settings/security`. API requests return
-  `403` with code `SECOND_FACTOR_ENROLLMENT_REQUIRED`. When you add a passkey,
-  your current session counts as verified and everything works again.
+- its projects (code, changes, reviews, issues, deployments)
+- its organization endpoints under `/api/orgs/{slug}/` (details, members, teams,
+  SSO, and changing the policy)
+
+Your personal projects, other organizations, account settings, and sign-out are
+never affected. An organization can add you as a member without your consent,
+so its policy cannot restrict anything it did not give you.
+
+If your session has not passed a second factor, requests for the org's
+resources return `403` with code `SECOND_FACTOR_REQUIRED` and a link to
+`/settings/security`. Browser pages show the same explanation.
+
+- **You have no passkey yet:** add one at `/settings/security`. Your current
+  session then counts as verified, and the org's resources open up.
 - **You have a passkey, but this session did not use it** (for example, it
-  started before the policy was turned on): Stratum signs the session out. Sign
-  in again and use your passkey. API requests return `401` with code
-  `SECOND_FACTOR_REQUIRED`.
+  started before the policy was turned on): sign out, then sign in again and use
+  your passkey.
+
+Two org endpoints stay open even when the policy blocks you: reading the policy
+(`GET /api/orgs/{slug}/security`) and leaving the org.
+
+### Leaving an organization
+
+Any member can remove themselves from an organization with
+`DELETE /api/orgs/{slug}/members/{your user id}`, whatever the org's policy. The
+org owner cannot leave.
 
 **SSO sessions:** a session that signed in through an org's own SSO satisfies
 **that org's** requirement. Stratum trusts the identity provider to enforce
