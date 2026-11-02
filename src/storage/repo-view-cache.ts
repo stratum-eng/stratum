@@ -3,19 +3,30 @@ import type { Logger } from "../utils/logger";
 import type { RepoView } from "./git-ops";
 
 /**
- * A cache of the repo overview page, keyed by branch and validated by head sha.
+ * A cache of the repo overview page, keyed by branch and stamped with the
+ * commit it was read at.
  *
  * Separate from the `repo_snapshot:` entry on purpose. That snapshot is written
  * only at import/sync time and is also what `resolveProjectHead` trusts as the
  * project's HEAD for merge freshness checks — so it must never be refreshed from
- * a page view. This cache answers only "what does this exact commit look like",
- * which never changes. A reader always compares the stored sha to the branch's
- * live tip first, so a push or merge turns the entry into a miss and it can
- * never serve a stale view.
+ * a page view. This cache only answers "what did this branch look like at
+ * `headSha`", which is safe to show while a newer read is in flight.
+ *
+ * Readers serve it stale-while-revalidate: an entry whose `headSha` is not the
+ * branch's live tip is still rendered (flagged as behind) while one background
+ * read, gated by {@link claimRepoViewRefresh}, replaces it. Only a branch with
+ * no entry at all makes a viewer wait for a clone.
  */
 
 const CACHE_VERSION = 1;
 const TTL_SECONDS = 7 * 24 * 60 * 60;
+/**
+ * How long one background refresh holds the branch's refresh claim. KV's floor
+ * for `expirationTtl` is 60s, and a clone of a large repo can take most of that,
+ * so this is also roughly the longest a refresh may run before another viewer
+ * is allowed to start a second one.
+ */
+const REFRESH_CLAIM_TTL_SECONDS = 60;
 
 /**
  * Entries bigger than this are not cached. KV accepts up to 25 MiB per value,
@@ -26,21 +37,30 @@ export const REPO_VIEW_CACHE_MAX_BYTES = 5 * 1024 * 1024;
 
 type CachedRepoView = { v: typeof CACHE_VERSION } & RepoView & { files: string[] };
 
+function keySuffix(namespace: string, slug: string, branch: string): string {
+  return `${encodeURIComponent(namespace)}:${encodeURIComponent(slug)}:${encodeURIComponent(branch)}`;
+}
+
 function repoViewKey(namespace: string, slug: string, branch: string): string {
-  return `repo_view:v${CACHE_VERSION}:${encodeURIComponent(namespace)}:${encodeURIComponent(slug)}:${encodeURIComponent(branch)}`;
+  return `repo_view:v${CACHE_VERSION}:${keySuffix(namespace, slug, branch)}`;
+}
+
+function refreshClaimKey(namespace: string, slug: string, branch: string): string {
+  return `repo_view_refresh:${keySuffix(namespace, slug, branch)}`;
 }
 
 /**
- * The cached view of `branch`, if it was taken at `headSha`.
+ * The last cached view of `branch`, whatever commit it was taken at.
  *
- * Returns null on a miss, a stale entry, or any KV/parse failure — the caller
- * then reads the repository, so a broken cache costs a clone, never the page.
+ * The caller compares the returned `headSha` with the branch's live tip to tell
+ * a current entry from one that is behind. Returns null on a miss or any
+ * KV/parse failure — the caller then reads the repository, so a broken cache
+ * costs a clone, never the page.
  */
 export async function readRepoViewCache(
   kv: KVNamespace,
   project: { namespace: string; slug: string },
   branch: string,
-  headSha: string,
   logger: Logger,
 ): Promise<(RepoView & { files: string[] }) | null> {
   let raw: string | null;
@@ -62,7 +82,7 @@ export async function readRepoViewCache(
     logger.warn("Corrupt repo view cache entry", { branch });
     return null;
   }
-  if (!isCachedRepoView(parsed) || parsed.headSha !== headSha) return null;
+  if (!isCachedRepoView(parsed)) return null;
   return {
     headSha: parsed.headSha,
     files: parsed.files,
@@ -104,6 +124,63 @@ export async function writeRepoViewCache(
       branch,
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+}
+
+/**
+ * Refresh claims this isolate has handed out, per KV binding: key → expiry (ms).
+ *
+ * KV has no compare-and-swap, so concurrent requests that all read "no claim"
+ * before any of them writes one would each win. Concurrent requests usually
+ * share an isolate, and this map is checked and set synchronously, so it closes
+ * that race locally; the KV claim covers other isolates and locations. Keyed by
+ * binding so separate environments (and tests) never share claims. Losing it on
+ * isolate eviction only means an extra clone.
+ */
+const localClaims = new WeakMap<KVNamespace, Map<string, number>>();
+
+function claimLocally(kv: KVNamespace, key: string): boolean {
+  const now = Date.now();
+  let claims = localClaims.get(kv);
+  if (!claims) {
+    claims = new Map();
+    localClaims.set(kv, claims);
+  }
+  const expiresAt = claims.get(key);
+  if (expiresAt !== undefined && expiresAt > now) return false;
+  for (const [claimed, expiry] of claims) if (expiry <= now) claims.delete(claimed);
+  claims.set(key, now + REFRESH_CLAIM_TTL_SECONDS * 1000);
+  return true;
+}
+
+/**
+ * Claims the right to refresh `branch`'s cached view for the next
+ * {@link REFRESH_CLAIM_TTL_SECONDS}, so a burst of viewers of a page that is
+ * behind starts one background clone rather than one each.
+ *
+ * Best-effort: KV is eventually consistent, so viewers in different locations
+ * can both win; that costs a duplicate clone, never a wrong page. A KV failure
+ * answers false — skipping a refresh only leaves the page behind until the next
+ * view after the claim lapses.
+ */
+export async function claimRepoViewRefresh(
+  kv: KVNamespace,
+  project: { namespace: string; slug: string },
+  branch: string,
+  logger: Logger,
+): Promise<boolean> {
+  const key = refreshClaimKey(project.namespace, project.slug, branch);
+  if (!claimLocally(kv, key)) return false;
+  try {
+    if ((await kv.get(key)) !== null) return false;
+    await kv.put(key, "1", { expirationTtl: REFRESH_CLAIM_TTL_SECONDS });
+    return true;
+  } catch (error) {
+    logger.warn("KV error claiming repo view refresh", {
+      branch,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
   }
 }
 

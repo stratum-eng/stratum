@@ -584,6 +584,88 @@ describe("UI GET /:namespace/:slug — view cache on a snapshot miss", () => {
     expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
   });
 
+  /** An execution context whose `waitUntil` work the test can wait for. */
+  function backgroundCtx(): { ctx: ExecutionContext; settle: () => Promise<void> } {
+    const pending: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil: (promise: Promise<unknown>) => {
+        pending.push(promise);
+      },
+      passThroughOnException: () => {},
+      props: {},
+    } as unknown as ExecutionContext;
+    return {
+      ctx,
+      settle: async () => {
+        await Promise.all(pending.splice(0));
+      },
+    };
+  }
+
+  it("serves the earlier view at once after a push, and catches it up in the background", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    const bg = backgroundCtx();
+    await app.fetch(req("/@owner/repo"), env, bg.ctx);
+    await bg.settle();
+
+    const movedTip = "c".repeat(40);
+    advertise(movedTip);
+    cloneReads(movedTip, ["AFTER_PUSH.md"]);
+    const behind = await app.fetch(req("/@owner/repo"), env, bg.ctx);
+
+    // The reader is not made to wait for the clone: the cached page renders,
+    // saying which commit it shows.
+    const behindHtml = await behind.text();
+    expect(behindHtml).toContain("CLONED.md");
+    expect(behindHtml).toContain(`Showing commit <code>${DEFAULT_TIP.slice(0, 7)}</code>`);
+
+    await bg.settle();
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
+
+    const caughtUp = await app.fetch(req("/@owner/repo"), env, bg.ctx);
+    const caughtUpHtml = await caughtUp.text();
+    expect(caughtUpHtml).toContain("AFTER_PUSH.md");
+    expect(caughtUpHtml).not.toContain("Showing commit");
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts one background refresh for a burst of views of a page that is behind", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    const bg = backgroundCtx();
+    await app.fetch(req("/@owner/repo"), env, bg.ctx);
+    await bg.settle();
+
+    advertise("c".repeat(40));
+    await Promise.all([
+      app.fetch(req("/@owner/repo"), env, bg.ctx),
+      app.fetch(req("/@owner/repo"), env, bg.ctx),
+      app.fetch(req("/@owner/repo"), env, bg.ctx),
+    ]);
+    await bg.settle();
+
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps serving the earlier view when the background refresh fails", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    const bg = backgroundCtx();
+    await app.fetch(req("/@owner/repo"), env, bg.ctx);
+    await bg.settle();
+
+    advertise("c".repeat(40));
+    vi.mocked(loadRepoView).mockResolvedValue(
+      err(new AppError("Failed to clone", "EXTERNAL_SERVICE_ERROR", 502)),
+    );
+    await app.fetch(req("/@owner/repo"), env, bg.ctx);
+    await bg.settle();
+
+    const res = await app.fetch(req("/@owner/repo"), env, bg.ctx);
+    expect(await res.text()).toContain("CLONED.md");
+  });
+
   it("does not cache a view whose file listing failed", async () => {
     const env = makeEnv();
     await seedProject(env);
