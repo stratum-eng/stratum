@@ -17,9 +17,23 @@ staged-sha/<projectId>/<workspace>/<sha>
   changes, intermediate commits that never became a change, and abandoned
   workspaces (#262).
 
-Expiry is safe because a missing copy only costs speed. The merge then uses the
-latest-tip tree when it provably matches the evaluated tree, and otherwise the git
-path, which merges the same pinned sha.
+Expiry is almost always free. A missing copy only costs speed: the merge then
+uses the latest-tip tree when it provably matches the evaluated tree, and
+otherwise the git path, which merges the same pinned sha.
+
+There is one case where expiry makes a merge fail. It needs all of the following:
+
+- the project's merge policy allows force merges (`allowForce`, off by default);
+- a change stays open longer than the expiry;
+- the workspace is force-pushed so that the evaluated commit is no longer
+  reachable;
+- the change is then force-merged.
+
+The force merge skips the workspace-freshness check, the latest tip no longer
+matches the evaluated tree, and the git path can't fetch a commit that is gone.
+The merge then fails with an error. It never merges the wrong tree. Re-evaluate
+the change against the current workspace and merge again. If a project relies on
+long-lived changes like this, raise the expiry.
 
 The latest-tip trees (`repos/<projectId>/ws/<workspace>`) and backups
 (`repos/<projectId>.pack`) are outside the prefix. The rule can't touch them.
@@ -55,3 +69,7 @@ aws s3 rm "s3://stratum-repo-objects-staging/repos/" --recursive \
 ```
 
 Run it with `--dryrun` first and check that every listed key contains `/sha/`.
+
+Wait until changes evaluated before the deploy have merged or closed. Until then,
+their only copy is at the old key. The new code doesn't read it, so those changes
+merge through the fallbacks above, and the case above applies to them as well.
