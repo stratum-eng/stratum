@@ -75,6 +75,7 @@ import {
 } from "../src/storage/project-secrets";
 import { getProjectById, getProjectByPath } from "../src/storage/state";
 import { getUser, getUserByToken } from "../src/storage/users";
+import { UNBOUND } from "../src/utils/authz";
 
 const OWNER_TOKEN = "stratum_user_owner0000000000000000000";
 const OUTSIDER_TOKEN = "stratum_user_outsider00000000000000";
@@ -506,16 +507,32 @@ describe("canManageSecrets", () => {
   // acting, for a `stratum_agent_` identity.
   it("grants an admin user and refuses an agent owned by that same user", async () => {
     expect(
-      await canManageSecrets(env.DB, PROJECT, { userId: "usr_owner", agentId: undefined }),
+      await canManageSecrets(env.DB, PROJECT, {
+        userId: "usr_owner",
+        agentId: undefined,
+        binding: UNBOUND,
+      }),
     ).toBe(true);
     expect(
-      await canManageSecrets(env.DB, PROJECT, { userId: "usr_owner", agentId: "agt_bot" }),
+      await canManageSecrets(env.DB, PROJECT, {
+        userId: "usr_owner",
+        agentId: "agt_bot",
+        binding: UNBOUND,
+      }),
     ).toBe(false);
-    expect(await canManageSecrets(env.DB, PROJECT, { userId: undefined, agentId: "agt_bot" })).toBe(
-      false,
-    );
     expect(
-      await canManageSecrets(env.DB, PROJECT, { userId: "usr_outsider", agentId: undefined }),
+      await canManageSecrets(env.DB, PROJECT, {
+        userId: undefined,
+        agentId: "agt_bot",
+        binding: UNBOUND,
+      }),
+    ).toBe(false);
+    expect(
+      await canManageSecrets(env.DB, PROJECT, {
+        userId: "usr_outsider",
+        agentId: undefined,
+        binding: UNBOUND,
+      }),
     ).toBe(false);
   });
 });

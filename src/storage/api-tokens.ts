@@ -1,4 +1,4 @@
-import type { ApiTokenScope, User } from "../types";
+import type { ApiTokenScope, BoundCredentialBinding, CredentialBinding, User } from "../types";
 import { generateApiKey, hashToken } from "../utils/crypto";
 import { AppError, NotFoundError } from "../utils/errors";
 import { newId } from "../utils/ids";
@@ -55,6 +55,8 @@ export interface ApiTokenSummary {
   lastUsedAt?: string;
   createdAt: string;
   revokedAt?: string;
+  /** The project or org this token is limited to (#323). Absent = account-wide. */
+  binding?: BoundCredentialBinding;
 }
 
 interface ApiTokenRow {
@@ -67,6 +69,8 @@ interface ApiTokenRow {
   last_used_at: string | null;
   created_at: string;
   revoked_at: string | null;
+  binding_kind: string | null;
+  binding_id: string | null;
 }
 
 /**
@@ -81,6 +85,31 @@ export function narrowTokenScope(value: string): ApiTokenScope {
   return value === "read_write" ? "read_write" : "read";
 }
 
+/**
+ * Reads a stored binding (#323). `null` means the row is MALFORMED — exactly
+ * one of the two columns set, or a kind the CHECK should have refused — and
+ * every caller must treat that as "do not honour this token", never as
+ * account-wide: a corrupted narrowing must not silently become no narrowing.
+ */
+export function narrowTokenBinding(
+  kind: string | null,
+  id: string | null,
+): CredentialBinding | null {
+  if (kind === null && id === null) return { kind: "unbound" };
+  if (kind === null || id === null || id.length === 0) return null;
+  if (kind === "project") return { kind: "project", projectId: id };
+  if (kind === "org") return { kind: "org", orgId: id };
+  return null;
+}
+
+/** The `(binding_kind, binding_id)` column pair for a binding. */
+function bindingColumns(
+  binding: BoundCredentialBinding | undefined,
+): [string | null, string | null] {
+  if (binding === undefined) return [null, null];
+  return binding.kind === "project" ? ["project", binding.projectId] : ["org", binding.orgId];
+}
+
 function rowToSummary(row: ApiTokenRow): ApiTokenSummary {
   const summary: ApiTokenSummary = {
     id: row.id,
@@ -92,6 +121,12 @@ function rowToSummary(row: ApiTokenRow): ApiTokenSummary {
   if (row.expires_at !== null) summary.expiresAt = row.expires_at;
   if (row.last_used_at !== null) summary.lastUsedAt = row.last_used_at;
   if (row.revoked_at !== null) summary.revokedAt = row.revoked_at;
+  // A malformed binding is listed as if it were bound to nothing reachable — a
+  // project id no project has — rather than dropped, which would display the
+  // token as account-wide. Authentication rejects it outright either way.
+  const binding = narrowTokenBinding(row.binding_kind, row.binding_id);
+  if (binding === null) summary.binding = { kind: "project", projectId: "" };
+  else if (binding.kind !== "unbound") summary.binding = binding;
   return summary;
 }
 
@@ -134,9 +169,18 @@ export interface CreatedApiToken {
 export async function createApiToken(
   db: D1Database,
   logger: Logger,
-  opts: { userId: string; name: string; scope: ApiTokenScope; expiresInDays?: number },
+  opts: {
+    userId: string;
+    name: string;
+    scope: ApiTokenScope;
+    expiresInDays?: number;
+    /** Limit the token to one project or org (#323). Omitted = account-wide.
+     * Callers must already have checked the user can reach the target; this
+     * layer stores what it is given. */
+    binding?: BoundCredentialBinding;
+  },
 ): Promise<Result<CreatedApiToken, AppError>> {
-  const { userId, name, scope, expiresInDays } = opts;
+  const { userId, name, scope, expiresInDays, binding } = opts;
 
   if (
     expiresInDays !== undefined &&
@@ -181,11 +225,13 @@ export async function createApiToken(
         ? null
         : new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString();
 
+    const [bindingKind, bindingId] = bindingColumns(binding);
     await db
       .prepare(
         `INSERT INTO api_tokens
-           (id, user_id, name, token_hash, token_prefix, scope, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, user_id, name, token_hash, token_prefix, scope, expires_at, created_at,
+            binding_kind, binding_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         id,
@@ -196,10 +242,12 @@ export async function createApiToken(
         scope,
         expiresAt,
         createdAt,
+        bindingKind,
+        bindingId,
       )
       .run();
 
-    logger.info("API token created", { userId, tokenId: id, scope });
+    logger.info("API token created", { userId, tokenId: id, scope, bindingKind, bindingId });
     const token: ApiTokenSummary = {
       id,
       name,
@@ -208,6 +256,7 @@ export async function createApiToken(
       createdAt,
     };
     if (expiresAt !== null) token.expiresAt = expiresAt;
+    if (binding !== undefined) token.binding = binding;
     return ok({ token, plaintext });
   } catch (error) {
     const appError = toAppError(error, "createApiToken", { userId });
@@ -225,7 +274,8 @@ export async function listApiTokens(
   try {
     const rows = await db
       .prepare(
-        `SELECT id, user_id, name, token_prefix, scope, expires_at, last_used_at, created_at, revoked_at
+        `SELECT id, user_id, name, token_prefix, scope, expires_at, last_used_at, created_at, revoked_at,
+                binding_kind, binding_id
          FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`,
       )
       .bind(userId)
@@ -303,6 +353,8 @@ export async function touchApiTokenLastUsed(
 export interface ResolvedApiToken {
   user: User;
   scope: ApiTokenScope;
+  /** Which projects the token may reach (#323). `unbound` = account-wide. */
+  binding: CredentialBinding;
   tokenId: string;
   /** Drives the last-used debounce; absent until the token is first used. */
   lastUsedAt?: string;
@@ -324,6 +376,8 @@ interface ResolvedTokenRow {
   token_expires_at: string | null;
   token_last_used_at: string | null;
   token_revoked_at: string | null;
+  token_binding_kind: string | null;
+  token_binding_id: string | null;
 }
 
 /**
@@ -359,7 +413,8 @@ export async function resolveApiToken(
                 u.token_hash AS user_token_hash, u.created_at AS user_created_at, u.deleting_at, u.disabled_at,
                 u.telemetry_opt_out,
                 t.id AS token_id, t.scope AS token_scope, t.expires_at AS token_expires_at,
-                t.last_used_at AS token_last_used_at, t.revoked_at AS token_revoked_at
+                t.last_used_at AS token_last_used_at, t.revoked_at AS token_revoked_at,
+                t.binding_kind AS token_binding_kind, t.binding_id AS token_binding_id
            FROM api_tokens t JOIN users u ON u.id = t.user_id
           WHERE t.token_hash = ?`,
       )
@@ -379,6 +434,13 @@ export async function resolveApiToken(
   // NULL on enabled accounts, and `!= null` also tolerates a stub row without it.
   if (row.disabled_at != null) return err(new NotFoundError("Token", "owner-disabled"));
   if (isExpired(row.token_expires_at)) return err(new NotFoundError("Token", "expired"));
+  // Rejected, not read as account-wide: see `narrowTokenBinding`. Answered here
+  // rather than falling through, so the legacy fallback cannot launder it.
+  const binding = narrowTokenBinding(row.token_binding_kind, row.token_binding_id);
+  if (binding === null) {
+    logger.warn("Scoped token has a malformed binding; refusing it", { tokenId: row.token_id });
+    return err(new NotFoundError("Token", "malformed-binding"));
+  }
 
   const user: User = {
     id: row.user_id,
@@ -398,6 +460,7 @@ export async function resolveApiToken(
   const resolved: ResolvedApiToken = {
     user,
     scope: narrowTokenScope(row.token_scope),
+    binding,
     tokenId: row.token_id,
   };
   if (row.token_last_used_at !== null) resolved.lastUsedAt = row.token_last_used_at;

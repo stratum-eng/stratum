@@ -267,6 +267,38 @@ export async function setWebhookActive(
   }
 }
 
+/**
+ * Replaces a webhook's signing secret with a freshly generated one and returns
+ * it — alongside {@link createWebhook}, the only other time a plaintext secret
+ * is handed back to a client. Uses the same generator as creation, so a rotated
+ * secret is indistinguishable in shape from an original one.
+ *
+ * The old secret stops working immediately: delivery reads the secret from the
+ * row on every attempt, so the next delivery signs with the new value. There
+ * is no overlap window — receivers must be updated with the new secret.
+ */
+export async function regenerateWebhookSecret(
+  db: D1Database,
+  logger: Logger,
+  id: string,
+): Promise<Result<string, NotFoundError | AppError>> {
+  const secret = await generateApiKey("stm_whsec");
+  try {
+    const result = await db
+      .prepare("UPDATE webhooks SET secret = ? WHERE id = ?")
+      .bind(secret, id)
+      .run();
+    // Deleted since the caller looked it up: there is no secret to reveal.
+    if ((result.meta?.changes ?? 0) === 0) return err(new NotFoundError("Webhook", id));
+    logger.info("Webhook secret regenerated", { webhookId: id });
+    return ok(secret);
+  } catch (error) {
+    const appError = toAppError(error, "regenerateWebhookSecret", { webhookId: id });
+    logger.error("Failed to regenerate webhook secret", appError, { webhookId: id });
+    return err(appError);
+  }
+}
+
 export async function recordDelivery(
   db: D1Database,
   logger: Logger,

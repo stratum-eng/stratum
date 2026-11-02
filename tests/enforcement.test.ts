@@ -42,7 +42,7 @@ import { insertDeployment } from "../src/storage/deployments";
 import { GAUGE_CHARGE_GRACE_MS, recordGaugeCharge } from "../src/storage/gauge-index";
 import { getProjectByPath, setProject } from "../src/storage/state";
 import { getOwnerMeterTotals, upsertUsage } from "../src/storage/usage";
-import type { Env, ProjectEntry } from "../src/types";
+import type { CredentialBinding, Env, ProjectEntry } from "../src/types";
 import type { Logger } from "../src/utils/logger";
 import { ok } from "../src/utils/result";
 import { makeFakeKV } from "./helpers/fake-kv";
@@ -1291,11 +1291,12 @@ describe("the private project gauge holds what it admits (#384)", () => {
     },
   } as unknown as Env["ARTIFACTS"];
 
-  function app(userId: string, username: string, env: Partial<Env>) {
+  function app(userId: string, username: string, env: Partial<Env>, binding?: CredentialBinding) {
     const application = new Hono<{ Bindings: Env }>();
     application.use("*", async (c, next) => {
       c.set("userId", userId);
       c.set("username", username);
+      if (binding) c.set("credentialBinding", binding);
       await next();
     });
     application.route("/projects", projectsRouter);
@@ -1654,6 +1655,34 @@ describe("the private project gauge holds what it admits (#384)", () => {
     ]);
     expect(await holdsFor(userId)).toEqual([]);
     rpc.mockRestore();
+  });
+
+  it("refuses a bound token before the gauge, so a refusal never holds a slot", async () => {
+    // #323's binding refusal and the gauge hold, in that order: a token that
+    // may not create here must not tie up a slot it can never use — in a
+    // pooled org that would be someone else's slot.
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    const bound: CredentialBinding = { kind: "project", projectId: "prj_elsewhere" };
+    const post = app(
+      userId,
+      "alice",
+      { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: landingArtifacts },
+      bound,
+    );
+
+    const created = await post("/projects", { name: "one", visibility: "private" });
+    const imported = await post("/projects/@alice/two/import", {
+      url: "https://github.com/octo/widget",
+      branch: "main",
+    });
+
+    expect(created.status).toBe(403);
+    expect(await created.text()).toContain("cannot create projects here");
+    expect(imported.status).toBe(403);
+    expect(await imported.text()).toContain("cannot import projects");
+    expect(meters.calls).toEqual([]);
+    expect(await holdsFor(userId)).toEqual([]);
   });
 
   it("makes no meter call at all for a self-hoster", async () => {

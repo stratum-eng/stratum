@@ -38,6 +38,7 @@ vi.mock("../src/storage/api-tokens", async (importActual) => {
         data: {
           user: { id: "user_owner", email: "o@x.io", username: "owner" },
           scope,
+          binding: { kind: "unbound" },
           tokenId: `tok_${scope}`,
         },
       };
