@@ -44,6 +44,19 @@ vi.mock("../src/storage/audit", () => ({
   recordAudit: vi.fn().mockResolvedValue({ success: true, data: undefined }),
 }));
 
+// No linked (issuer, subject) identity: Google sign-in falls through to the
+// verified-email match these tests exercise (#253).
+vi.mock("../src/storage/identities", async () => {
+  const { NotFoundError } = await import("../src/utils/errors");
+  return {
+    getIdentityByIssuerSubject: vi.fn(async () => ({
+      success: false,
+      error: new NotFoundError("Identity", "none"),
+    })),
+    upsertIdentity: vi.fn(async () => ({ success: true, data: undefined })),
+  };
+});
+
 import { createSession, getSession } from "../src/storage/sessions";
 import {
   createUser,

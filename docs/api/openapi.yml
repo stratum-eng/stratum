@@ -7,7 +7,8 @@ info:
 
     This specification is generated from the route code (`src/index.ts` and
     `src/routes/*.ts`) and covers every `/api/*` route, the root health check,
-    and the GitHub webhook receiver.
+    the GitHub webhook receiver, and the SCIM 2.0 provisioning endpoints under
+    `/scim/v2`.
 
     Also covered: the remote MCP endpoint (`/mcp`) and the OAuth 2.1
     authorization server that fronts it (`/oauth/*` and its `.well-known`
@@ -15,7 +16,8 @@ info:
     client speaks to.
 
     Not covered here:
-    - HTML page routes (`/`, `/p/*`, `/changes/*`, `/auth/*`, `/dev-login`, `/ui.css`, ...).
+    - HTML page routes (`/`, `/p/*`, `/changes/*`, `/auth/*` — including the
+      SSO sign-in flow at `/auth/sso/*` — `/dev-login`, `/ui.css`, ...).
     - `GET|POST /oauth/authorize`, which renders and processes an HTML consent
       screen rather than serving JSON.
     - The git smart-HTTP endpoints (`/@{namespace}/{slug}/info/refs`,
@@ -26,7 +28,9 @@ info:
     as a `Authorization: Bearer <token>` header. Browser requests may instead be
     authenticated by the `stratum_session` cookie. Read endpoints on projects
     with `visibility: public` also accept anonymous requests. Admin endpoints
-    additionally accept an `X-Admin-API-Key` header.
+    additionally accept an `X-Admin-API-Key` header. The `/scim/v2` endpoints
+    accept only a per-connection SCIM bearer token (`stratum_scim_*`) and no
+    other credential.
 
     MCP OAuth grants (`stratum_mcp_...`) authenticate like any user token and
     obey the same scopes — `mcp:write` maps to `read_write`, anything else to
@@ -74,6 +78,10 @@ tags:
     description: Post-merge deployments and the per-project deploy secret store
   - name: orgs
     description: Organizations, members, and teams
+  - name: sso
+    description: Per-org OIDC SSO connection administration (org admins/owners; 501 without SSO_ENCRYPTION_SECRET)
+  - name: scim
+    description: SCIM 2.0 Users provisioning (SCIM bearer token only)
   - name: users
     description: The authenticated user's account
   - name: agents
@@ -2978,6 +2986,236 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/orgs/{slug}/sso:
+    parameters:
+      - $ref: "#/components/parameters/OrgSlug"
+    put:
+      operationId: upsertSsoConnection
+      tags: [sso]
+      summary: Create or replace the org's OIDC SSO connection (admins/owner only)
+      description: |
+        Endpoints are discovered from the issuer's OIDC discovery document. The
+        client secret is encrypted at rest and never echoed back. Changing the
+        connection resets domain verification. Like every `/sso` endpoint,
+        answers 501 when the server has no `SSO_ENCRYPTION_SECRET`; non-members
+        get the same 404 as a missing org.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [issuer, clientId, clientSecret, emailDomains]
+              properties:
+                issuer: { type: string, description: OIDC issuer URL }
+                clientId: { type: string }
+                clientSecret:
+                  type: string
+                  description: Accepted in request bodies only; never returned
+                emailDomains:
+                  type: array
+                  items: { type: string }
+                  description: Email domains this connection covers; each must pass DNS TXT verification before the connection can be enabled
+      responses:
+        "200":
+          description: Connection replaced
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SsoConnectionEnvelope" }
+        "201":
+          description: Connection created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SsoConnectionEnvelope" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/SsoNotConfigured"
+    get:
+      operationId: getSsoConnection
+      tags: [sso]
+      summary: Get the org's SSO connection (admins/owner only)
+      responses:
+        "200":
+          description: Connection (secret ciphertext and SCIM token hash redacted)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SsoConnectionEnvelope" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/SsoNotConfigured"
+    delete:
+      operationId: deleteSsoConnection
+      tags: [sso]
+      summary: Delete the org's SSO connection (admins/owner only)
+      description: Users this connection had deactivated via SCIM are re-enabled first, so deletion is a clean rollback rather than a lockout.
+      responses:
+        "200":
+          description: Connection deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  reenabledUserIds:
+                    type: array
+                    items: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/SsoNotConfigured"
+
+  /api/orgs/{slug}/sso/verify-domains:
+    parameters:
+      - $ref: "#/components/parameters/OrgSlug"
+    post:
+      operationId: verifySsoDomains
+      tags: [sso]
+      summary: Verify the connection's email domains via DNS (admins/owner only)
+      description: |
+        Checks (over DNS-over-HTTPS) that each domain publishes a TXT record
+        `stratum-sso-verify=<token>` at `_stratum-sso.<domain>`; the record
+        details are returned by `PUT`/`GET` under `domainVerification`. All
+        domains must pass in one call. Verified domains are globally unique
+        across connections.
+      responses:
+        "200":
+          description: All domains verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified: { type: boolean }
+                  domains:
+                    type: array
+                    items: { type: string }
+                  domainsVerifiedAt: { type: string, format: date-time }
+        "400":
+          description: TXT record missing or incorrect (code DOMAIN_VERIFICATION_FAILED, with failedDomains)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: A domain is already verified by another connection
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "501":
+          $ref: "#/components/responses/SsoNotConfigured"
+
+  /api/orgs/{slug}/sso/enable:
+    parameters:
+      - $ref: "#/components/parameters/OrgSlug"
+    post:
+      operationId: enableSsoConnection
+      tags: [sso]
+      summary: Enable the connection for sign-in and SCIM (admins/owner only)
+      description: Requires verified domains; domain uniqueness is re-checked at enable time.
+      responses:
+        "200":
+          description: Enabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+        "400":
+          description: Domains are not verified yet
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: A domain is already verified by another connection
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "501":
+          $ref: "#/components/responses/SsoNotConfigured"
+
+  /api/orgs/{slug}/sso/disable:
+    parameters:
+      - $ref: "#/components/parameters/OrgSlug"
+    post:
+      operationId: disableSsoConnection
+      tags: [sso]
+      summary: Disable the connection (admins/owner only)
+      description: Stops SSO sign-in and SCIM for this connection without deleting its configuration.
+      responses:
+        "200":
+          description: Disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/SsoNotConfigured"
+
+  /api/orgs/{slug}/sso/scim-token:
+    parameters:
+      - $ref: "#/components/parameters/OrgSlug"
+    post:
+      operationId: rotateScimToken
+      tags: [sso]
+      summary: Rotate the connection's SCIM bearer token (admins/owner only)
+      description: The plaintext token (`stratum_scim_*`) is returned exactly once; only its hash is stored. Rotation invalidates the previous token.
+      responses:
+        "200":
+          description: New SCIM token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scimToken:
+                    type: string
+                    description: The `stratum_scim_*` bearer for `/scim/v2`
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "501":
+          $ref: "#/components/responses/SsoNotConfigured"
+
   /api/users/me:
     get:
       operationId: getMe
@@ -3908,6 +4146,254 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /scim/v2/ServiceProviderConfig:
+    get:
+      operationId: scimServiceProviderConfig
+      tags: [scim]
+      summary: SCIM service provider configuration
+      security:
+        - scimBearer: []
+      responses:
+        "200":
+          description: Supported SCIM features (PATCH supported; bulk, filter beyond eq, sort, and etags not)
+          content:
+            application/scim+json:
+              schema: { type: object }
+        "401":
+          $ref: "#/components/responses/ScimUnauthorized"
+
+  /scim/v2/ResourceTypes:
+    get:
+      operationId: scimResourceTypes
+      tags: [scim]
+      summary: SCIM resource types (Users only; no Groups)
+      security:
+        - scimBearer: []
+      responses:
+        "200":
+          description: Resource type list
+          content:
+            application/scim+json:
+              schema: { type: object }
+        "401":
+          $ref: "#/components/responses/ScimUnauthorized"
+
+  /scim/v2/Schemas:
+    get:
+      operationId: scimSchemas
+      tags: [scim]
+      summary: SCIM schemas (core User only)
+      security:
+        - scimBearer: []
+      responses:
+        "200":
+          description: Schema list
+          content:
+            application/scim+json:
+              schema: { type: object }
+        "401":
+          $ref: "#/components/responses/ScimUnauthorized"
+
+  /scim/v2/Users:
+    get:
+      operationId: scimListUsers
+      tags: [scim]
+      summary: List users in the connection's scope
+      security:
+        - scimBearer: []
+      parameters:
+        - name: filter
+          in: query
+          schema: { type: string }
+          description: Only `userName eq "..."` and `externalId eq "..."` are supported; any other filter answers 501
+        - name: startIndex
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+          description: 1-based start index
+        - name: count
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 200, default: 100 }
+          description: Page size; 0 returns totalResults with no Resources
+      responses:
+        "200":
+          description: SCIM ListResponse of Users
+          content:
+            application/scim+json:
+              schema: { $ref: "#/components/schemas/ScimUserList" }
+        "401":
+          $ref: "#/components/responses/ScimUnauthorized"
+        "501":
+          description: Unsupported filter expression
+          content:
+            application/scim+json:
+              schema: { $ref: "#/components/schemas/ScimError" }
+    post:
+      operationId: scimCreateUser
+      tags: [scim]
+      summary: Provision a user
+      description: |
+        `userName` must be an email within the connection's verified domains.
+        If an account with that email already exists (and is not being
+        deleted), it is adopted into the connection's scope; otherwise a new
+        account is created and added to the org as a member. Either way the
+        answer is 201 with a `Location` header (RFC 7644 §3.3). A retried POST
+        for a user this connection already manages converges on the requested
+        `externalId`/`active` instead of failing; only a different stored
+        `externalId` is a 409.
+      security:
+        - scimBearer: []
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              type: object
+              required: [userName]
+              properties:
+                userName: { type: string, description: Email address within the connection's verified domains }
+                externalId: { type: string }
+                active: { type: boolean, default: true }
+      responses:
+        "201":
+          description: User created or existing account adopted
+          headers:
+            Location:
+              schema: { type: string }
+              description: Canonical URI of the user resource
+          content:
+            application/scim+json:
+              schema: { $ref: "#/components/schemas/ScimUser" }
+        "400":
+          description: Invalid attribute (SCIM error body)
+          content:
+            application/scim+json:
+              schema: { $ref: "#/components/schemas/ScimError" }
+        "401":
+          $ref: "#/components/responses/ScimUnauthorized"
+        "409":
+          description: Conflicting account, already-provisioned user, or duplicate externalId
+          content:
+            application/scim+json:
+              schema: { $ref: "#/components/schemas/ScimError" }
+
+  /scim/v2/Users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: Stratum user id
+    get:
+      operationId: scimGetUser
+      tags: [scim]
+      summary: Get a user
+      security:
+        - scimBearer: []
+      responses:
+        "200":
+          description: User (`active` reflects the enforced account state)
+          content:
+            application/scim+json:
+              schema: { $ref: "#/components/schemas/ScimUser" }
+        "401":
+          $ref: "#/components/responses/ScimUnauthorized"
+        "404":
+          $ref: "#/components/responses/ScimNotFound"
+    put:
+      operationId: scimReplaceUser
+      tags: [scim]
+      summary: Replace a user
+      description: Only `active` and `externalId` are writable; `userName` cannot be changed (400 mutability). Deactivation (`active:false`) reversibly disables every credential the user holds and deletes their browser sessions; reactivation restores their tokens, agents, and OAuth grants (the user signs in again for a new session).
+      security:
+        - scimBearer: []
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              type: object
+              properties:
+                userName: { type: string, description: Must equal the current value }
+                externalId: { type: [string, "null"] }
+                active: { type: boolean }
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/scim+json:
+              schema: { $ref: "#/components/schemas/ScimUser" }
+        "400":
+          description: Invalid attribute or userName change (SCIM error body)
+          content:
+            application/scim+json:
+              schema: { $ref: "#/components/schemas/ScimError" }
+        "401":
+          $ref: "#/components/responses/ScimUnauthorized"
+        "404":
+          $ref: "#/components/responses/ScimNotFound"
+        "409":
+          description: externalId already assigned to another user
+          content:
+            application/scim+json:
+              schema: { $ref: "#/components/schemas/ScimError" }
+    patch:
+      operationId: scimPatchUser
+      tags: [scim]
+      summary: Patch a user
+      description: Accepts `replace` and `add` operations (equivalent for these single-valued attributes, RFC 7644 §3.5.2.1) on `active` and `externalId`, with or without a path. Operations of any type on unstored attributes (displayName, name.*, enterprise extension paths, ...) are ignored rather than errored, matching Okta/Entra profile syncs; any other operation on a stored attribute is rejected.
+      security:
+        - scimBearer: []
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              type: object
+              required: [Operations]
+              properties:
+                Operations:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      op: { type: string, description: '"replace" or "add" (case-insensitive) on stored attributes' }
+                      path: { type: string }
+                      value: {}
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/scim+json:
+              schema: { $ref: "#/components/schemas/ScimUser" }
+        "400":
+          description: Malformed operations (SCIM error body)
+          content:
+            application/scim+json:
+              schema: { $ref: "#/components/schemas/ScimError" }
+        "401":
+          $ref: "#/components/responses/ScimUnauthorized"
+        "404":
+          $ref: "#/components/responses/ScimNotFound"
+        "409":
+          description: externalId already assigned to another user
+          content:
+            application/scim+json:
+              schema: { $ref: "#/components/schemas/ScimError" }
+    delete:
+      operationId: scimDeleteUser
+      tags: [scim]
+      summary: Deactivate a user
+      description: Deactivates rather than erases (equivalent to `active:false`), so a later GET returns the resource with `active:false` and a misconfigured IdP cannot destroy data. Idempotent.
+      security:
+        - scimBearer: []
+      responses:
+        "204":
+          description: User deactivated
+        "401":
+          $ref: "#/components/responses/ScimUnauthorized"
+        "404":
+          $ref: "#/components/responses/ScimNotFound"
+
   /mcp:
     post:
       tags: [mcp]
@@ -4174,6 +4660,14 @@ components:
       in: header
       name: X-Admin-API-Key
       description: Admin API key for administrator endpoints
+    scimBearer:
+      type: http
+      scheme: bearer
+      description: >
+        Per-connection SCIM token (`stratum_scim_*`), rotated via
+        `POST /api/orgs/{slug}/sso/scim-token`. The only credential the
+        `/scim/v2` endpoints accept — session cookies and user/agent tokens
+        are never honored there.
     sessionCookie:
       type: apiKey
       in: cookie
@@ -4272,6 +4766,21 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    SsoNotConfigured:
+      description: SSO is not configured on this server (no SSO_ENCRYPTION_SECRET)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ScimUnauthorized:
+      description: Missing/invalid SCIM bearer, or the connection is disabled, unverified, or deleted
+      content:
+        application/scim+json:
+          schema: { $ref: "#/components/schemas/ScimError" }
+    ScimNotFound:
+      description: User not found in the connection's scope
+      content:
+        application/scim+json:
+          schema: { $ref: "#/components/schemas/ScimError" }
 
   schemas:
     JsonRpcRequest:
@@ -4342,7 +4851,109 @@ components:
             Machine-readable code present on some errors (e.g. TARGET_DELETING,
             STALE_BASE, STALE_WORKSPACE, WORKSPACE_UNVERIFIABLE, MERGE_CONFLICT,
             PROTECTION_BLOCKED, NOT_REDRIVABLE, GONE, INVALID_PATH,
-            TOKEN_SCOPE_INSUFFICIENT, TOKEN_LIMIT_REACHED, SESSION_REQUIRED)
+            TOKEN_SCOPE_INSUFFICIENT, TOKEN_LIMIT_REACHED, SESSION_REQUIRED,
+            DOMAIN_VERIFICATION_FAILED)
+
+    SsoConnectionEnvelope:
+      type: object
+      properties:
+        connection:
+          type: object
+          description: Admin view of the connection — client secret ciphertext and SCIM token hash are never included
+          properties:
+            id: { type: string }
+            orgId: { type: string }
+            protocol: { type: string, enum: [oidc] }
+            issuer: { type: string }
+            clientId: { type: string }
+            authorizationEndpoint: { type: string }
+            tokenEndpoint: { type: string }
+            jwksUri: { type: string }
+            emailDomains:
+              type: array
+              items: { type: string }
+            domainsVerifiedAt:
+              type: [string, "null"]
+              format: date-time
+            enabled: { type: boolean }
+            scimTokenSet: { type: boolean }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+        domainVerification:
+          type: [object, "null"]
+          description: The DNS TXT records to publish (null only when the connection has no verification token). It may still be present after verification, so read `connection.domainsVerifiedAt` for verification status
+          properties:
+            token: { type: string }
+            records:
+              type: array
+              items:
+                type: object
+                properties:
+                  domain: { type: string }
+                  name:
+                    type: string
+                    description: "`_stratum-sso.<domain>`"
+                  type: { type: string, enum: [TXT] }
+                  value:
+                    type: string
+                    description: "`stratum-sso-verify=<token>`"
+            instructions: { type: string }
+
+    ScimUser:
+      type: object
+      description: SCIM core User resource
+      properties:
+        schemas:
+          type: array
+          items: { type: string }
+        id: { type: string, description: Stratum user id }
+        userName: { type: string, description: The user's email address }
+        externalId: { type: string }
+        active:
+          type: boolean
+          description: Reflects users.disabled_at — the enforced account state
+        name:
+          type: object
+          properties:
+            formatted: { type: string }
+        emails:
+          type: array
+          items:
+            type: object
+            properties:
+              value: { type: string }
+              primary: { type: boolean }
+        meta:
+          type: object
+          properties:
+            resourceType: { type: string }
+            created: { type: string, format: date-time }
+            location: { type: string }
+
+    ScimUserList:
+      type: object
+      description: SCIM ListResponse envelope
+      properties:
+        schemas:
+          type: array
+          items: { type: string }
+        totalResults: { type: integer }
+        startIndex: { type: integer }
+        itemsPerPage: { type: integer }
+        Resources:
+          type: array
+          items: { $ref: "#/components/schemas/ScimUser" }
+
+    ScimError:
+      type: object
+      description: SCIM error envelope (urn:ietf:params:scim:api:messages:2.0:Error)
+      properties:
+        schemas:
+          type: array
+          items: { type: string }
+        status: { type: string }
+        detail: { type: string }
+        scimType: { type: string }
 
     ApiToken:
       type: object

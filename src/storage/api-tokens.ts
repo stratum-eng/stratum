@@ -317,6 +317,7 @@ interface ResolvedTokenRow {
   user_token_hash: string;
   user_created_at: string;
   deleting_at: string | null;
+  disabled_at: string | null;
   telemetry_opt_out: number;
   token_id: string;
   token_scope: string;
@@ -355,7 +356,7 @@ export async function resolveApiToken(
     row = await db
       .prepare(
         `SELECT u.id AS user_id, u.email, u.username, u.github_id, u.github_username,
-                u.token_hash AS user_token_hash, u.created_at AS user_created_at, u.deleting_at,
+                u.token_hash AS user_token_hash, u.created_at AS user_created_at, u.deleting_at, u.disabled_at,
                 u.telemetry_opt_out,
                 t.id AS token_id, t.scope AS token_scope, t.expires_at AS token_expires_at,
                 t.last_used_at AS token_last_used_at, t.revoked_at AS token_revoked_at
@@ -374,6 +375,9 @@ export async function resolveApiToken(
   if (!row) return err(new NotFoundError("Token", "by-token"));
   if (row.token_revoked_at !== null) return err(new NotFoundError("Token", "revoked"));
   if (row.deleting_at !== null) return err(new NotFoundError("Token", "owner-deleting"));
+  // A SCIM-disabled owner is as inert as a deleting one (#253); the column is
+  // NULL on enabled accounts, and `!= null` also tolerates a stub row without it.
+  if (row.disabled_at != null) return err(new NotFoundError("Token", "owner-disabled"));
   if (isExpired(row.token_expires_at)) return err(new NotFoundError("Token", "expired"));
 
   const user: User = {

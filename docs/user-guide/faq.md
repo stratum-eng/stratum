@@ -80,8 +80,12 @@ at all. You choose the level of buy-in, and you can start with layer mode.
 
 No. Email magic-link authentication is the recommended sign-in and has no
 external dependencies. GitHub OAuth (needed for GitHub sync) and Google OAuth
-are alternatives; all resolve to the same email-based identity, and all three
-ask you to choose your username when the account is first created.
+are alternatives, and organizations can configure enterprise SSO (OIDC) for
+sign-in at `/auth/sso`; all resolve to the same email-based account. Magic link,
+GitHub, and Google ask you to choose your username when the account is first
+created; SSO derives one from your work email. Note that SSO does not yet lock
+out the other methods — magic-link sign-in still works for corporate emails
+until an enforcement toggle ships.
 
 ## What happens when an evaluation fails?
 

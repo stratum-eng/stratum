@@ -43,7 +43,10 @@ under [Deployments](#deployments).
       change at a time. Test N queued changes together and bisect on failure. (The
       server-side `changes/merge-batch` endpoint already does this for an explicit batch;
       this item is the queue doing it automatically.)
-- [ ] **SSO/SAML** — enterprise sign-in alongside magic-link, GitHub OAuth, and Google OAuth.
+- [ ] **SSO remainders** — per-org OIDC sign-in and SCIM 2.0 Users provisioning shipped
+      (#253; config via `/api/orgs/:slug/sso`, sign-in at `/auth/sso`). Still open: an SSO
+      enforcement toggle (magic-link still works for corporate emails), SAML (if a customer
+      requires it), SCIM Groups, and a management UI.
 - [ ] **Multi-tenancy and billing** — tenant isolation, usage metering, billing. Per-change
       cost tracking already exists and provides the metering foundation.
 - [ ] **Monitoring dashboard UI** — a UI over the existing `/api/admin/metrics` (queue

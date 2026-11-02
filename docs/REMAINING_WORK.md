@@ -1,7 +1,8 @@
 # Remaining Work
 
-Last updated: 2026-09-04 — records what post-merge deployments left out, now
-that they ship.
+Last updated: 2026-11-02 — records enterprise OIDC SSO + SCIM as shipped (#253)
+and narrows the SSO section to the remaining pieces; also records what
+post-merge deployments left out, now that they ship.
 
 The master-plan feature roadmap (Phases 0–3 plus the code-level Phase 4
 hardening items) is complete as of 2026-06-11. See
@@ -32,10 +33,22 @@ The merge queue Durable Object currently merges changes one at a time. Batch
 merging (test N queued changes together, bisect on failure) increases
 throughput when the queue is deep.
 
-### SSO/SAML
+### Enterprise SSO — remaining pieces
 
-Enterprise sign-in alongside the existing magic-link, GitHub OAuth, and Google
-OAuth options. Required for most paid team adoption.
+OIDC SSO and SCIM provisioning shipped (#253): per-org OIDC connections
+configured via `/api/orgs/:slug/sso` with DNS-TXT domain verification, sign-in
+at `/auth/sso` with JIT provisioning, and SCIM 2.0 Users at `/scim/v2` with
+reversible deactivation enforced at every credential path. See
+[CURRENT_CAPABILITIES.md](./CURRENT_CAPABILITIES.md) and
+[api/authentication.md](./api/authentication.md). Still open:
+
+- **SSO login enforcement toggle** — magic-link login still works for
+  corporate emails, so IdP MFA/conditional-access can be bypassed until an
+  org can require SSO. (Offboarding is still effective: disabled users fail
+  every login path.)
+- **SAML** — only if a customer requires it; OIDC covers the major IdPs.
+- **SCIM Groups** — group push / team mapping; only Users sync today.
+- **SSO management UI** — configuration is API-only today.
 
 ### Multi-tenancy and billing
 

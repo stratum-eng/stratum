@@ -40,7 +40,19 @@ export type AuditAction =
   | "secret.written"
   | "secret.deleted"
   | "deployment.approved"
-  | "deployment.retried";
+  | "deployment.retried"
+  // Enterprise SSO (OIDC) + SCIM (#253).
+  | "user.disabled"
+  | "user.enabled"
+  | "sso.connection.created"
+  | "sso.connection.updated"
+  | "sso.connection.deleted"
+  | "sso.domain.verified"
+  | "sso.scim_token.rotated"
+  | "scim.user.provisioned"
+  | "scim.user.updated"
+  | "scim.user.deactivated"
+  | "scim.user.reactivated";
 
 export interface AuditEntry {
   id: string;

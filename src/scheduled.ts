@@ -6,6 +6,7 @@ import { runTtlSweep } from "./queue/ttl-sweep";
 import { syncAllProjects } from "./routes/sync";
 import { cleanupOldImports } from "./storage/imports";
 import { sweepExpiredAuthorizationCodes } from "./storage/oauth";
+import { purgeExpiredOidcStates } from "./storage/sso";
 import type { Env } from "./types";
 import type { Logger } from "./utils/logger";
 
@@ -17,7 +18,8 @@ export type ScheduledJob =
   | "ttl-sweep"
   | "project-sync"
   | "import-cleanup"
-  | "oauth-code-sweep";
+  | "oauth-code-sweep"
+  | "oidc-state-purge";
 
 /** How long a finished import job is kept before `import-cleanup` prunes it. */
 const IMPORT_RETENTION_DAYS = 30;
@@ -45,7 +47,7 @@ export function jobsForCron(cron: string): ScheduledJob[] {
     case "0 4 * * *":
       return ["backup"];
     case "0 6 * * *":
-      return ["ttl-sweep", "project-sync", "import-cleanup"];
+      return ["ttl-sweep", "project-sync", "import-cleanup", "oidc-state-purge"];
     default:
       return [];
   }
@@ -60,6 +62,7 @@ const JOB_RUNNERS: JobRunners = {
   backup: (env, logger) => runBackup(env, logger, new Date().toISOString()),
   "ttl-sweep": (env, logger) => runTtlSweep(env, logger),
   "project-sync": (env) => syncAllProjects(env),
+  "oidc-state-purge": (env, logger) => purgeExpiredOidcStates(env.DB, logger),
   "import-cleanup": (env, logger) => cleanupOldImports(env.DB, IMPORT_RETENTION_DAYS, logger),
   "oauth-code-sweep": (env, logger) => sweepExpiredAuthorizationCodes(env.DB, logger),
 };

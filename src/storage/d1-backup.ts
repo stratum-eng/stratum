@@ -31,6 +31,11 @@ export const BACKUP_TABLES: readonly string[] = [
   "teams",
   "org_members",
   "team_members",
+  // SSO/SCIM (migration 049): identities references users; scim_members
+  // references org_sso_connections, which references orgs — so this order.
+  "identities",
+  "org_sso_connections",
+  "scim_members",
   "sessions",
   "import_jobs",
   "changes",
@@ -81,6 +86,9 @@ export const BACKUP_EXCLUDED_TABLES: readonly string[] = [
   // Ephemeral, single-use, short-TTL login tokens (stored hashed). They expire
   // in minutes, so a backup would only ever hold dead rows — nothing to restore.
   "magic_links",
+  // Same story for OIDC login state (migration 049): single-use, 10-minute-TTL
+  // rows consumed at callback time; a backup would only ever hold dead rows.
+  "oidc_login_states",
   // The backup orchestrator's own per-repo rotation cursor. It describes backup
   // progress, not user data; restoring it into a fresh DB would be meaningless.
   "backup_state",
