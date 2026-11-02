@@ -12,10 +12,12 @@
   namespace it did not own, and the import routes, which authorize by that namespace,
   then accepted it. Renames, signups, org creation and `GET /api/users/check-username` now
   treat an org slug, a live project claim, or existing projects under `@name` as taken.
+  The user/org check also sits inside the rename's `UPDATE` and the org's `INSERT`, so a
+  concurrent rename and org creation cannot both claim the same name.
 - **The OAuth authorize endpoint is no longer an open redirect.** Client registration is
   open, so anyone could register a client whose redirect URI was their own site and then
   link users to `/oauth/authorize` with a malformed request, which bounced them straight
   to that site from Stratum's domain. Invalid authorization requests (bad
-  `response_type`, PKCE, scope or resource) now show an error page naming the OAuth
-  error code instead of redirecting. Only the user's own "deny" on the consent screen
-  sends an error back to the client.
+  `response_type`, PKCE, scope or resource) and a declined consent now show a Stratum
+  page naming the OAuth error, with a "Return to <host>" link that carries the error and
+  `state` back to the client only when the user chooses to follow it.

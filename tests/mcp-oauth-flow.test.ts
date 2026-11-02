@@ -319,7 +319,12 @@ describe("authorization", () => {
       );
       expect(response.status).toBe(400);
       expect(response.headers.get("location")).toBeNull();
-      expect(await response.text()).toContain(`Invalid request (${expected})`);
+      const html = await response.text();
+      expect(html).toContain(`Invalid request (${expected})`);
+      const href = /href="([^"]+)"[^>]*>\s*Return to /.exec(html)?.[1]?.replaceAll("&amp;", "&");
+      const back = new URL(href ?? "");
+      expect(back.searchParams.get("error")).toBe(expected);
+      expect(back.searchParams.get("state")).toBe("xyz");
     }
   });
 
@@ -332,7 +337,9 @@ describe("authorization", () => {
     expect(await response.text()).toContain("Invalid request (invalid_target)");
   });
 
-  it("returns access_denied when the user cancels", async () => {
+  // A declined request is not bounced to the client automatically (open
+  // registration makes its URI untrusted); the page offers the way back.
+  it("offers, but does not follow, a return link carrying access_denied when the user cancels", async () => {
     const { json } = await register();
     const response = await app.fetch(
       new Request(`${ORIGIN}/oauth/authorize`, {
@@ -353,9 +360,15 @@ describe("authorization", () => {
       }),
       env,
     );
-    const location = new URL(response.headers.get("location") ?? "");
-    expect(location.searchParams.get("error")).toBe("access_denied");
-    expect(location.searchParams.get("code")).toBeNull();
+    expect(response.headers.get("location")).toBeNull();
+    const html = await response.text();
+    expect(html).toContain("Request declined");
+    const href = /href="([^"]+)"[^>]*>\s*Return to /.exec(html)?.[1]?.replaceAll("&amp;", "&");
+    const back = new URL(href ?? "");
+    expect(back.origin + back.pathname).toBe(REDIRECT);
+    expect(back.searchParams.get("error")).toBe("access_denied");
+    expect(back.searchParams.get("state")).toBe("xyz");
+    expect(back.searchParams.get("code")).toBeNull();
   });
 
   it("re-validates the consent POST instead of trusting its hidden fields", async () => {

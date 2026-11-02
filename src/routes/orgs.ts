@@ -19,6 +19,7 @@ import {
 } from "../storage/teams";
 import { getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
+import { AppError } from "../utils/errors";
 import { createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 import { badRequest, created, notFound, ok } from "../utils/response";
@@ -74,6 +75,12 @@ app.post("/", async (c) => {
 
   const orgResult = await createOrg(c.env.DB, logger, userId, body.name, body.slug);
   if (!orgResult.success) {
+    // 409 from createOrg: a user took the name between the checks above and
+    // the INSERT. A UNIQUE failure: another org did.
+    const lost =
+      (orgResult.error instanceof AppError && orgResult.error.statusCode === 409) ||
+      /UNIQUE|constraint/i.test(orgResult.error.message);
+    if (lost) return badRequest("slug is already taken");
     logger.error("Failed to create org", orgResult.error, { name: body.name, slug: body.slug });
     return c.json({ error: "Failed to create organization" }, 500);
   }

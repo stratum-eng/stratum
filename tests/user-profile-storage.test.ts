@@ -4,6 +4,7 @@
  * username rejects a collision the way D1 does, with a constraint error.
  */
 import { describe, expect, it, vi } from "vitest";
+import { createOrg } from "../src/storage/orgs";
 import { claimNamespace } from "../src/storage/project-namespace";
 import { getUser, renameUser, setUserDisplayName } from "../src/storage/users";
 import type { Logger } from "../src/utils/logger";
@@ -195,5 +196,42 @@ describe("renameUser against namespace claims", () => {
     const { db } = makeSqliteD1();
     const renamed = await renameUser(db, "usr_9", "carol", mockLogger);
     expect(!renamed.success && renamed.error.statusCode).toBe(404);
+  });
+});
+
+/**
+ * Users and orgs share the `@name` namespace. Each side's write refuses the
+ * other's name inside its own statement, so a concurrent rename and org
+ * creation cannot both pass separate preflight checks and collide.
+ */
+describe("the shared @name namespace, enforced in the write", () => {
+  function seed(raw: ReturnType<typeof makeSqliteD1>["raw"]) {
+    raw
+      .prepare(
+        "INSERT INTO users (id, email, username, token_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("usr_1", "alice@example.com", "alice", "hash-1", "2026-01-01T00:00:00.000Z");
+  }
+
+  it("refuses a rename onto an org's slug with a 409", async () => {
+    const { db, raw } = makeSqliteD1();
+    seed(raw);
+    const org = await createOrg(db, mockLogger, "usr_1", "Acme", "acme");
+    expect(org.success).toBe(true);
+    const renamed = await renameUser(db, "usr_1", "acme", mockLogger);
+    expect(renamed.success).toBe(false);
+    expect(!renamed.success && renamed.error.statusCode).toBe(409);
+    const user = await getUser(db, "usr_1", mockLogger);
+    expect(user.success && user.data.username).toBe("alice");
+  });
+
+  it("refuses an org whose slug is a username, writing nothing", async () => {
+    const { db, raw } = makeSqliteD1();
+    seed(raw);
+    const org = await createOrg(db, mockLogger, "usr_1", "Alice Inc", "alice");
+    expect(org.success).toBe(false);
+    expect(!org.success && "statusCode" in org.error && org.error.statusCode).toBe(409);
+    const count = raw.prepare("SELECT COUNT(*) AS n FROM orgs").get() as { n: number };
+    expect(count.n).toBe(0);
   });
 });

@@ -287,15 +287,23 @@ export async function renameUser(
   try {
     const result = await db
       .prepare(
-        "UPDATE users SET username = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM namespace_claims WHERE owner_id = ?)",
+        "UPDATE users SET username = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM namespace_claims WHERE owner_id = ?) AND NOT EXISTS (SELECT 1 FROM orgs WHERE slug = ?)",
       )
-      .bind(username, userId, userId)
+      .bind(username, userId, userId, username)
       .run();
     if ((result.meta?.changes ?? 0) === 0) {
-      // Nothing changed: either the row is gone or a claim held the name.
+      // Nothing changed: the row is gone, an org holds the name (users and orgs
+      // share `@name`; checked here so a concurrent org creation cannot race a
+      // route-level preflight), or a claim held the old name.
       const exists = await db.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
       if (exists === null) {
         return err(new AppError(`User '${userId}' not found`, "NOT_FOUND", 404, { userId }));
+      }
+      const org = await db.prepare("SELECT id FROM orgs WHERE slug = ?").bind(username).first();
+      if (org !== null) {
+        return err(
+          new AppError("That username is already taken.", "CONFLICT", 409, { userId, username }),
+        );
       }
       return err(
         new AppError(

@@ -1,4 +1,4 @@
-import { NotFoundError } from "../utils/errors";
+import { AppError, NotFoundError } from "../utils/errors";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
@@ -56,10 +56,19 @@ export async function createOrg(
     const id = newId("org");
     const createdAt = new Date().toISOString();
 
-    await db
-      .prepare("INSERT INTO orgs (id, name, slug, owner_id, created_at) VALUES (?, ?, ?, ?, ?)")
-      .bind(id, name, slug, ownerId, createdAt)
+    // Users and orgs share the `@name` namespace. The username check sits in
+    // the INSERT itself so a concurrent rename onto this slug cannot slip in
+    // between a route-level preflight and the write (renameUser does the same
+    // in reverse).
+    const result = await db
+      .prepare(
+        "INSERT INTO orgs (id, name, slug, owner_id, created_at) SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = ?)",
+      )
+      .bind(id, name, slug, ownerId, createdAt, slug)
       .run();
+    if ((result.meta?.changes ?? 0) === 0) {
+      return err(new AppError("slug is already taken", "CONFLICT", 409, { slug }));
+    }
 
     const org: Org = { id, name, slug, ownerId, createdAt };
     logger.info("Org created successfully", { orgId: id, slug });
