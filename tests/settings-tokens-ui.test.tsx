@@ -283,6 +283,24 @@ describe("POST /settings/tokens — creating a token", () => {
     expect(createApiToken).not.toHaveBeenCalled();
   });
 
+  it("renders a refused field inline, refilled, with a summary linking to it", async () => {
+    const res = await post("/settings/tokens", { name: "ci", expiresInDays: "366" });
+    expect(res.status).toBe(400);
+    const html = await res.text();
+    // The form is `novalidate`: the server's check is the one the user sees.
+    expect(html).toMatch(/action="\/settings\/tokens" class="settings-form" novalidate/);
+    const expiry = html.match(/<input[^>]*id="settings-token-expiry"[^>]*>/)?.[0] ?? "";
+    expect(expiry).toContain('aria-invalid="true"');
+    expect(expiry).toContain('aria-describedby="settings-token-expiry-error"');
+    expect(expiry).toContain('value="366"');
+    expect(html).toMatch(/<p class="field-error" id="settings-token-expiry-error">Expiry must be/);
+    // The name was fine: it comes back filled in, and not marked invalid.
+    const name = html.match(/<input[^>]*id="settings-token-name"[^>]*>/)?.[0] ?? "";
+    expect(name).toContain('value="ci"');
+    expect(name).not.toContain("aria-invalid");
+    expect(html).toMatch(/role="alert"[\s\S]*?<a href="#settings-token-expiry">Expiry must be/);
+  });
+
   it("shows the cap message when the user already holds the maximum", async () => {
     vi.mocked(createApiToken).mockResolvedValue({
       success: false,
@@ -414,6 +432,15 @@ describe("the agent surfaces still work for a browser session", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
     expect(await res.text()).toContain("stratum_agent_fresh");
+  });
+
+  it("re-renders settings with an inline error for a blank agent name", async () => {
+    const res = await post("/settings/agents", { name: "  " }, SESSION);
+    expect(res.status).toBe(400);
+    const html = await res.text();
+    expect(html).toMatch(/<input[^>]*id="settings-agent-name"[^>]*aria-invalid="true"/);
+    expect(html).toContain('id="settings-agent-name-error">Give the agent a name.');
+    expect(createAgent).not.toHaveBeenCalled();
   });
 
   it("revokes an agent the caller owns", async () => {

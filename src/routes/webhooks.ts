@@ -13,6 +13,7 @@ import {
 } from "../storage/webhooks";
 import type { Env, ProjectEntry } from "../types";
 import { SOURCE_FOOTER_HTML } from "../ui/components/source-footer";
+import type { WebhookFormField } from "../ui/pages/webhooks";
 import { canWriteProject } from "../utils/authz";
 import { escapeHtml } from "../utils/html";
 import { createLogger } from "../utils/logger";
@@ -147,13 +148,22 @@ app.post("/:namespace/:slug/webhooks", async (c) => {
     body = { url: form.url, events: form.events };
   }
 
+  // The management page's form lands back on that page with the reason under
+  // the field, not on a raw JSON 400. The query carries the field name as a
+  // fixed code; the page owns the copy (see `webhookFormError`).
+  const isForm = !contentType.includes("application/json");
+  const backToForm = (field: WebhookFormField) =>
+    c.redirect(`/${project.namespace}/${project.slug}/webhooks?error=${field}`, 303);
+
   const urlResult = validateWebhookUrl(body.url, logger);
   if (!urlResult.success) {
+    if (isForm) return backToForm("url");
     return badRequest(urlResult.error[0]?.message ?? "Invalid webhook URL");
   }
 
   const events = sanitizeEvents(body.events);
   if (events === null) {
+    if (isForm) return backToForm("events");
     return badRequest(
       `events must be "*" or a comma-separated subset of: ${SUBSCRIBABLE_EVENTS.join(", ")}`,
     );

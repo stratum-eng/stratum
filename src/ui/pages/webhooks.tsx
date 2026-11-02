@@ -1,5 +1,6 @@
 import type { FC } from "hono/jsx";
 import type { Webhook, WebhookDelivery } from "../../storage/webhooks";
+import { FieldError, fieldAttrs, fieldErrorId } from "../components/field-error";
 import { ProjectHeader } from "../components/project-header";
 import { Layout } from "../layout";
 
@@ -12,7 +13,32 @@ interface WebhooksPageProps {
   };
   webhooks: Array<{ webhook: Omit<Webhook, "secret">; deliveries: WebhookDelivery[] }>;
   subscribableEvents: string[];
+  /** A refused "Add webhook" submission, resolved from its `?error=` code. */
+  formError?: WebhookFormError | undefined;
   user?: { id: string; email: string; username: string } | null;
+}
+
+/** The fields of the "Add webhook" form a refusal can be about. */
+export type WebhookFormField = "url" | "events";
+
+/** A refused "Add webhook" submission: which field, and why. */
+export interface WebhookFormError {
+  field: WebhookFormField;
+  message: string;
+}
+
+const WEBHOOK_FORM_ERRORS: Record<WebhookFormField, string> = {
+  url: "Enter a public http:// or https:// URL. Private, loopback and link-local addresses are refused.",
+  events: "Choose “All events” or at least one event to deliver.",
+};
+
+/**
+ * Maps a `?error=` code to its copy. The code is the field name and the copy
+ * is ours: the query string can select a message but never supply one.
+ */
+export function webhookFormError(code: string | undefined): WebhookFormError | undefined {
+  if (code !== "url" && code !== "events") return undefined;
+  return { field: code, message: WEBHOOK_FORM_ERRORS[code] };
 }
 
 const DeliveryRow: FC<{ delivery: WebhookDelivery }> = ({ delivery }) => (
@@ -33,9 +59,12 @@ export const WebhooksPage: FC<WebhooksPageProps> = ({
   project,
   webhooks,
   subscribableEvents,
+  formError,
   user,
 }) => {
   const base = `/api/projects/${project.namespace}/${project.slug}/webhooks`;
+  const urlError = formError?.field === "url" ? formError.message : undefined;
+  const eventsError = formError?.field === "events" ? formError.message : undefined;
   return (
     <Layout title={`Webhooks — ${project.name}`} user={user}>
       <ProjectHeader project={project} active="settings" canWrite={true} />
@@ -49,13 +78,29 @@ export const WebhooksPage: FC<WebhooksPageProps> = ({
           Stratum will POST a JSON payload to this URL for each subscribed event, signed with an
           HMAC-SHA256 <code>X-Stratum-Signature</code> header.
         </p>
-        <form method="post" action={base} class="webhook-form">
+        {/* `novalidate`: the create route checks the URL (including what only
+            the server can, such as a private host) and sends the form back
+            here with the reason under the field. */}
+        <form method="post" action={base} class="webhook-form" novalidate>
           <label>
             Payload URL
-            <input type="url" name="url" placeholder="https://example.com/hooks/stratum" required />
+            <input
+              {...fieldAttrs("webhook-url", urlError)}
+              type="url"
+              name="url"
+              placeholder="https://example.com/hooks/stratum"
+              required
+            />
           </label>
-          <fieldset class="webhook-events">
+          <FieldError for="webhook-url" message={urlError} />
+          <fieldset
+            class="webhook-events"
+            {...(eventsError !== undefined
+              ? { "aria-describedby": fieldErrorId("webhook-events") }
+              : {})}
+          >
             <legend>Events to deliver</legend>
+            <FieldError for="webhook-events" message={eventsError} />
             <label class="checkbox-label">
               <input type="checkbox" name="events" value="*" checked />
               All events

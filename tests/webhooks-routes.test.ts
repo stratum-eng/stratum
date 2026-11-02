@@ -216,6 +216,30 @@ describe("webhook management routes — project-id scoping (SA-1)", () => {
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
+  it("sends a refused form submission back to the page with a field code, not JSON", async () => {
+    const submit = (url: string, contentType: string) =>
+      makeApp().fetch(
+        new Request("http://localhost/@alice/api/webhooks", {
+          method: "POST",
+          headers: { ...AUTH, "Content-Type": contentType },
+          body:
+            contentType === "application/json"
+              ? JSON.stringify({ url })
+              : new URLSearchParams({ url }).toString(),
+        }),
+        env,
+      );
+
+    const form = await submit("http://127.0.0.1/hook", "application/x-www-form-urlencoded");
+    expect(form.status).toBe(303);
+    // A fixed code naming the field; the page owns the copy.
+    expect(form.headers.get("location")).toBe("/@alice/api/webhooks?error=url");
+
+    const json = await submit("http://127.0.0.1/hook", "application/json");
+    expect(json.status).toBe(400);
+    expect(createWebhook).not.toHaveBeenCalled();
+  });
+
   it("marks the JSON creation response no-store too — it also returns the secret", async () => {
     vi.mocked(createWebhook).mockResolvedValue({
       success: true,

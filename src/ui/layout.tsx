@@ -122,10 +122,6 @@ export const Layout: FC<LayoutProps> = ({
           <div class="nav-auth">
             {user ? (
               <>
-                {/* Identity, not navigation: who is signed in. The account page is "settings". */}
-                <span class="nav-user" title={`@${user.username}`}>
-                  {user.displayName ?? user.username ?? user.email}
-                </span>
                 <a
                   href="/new"
                   class="nav-auth-link"
@@ -134,19 +130,48 @@ export const Layout: FC<LayoutProps> = ({
                 >
                   new project
                 </a>
-                <a
-                  href="/settings"
-                  class="nav-auth-link"
-                  data-ph="nav-settings"
-                  aria-current={current("settings")}
-                >
-                  settings
-                </a>
-                <form method="post" action="/auth/logout" class="nav-logout-form">
-                  <button type="submit" class="nav-auth-link" data-ph="nav-logout">
-                    logout
-                  </button>
-                </form>
+                {/*
+                  The account menu: who is signed in, and the things that belong
+                  to that account, collapsed under the name so logout no longer
+                  sits in the bar at link weight. A <details> disclosure rather
+                  than an ARIA menu button: it opens and closes with no client
+                  script (this layout has no CSP nonce to run one with, and the
+                  UI works without JS), and the browser gives it keyboard
+                  handling and its expanded state for free. Its items are plain
+                  links and a form, so they are announced as what they are. It
+                  does not close on an outside click — that needs script — but
+                  every item navigates, which closes it.
+                */}
+                <details class="nav-user-menu">
+                  <summary
+                    class={active === "settings" ? "nav-user nav-user-current" : "nav-user"}
+                    data-ph="nav-user-menu"
+                  >
+                    <span class="nav-user-name" title={`@${user.username}`}>
+                      {user.displayName ?? user.username ?? user.email}
+                    </span>
+                    <span class="visually-hidden"> — account menu</span>
+                  </summary>
+                  <div class="nav-user-panel">
+                    <p class="nav-user-handle">Signed in as @{user.username}</p>
+                    <a href="/settings#account" class="nav-auth-link" data-ph="nav-profile">
+                      profile
+                    </a>
+                    <a
+                      href="/settings"
+                      class="nav-auth-link"
+                      data-ph="nav-settings"
+                      aria-current={current("settings")}
+                    >
+                      settings
+                    </a>
+                    <form method="post" action="/auth/logout" class="nav-logout-form">
+                      <button type="submit" class="nav-auth-link" data-ph="nav-logout">
+                        logout
+                      </button>
+                    </form>
+                  </div>
+                </details>
               </>
             ) : (
               <a href="/auth/login" class="nav-auth-link" data-ph="nav-sign-in">

@@ -51,9 +51,80 @@
   gap: 0.75rem;
 }
 
+/*
+ * The account menu: a <details> whose summary is the signed-in name and whose
+ * panel drops below it, right-aligned to the bar's edge. No script: the
+ * browser owns open/closed, Enter/Space toggling, and aria-expanded.
+ */
+.nav-user-menu { position: relative; }
+
 .nav-user {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   color: var(--text-muted);
   font-size: 0.85rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.nav-user::-webkit-details-marker { display: none; }
+.nav-user::after {
+  content: "";
+  width: 0.4em;
+  height: 0.4em;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-0.15em) rotate(45deg);
+  transition: transform 0.15s;
+}
+.nav-user-menu[open] > .nav-user::after { transform: translateY(0.1em) rotate(-135deg); }
+.nav-user:hover,
+.nav-user-menu[open] > .nav-user { color: var(--text-primary); background: var(--bg-raised); }
+.nav-user:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+/* On an account page, the name reads as the current section like a nav link would. */
+.nav-user-current { color: var(--text-primary); }
+.nav-user-name { max-width: 16rem; overflow: hidden; text-overflow: ellipsis; }
+
+.nav-user-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.4rem);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 12rem;
+  padding: 0.35rem;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.nav-user-handle {
+  margin: 0 0 0.25rem;
+  padding: 0.35rem 0.5rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+.nav-user-panel .nav-auth-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+}
+.nav-user-panel .nav-logout-form { display: block; }
+.nav-auth-link:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 1px;
 }
 
 .nav-auth-link {
@@ -140,8 +211,21 @@ button.nav-auth-link {
     border-top: 1px solid var(--border);
   }
   .nav-menu-toggle:checked ~ .nav-auth { display: flex; }
-  .nav-menu-toggle ~ .nav-auth .nav-user { padding: 0.5rem; }
   .nav-menu-toggle ~ .nav-auth .nav-logout-form { display: block; }
+  /*
+   * Inside the phone menu the account menu is a row like the rest, and its
+   * panel opens in place, indented under the name, rather than floating over
+   * the page.
+   */
+  .nav-menu-toggle ~ .nav-auth .nav-user { min-height: 2.75rem; padding: 0.5rem; }
+  .nav-menu-toggle ~ .nav-auth .nav-user-panel {
+    position: static;
+    min-width: 0;
+    padding: 0 0 0 1rem;
+    background: none;
+    border: none;
+    box-shadow: none;
+  }
   /* Full-width rows at least 44px tall, so a thumb hits one link and not two. */
   .nav-menu-toggle ~ .nav-auth .nav-auth-link {
     display: flex;

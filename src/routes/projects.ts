@@ -61,7 +61,13 @@ import {
 import type { ArtifactsCreateResult, Env, ImportStatus, ProjectEntry } from "../types";
 import { getArtifactsRepoName, getUserNamespace, projectDefaultBranch } from "../types";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
-import { NEW_PROJECT_ERROR_PRIVATE_LIMIT } from "../ui/pages/new-project";
+import {
+  NEW_PROJECT_ERROR_INVALID_NAME,
+  NEW_PROJECT_ERROR_INVALID_URL,
+  NEW_PROJECT_ERROR_NAME_TAKEN,
+  NEW_PROJECT_ERROR_PRIVATE_LIMIT,
+  newProjectErrorUrl,
+} from "../ui/pages/new-project";
 import {
   canReadProject,
   canWriteProject,
@@ -152,7 +158,18 @@ app.post("/", async (c) => {
     body = { name: form.name, visibility: form.visibility, seed: form.seed, org: form.org };
   }
 
-  if (!isValidSlug(body.name)) return badRequest("name must be a 1-64 char alphanumeric slug");
+  // A browser submitting the new-project form lands back on the form with the
+  // reason under the field it is about, not on a raw JSON 400. Like the gauge
+  // redirect below, the query carries a fixed code, never the reason text.
+  const isForm = !contentType.includes("application/json");
+  const formName = typeof body.name === "string" ? body.name : undefined;
+  const backToForm = (code: string) =>
+    c.redirect(newProjectErrorUrl(code, { mode: "blank", name: formName }), 303);
+
+  if (!isValidSlug(body.name)) {
+    if (isForm) return backToForm(NEW_PROJECT_ERROR_INVALID_NAME);
+    return badRequest("name must be a 1-64 char alphanumeric slug");
+  }
 
   // Optional org ownership: the project lives under the org's namespace and
   // access follows org/team membership instead of personal ownership.
@@ -200,7 +217,7 @@ app.post("/", async (c) => {
       // A browser submitting the new-project form must land back on the
       // form, not on a raw JSON 403. The redirect carries a fixed code,
       // never the reason text, so the query string cannot inject copy.
-      if (!contentType.includes("application/json")) {
+      if (isForm) {
         return c.redirect(`/new?error=${NEW_PROJECT_ERROR_PRIVATE_LIMIT}`, 303);
       }
       return forbidden(gauge.reason);
@@ -225,6 +242,7 @@ app.post("/", async (c) => {
 
   // Validate slug length after slugification
   if (!isValidSlug(slug)) {
+    if (isForm) return backToForm(NEW_PROJECT_ERROR_INVALID_NAME);
     return badRequest("Slug too long (max 100 characters)");
   }
   const projectId = generateProjectId();
@@ -232,6 +250,7 @@ app.post("/", async (c) => {
   // Check if project already exists
   const existingResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
   if (existingResult.success) {
+    if (isForm) return backToForm(NEW_PROJECT_ERROR_NAME_TAKEN);
     return badRequest(`Project '${slug}' already exists in your namespace`);
   }
 
@@ -480,7 +499,18 @@ app.post(
         return badRequest("Invalid namespace format");
       }
 
-      if (!isValidSlug(slug)) return badRequest("Slug too long (max 100 characters)");
+      // The new-project form posts here in import mode; like POST /, a refusal
+      // the user can fix goes back to the form rather than to a JSON body.
+      const isForm = !(c.req.header("content-type") ?? "").includes("application/json");
+      if (!isValidSlug(slug)) {
+        if (isForm) {
+          return c.redirect(
+            newProjectErrorUrl(NEW_PROJECT_ERROR_INVALID_NAME, { mode: "import", name: slug }),
+            303,
+          );
+        }
+        return badRequest("Slug too long (max 100 characters)");
+      }
 
       const userNamespace = getUserNamespace(username);
 
@@ -609,8 +639,17 @@ app.post(
         };
       }
 
-      if (!isValidRepoUrl(body.url) && !isValidGitHubUrl(body.url))
+      // What the user typed, echoed back into the form on a refusal.
+      const formValues = {
+        mode: "import" as const,
+        name: slug,
+        ...(typeof body.url === "string" ? { url: body.url } : {}),
+      };
+      if (!isValidRepoUrl(body.url) && !isValidGitHubUrl(body.url)) {
+        if (isForm)
+          return c.redirect(newProjectErrorUrl(NEW_PROJECT_ERROR_INVALID_URL, formValues), 303);
         return badRequest("url must be a valid repository URL from GitHub, GitLab, or Bitbucket");
+      }
 
       // Validate clone depth (integer 1..MAX_CLONE_DEPTH, or 0 / "full" for
       // full history; absent -> DEFAULT_CLONE_DEPTH).
@@ -651,7 +690,12 @@ app.post(
           targetNamespace: namespace,
           waitUntil: getWaitUntil(c),
         });
-        if (!gauge.admitted) return forbidden(gauge.reason);
+        if (!gauge.admitted) {
+          if (isForm) {
+            return c.redirect(newProjectErrorUrl(NEW_PROJECT_ERROR_PRIVATE_LIMIT, formValues), 303);
+          }
+          return forbidden(gauge.reason);
+        }
         gaugeSubjectId = gauge.gaugeSubjectId;
       }
 

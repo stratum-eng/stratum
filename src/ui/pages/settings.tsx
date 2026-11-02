@@ -11,6 +11,7 @@ import {
 import type { OAuthGrantSummary } from "../../storage/oauth";
 import type { ApiTokenScope } from "../../types";
 import { MAX_DISPLAY_NAME_LENGTH } from "../../utils/display-name";
+import { FieldError, fieldAttrs } from "../components/field-error";
 import { formatDate } from "../format";
 import { Layout } from "../layout";
 import { InviteCodesCard } from "./invite-codes";
@@ -48,6 +49,53 @@ export interface SettingsNotice {
   message: string;
 }
 
+/** The settings fields whose refusal the server reports inline, under the field. */
+export type SettingsField = "displayName" | "username" | "tokenName" | "tokenExpiry" | "agentName";
+
+/**
+ * A submission refused because of what was typed into one field. Rendered
+ * under that field (with `aria-invalid` on it), and summarized at the top of
+ * the page with a link down to it — the re-rendered page opens at the top, and
+ * the token and agent forms are a long scroll below.
+ */
+export interface SettingsFieldError {
+  field: SettingsField;
+  message: string;
+  /** What the user had typed into the refused form, so it comes back filled in. */
+  values?: Partial<Record<SettingsField, string>>;
+}
+
+/** Each field's control id: the error summary links to it. */
+const FIELD_IDS: Record<SettingsField, string> = {
+  displayName: "settings-display-name",
+  username: "settings-username",
+  tokenName: "settings-token-name",
+  tokenExpiry: "settings-token-expiry",
+  agentName: "settings-agent-name",
+};
+
+/** The message for `field`, when it is the one refused. */
+function errorFor(fieldError: SettingsFieldError | undefined, field: SettingsField) {
+  return fieldError?.field === field ? fieldError.message : undefined;
+}
+
+/** `fieldAttrs` for a settings control, keyed by field rather than by id. */
+function settingsFieldAttrs(
+  fieldError: SettingsFieldError | undefined,
+  field: SettingsField,
+  helpId?: string,
+) {
+  return fieldAttrs(FIELD_IDS[field], errorFor(fieldError, field), helpId);
+}
+
+/** The inline error under a settings control, when that control was refused. */
+const SettingsFieldErrorText: FC<{
+  fieldError?: SettingsFieldError | undefined;
+  field: SettingsField;
+}> = ({ fieldError, field }) => (
+  <FieldError for={FIELD_IDS[field]} message={errorFor(fieldError, field)} />
+);
+
 /**
  * Whether the username form is offered. "blocked" means the account owns
  * projects (or did within the last claim window); "unavailable" means the
@@ -77,6 +125,8 @@ interface SettingsPageProps {
   oauthGrantsUnavailable: boolean;
   freshToken?: FreshCredential;
   notice?: SettingsNotice;
+  /** A refused form field, rendered inline; see `SettingsFieldError`. */
+  fieldError?: SettingsFieldError | undefined;
   /** Per-request CSP nonce for the copy-button scripts. */
   nonce?: string;
   /** True when the user has opted out of product analytics (#257). */
@@ -211,10 +261,11 @@ const ApiTokenRow: FC<{ token: ApiTokenSummary; now: number }> = ({ token, now }
  * be edited only while the account owns nothing that would have to be
  * rewritten — after that the row is read-only and says why.
  */
-const AccountCard: FC<{ user: SettingsUser; usernameChange: UsernameChange }> = ({
-  user,
-  usernameChange,
-}) => (
+const AccountCard: FC<{
+  user: SettingsUser;
+  usernameChange: UsernameChange;
+  fieldError?: SettingsFieldError | undefined;
+}> = ({ user, usernameChange, fieldError }) => (
   <div class="card" id="account">
     <h2>Account</h2>
     <dl class="detail-list">
@@ -238,15 +289,17 @@ const AccountCard: FC<{ user: SettingsUser; usernameChange: UsernameChange }> = 
       <label>
         Display name
         <input
+          {...settingsFieldAttrs(fieldError, "displayName", "settings-display-name-help")}
           type="text"
           name="displayName"
-          value={user.displayName ?? ""}
+          value={fieldError?.values?.displayName ?? user.displayName ?? ""}
           maxlength={MAX_DISPLAY_NAME_LENGTH}
           placeholder={user.username}
           autocomplete="name"
         />
       </label>
-      <p class="settings-help">
+      <SettingsFieldErrorText fieldError={fieldError} field="displayName" />
+      <p class="settings-help" id="settings-display-name-help">
         Shown in the header instead of your username. Leave it blank to show the username.
       </p>
       <button type="submit" class="btn btn-primary">
@@ -255,22 +308,28 @@ const AccountCard: FC<{ user: SettingsUser; usernameChange: UsernameChange }> = 
     </form>
 
     {usernameChange === "allowed" ? (
-      <form method="post" action="/settings/username" class="settings-form">
+      // `novalidate`: POST /settings/username validates the name and re-renders
+      // this form with the reason inline, so the browser's bubble is not needed.
+      <form method="post" action="/settings/username" class="settings-form" novalidate>
         <label>
           Username
           <input
+            {...settingsFieldAttrs(fieldError, "username", "settings-username-help")}
             type="text"
             name="username"
-            value={user.username}
+            value={fieldError?.values?.username ?? user.username}
             required
             minlength={3}
             maxlength={39}
             pattern={USERNAME_PATTERN}
-            title={USERNAME_RULES}
             autocomplete="username"
             spellcheck={false}
           />
         </label>
+        <SettingsFieldErrorText fieldError={fieldError} field="username" />
+        <p class="settings-help" id="settings-username-help">
+          {USERNAME_RULES}
+        </p>
         <p class="settings-help">
           Your namespace: <code>@{user.username}/…</code> in every project and clone URL. It can be
           changed only while you own no projects; after deleting your last project, allow up to 15
@@ -306,6 +365,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({
   oauthGrantsUnavailable,
   freshToken,
   notice,
+  fieldError,
   nonce,
   telemetryOptOut,
   usageNotice,
@@ -335,10 +395,20 @@ export const SettingsPage: FC<SettingsPageProps> = ({
         ))}
       </nav>
 
-      {notice && (
-        <div class={`card ${notice.kind === "error" ? "card-error" : "card-success"}`}>
-          <p class="settings-help settings-notice">{notice.message}</p>
+      {fieldError ? (
+        // An error summary: the same message as under the field, as a link that
+        // moves focus to the control so it can be fixed without hunting for it.
+        <div class="card card-error" role="alert">
+          <p class="settings-help settings-notice">
+            <a href={`#${FIELD_IDS[fieldError.field]}`}>{fieldError.message}</a>
+          </p>
         </div>
+      ) : (
+        notice && (
+          <div class={`card ${notice.kind === "error" ? "card-error" : "card-success"}`}>
+            <p class="settings-help settings-notice">{notice.message}</p>
+          </div>
+        )
       )}
 
       {freshToken && (
@@ -368,7 +438,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({
         </div>
       )}
 
-      <AccountCard user={user} usernameChange={usernameChange} />
+      <AccountCard user={user} usernameChange={usernameChange} fieldError={fieldError} />
 
       {invites !== undefined && (
         <InviteCodesCard
@@ -450,11 +520,22 @@ export const SettingsPage: FC<SettingsPageProps> = ({
             </table>
           </div>
         )}
-        <form method="post" action="/settings/tokens" class="settings-form">
+        {/* `novalidate`: `parseTokenForm` checks every field and re-renders the
+            form with the reason under the field it is about. */}
+        <form method="post" action="/settings/tokens" class="settings-form" novalidate>
           <label>
             Token name
-            <input type="text" name="name" required maxlength={100} placeholder="buildkite" />
+            <input
+              {...settingsFieldAttrs(fieldError, "tokenName")}
+              type="text"
+              name="name"
+              value={fieldError?.values?.tokenName}
+              required
+              maxlength={100}
+              placeholder="buildkite"
+            />
           </label>
+          <SettingsFieldErrorText fieldError={fieldError} field="tokenName" />
           <label>
             Scope
             {/* Read-only is the default: a token created without a deliberate
@@ -469,13 +550,16 @@ export const SettingsPage: FC<SettingsPageProps> = ({
           <label>
             Expires in days (optional — blank never expires)
             <input
+              {...settingsFieldAttrs(fieldError, "tokenExpiry")}
               type="number"
               name="expiresInDays"
+              value={fieldError?.values?.tokenExpiry}
               min={MIN_TOKEN_EXPIRY_DAYS}
               max={MAX_TOKEN_EXPIRY_DAYS}
               placeholder="90"
             />
           </label>
+          <SettingsFieldErrorText fieldError={fieldError} field="tokenExpiry" />
           <button type="submit" class="btn btn-primary">
             Create token
           </button>
@@ -589,11 +673,20 @@ export const SettingsPage: FC<SettingsPageProps> = ({
             </table>
           </div>
         )}
-        <form method="post" action="/settings/agents" class="settings-form">
+        {/* `novalidate`: POST /settings/agents re-renders with the reason inline. */}
+        <form method="post" action="/settings/agents" class="settings-form" novalidate>
           <label>
             Agent name
-            <input type="text" name="name" required maxlength={100} />
+            <input
+              {...settingsFieldAttrs(fieldError, "agentName")}
+              type="text"
+              name="name"
+              value={fieldError?.values?.agentName}
+              required
+              maxlength={100}
+            />
           </label>
+          <SettingsFieldErrorText fieldError={fieldError} field="agentName" />
           <label>
             Model (optional)
             <input type="text" name="model" placeholder="claude-sonnet-4-6" maxlength={100} />
