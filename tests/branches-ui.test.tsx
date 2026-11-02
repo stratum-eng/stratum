@@ -648,6 +648,30 @@ describe("UI GET /:namespace/:slug — view cache on a snapshot miss", () => {
     expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
   });
 
+  it("refreshes again for a push that lands right after a refresh finished", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    const bg = backgroundCtx();
+    await app.fetch(req("/@owner/repo"), env, bg.ctx);
+    await bg.settle();
+
+    advertise("c".repeat(40));
+    cloneReads("c".repeat(40), ["FIRST_PUSH.md"]);
+    await app.fetch(req("/@owner/repo"), env, bg.ctx);
+    await bg.settle();
+
+    // A second push well inside the claim TTL: the finished refresh released
+    // its claim, so this viewer's refresh runs instead of waiting it out.
+    advertise("d".repeat(40));
+    cloneReads("d".repeat(40), ["SECOND_PUSH.md"]);
+    await app.fetch(req("/@owner/repo"), env, bg.ctx);
+    await bg.settle();
+
+    const res = await app.fetch(req("/@owner/repo"), env, bg.ctx);
+    expect(await res.text()).toContain("SECOND_PUSH.md");
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(3);
+  });
+
   it("keeps serving the earlier view when the background refresh fails", async () => {
     const env = makeEnv();
     await seedProject(env);

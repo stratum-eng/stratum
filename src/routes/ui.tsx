@@ -43,6 +43,7 @@ import {
   type RepoViewCacheProject,
   claimRepoViewRefresh,
   readRepoViewCache,
+  releaseRepoViewRefresh,
   writeRepoViewCache,
 } from "../storage/repo-view-cache";
 import {
@@ -1836,6 +1837,7 @@ async function refreshRepoView(
       return;
     }
     await writeRepoViewCache(kv, cacheProject, branch, viewResult.data, logger);
+    await releaseRepoViewRefresh(kv, cacheProject, branch, logger);
   } catch (error) {
     logger.warn("Background repo view refresh threw", {
       branch,

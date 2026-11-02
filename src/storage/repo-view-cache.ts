@@ -192,6 +192,31 @@ export async function claimRepoViewRefresh(
   }
 }
 
+/**
+ * Releases a claim taken by {@link claimRepoViewRefresh} once its refresh has
+ * written the new view, so a push landing right after a refresh is picked up by
+ * the next viewer rather than waiting out the TTL. The TTL stays as the guard
+ * for a refresh that fails or never finishes: a failed one is not released, so
+ * a broken repository is retried at most once per TTL. Never throws.
+ */
+export async function releaseRepoViewRefresh(
+  kv: KVNamespace,
+  project: RepoViewCacheProject,
+  branch: string,
+  logger: Logger,
+): Promise<void> {
+  const key = refreshClaimKey(project.id, branch);
+  localClaims.get(kv)?.delete(key);
+  try {
+    await kv.delete(key);
+  } catch (error) {
+    logger.warn("KV error releasing repo view refresh", {
+      branch,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 function isCachedRepoView(value: unknown): value is CachedRepoView {
   if (typeof value !== "object" || value === null) return false;
   const entry = value as Record<string, unknown>;

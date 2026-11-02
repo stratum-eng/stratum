@@ -4,6 +4,7 @@ import {
   REPO_VIEW_CACHE_MAX_BYTES,
   claimRepoViewRefresh,
   readRepoViewCache,
+  releaseRepoViewRefresh,
   writeRepoViewCache,
 } from "../src/storage/repo-view-cache";
 import type { Logger } from "../src/utils/logger";
@@ -174,5 +175,15 @@ describe("repo view cache", () => {
     await writeRepoViewCache(kv, { id: "proj_old" }, "main", view(), logger);
 
     expect(await readRepoViewCache(kv, { id: "proj_new" }, "main", logger)).toBeNull();
+  });
+
+  it("frees a released claim at once, in KV and in this isolate", async () => {
+    const { kv, store } = makeKV();
+    expect(await claimRepoViewRefresh(kv, project, "main", logger)).toBe(true);
+
+    await releaseRepoViewRefresh(kv, project, "main", logger);
+
+    expect(store.size).toBe(0);
+    expect(await claimRepoViewRefresh(kv, project, "main", logger)).toBe(true);
   });
 });
