@@ -16,12 +16,14 @@ vi.mock("../src/storage/webhooks", async (importActual) => {
     listDeliveries: vi.fn(),
     deleteWebhook: vi.fn(),
     setWebhookActive: vi.fn(),
+    regenerateWebhookSecret: vi.fn(),
   };
 });
 vi.mock("../src/storage/state", () => ({ getProjectByPath: vi.fn() }));
 vi.mock("../src/storage/audit", () => ({ recordAudit: vi.fn(async () => {}) }));
 vi.mock("../src/storage/users", () => ({ getUserByToken: vi.fn(), getUser: vi.fn() }));
 
+import { recordAudit } from "../src/storage/audit";
 import { getProjectByPath } from "../src/storage/state";
 import { getUserByToken } from "../src/storage/users";
 import {
@@ -31,6 +33,7 @@ import {
   getWebhook,
   listDeliveries,
   listWebhooks,
+  regenerateWebhookSecret,
 } from "../src/storage/webhooks";
 
 const AUTH = { Authorization: "Bearer stratum_user_testtoken00000000000000000" };
@@ -259,5 +262,93 @@ describe("webhook management routes — project-id scoping (SA-1)", () => {
     // admin backfill exists to stamp these before they get here.
     expect(res.status).toBe(404);
     expect(deleteWebhook).not.toHaveBeenCalled();
+  });
+
+  describe("regenerate secret", () => {
+    const NEW_SECRET = "stm_whsec_feedfacefeedfacefeedfacefeedface";
+
+    function regenerate(headers: Record<string, string> = {}, id = "wh_1") {
+      return makeApp().fetch(
+        new Request(`http://localhost/@alice/api/webhooks/${id}/regenerate-secret`, {
+          method: "POST",
+          headers: { ...AUTH, ...headers },
+        }),
+        env,
+      );
+    }
+
+    beforeEach(() => {
+      vi.mocked(getWebhook).mockResolvedValue({ success: true, data: webhook() });
+      vi.mocked(regenerateWebhookSecret).mockResolvedValue({ success: true, data: NEW_SECRET });
+    });
+
+    it("refuses a caller without write access to the project", async () => {
+      vi.mocked(getUserByToken).mockResolvedValue({
+        success: true,
+        data: {
+          id: "user_mallory",
+          email: "m@x.io",
+          username: "mallory",
+          tokenHash: "h",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+
+      const res = await regenerate({ "Content-Type": "application/json" });
+
+      expect(res.status).toBe(403);
+      expect(regenerateWebhookSecret).not.toHaveBeenCalled();
+      expect(recordAudit).not.toHaveBeenCalled();
+    });
+
+    it("404s a cross-tenant webhook without rotating it", async () => {
+      vi.mocked(getWebhook).mockResolvedValue({
+        success: true,
+        data: webhook({ id: "wh_victim", projectId: "proj_bob" }),
+      });
+
+      const res = await regenerate({ "Content-Type": "application/json" }, "wh_victim");
+
+      expect(res.status).toBe(404);
+      expect(regenerateWebhookSecret).not.toHaveBeenCalled();
+    });
+
+    it("returns the new secret once over JSON, no-store, and records an audit entry", async () => {
+      const res = await regenerate({ "Content-Type": "application/json" });
+
+      expect(res.status).toBe(200);
+      expect(regenerateWebhookSecret).toHaveBeenCalledWith(env.DB, expect.any(Object), "wh_1");
+      const body = (await res.json()) as { webhook: { id: string; secret: string } };
+      expect(body.webhook.id).toBe("wh_1");
+      expect(body.webhook.secret).toBe(NEW_SECRET);
+      expect(body.webhook.secret).not.toBe(webhook().secret);
+      expect(res.headers.get("Cache-Control")).toBe("no-store");
+      expect(recordAudit).toHaveBeenCalledWith(
+        env.DB,
+        expect.any(Object),
+        expect.objectContaining({
+          action: "webhook.secret_rotated",
+          actorType: "user",
+          actorId: "user_test",
+          subject: "wh_1",
+          detail: { project: "api" },
+        }),
+      );
+      // The secret itself must never land in the audit log.
+      expect(JSON.stringify(vi.mocked(recordAudit).mock.calls)).not.toContain(NEW_SECRET);
+    });
+
+    it("shows the new secret on the reveal-once page for a form post", async () => {
+      const res = await regenerate({ "Content-Type": "application/x-www-form-urlencoded" });
+
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain(NEW_SECRET);
+      expect(html).not.toContain(webhook().secret);
+      expect(html).toContain("Webhook secret regenerated");
+      expect(html).toContain("will not be shown again");
+      expect(html).toContain('href="/@alice/api/webhooks"');
+      expect(res.headers.get("Cache-Control")).toBe("no-store");
+    });
   });
 });
