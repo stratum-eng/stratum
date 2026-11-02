@@ -1836,8 +1836,12 @@ async function refreshRepoView(
       });
       return;
     }
-    await writeRepoViewCache(kv, cacheProject, branch, viewResult.data, logger);
-    await releaseRepoViewRefresh(kv, cacheProject, branch, logger);
+    // Released only once the view is stored. A view that cannot be stored
+    // (incomplete, or over the size cap) keeps the claim until its TTL, or every
+    // viewer of the still-behind page would start another clone.
+    if (await writeRepoViewCache(kv, cacheProject, branch, viewResult.data, logger)) {
+      await releaseRepoViewRefresh(kv, cacheProject, branch, logger);
+    }
   } catch (error) {
     logger.warn("Background repo view refresh threw", {
       branch,

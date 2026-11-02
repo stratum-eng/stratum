@@ -672,6 +672,29 @@ describe("UI GET /:namespace/:slug — view cache on a snapshot miss", () => {
     expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(3);
   });
 
+  it("does not re-clone on every view when the refreshed view cannot be stored", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    const bg = backgroundCtx();
+    await app.fetch(req("/@owner/repo"), env, bg.ctx);
+    await bg.settle();
+
+    // The branch moves to a commit whose view never caches (here: incomplete).
+    // Releasing the claim anyway would let each viewer start another clone.
+    const movedTip = "c".repeat(40);
+    advertise(movedTip);
+    vi.mocked(loadRepoView).mockResolvedValue({
+      success: true,
+      data: { headSha: movedTip, files: ["X.md"], commits: [], readme: null, complete: false },
+    });
+    for (let i = 0; i < 3; i++) {
+      await app.fetch(req("/@owner/repo"), env, bg.ctx);
+      await bg.settle();
+    }
+
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps serving the earlier view when the background refresh fails", async () => {
     const env = makeEnv();
     await seedProject(env);

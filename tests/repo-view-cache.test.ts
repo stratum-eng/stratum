@@ -119,7 +119,7 @@ describe("repo view cache", () => {
       },
     } as unknown as KVNamespace;
 
-    await expect(writeRepoViewCache(kv, project, "main", view(), logger)).resolves.toBeUndefined();
+    await expect(writeRepoViewCache(kv, project, "main", view(), logger)).resolves.toBe(false);
     expect(await readRepoViewCache(kv, project, "main", logger)).toBeNull();
   });
 
@@ -185,5 +185,13 @@ describe("repo view cache", () => {
 
     expect(store.size).toBe(0);
     expect(await claimRepoViewRefresh(kv, project, "main", logger)).toBe(true);
+  });
+
+  it("reports whether a view was stored", async () => {
+    const { kv } = makeKV();
+    expect(await writeRepoViewCache(kv, project, "main", view(), logger)).toBe(true);
+    expect(await writeRepoViewCache(kv, project, "main", view({ complete: false }), logger)).toBe(
+      false,
+    );
   });
 });

@@ -107,6 +107,10 @@ export async function readRepoViewCache(
  * Best-effort: an incomplete view (a failed walk, log, or README read) is not
  * cached — the failure is transient, and caching it would pin a partial page to
  * the commit — nor is one over {@link REPO_VIEW_CACHE_MAX_BYTES}. Never throws.
+ *
+ * @returns whether the view was stored. A refresh releases its claim only on
+ * true: a view that is never stored would otherwise let every viewer start a
+ * fresh clone.
  */
 export async function writeRepoViewCache(
   kv: KVNamespace,
@@ -114,24 +118,26 @@ export async function writeRepoViewCache(
   branch: string,
   view: RepoView,
   logger: Logger,
-): Promise<void> {
-  if (!view.complete || view.files === null) return;
+): Promise<boolean> {
+  if (!view.complete || view.files === null) return false;
   const entry: CachedRepoView = { v: CACHE_VERSION, ...view, files: view.files };
   const body = JSON.stringify(entry);
   const bytes = new TextEncoder().encode(body).byteLength;
   if (bytes > REPO_VIEW_CACHE_MAX_BYTES) {
     logger.warn("Repo view too large to cache", { branch, bytes });
-    return;
+    return false;
   }
   try {
     await kv.put(repoViewKey(project.id, branch), body, {
       expirationTtl: TTL_SECONDS,
     });
+    return true;
   } catch (error) {
     logger.warn("KV error writing repo view cache", {
       branch,
       error: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
 }
 
@@ -194,10 +200,11 @@ export async function claimRepoViewRefresh(
 
 /**
  * Releases a claim taken by {@link claimRepoViewRefresh} once its refresh has
- * written the new view, so a push landing right after a refresh is picked up by
+ * stored the new view, so a push landing right after a refresh is picked up by
  * the next viewer rather than waiting out the TTL. The TTL stays as the guard
- * for a refresh that fails or never finishes: a failed one is not released, so
- * a broken repository is retried at most once per TTL. Never throws.
+ * for a refresh that fails, never finishes, or reads a view that cannot be
+ * stored (incomplete or over the size cap): none of those release, so such a
+ * repository is cloned at most once per TTL. Never throws.
  */
 export async function releaseRepoViewRefresh(
   kv: KVNamespace,
