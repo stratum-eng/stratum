@@ -104,6 +104,20 @@ describe("anonymizeUserContributions", () => {
 describe("deleteAccountCascade", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it("erases the user's private-project charge index, and nobody else's", async () => {
+    const kv = makeKvStub(2);
+    for (const slug of ["a", "b", "c"]) kv.store.set(`gauge-charge:usr_1:@acme:${slug}`, slug);
+    kv.store.set("gauge-charge:usr_2:@acme:d", "d");
+    const { db } = makeAccountD1(() => []);
+
+    const result = await deleteAccountCascade(makeEnv(db, kv.kv), "usr_1", mockLogger);
+
+    expect(result.success).toBe(true);
+    expect([...kv.store.keys()].filter((k) => k.startsWith("gauge-charge:"))).toEqual([
+      "gauge-charge:usr_2:@acme:d",
+    ]);
+  });
+
   it("deletes owned projects BEFORE anonymizing, and the user row LAST", async () => {
     const kv = makeKvStub(50);
     kv.store.set(

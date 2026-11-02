@@ -4,6 +4,7 @@ import { type AppError, toAppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 import { findActiveJobForTarget } from "./deletion-jobs";
+import { deleteGaugeCharges } from "./gauge-index";
 import { artifactsRepoNameFromRemote } from "./git-ops";
 import { deleteOAuthDataForUser } from "./oauth";
 import { deleteAllUserSessions } from "./sessions";
@@ -926,6 +927,10 @@ export async function deleteAccountCascade(
     if (!(await purgeDurableObject(env.USAGE_METER, userMeterName, "UsageMeter", logger))) {
       residuals.push(`do:UsageMeter:${userMeterName}`);
     }
+    // The private-project charge index is keyed on the same subject and names
+    // org projects this user created; it goes with the account.
+    const charges = await deleteGaugeCharges(env.STATE, logger, userId);
+    if (!charges.success) residuals.push(`account:gauge-charges:${charges.error.code}`);
     // Same reasoning, same trap: `oauth_tokens.user_id` and
     // `oauth_auth_codes.user_id` both REFERENCE users(id) (#349). An OAuth
     // grant is a live credential handed to an editor, so an erasure that left

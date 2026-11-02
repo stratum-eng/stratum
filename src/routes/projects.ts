@@ -17,6 +17,7 @@ import { recordAudit } from "../storage/audit";
 import { captureDeletionTarget, isTargetDeleting } from "../storage/deletion";
 import { createDeletionJob } from "../storage/deletion-jobs";
 import { listProjectEvents } from "../storage/events";
+import { countGaugeCharges, recordGaugeCharge } from "../storage/gauge-index";
 import {
   createBranchRef,
   deleteBranchRef,
@@ -44,7 +45,7 @@ import {
   recoverStalledImport,
   updateImportStatus,
 } from "../storage/imports";
-import { getOrgAccessLevel, getOrgBySlug, listOrgsForUser } from "../storage/orgs";
+import { getOrgAccessLevel, getOrgBySlug } from "../storage/orgs";
 import {
   claimNamespace,
   confirmOwnerNamespace,
@@ -126,43 +127,43 @@ function generateProjectId(): string {
 }
 
 /**
- * The most namespaces (personal + orgs) the private-project gauge will list for
- * one user. Each listing is a KV list plus a read per project, and orgs are
- * free to create and join, so without a bound one account decides how much KV
- * work every private creation costs — and can push it until it faults.
+ * The most charged projects outside the personal namespace that one private
+ * creation will verify. Every indexed entry was written by the subject's own
+ * creation, so reaching this is self-inflicted — and a plan with a finite limit
+ * this large is not one this gauge exists for.
  */
-export const MAX_GAUGE_NAMESPACES = 20;
+export const MAX_GAUGE_CHARGES = 100;
 
 /** What counting a subject's private projects produced. */
 export type GaugeCount =
-  /** `complete: false` — a listing faulted, so `count` is a lower bound. */
+  /** `complete: false` — a read faulted, so `count` is a lower bound. */
   | { kind: "counted"; count: number; complete: boolean }
-  /** More namespaces than {@link MAX_GAUGE_NAMESPACES}; nothing was listed. */
-  | { kind: "too_many_namespaces"; namespaces: number };
+  /** At least {@link MAX_GAUGE_CHARGES} verified charges, with more unchecked. */
+  | { kind: "over_cap" };
 
 /**
  * Count the private projects already charged to `subject`'s gauge.
  *
  * - **A pooled org** counts the private projects it owns, in its own namespace.
- * - **A user** counts what they own personally plus anything recorded as
- *   charged to them (`gaugeSubjectId`) in an org they belong to, so creating
- *   into an org that does not pool cannot sidestep the limit, and other
- *   members' projects in a busy org are never counted against them.
+ * - **A user** counts their personal namespace (owned by them or charged to
+ *   them) plus the `gauge-charge` index of projects they were charged for
+ *   elsewhere — in an org that does not pool.
+ *
+ * **Nothing a third party controls is read.** Org membership is granted by the
+ * org, not the member, so this never walks the orgs a user belongs to: being
+ * added to a hundred orgs costs them nothing and cannot refuse them. The index
+ * only grows by the subject's own creations (`src/storage/gauge-index.ts`).
  *
  * **Two failure directions, deliberately different.**
- * A listing that *faults* (D1 or KV unavailable) fails OPEN, per the PRD's
- * billing rule (docs/research/monetization-and-byok.md, "Fail direction"): an
- * outage of the billing machinery must not block a customer's work. The fault
- * still only removes what it could not read — whatever was counted is returned
- * as a lower bound, and a lower bound already over the limit refuses, because
- * that is an answer, not a fault.
- * Too many namespaces fails CLOSED. That outage rationale does not cover it: the
- * namespace count is in the user's hands (orgs cost nothing), so failing open
- * there would hand them a switch that turns the limit off — the same reason an
- * unknown org never pools (`resolveEnforcementSubject`).
- *
- * Entries written before `gaugeSubjectId` existed carry none, and an org one
- * then counts for nobody but its owner — the same fail-open under-count.
+ * A read that *faults* fails OPEN, per the PRD's billing rule
+ * (docs/research/monetization-and-byok.md, "Fail direction"): an outage of the
+ * billing machinery must not block a customer's work. Only what could not be
+ * read is dropped — the rest is a lower bound, and a lower bound already over
+ * the limit refuses, because that is an answer, not a fault.
+ * Past {@link MAX_GAUGE_CHARGES} verification stops and the count is that
+ * floor: it still refuses any limit it already meets, and the work per creation
+ * stays bounded. Reaching it takes the subject's own creations, so no one else
+ * can move it.
  */
 async function countGaugedPrivateProjects(
   env: Env,
@@ -174,39 +175,35 @@ async function countGaugedPrivateProjects(
     entry.visibility === "private" &&
     (entry.ownerId === subject.ownerId || entry.gaugeSubjectId === subject.ownerId);
 
-  const namespaces = new Set<string>();
+  const home = subject.ownerType === "org" ? targetNamespace : personalNamespace;
   let complete = true;
-  if (subject.ownerType === "org") {
-    namespaces.add(targetNamespace);
+  let count = 0;
+  const listed = await listProjectsByNamespace(env.STATE, home, logger);
+  if (listed.success) {
+    count += listed.data.filter(counts).length;
   } else {
-    namespaces.add(personalNamespace);
-    const orgs = await listOrgsForUser(env.DB, logger, subject.ownerId);
-    if (orgs.success) {
-      for (const org of orgs.data) namespaces.add(`@${org.slug}`);
+    complete = false;
+    logger.warn("Private project gauge: namespace unreadable; count is a lower bound", {
+      subjectId: subject.ownerId,
+      namespace: home,
+    });
+  }
+
+  if (subject.ownerType === "user") {
+    const charged = await countGaugeCharges(env.STATE, logger, {
+      subjectId: subject.ownerId,
+      excludeNamespace: personalNamespace,
+      max: MAX_GAUGE_CHARGES,
+    });
+    if (charged.success) {
+      if (charged.data.overflow) return { kind: "over_cap" };
+      count += charged.data.count;
     } else {
       complete = false;
-      logger.warn("Private project gauge: org memberships unreadable; counting personal only", {
+      logger.warn("Private project gauge: charge index unreadable; count is a lower bound", {
         subjectId: subject.ownerId,
       });
     }
-  }
-
-  if (namespaces.size > MAX_GAUGE_NAMESPACES) {
-    return { kind: "too_many_namespaces", namespaces: namespaces.size };
-  }
-
-  let count = 0;
-  for (const ns of namespaces) {
-    const listed = await listProjectsByNamespace(env.STATE, ns, logger);
-    if (!listed.success) {
-      complete = false;
-      logger.warn("Private project gauge: namespace unreadable; count is a lower bound", {
-        subjectId: subject.ownerId,
-        namespace: ns,
-      });
-      continue;
-    }
-    count += listed.data.filter(counts).length;
   }
   return { kind: "counted", count, complete };
 }
@@ -307,24 +304,15 @@ app.post("/", async (c) => {
         personalNamespace: getUserNamespace(username),
         targetNamespace: namespace,
       });
-      // Too many namespaces to count is treated as "over any finite limit" and
-      // still goes through `checkGauge`, so an unlimited plan admits and
-      // observe-only records rather than refuses — only the reason differs.
-      const tooMany = counted.kind === "too_many_namespaces";
+      // Over the cap the verified charges alone reach MAX_GAUGE_CHARGES, which
+      // is a true floor: passing it refuses exactly the limits it already
+      // exceeds, and an unlimited plan or observe-only behaves as usual.
       const decision = await checkGauge(c.env, logger, {
         subject: gaugeSubject,
         count: "private_projects",
-        current: tooMany ? Number.MAX_SAFE_INTEGER : counted.count,
+        current: counted.kind === "over_cap" ? MAX_GAUGE_CHARGES : counted.count,
         what: "Creating another private project",
       });
-      if (tooMany && decision.refused) {
-        logger.warn("Private project gauge: too many namespaces to count; refusing", {
-          subjectId: gaugeSubject.ownerId,
-          namespaces: counted.namespaces,
-          max: MAX_GAUGE_NAMESPACES,
-        });
-        decision.reason = `Creating another private project is not allowed: this account belongs to more organizations than the private project allowance can be checked across (${MAX_GAUGE_NAMESPACES - 1}). Make the project public, leave an organization you no longer use, or raise this account's plan limits.`;
-      }
       if (!decision.admitted) {
         // A browser submitting the new-project form must land back on the
         // form, not on a raw JSON 403. The redirect carries a fixed code,
@@ -429,6 +417,18 @@ app.post("/", async (c) => {
     logger.error("Failed to set project", setResult.error);
     if (owner.type === "user") await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
     return internalError(setResult.error.message);
+  }
+
+  // Charged to the actor but stored under an org: index it under the actor so
+  // the gauge can find it without walking their memberships. A failed write is
+  // logged inside and only under-counts — the fail-open direction.
+  if (owner.type === "org" && gaugeSubjectId !== undefined && gaugeSubjectId !== owner.id) {
+    await recordGaugeCharge(c.env.STATE, logger, {
+      subjectId: gaugeSubjectId,
+      namespace,
+      slug,
+      projectId,
+    });
   }
 
   // The username on this request was read at auth time, before the repository

@@ -28,9 +28,10 @@ import { LLMEvaluator } from "../src/evaluation/llm-evaluator";
 import type { LlmProvider } from "../src/evaluation/llm-provider";
 import type { EvalPolicy, EvaluationContext } from "../src/evaluation/types";
 import { rateLimitMiddleware } from "../src/middleware/rate-limit";
-import { MAX_GAUGE_NAMESPACES, projectsRouter } from "../src/routes/projects";
+import { MAX_GAUGE_CHARGES, projectsRouter } from "../src/routes/projects";
 import { recordCosts } from "../src/storage/costs";
 import { insertDeployment } from "../src/storage/deployments";
+import { recordGaugeCharge } from "../src/storage/gauge-index";
 import { setProject } from "../src/storage/state";
 import { getOwnerMeterTotals, upsertUsage } from "../src/storage/usage";
 import type { Env, ProjectEntry } from "../src/types";
@@ -769,14 +770,35 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
     expect(await response.text()).toContain("plan allows 2");
   });
 
+  /** An org project charged to `actor`, indexed as the creation route does. */
+  async function seedChargedOrgProject(slug: string, actor: string): Promise<void> {
+    await seedProject("@acme", slug, { ownerId: ORG_ID, ownerType: "org" }, actor);
+    const indexed = await recordGaugeCharge(kv, logger, {
+      subjectId: actor,
+      namespace: "@acme",
+      slug,
+      projectId: `prj_@acme_${slug}`,
+    });
+    if (!indexed.success) throw indexed.error;
+  }
+
+  /** Make KV `list` throw for one key prefix, and behave normally otherwise. */
+  function failListingsUnder(prefix: string): void {
+    const realList = kv.list.bind(kv);
+    vi.spyOn(kv, "list").mockImplementation(async (opts) => {
+      if (opts?.prefix?.startsWith(prefix)) throw new Error("kv down");
+      return realList({ prefix: opts?.prefix ?? undefined });
+    });
+  }
+
   it("counts private projects the actor created in an org that does not pool", async () => {
     // The org owns them, but the actor was charged for them: counting by owner
     // alone let an actor create private projects there without limit.
     const userId = createUser(nextUserId());
     seedOrg(userId);
     cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
-    await seedProject("@acme", "one", { ownerId: ORG_ID, ownerType: "org" }, userId);
-    await seedProject("@acme", "two", { ownerId: ORG_ID, ownerType: "org" }, userId);
+    await seedChargedOrgProject("one", userId);
+    await seedChargedOrgProject("two", userId);
 
     const response = await projectApp(
       userId,
@@ -791,77 +813,88 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
     expect(await response.text()).toContain("plan allows 2");
   });
 
-  it("fails closed, without listing anything, past the namespace cap", async () => {
-    // Orgs cost nothing, so a count that grows with membership is a switch the
-    // user holds. Over the cap the answer is a refusal, not an unbounded scan.
+  it("is not refused, and lists no org, after being added to many orgs by others", async () => {
+    // Membership is granted by the org, not the member. A count that walked
+    // memberships would let anyone exhaust — or cap out — someone else's limit.
     const userId = createUser(nextUserId());
-    cachePlan("user", userId, plan({ counts: { private_projects: 5 } }));
-    for (let i = 0; i < MAX_GAUGE_NAMESPACES; i++) {
+    const otherId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    for (let i = 0; i < 150; i++) {
       raw
         .prepare("INSERT INTO orgs (id, name, slug, owner_id) VALUES (?, ?, ?, ?)")
-        .run(`org_${i}`, `Org ${i}`, `org-${i}`, userId);
+        .run(`org_${i}`, `Org ${i}`, `org-${i}`, otherId);
       raw
         .prepare("INSERT INTO org_members (org_id, user_id, role) VALUES (?, ?, 'member')")
         .run(`org_${i}`, userId);
     }
+    await seedProject("@org-0", "theirs", { ownerId: "org_0", ownerType: "org" }, otherId);
     const list = vi.spyOn(kv, "list");
+
+    const response = await projectApp(userId, "alice")({ name: "mine", visibility: "private" });
+
+    // Past the gauge: the creation fails later, at the repository.
+    expect(response.status).not.toBe(403);
+    const prefixes = list.mock.calls.map(([opts]) => opts?.prefix ?? "");
+    expect(prefixes.some((p) => p.startsWith("project:@org-"))).toBe(false);
+  });
+
+  it("verifies at most the cap and refuses on the floor it reached", async () => {
+    const userId = createUser(nextUserId());
+    seedOrg(userId);
+    cachePlan("user", userId, plan({ counts: { private_projects: 5 } }));
+    for (let i = 0; i < MAX_GAUGE_CHARGES + 10; i++) await seedChargedOrgProject(`p${i}`, userId);
+    const get = vi.spyOn(kv, "get");
 
     const response = await projectApp(userId, "alice")({ name: "x", visibility: "private" });
 
     expect(response.status).toBe(403);
-    expect(await response.text()).toContain("more organizations");
-    expect(list).not.toHaveBeenCalled();
+    const projectReads = get.mock.calls.filter(([key]) => String(key).startsWith("project:@acme:"));
+    expect(projectReads.length).toBeLessThanOrEqual(MAX_GAUGE_CHARGES);
   });
 
-  it("still refuses when a faulted listing leaves a lower bound already at the limit", async () => {
+  it("prunes a charge whose project is gone, so it never over-counts", async () => {
     const userId = createUser(nextUserId());
     seedOrg(userId);
     cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    await seedChargedOrgProject("one", userId);
+    await seedChargedOrgProject("gone", userId);
+    await kv.delete("project:@acme:gone");
+
+    const response = await projectApp(userId, "alice")({ name: "two", visibility: "private" });
+
+    expect(response.status).not.toBe(403);
+    expect(await kv.get(`gauge-charge:${userId}:@acme:gone`)).toBeNull();
+    expect(await kv.get(`gauge-charge:${userId}:@acme:one`)).not.toBeNull();
+  });
+
+  it("still refuses when a faulted read leaves a lower bound already at the limit", async () => {
+    const userId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
     await seedProject("@alice", "one", { ownerId: userId, ownerType: "user" });
     await seedProject("@alice", "two", { ownerId: userId, ownerType: "user" });
-    const realList = kv.list.bind(kv);
-    vi.spyOn(kv, "list").mockImplementation(async (opts) => {
-      if (opts?.prefix?.startsWith("project:@acme:")) throw new Error("kv down");
-      return realList({ prefix: opts?.prefix ?? undefined });
-    });
+    failListingsUnder("gauge-charge:");
 
     const response = await projectApp(userId, "alice")({ name: "three", visibility: "private" });
 
     expect(response.status).toBe(403);
   });
 
-  it("fails open when a faulted listing leaves the count under the limit", async () => {
+  it("fails open when a faulted read leaves the count under the limit", async () => {
     // The PRD's billing rule: an outage of the counting machinery must not
     // block work. Admitted here means it got past the gauge to the repository.
     const userId = createUser(nextUserId());
     seedOrg(userId);
     cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
-    await seedProject("@acme", "one", { ownerId: ORG_ID, ownerType: "org" }, userId);
-    await seedProject("@acme", "two", { ownerId: ORG_ID, ownerType: "org" }, userId);
-    const realList = kv.list.bind(kv);
-    vi.spyOn(kv, "list").mockImplementation(async (opts) => {
-      if (opts?.prefix?.startsWith("project:@acme:")) throw new Error("kv down");
-      return realList({ prefix: opts?.prefix ?? undefined });
-    });
+    await seedChargedOrgProject("one", userId);
+    await seedChargedOrgProject("two", userId);
+    failListingsUnder("gauge-charge:");
 
     const response = await projectApp(userId, "alice")({ name: "three", visibility: "private" });
 
     expect(response.status).not.toBe(403);
   });
 
-  it("counts the personal namespace when org memberships cannot be read", async () => {
-    const userId = createUser(nextUserId());
-    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
-    await seedProject("@alice", "one", { ownerId: userId, ownerType: "user" });
-    await seedProject("@alice", "two", { ownerId: userId, ownerType: "user" });
-    raw.exec("DROP TABLE org_members");
-
-    const response = await projectApp(userId, "alice")({ name: "three", visibility: "private" });
-
-    expect(response.status).toBe(403);
-  });
-
-  it("records the charged subject on a private project created into an org", async () => {
+  it("records and indexes the charge on a private project created into an org", async () => {
     const userId = createUser(nextUserId());
     seedOrg(userId);
     cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
@@ -886,6 +919,7 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
     expect(response.status).toBe(201);
     const stored = JSON.parse((await kv.get("project:@acme:fresh")) ?? "null") as ProjectEntry;
     expect(stored).toMatchObject({ ownerId: ORG_ID, ownerType: "org", gaugeSubjectId: userId });
+    expect(await kv.get(`gauge-charge:${userId}:@acme:fresh`)).toBe(stored.id);
   });
 
   it("sends a browser form submission back to the form, not to a JSON 403", async () => {

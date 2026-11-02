@@ -64,10 +64,9 @@
   so an allowance follows you across your own and your organizations' projects,
   and creating another organization does not hand you a fresh one. The one
   exception is an organization whose plan is positively known to pool usage:
-  its projects draw on the organization's allowance instead. The private-project
-  limit is counted across your personal namespace and up to 19 organizations;
-  on a plan with a finite limit, an account in more organizations than that is
-  refused a new private project rather than counted unboundedly.
+  its projects draw on the organization's allowance instead. A private project
+  you create in an organization that does not pool counts against your own
+  limit; organizations you are merely a member of never do.
 
 ### Changed
 
