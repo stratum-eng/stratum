@@ -308,9 +308,12 @@ export async function restoreProjectRepo(
     return err(rebuilt.error);
   }
 
-  // A tag-only snapshot (#251) has no default branch to push. The restored
-  // repo keeps an unborn default branch, as the source did, and only its tags
-  // (below) are published; nothing is fabricated to stand in for `main`.
+  // A tag-only snapshot (#251) has no default branch to push, so only its tags
+  // (below) are published and nothing is fabricated to stand in for `main`. A
+  // fresh target therefore keeps an unborn default branch, as the source did.
+  // A forced restore over an existing repo leaves that repo's default branch
+  // as it was: deleting a branch the snapshot never recorded is not a restore's
+  // call (docs/runbooks/backup-restore.md, tag-only snapshots).
   const tipSha = snapshot.manifest.tipSha;
   const mainPushed = tipSha !== undefined;
   if (mainPushed) {
