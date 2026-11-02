@@ -1110,6 +1110,14 @@ input[type="checkbox"] { width: 1.15rem; height: 1.15rem; accent-color: var(--ac
 }
 .usage-banner a { color: var(--warning-text); text-decoration: underline; white-space: nowrap; }
 
+/* Repo page: the cached view is of an earlier commit and a refresh is running.
+   Informational, not a warning — nothing is wrong, the page is catching up. */
+.repo-behind-notice {
+  display: block; margin-bottom: 1rem; padding: 0.6rem 1rem;
+  border: 1px solid var(--border-strong); border-radius: 6px;
+  color: var(--text-muted); font-size: 0.85rem;
+}
+
 .usage-meter { padding: 0.85rem 0; border-bottom: 1px solid var(--divider); }
 .usage-meter:first-of-type { padding-top: 0; }
 .usage-meter:last-child { border-bottom: none; padding-bottom: 0; }
