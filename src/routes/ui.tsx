@@ -1569,7 +1569,8 @@ type UiRefResolution =
    * `oid` is the branch tip from the full (untruncated) ref advertisement, set
    * only when a ref was requested. The switcher's listing is capped, so a
    * requested branch past the cut would otherwise have no tip to validate the
-   * view cache against and would clone on every view.
+   * view cache against and would clone on every view. It is the fallback only:
+   * the switcher advertises later in the same request, so its tip is newer.
    */
   | { resolved: true; branch: string; oid?: string }
   | { resolved: false; message: string; status: 400 | 404 | 409 | 500 };
@@ -2534,7 +2535,11 @@ app.get("/:namespace/:slug", async (c) => {
     // switcher just made also gives the branch's live tip, which is what lets
     // the per-commit view cache be trusted. A token that could not be minted
     // was already warned about above and leaves the page rendering empty.
-    const liveHead = refResolution.oid ?? switcherBranches?.find((b) => b.name === branch)?.oid;
+    // Prefer the switcher's tip: it was advertised after resolveUiRef's, so if
+    // the branch moved in between it is the newer one. resolveUiRef's tip (from
+    // the full, untruncated advertisement) covers a branch the capped listing
+    // left out.
+    const liveHead = switcherBranches?.find((b) => b.name === branch)?.oid ?? refResolution.oid;
     const data = await loadRepoPageData(
       c.env.STATE,
       project,

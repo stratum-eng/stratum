@@ -659,6 +659,38 @@ describe("UI GET /:namespace/:slug — view cache on a snapshot miss", () => {
     expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(1);
   });
 
+  it("checks the cache against the later of the two advertisements when a branch moves mid-request", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    cloneReads(FEATURE_TIP, ["BEFORE_PUSH.md"]);
+    await app.fetch(req("/@owner/repo?ref=release/2.x"), env);
+
+    // The branch moves between resolveUiRef's advertisement (still the old
+    // tip) and the switcher's (already the new one). Serving the view cached
+    // at the old tip would show the reader a page from before the push.
+    const movedTip = "d".repeat(40);
+    vi.mocked(resolveBranchRef).mockResolvedValueOnce({
+      success: true,
+      data: { name: "release/2.x", oid: FEATURE_TIP },
+    });
+    vi.mocked(listRepoBranches).mockResolvedValue({
+      success: true,
+      data: {
+        branches: [
+          { name: "main", oid: DEFAULT_TIP },
+          { name: "release/2.x", oid: movedTip },
+        ],
+        truncated: false,
+        totalBranchCount: 2,
+      },
+    });
+    cloneReads(movedTip, ["AFTER_PUSH.md"]);
+    const res = await app.fetch(req("/@owner/repo?ref=release/2.x"), env);
+
+    expect(await res.text()).toContain("AFTER_PUSH.md");
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
+  });
+
   it("clones without caching when the advertisement failed and there is no tip to check", async () => {
     const env = makeEnv();
     await seedProject(env);
