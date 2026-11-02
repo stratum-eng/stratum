@@ -3158,6 +3158,14 @@ export type RepoView = {
   files: string[] | null;
   commits: CommitLogEntry[];
   readme: string | null;
+  /**
+   * Whether every part of the view was read. False when the walk, the log, or
+   * an existing README failed to read — the page still renders what it got, but
+   * such a view must not be cached against its commit, or a transient failure
+   * would stick for as long as that commit is the tip. A repo that simply has
+   * no README is complete.
+   */
+  complete: boolean;
 };
 
 /**
@@ -3192,6 +3200,7 @@ export async function loadRepoView(
 
   const walkResult = await walkDir(fs, dir, "", logger);
   const files = walkResult.success ? walkResult.data : null;
+  let complete = files !== null;
 
   let commits: CommitLogEntry[] = [];
   const logResult = await fromPromise(git.log({ fs, dir, depth: commitDepth }));
@@ -3203,6 +3212,7 @@ export async function loadRepoView(
       timestamp: c.commit.author.timestamp,
     }));
   } else {
+    complete = false;
     logger.warn("Failed to get commit log for repo view", { remote, branch });
   }
 
@@ -3216,6 +3226,7 @@ export async function loadRepoView(
       const content = readResult.data;
       readme = typeof content === "string" ? content : new TextDecoder().decode(content);
     } else {
+      complete = false;
       logger.warn("Failed to read README for repo view", { remote, path: readmePath });
     }
   }
@@ -3226,7 +3237,7 @@ export async function loadRepoView(
     fileCount: files?.length ?? 0,
     commitCount: commits.length,
   });
-  return ok({ headSha: headResult.data, files, commits, readme });
+  return ok({ headSha: headResult.data, files, commits, readme, complete });
 }
 
 export async function importFromGitHub(

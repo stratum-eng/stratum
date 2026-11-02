@@ -97,6 +97,7 @@ vi.mock("../src/storage/git-ops", () => ({
         },
       ],
       readme: "# README",
+      complete: true,
     },
   })),
   freshRepoToken: vi.fn(async (_artifacts: unknown, _remote: string, _scope: string) => ({
@@ -395,6 +396,7 @@ describe("Namespace Routes", () => {
           files: ["README.md"],
           commits: [],
           readme: "# My Project\n\nThis is the README",
+          complete: true,
         },
       });
 

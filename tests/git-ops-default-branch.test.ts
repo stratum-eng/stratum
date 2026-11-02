@@ -279,6 +279,7 @@ describe("loadRepoView", () => {
     expect(result.data.commits.map((c) => c.message)).toEqual(["seed 1", "seed 0"]);
     expect(result.data.commits[0]?.sha).toBe(tip);
     expect(result.data.readme).toBe("# Title\n");
+    expect(result.data.complete).toBe(true);
     // The whole point: one clone per page view, not one per piece of the view.
     expect(h.calls.clone).toHaveLength(1);
     expect(h.calls.clone[0]).toMatchObject({ ref: "master" });
@@ -293,6 +294,8 @@ describe("loadRepoView", () => {
     h.servers.set(remote, { branch: "master", commits: [{ "a.txt": "v1\n" }] });
     const result = await loadRepoView(remote, "tok", logger, "master");
     expect(result.success && result.data.readme).toBeNull();
+    // An absent README is not a failed read: the view is still cacheable.
+    expect(result.success && result.data.complete).toBe(true);
   });
 
   it("errs when the clone fails", async () => {

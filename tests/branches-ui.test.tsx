@@ -47,7 +47,13 @@ vi.mock("../src/storage/git-ops", async (importActual) => {
     ),
     loadRepoView: vi.fn(async () => ({
       success: true,
-      data: { headSha: "b".repeat(40), files: ["src/index.ts"], commits: [], readme: null },
+      data: {
+        headSha: "b".repeat(40),
+        files: ["src/index.ts"],
+        commits: [],
+        readme: null,
+        complete: true,
+      },
     })),
   };
 });
@@ -520,7 +526,7 @@ describe("UI GET /:namespace/:slug — view cache on a snapshot miss", () => {
   function cloneReads(headSha: string, files: string[] = ["CLONED.md"]): void {
     vi.mocked(loadRepoView).mockResolvedValue({
       success: true,
-      data: { headSha, files, commits: [], readme: null },
+      data: { headSha, files, commits: [], readme: null, complete: true },
     });
   }
 
@@ -583,13 +589,36 @@ describe("UI GET /:namespace/:slug — view cache on a snapshot miss", () => {
     await seedProject(env);
     vi.mocked(loadRepoView).mockResolvedValueOnce({
       success: true,
-      data: { headSha: DEFAULT_TIP, files: null, commits: [], readme: null },
+      data: { headSha: DEFAULT_TIP, files: null, commits: [], readme: null, complete: false },
     });
 
     await app.fetch(req("/@owner/repo"), env);
     const res = await app.fetch(req("/@owner/repo"), env);
 
     expect(await res.text()).toContain("CLONED.md");
+    expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache a view whose log or README read failed, even with files listed", async () => {
+    const env = makeEnv();
+    await seedProject(env);
+    // Files read fine but a later part of the view did not: the page renders
+    // what it got, but pinning that partial view to the commit would keep the
+    // log or README missing until the branch moves.
+    vi.mocked(loadRepoView).mockResolvedValueOnce({
+      success: true,
+      data: {
+        headSha: DEFAULT_TIP,
+        files: ["CLONED.md"],
+        commits: [],
+        readme: null,
+        complete: false,
+      },
+    });
+
+    await app.fetch(req("/@owner/repo"), env);
+    await app.fetch(req("/@owner/repo"), env);
+
     expect(vi.mocked(loadRepoView)).toHaveBeenCalledTimes(2);
   });
 

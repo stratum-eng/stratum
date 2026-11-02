@@ -158,7 +158,13 @@ vi.mock("../src/storage/git-ops", () => ({
   readFileFromRepo: vi.fn(async () => ({ success: false, error: { message: "Not found" } })),
   loadRepoView: vi.fn(async () => ({
     success: true,
-    data: { headSha: "abc1234", files: ["src/index.ts"], commits: [], readme: null },
+    data: {
+      headSha: "abc1234",
+      files: ["src/index.ts"],
+      commits: [],
+      readme: null,
+      complete: true,
+    },
   })),
 }));
 

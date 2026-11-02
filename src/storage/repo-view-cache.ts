@@ -68,15 +68,17 @@ export async function readRepoViewCache(
     files: parsed.files,
     commits: parsed.commits,
     readme: parsed.readme,
+    // Only complete views are ever written.
+    complete: true,
   };
 }
 
 /**
  * Stores `view` as the cached overview of `branch`.
  *
- * Best-effort: a view whose file listing failed is not cached (that failure is
- * transient, and caching it would pin an empty page to the commit), nor is one
- * over {@link REPO_VIEW_CACHE_MAX_BYTES}. Never throws.
+ * Best-effort: an incomplete view (a failed walk, log, or README read) is not
+ * cached — the failure is transient, and caching it would pin a partial page to
+ * the commit — nor is one over {@link REPO_VIEW_CACHE_MAX_BYTES}. Never throws.
  */
 export async function writeRepoViewCache(
   kv: KVNamespace,
@@ -85,7 +87,7 @@ export async function writeRepoViewCache(
   view: RepoView,
   logger: Logger,
 ): Promise<void> {
-  if (view.files === null) return;
+  if (!view.complete || view.files === null) return;
   const entry: CachedRepoView = { v: CACHE_VERSION, ...view, files: view.files };
   const body = JSON.stringify(entry);
   const bytes = new TextEncoder().encode(body).byteLength;

@@ -35,6 +35,7 @@ function view(overrides: Partial<RepoView> = {}): RepoView {
     files: ["README.md"],
     commits: [{ sha: TIP, message: "m", author: "A <a@x>", timestamp: 1 }],
     readme: "# hi",
+    complete: true,
     ...overrides,
   };
 }
@@ -66,8 +67,22 @@ describe("repo view cache", () => {
 
   it("does not write a view whose file listing failed", async () => {
     const { kv, store } = makeKV();
-    await writeRepoViewCache(kv, project, "main", view({ files: null }), logger);
+    await writeRepoViewCache(kv, project, "main", view({ files: null, complete: false }), logger);
     expect(store.size).toBe(0);
+  });
+
+  it("does not write an incomplete view even when its file list is present", async () => {
+    const { kv, store } = makeKV();
+    await writeRepoViewCache(kv, project, "main", view({ complete: false }), logger);
+    expect(store.size).toBe(0);
+  });
+
+  it("caches a complete view of a repo that has no README", async () => {
+    const { kv } = makeKV();
+    await writeRepoViewCache(kv, project, "main", view({ readme: null }), logger);
+    expect(await readRepoViewCache(kv, project, "main", TIP, logger)).toEqual(
+      view({ readme: null }),
+    );
   });
 
   it("does not write a view over the size cap", async () => {
