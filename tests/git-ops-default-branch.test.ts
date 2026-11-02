@@ -302,6 +302,63 @@ describe("loadRepoView", () => {
     const result = await loadRepoView(remote, "tok", logger, "main");
     expect(result.success).toBe(false);
   });
+
+  /**
+   * Makes one fs call on the next clone's filesystem fail — but only once the
+   * clone has finished seeding it, so the failure lands on loadRepoView's own
+   * read rather than on the fake remote writing the repo.
+   */
+  function failAfterClone(method: "readdir" | "readFile", path: string): void {
+    let cloned = false;
+    // biome-ignore lint/suspicious/noExplicitAny: mocked isomorphic-git default export
+    const mockedGit = git as any;
+    const clone = mockedGit.clone;
+    vi.spyOn(mockedGit, "clone").mockImplementationOnce(async (args: unknown) => {
+      await clone(args);
+      cloned = true;
+    });
+    const toNodeFS = MemoryFS.prototype.toNodeFS;
+    vi.spyOn(MemoryFS.prototype, "toNodeFS").mockImplementationOnce(function (this: MemoryFS) {
+      const nodeFs = toNodeFS.call(this);
+      const real = nodeFs.promises[method] as (...args: unknown[]) => Promise<unknown>;
+      // biome-ignore lint/suspicious/noExplicitAny: swapping one method on the fs facade
+      (nodeFs.promises as any)[method] = (target: string, ...rest: unknown[]) => {
+        if (cloned && target === path) return Promise.reject(new Error(`EIO: ${target}`));
+        return real.call(nodeFs.promises, target, ...rest);
+      };
+      return nodeFs;
+    });
+  }
+
+  it("is incomplete when the tree walk fails", async () => {
+    failAfterClone("readdir", "/");
+    const result = await loadRepoView(remote, "tok", logger, "master");
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.files).toBeNull();
+    expect(result.data.complete).toBe(false);
+  });
+
+  it("is incomplete when the log read fails, but still lists files", async () => {
+    // biome-ignore lint/suspicious/noExplicitAny: mocked isomorphic-git default export
+    vi.spyOn(git as any, "log").mockRejectedValueOnce(new Error("corrupt pack"));
+    const result = await loadRepoView(remote, "tok", logger, "master");
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.files).not.toBeNull();
+    expect(result.data.commits).toEqual([]);
+    expect(result.data.complete).toBe(false);
+  });
+
+  it("is incomplete when an existing README fails to read", async () => {
+    failAfterClone("readFile", "/README.md");
+    const result = await loadRepoView(remote, "tok", logger, "master");
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.files).toContain("README.md");
+    expect(result.data.readme).toBeNull();
+    expect(result.data.complete).toBe(false);
+  });
 });
 
 describe("revertToCommit", () => {
