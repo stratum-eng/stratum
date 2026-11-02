@@ -26,18 +26,11 @@ import {
   canWriteProject,
   canWriteWorkspace,
   credentialBindingFrom,
+  refuseProjectAccess,
 } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
-import {
-  badRequest,
-  created,
-  forbidden,
-  internalError,
-  notFound,
-  ok,
-  unauthorized,
-} from "../utils/response";
+import { badRequest, created, internalError, notFound, ok, unauthorized } from "../utils/response";
 import { isStringRecord, isTraversalPath, isValidSlug, isValidUuid } from "../utils/validation";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -83,7 +76,9 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
   const project = projectResult.data;
 
   if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
-    return forbidden("Project access denied");
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Project", `${namespace}/${slug}`),
+    );
 
   // Refuse creating a workspace/fork while the project is being deleted — a new
   // fork the cascade never captured leaks as an orphan and wedges the job.

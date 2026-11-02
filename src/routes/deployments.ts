@@ -59,6 +59,7 @@ import {
   canWriteProject,
   credentialBindingFrom,
   isProjectAdmin,
+  refuseProjectAccess,
 } from "../utils/authz";
 import { AppError } from "../utils/errors";
 import { type Logger, createLogger } from "../utils/logger";
@@ -199,7 +200,11 @@ async function requireSecretsAdmin(
 
   const identity = { userId, agentId: c.get("agentId"), binding: credentialBindingFrom(c) };
   if (!(await canManageSecrets(c.env.DB, loaded.project, identity))) {
-    return { response: forbidden("Project access denied") };
+    return {
+      response: refuseProjectAccess(credentialBindingFrom(c), loaded.project, () =>
+        notFound("Project", `${loaded.project.namespace}/${loaded.project.slug}`),
+      ),
+    };
   }
   return { project: loaded.project, userId };
 }
@@ -569,7 +574,9 @@ deploymentApp.post("/:id/approve", async (c) => {
   const { deployment, project } = loaded;
 
   if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId))) {
-    return forbidden("Project access denied");
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Deployment", deployment.id),
+    );
   }
 
   const queue = c.env.DEPLOY_QUEUE;
@@ -673,7 +680,9 @@ deploymentApp.post("/:id/retry", async (c) => {
   const { deployment, project } = loaded;
 
   if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
-    return forbidden("Project access denied");
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Deployment", deployment.id),
+    );
   }
 
   if (!isTerminal(deployment.status)) {

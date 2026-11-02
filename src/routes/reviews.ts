@@ -15,19 +15,16 @@ import { getChange, updateChangeStatus } from "../storage/changes";
 import { isTargetDeleting } from "../storage/deletion";
 import { getProject } from "../storage/state";
 import type { Change, Env, ProjectEntry } from "../types";
-import { canReadProject, canWriteProject, credentialBindingFrom } from "../utils/authz";
+import {
+  canReadProject,
+  canWriteProject,
+  credentialBindingFrom,
+  refuseProjectAccess,
+} from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
-import {
-  badRequest,
-  created,
-  forbidden,
-  internalError,
-  notFound,
-  ok,
-  unauthorized,
-} from "../utils/response";
+import { badRequest, created, internalError, notFound, ok, unauthorized } from "../utils/response";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -323,7 +320,9 @@ async function handleResolveToggle(
     !isAuthor &&
     !(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))
   ) {
-    return forbidden("Project access denied");
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Change", change.id),
+    );
   }
 
   const updateResult = await setCommentResolved(c.env.DB, logger, comment.id, resolved);
@@ -360,7 +359,9 @@ app.post("/changes/:id/reviews", async (c) => {
   const { change, project } = loaded;
 
   if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
-    return forbidden("Project access denied");
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Change", change.id),
+    );
 
   // Refuse a review verdict while the project is being deleted (it resurrects
   // change_reviews rows and wedges the cascade). Best-effort; verifier re-run backs it.

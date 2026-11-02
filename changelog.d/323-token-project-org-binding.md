@@ -12,3 +12,9 @@
   independent of the read/write scope, and existing tokens are unchanged:
   without a binding a token stays account-wide. The settings token list now
   shows what each token can reach. Requires migration 057.
+
+### Security
+- **`POST /api/changes/{id}/github-pr` checks write access before reporting the
+  change's state.** A caller without write access used to learn whether a
+  change was accepted from the `400` it got; it now gets the same refusal as
+  for any other change.

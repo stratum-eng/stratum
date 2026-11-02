@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { checkPrivateProjectGauge } from "../billing/private-project-gauge";
 import {
   importRateLimitMiddleware,
@@ -516,6 +516,8 @@ app.get("/:namespace/:slug", async (c) => {
 // Strict rate limiting: 1 import per minute per user, 1 concurrent import per project
 app.post(
   "/:namespace/:slug/import",
+  // Before the rate limiter: see `refuseBoundImport`.
+  refuseBoundImport(),
   importRateLimitMiddleware({
     importsPerWindow: 3,
     windowSeconds: 60,
@@ -554,14 +556,6 @@ app.post(
       // For now, users can only import into their own namespace
       if (namespace !== userNamespace) {
         return forbidden("You can only import projects into your own namespace");
-      }
-
-      // Import creates (or re-triggers) a project in the caller's PERSONAL
-      // namespace, which no bound token (#323) may create in.
-      if (isBound(credentialBindingFrom(c))) {
-        return forbidden(
-          "This token is limited to one project or organization and cannot import projects",
-        );
       }
 
       // Check if project already exists
@@ -1368,6 +1362,48 @@ async function refuseOutsideBinding(
   return notFound("Project", `${namespace}/${slug}`);
 }
 
+/**
+ * Import creates (or re-triggers) a project in the caller's PERSONAL
+ * namespace, which no bound token (#323) may create in.
+ *
+ * A middleware, ordered BEFORE `importRateLimitMiddleware`, rather than a check
+ * in the handler: the limiter takes the per-project import lock and one of the
+ * caller's import slots on the way in, and a refusal returned after it would
+ * leave that lock held — so a bound token could block imports of projects it
+ * cannot even see. A function declaration so it is hoisted above the route
+ * registrations that use it.
+ */
+function refuseBoundImport(): MiddlewareHandler<{ Bindings: Env }> {
+  return async (c, next) => {
+    if (isBound(credentialBindingFrom(c))) {
+      return forbidden(
+        "This token is limited to one project or organization and cannot import projects",
+      );
+    }
+    await next();
+  };
+}
+
+/**
+ * {@link refuseOutsideBinding} for the import retry/delete/cancel routes, as a
+ * middleware ordered before their rate limiters for the reason given on
+ * {@link refuseBoundImport}: an out-of-binding call must not take the target
+ * project's import lock.
+ */
+function requireImportTargetInBinding(): MiddlewareHandler<{ Bindings: Env }> {
+  return async (c, next) => {
+    const logger = createLogger({ path: c.req.path, method: c.req.method });
+    const refusal = await refuseOutsideBinding(
+      c,
+      c.req.param("namespace") ?? "",
+      c.req.param("slug") ?? "",
+      logger,
+    );
+    if (refusal) return refusal;
+    await next();
+  };
+}
+
 /** Loads a project and confirms the caller may WRITE to it.
  *
  * Non-writers get 404, not 403 — the same choice the other project-scoped
@@ -1998,6 +2034,8 @@ app.get("/:namespace/:slug/import/stream", async (c) => {
 // Same rate limiting as initial import
 app.post(
   "/:namespace/:slug/import/retry",
+  // Before any limiter: see `requireImportTargetInBinding`.
+  requireImportTargetInBinding(),
   importRateLimitMiddleware({
     importsPerWindow: 3,
     windowSeconds: 60,
@@ -2022,9 +2060,6 @@ app.post(
     if (namespace !== userNamespace) {
       return forbidden("You can only retry imports in your own namespace");
     }
-
-    const bindingRefusal = await refuseOutsideBinding(c, namespace, slug, logger);
-    if (bindingRefusal) return bindingRefusal;
 
     // Get existing import progress
     const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
@@ -2141,6 +2176,8 @@ const DELETABLE_IMPORT_STATUSES: readonly ImportStatus[] = ["failed", "cancelled
 // so an abandoned failure stops rendering import chrome on the project page (#304).
 app.post(
   "/:namespace/:slug/import/delete",
+  // Before any limiter: see `requireImportTargetInBinding`.
+  requireImportTargetInBinding(),
   // A plain per-user limiter, NOT importRateLimitMiddleware: that one takes the
   // per-project import lock and only the import paths release it, so deleting a
   // dead job would 429 the user's next import for the lock's full duration —
@@ -2165,9 +2202,6 @@ app.post(
     if (namespace !== userNamespace) {
       return forbidden("You can only delete imports in your own namespace");
     }
-
-    const bindingRefusal = await refuseOutsideBinding(c, namespace, slug, logger);
-    if (bindingRefusal) return bindingRefusal;
 
     const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
     if (!progressResult.success) {
@@ -2662,6 +2696,8 @@ export async function processSyncJob(
 // More lenient rate limiting: 5 cancels per minute per user
 app.post(
   "/:namespace/:slug/import/cancel",
+  // Before any limiter: see `requireImportTargetInBinding`.
+  requireImportTargetInBinding(),
   importRateLimitMiddleware({
     importsPerWindow: 5,
     windowSeconds: 60,
@@ -2686,9 +2722,6 @@ app.post(
     if (namespace !== userNamespace) {
       return forbidden("You can only cancel imports in your own namespace");
     }
-
-    const bindingRefusal = await refuseOutsideBinding(c, namespace, slug, logger);
-    if (bindingRefusal) return bindingRefusal;
 
     const cancelResult = await cancelImportJob(c.env.DB, namespace, slug, logger);
 

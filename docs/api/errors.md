@@ -50,9 +50,12 @@ codes are in the [OpenAPI specification](openapi.yml).
 - `TOKEN_BINDING_EXCLUDES_ROUTE` — `403`; a token bound to one project or
   organization was used on an endpoint outside the project surfaces (account
   settings, token or agent minting, organization administration, bulk import,
-  the admin API, or the web UI). Checked before routing. A bound token used on a
-  *project* outside its binding gets that route's ordinary not-found answer
-  instead, so the binding does not reveal what else exists
+  the admin API, or the web UI). Checked before routing, but after the
+  read-only rule: a `read` bound token sending a non-`GET`/`HEAD` request to
+  such an endpoint (e.g. `POST /api/agents`) gets `TOKEN_SCOPE_INSUFFICIENT`
+  instead. A bound token used on a *project* outside its binding gets that
+  route's ordinary not-found answer instead — even on routes that answer a
+  non-writer with `403` — so the binding does not reveal what else exists
 - `TOKEN_LIMIT_REACHED` — `409`; the account already holds 20 active tokens.
   Revoked tokens do not count toward the limit
 - `SESSION_REQUIRED` — `403`; the endpoint accepts the browser session cookie

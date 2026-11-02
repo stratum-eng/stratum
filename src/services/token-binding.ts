@@ -6,7 +6,7 @@
  * to token creation cannot drift on what they accept or who may bind to what.
  */
 import type { ApiTokenSummary } from "../storage/api-tokens";
-import { getOrg, getOrgAccessLevel, getOrgBySlug } from "../storage/orgs";
+import { findOrgSlugById, getOrgAccessLevel, getOrgBySlug } from "../storage/orgs";
 import { getProjectByPath, listProjects } from "../storage/state";
 import type { BoundCredentialBinding, CredentialBinding, Env } from "../types";
 import { canReadProject } from "../utils/authz";
@@ -112,11 +112,18 @@ export async function resolveBindingRequest(
   }
 }
 
+/** Shown when a binding's target could not be looked up — NOT when it is gone. */
+export const UNRESOLVED_BINDING_LABEL = "binding could not be resolved";
+export const DELETED_PROJECT_LABEL = "a project that no longer exists";
+export const DELETED_ORG_LABEL = "an organization that no longer exists";
+
 /**
  * Labels for the bindings in a token list, keyed by token id. Unbound tokens
  * are absent. A binding whose target no longer exists is labelled as such
  * rather than dropped — dropping it would display an inert token as
- * account-wide.
+ * account-wide. A lookup that FAILED gets {@link UNRESOLVED_BINDING_LABEL}
+ * instead: calling a working token's target deleted invites revoking it, and
+ * the reverse invites trusting one that is dead.
  */
 export async function describeTokenBindings(
   env: Env,
@@ -131,7 +138,8 @@ export async function describeTokenBindings(
   if (bound.length === 0) return labels;
 
   // One scan for every project binding: `getProjectById` would scan per token.
-  const projectPaths = new Map<string, string>();
+  // `null` = the listing failed, so absence from it proves nothing.
+  let projectPaths: Map<string, string> | null = new Map();
   if (bound.some((token) => token.binding.kind === "project")) {
     const all = await listProjects(env.STATE, logger);
     if (all.success) {
@@ -139,28 +147,39 @@ export async function describeTokenBindings(
         projectPaths.set(project.id, `${project.namespace}/${project.slug}`);
       }
     } else {
+      projectPaths = null;
       logger.warn("Could not list projects to label token bindings", {
         error: all.error.message,
       });
     }
   }
 
-  const orgSlugs = new Map<string, string | null>();
+  // Per org id: the slug, `null` for an org that is gone, `undefined` for a
+  // lookup that failed.
+  const orgSlugs = new Map<string, string | null | undefined>();
   for (const token of bound) {
     const binding = token.binding;
     if (binding.kind === "project") {
+      const path = projectPaths?.get(binding.projectId);
       labels.set(
         token.id,
-        projectPaths.get(binding.projectId) ?? "a project that no longer exists",
+        path ?? (projectPaths === null ? UNRESOLVED_BINDING_LABEL : DELETED_PROJECT_LABEL),
       );
       continue;
     }
     if (!orgSlugs.has(binding.orgId)) {
-      const org = await getOrg(env.DB, logger, binding.orgId);
-      orgSlugs.set(binding.orgId, org.success ? org.data.slug : null);
+      const org = await findOrgSlugById(env.DB, logger, binding.orgId);
+      orgSlugs.set(binding.orgId, org.success ? org.data : undefined);
     }
     const slug = orgSlugs.get(binding.orgId);
-    labels.set(token.id, slug ? `@${slug}` : "an organization that no longer exists");
+    labels.set(
+      token.id,
+      slug === undefined
+        ? UNRESOLVED_BINDING_LABEL
+        : slug === null
+          ? DELETED_ORG_LABEL
+          : `@${slug}`,
+    );
   }
   return labels;
 }

@@ -1,6 +1,7 @@
 import type { FC } from "hono/jsx";
 import type { InviteCodesResult } from "../../beta/gate";
 import type { UsageBannerNotice } from "../../billing/usage-banner";
+import { UNRESOLVED_BINDING_LABEL } from "../../services/token-binding";
 import {
   type ApiTokenSummary,
   MAX_ACTIVE_TOKENS_PER_USER,
@@ -185,6 +186,7 @@ const OAuthGrantRow: FC<{ grant: OAuthGrantSummary }> = ({ grant }) => (
  */
 function tokenAccessLabel(token: ApiTokenSummary, label: string | undefined): string {
   if (token.binding === undefined) return "All projects";
+  if (label === UNRESOLVED_BINDING_LABEL) return `Limited (${UNRESOLVED_BINDING_LABEL})`;
   const target = label ?? (token.binding.kind === "project" ? "one project" : "one organization");
   return token.binding.kind === "project" ? `Only ${target}` : `Projects of ${target}`;
 }

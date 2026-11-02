@@ -86,10 +86,16 @@ A binding only ever narrows: inside it, the token can still do no more than its
 owner can, under its scope. One project *or* one organization per token, not a
 set — create another token for another project.
 
-Outside its binding a token gets exactly what a stranger gets: a project it is
-not bound to answers `404`, the same as a private project that does not exist,
-even when the project is public. Over git, clone and push to an out-of-binding
-remote are the same `404`. `GET /api/projects` lists only the bound project (or
+Outside its binding a token learns nothing about what exists: every route
+answers an out-of-binding project exactly as it answers one that does not
+exist — `404` almost everywhere, even when the project is public. That holds on
+the routes that refuse a non-writer with `403` too (webhooks, deploy secrets,
+change merges and reviews, issue edits): a stranger gets `403` there, but a
+bound token gets the not-found answer, so it cannot tell another private
+project from a missing one. (The `/api/projects/{namespace}/{slug}/sync/*`
+routes answer `403` for missing and inaccessible projects alike, and so for an
+out-of-binding one.) Over git, clone and push to an out-of-binding remote are
+the same `404`. `GET /api/projects` lists only the bound project (or
 the bound organization's projects).
 
 A bound token can reach only the project surfaces of the API:
@@ -103,6 +109,12 @@ deletion), `/api/agents`, `/api/orgs` (including SSO and SCIM administration),
 `403` with the code `TOKEN_BINDING_EXCLUDES_ROUTE`, before routing. In
 particular a bound token can never mint a broader credential: not a token, not
 an agent, not the legacy key.
+
+The [read-only rule](#scopes) is checked first. A **`read`** bound token
+calling any non-`GET`/`HEAD` endpoint — including one outside its surfaces, such
+as `POST /api/agents` — gets `403 TOKEN_SCOPE_INSUFFICIENT`, not
+`TOKEN_BINDING_EXCLUDES_ROUTE`. Both are refusals before routing; only the code
+differs.
 
 Within its surfaces a bound token also cannot create anything outside its
 binding: a project-bound token cannot create or import projects at all, and an

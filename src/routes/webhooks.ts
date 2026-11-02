@@ -14,7 +14,12 @@ import {
 } from "../storage/webhooks";
 import type { Env, ProjectEntry } from "../types";
 import { SOURCE_FOOTER_HTML } from "../ui/components/source-footer";
-import { type BindingContext, canWriteProject, credentialBindingFrom } from "../utils/authz";
+import {
+  type BindingContext,
+  canWriteProject,
+  credentialBindingFrom,
+  refuseProjectAccess,
+} from "../utils/authz";
 import { escapeHtml } from "../utils/html";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
@@ -90,7 +95,11 @@ async function requireProjectAdmin(
 
   // Webhook URLs and secrets are sensitive: writers only, even for reads.
   if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId))) {
-    return { response: forbidden("Project access denied") };
+    return {
+      response: refuseProjectAccess(credentialBindingFrom(c), project, () =>
+        notFound("Project", `${namespace}/${slug}`),
+      ),
+    };
   }
 
   return { project };

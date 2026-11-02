@@ -6,6 +6,7 @@ import type {
   WorkspaceEntry,
 } from "../types";
 import { createLogger } from "./logger";
+import { forbidden } from "./response";
 
 const logger = createLogger({ component: "Authz" });
 
@@ -70,6 +71,27 @@ export function bindingCoversProject(binding: CredentialBinding, project: Projec
     case "org":
       return project.ownerType === "org" && project.ownerId === binding.orgId;
   }
+}
+
+/**
+ * The response for a caller an authz helper just refused, on a route that
+ * answers non-writers with `403`.
+ *
+ * A `403` confirms the project exists, which a stranger may learn on those
+ * routes but a bound token must not: its holder was handed one project or org,
+ * and a `403`/`404` split would let it enumerate the rest of the account's
+ * private projects. So outside the binding the route answers with `hidden` —
+ * whatever it gives for a target that does not exist — and only inside the
+ * binding is the refusal a `403`. Every "Project access denied" in the routes
+ * goes through here so the rule has one home.
+ */
+export function refuseProjectAccess(
+  binding: CredentialBinding,
+  project: ProjectEntry,
+  hidden: () => Response,
+): Response {
+  if (!bindingCoversProject(binding, project)) return hidden();
+  return forbidden("Project access denied");
 }
 
 /**

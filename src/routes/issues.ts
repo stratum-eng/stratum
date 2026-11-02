@@ -13,19 +13,16 @@ import {
 } from "../storage/issues";
 import { getProjectByPath } from "../storage/state";
 import type { Change, Env, ProjectEntry } from "../types";
-import { canReadProject, canWriteProject, credentialBindingFrom } from "../utils/authz";
+import {
+  canReadProject,
+  canWriteProject,
+  credentialBindingFrom,
+  refuseProjectAccess,
+} from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
-import {
-  badRequest,
-  created,
-  forbidden,
-  internalError,
-  notFound,
-  ok,
-  unauthorized,
-} from "../utils/response";
+import { badRequest, created, internalError, notFound, ok, unauthorized } from "../utils/response";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -346,7 +343,9 @@ app.patch("/:namespace/:slug/issues/:number", async (c) => {
 
   // Editing and closing issues requires write access to the project.
   if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
-    return forbidden("Project access denied");
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Project", `${project.namespace}/${project.slug}`),
+    );
 
   const number = parseIssueNumber(c.req.param("number"));
   if (number === null) return badRequest("Invalid issue number");
@@ -618,7 +617,9 @@ app.post("/:namespace/:slug/issues/:number/close", async (c) => {
   const { project } = result;
 
   if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
-    return forbidden("Project access denied");
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Project", `${project.namespace}/${project.slug}`),
+    );
 
   const number = parseIssueNumber(c.req.param("number"));
   if (number === null) return badRequest("Invalid issue number");

@@ -37,6 +37,7 @@ import { boundTokenMayReach } from "../src/middleware/auth";
 import { isGitHttpPath } from "../src/routes/git-http";
 import { isOAuthClientEndpoint } from "../src/routes/mcp-oauth";
 import { createApiToken, listApiTokens, resolveApiToken } from "../src/storage/api-tokens";
+import { createChange } from "../src/storage/changes";
 import { addOrgMember, createOrg } from "../src/storage/orgs";
 import { createSession } from "../src/storage/sessions";
 import type { BoundCredentialBinding, Env, ProjectEntry } from "../src/types";
@@ -248,7 +249,7 @@ describe("a project-bound token", () => {
       return id;
     }
 
-    it("is refused outside its project, exactly as for any non-writer, and rotates nothing", async () => {
+    it("is a 404 outside its project, as if the project were missing, and rotates nothing", async () => {
       const id = await webhookOn("@owner/other");
       const before = await env.DB.prepare("SELECT secret FROM webhooks WHERE id = ?")
         .bind(id)
@@ -259,8 +260,8 @@ describe("a project-bound token", () => {
         bearer(tokens.project),
         {},
       );
-      // The same answer every webhook route gives a caller without write access.
-      expect(res.status).toBe(403);
+      // Not the 403 a stranger gets: that would confirm the project exists.
+      expect(res.status).toBe(404);
       const after = await env.DB.prepare("SELECT secret FROM webhooks WHERE id = ?")
         .bind(id)
         .first<{ secret: string }>();
@@ -311,6 +312,130 @@ describe("a project-bound token", () => {
     expect((await res.json()) as { code: string }).toMatchObject({
       code: "TOKEN_SCOPE_INSUFFICIENT",
     });
+  });
+});
+
+/**
+ * Review finding on #398: routes that refuse a non-writer with `403` answer a
+ * MISSING target with `404`, so a bound token could tell the account's other
+ * private projects from names that do not exist. Each such route must answer an
+ * out-of-binding target exactly as it answers a missing one.
+ */
+describe("no existence oracle on the routes that answer non-writers with 403", () => {
+  let otherChange = "";
+
+  beforeAll(async () => {
+    const created = await createChange(env.DB, logger, {
+      project: "@owner/other",
+      projectId: "proj_other",
+      workspace: "ws",
+    });
+    if (!created.success) throw created.error;
+    otherChange = created.data.id;
+  });
+
+  type Probe = { label: string; method: string; existing: () => string; missing: string };
+  const probes: Probe[] = [
+    {
+      label: "webhook list",
+      method: "GET",
+      existing: () => "/api/projects/@owner/other/webhooks",
+      missing: "/api/projects/@owner/nope/webhooks",
+    },
+    {
+      label: "webhook create",
+      method: "POST",
+      existing: () => "/api/projects/@owner/other/webhooks",
+      missing: "/api/projects/@owner/nope/webhooks",
+    },
+    {
+      label: "deploy secrets list",
+      method: "GET",
+      existing: () => "/api/projects/@owner/other/secrets",
+      missing: "/api/projects/@owner/nope/secrets",
+    },
+    {
+      label: "deploy secret write",
+      method: "PUT",
+      existing: () => "/api/projects/@owner/other/secrets/TOKEN",
+      missing: "/api/projects/@owner/nope/secrets/TOKEN",
+    },
+    {
+      label: "issue edit",
+      method: "PATCH",
+      existing: () => "/api/projects/@owner/other/issues/1",
+      missing: "/api/projects/@owner/nope/issues/1",
+    },
+    {
+      label: "issue close",
+      method: "POST",
+      existing: () => "/api/projects/@owner/other/issues/1/close",
+      missing: "/api/projects/@owner/nope/issues/1/close",
+    },
+    {
+      label: "workspace create",
+      method: "POST",
+      existing: () => "/api/workspaces/@owner/other/workspaces",
+      missing: "/api/workspaces/@owner/nope/workspaces",
+    },
+    {
+      label: "change create",
+      method: "POST",
+      existing: () => "/api/projects/@owner%2Fother/changes",
+      missing: "/api/projects/@owner%2Fnope/changes",
+    },
+    {
+      label: "merge batch",
+      method: "POST",
+      existing: () => "/api/projects/@owner%2Fother/changes/merge-batch",
+      missing: "/api/projects/@owner%2Fnope/changes/merge-batch",
+    },
+    ...["merge", "reject", "evaluate", "github-pr", "reviews"].map((action) => ({
+      label: `change ${action}`,
+      method: "POST",
+      existing: () => `/api/changes/${otherChange}/${action}`,
+      missing: `/api/changes/chg_does_not_exist/${action}`,
+    })),
+  ];
+
+  it.each(probes)("$label", async ({ method, existing, missing }) => {
+    const body = method === "GET" ? undefined : { title: "x", workspace: "ws", verdict: "approve" };
+    const real = await call(method, existing(), bearer(tokens.project), body);
+    const absent = await call(method, missing, bearer(tokens.project), body);
+    expect(real.status).toBe(404);
+    expect(real.status).toBe(absent.status);
+    expect(((await real.json()) as { error: string }).error).not.toContain("access denied");
+  });
+
+  it("still answers a writer's in-binding refusal-free path normally", async () => {
+    expect(
+      (await call("GET", "/api/projects/@owner/mine/webhooks", bearer(tokens.project))).status,
+    ).toBe(200);
+  });
+});
+
+describe("import routes do not lock a project the token cannot reach", () => {
+  const lockKey = (slug: string) => `ratelimit:import:project:@owner:${slug}`;
+
+  it.each([
+    ["import", "/api/projects/@owner/locked-a/import", "locked-a"],
+    ["retry", "/api/projects/@owner/other/import/retry", "other"],
+    ["cancel", "/api/projects/@owner/other/import/cancel", "other"],
+  ])("an out-of-binding %s is refused before the import lock is taken", async (_l, path, slug) => {
+    // Each case starts from no limiter state: the owner's legitimate call in
+    // the previous case takes a lock of its own, which is not what is tested.
+    const held = await env.STATE.list({ prefix: "ratelimit:import:" });
+    for (const key of held.keys) await env.STATE.delete(key.name);
+
+    const res = await call("POST", path, bearer(tokens.project), {
+      url: "https://github.com/a/b",
+    });
+    expect([403, 404]).toContain(res.status);
+    expect(await env.STATE.get(lockKey(slug))).toBeNull();
+
+    // And the project's owner can still go ahead: not a 429 from a held lock.
+    const owner = await call("POST", path, bearer(tokens.unbound), {});
+    expect(owner.status).not.toBe(429);
   });
 });
 
@@ -373,6 +498,14 @@ describe("account-level surfaces refuse a bound token", () => {
         code: "TOKEN_BINDING_EXCLUDES_ROUTE",
       });
     }
+  });
+
+  it("a READ bound token on a write to such a route gets the scope code (documented precedence)", async () => {
+    const res = await call("POST", "/api/agents", bearer(tokens.readProject), { name: "bot" });
+    expect(res.status).toBe(403);
+    expect((await res.json()) as { code: string }).toMatchObject({
+      code: "TOKEN_SCOPE_INSUFFICIENT",
+    });
   });
 
   it("still answers GET /api/users/me (identity only)", async () => {
