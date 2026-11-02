@@ -296,6 +296,24 @@ describe("resolveApiToken", () => {
     expect(resolved.success).toBe(false);
   });
 
+  it("rejects a token whose owner is SCIM-disabled, and honours it again once re-enabled (#253)", async () => {
+    await seedUser();
+    const created = await createApiToken(db, logger, {
+      userId: "usr_1",
+      name: "t",
+      scope: "read_write",
+    });
+    if (!created.success) throw new Error("create failed");
+    raw
+      .prepare("UPDATE users SET disabled_at = ? WHERE id = 'usr_1'")
+      .run(new Date().toISOString());
+
+    expect((await resolveApiToken(db, created.data.plaintext, logger)).success).toBe(false);
+
+    raw.prepare("UPDATE users SET disabled_at = NULL WHERE id = 'usr_1'").run();
+    expect((await resolveApiToken(db, created.data.plaintext, logger)).success).toBe(true);
+  });
+
   it("rejects an expired token, comparing in JS rather than SQL", async () => {
     await seedUser();
     const created = await createApiToken(db, logger, {

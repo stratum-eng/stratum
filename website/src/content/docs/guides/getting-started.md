@@ -28,11 +28,14 @@ Sign in with any of:
 - **GitHub OAuth** at `/auth/github` — required later if you want bidirectional
   GitHub sync.
 - **Google OAuth** at `/auth/google`.
+- **Single sign-on (SSO)** at `/auth/sso` — if your organization has
+  configured OIDC SSO, enter your org's slug or your work email.
 
-All three resolve to the same email-identity account, so you can mix methods.
-Every method asks you to choose a **username** the first time: it is your
-namespace (`@you/project` in every URL and clone URL). You can change it in
-Settings while you own no projects; while any exists it is fixed, because
+All of these resolve to the same account (matched by verified email), so you
+can mix methods. Magic link, GitHub, and Google ask you to choose a **username**
+the first time: it is your namespace (`@you/project` in every URL and clone
+URL). SSO accounts get one derived from your work email instead. You can change
+it in Settings while you own no projects; while any exists it is fixed, because
 every project is keyed under it (after deleting your last project, allow up to
 15 minutes before the form reappears). GitHub and Google sign-in suggest one from
 your handle or email address and let you pick another before the account

@@ -128,10 +128,16 @@ npx wrangler secret put ADMIN_EMAIL          # or: a signed-in user with this em
 npx wrangler secret put POSTHOG_API_KEY      # analytics (route patterns only, never paths)
 npx wrangler secret put GITHUB_TOKEN         # REQUIRED for promote-to-PR and eval reporting to GitHub; also raises import rate limits
 npx wrangler secret put GITHUB_WEBHOOK_SECRET  # inbound GitHub sync
+npx wrangler secret put SSO_ENCRYPTION_SECRET  # enables enterprise SSO/SCIM
 ```
 
 OAuth callback URLs are set in `[vars]` (`OAUTH_REDIRECT_URI`, `GOOGLE_REDIRECT_URI`) —
 point them at your own host and register the same URLs in your OAuth apps.
+
+With `SSO_ENCRYPTION_SECRET` set, an org admin configures one OIDC connection per
+organization (`PUT /api/orgs/:slug/sso`), proves domain ownership with a DNS TXT record,
+and users sign in at `/auth/sso`; IdPs can provision and deactivate users via SCIM 2.0 at
+`/scim/v2`. See [docs/api/authentication.md](docs/api/authentication.md).
 
 ### Database setup
 
@@ -328,7 +334,8 @@ outbound PR promotion) with conflict resolution · bulk import · queue-backed w
 resumable progress.
 
 **Identity and access**
-Magic-link email auth · GitHub OAuth · Google OAuth · named API tokens, each `read` or
+Magic-link email auth · GitHub OAuth · Google OAuth · per-org enterprise SSO (OIDC) with
+DNS-verified email domains and SCIM 2.0 user provisioning · named API tokens, each `read` or
 `read_write`, independently revocable and optionally expiring · agent identities with
 tokens bounded by an owning user · organizations, teams, and
 role-based project access · CSRF protection · rate limiting.

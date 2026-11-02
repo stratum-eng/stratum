@@ -27,6 +27,10 @@ const DELETING_TOKEN = "stratum_user_deleting00000000000000";
 const DELETING_AGENT_TOKEN = "stratum_agent_deleting0000000000000";
 // An agent whose owner cannot be resolved — auth must fail closed.
 const GHOST_AGENT_TOKEN = "stratum_agent_ghost000000000000000";
+// A disabled owner (reversible, SCIM deprovisioning) and their agent: both must
+// lose git access while disabled_at is set.
+const DISABLED_TOKEN = "stratum_user_disabled00000000000000";
+const DISABLED_AGENT_TOKEN = "stratum_agent_disabled0000000000000";
 
 // The gated-push handler calls the change-flow service; mock its two entry
 // points so these tests exercise the wire protocol, not the eval pipeline
@@ -75,6 +79,11 @@ vi.mock("../src/storage/users", () => ({
         success: true,
         data: { id: "user_owner", email: "o@x.io", username: "owner", deletingAt: "2026-01-01" },
       };
+    if (token === DISABLED_TOKEN)
+      return {
+        success: true,
+        data: { id: "user_owner", email: "o@x.io", username: "owner", disabledAt: "2026-01-01" },
+      };
     return { success: false, error: { message: "not found" } };
   }),
   getUser: vi.fn(async (_db: unknown, id: string) => {
@@ -84,6 +93,11 @@ vi.mock("../src/storage/users", () => ({
       return {
         success: true,
         data: { id, email: "d@x.io", username: "deleter", deletingAt: "2026-01-01" },
+      };
+    if (id === "user_disabled_owner")
+      return {
+        success: true,
+        data: { id, email: "s@x.io", username: "suspended", disabledAt: "2026-01-01" },
       };
     return { success: false, error: { message: "not found" } };
   }),
@@ -97,6 +111,8 @@ vi.mock("../src/storage/agents", () => ({
       return { success: true, data: { id: "agent_2", ownerId: "user_deleting_owner" } };
     if (token === GHOST_AGENT_TOKEN)
       return { success: true, data: { id: "agent_3", ownerId: "user_ghost" } };
+    if (token === DISABLED_AGENT_TOKEN)
+      return { success: true, data: { id: "agent_4", ownerId: "user_disabled_owner" } };
     return { success: false, error: { message: "not found" } };
   }),
 }));
@@ -332,6 +348,24 @@ describe("git smart-HTTP proxy — auth & authorization truth table (Task 2)", (
     await seedProject(env, { visibility: "private" });
     const fetchMock = stubFetch(() => okUpstream());
     const res = await app.fetch(req(ADVERTISE, { headers: basic(DELETING_AGENT_TOKEN) }), env);
+    expect(res.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("disabled owner token + private → treated as anonymous (401), no upstream call", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private" });
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await app.fetch(req(ADVERTISE, { headers: basic(DISABLED_TOKEN) }), env);
+    expect(res.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("agent whose owner is disabled + private → treated as anonymous (401)", async () => {
+    const env = makeEnv();
+    await seedProject(env, { visibility: "private" });
+    const fetchMock = stubFetch(() => okUpstream());
+    const res = await app.fetch(req(ADVERTISE, { headers: basic(DISABLED_AGENT_TOKEN) }), env);
     expect(res.status).toBe(401);
     expect(fetchMock).not.toHaveBeenCalled();
   });

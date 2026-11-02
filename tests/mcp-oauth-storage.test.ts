@@ -450,6 +450,19 @@ describe("tokens", () => {
     expect((await resolveOAuthAccessToken(db, liveGrant.accessToken, logger)).success).toBe(false);
   });
 
+  it("fails closed for a SCIM-disabled owner, and resolves again once re-enabled (#253)", async () => {
+    await seedUser();
+    const live = await grant();
+    raw
+      .prepare("UPDATE users SET disabled_at = ? WHERE id = 'usr_1'")
+      .run(new Date().toISOString());
+    expect((await resolveOAuthAccessToken(db, live.accessToken, logger)).success).toBe(false);
+
+    // Disablement is reversible: the same grant works after re-enable.
+    raw.prepare("UPDATE users SET disabled_at = NULL WHERE id = 'usr_1'").run();
+    expect((await resolveOAuthAccessToken(db, live.accessToken, logger)).success).toBe(true);
+  });
+
   it("rotates a refresh token, retiring the old pair", async () => {
     await seedUser();
     const issued = await grant();

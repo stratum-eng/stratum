@@ -373,6 +373,17 @@ app.post("/", async (c) => {
   // this is a sign-in, not a second account; the parked record is spent.
   const existing = await getUserByEmail(c.env.DB, record.email, logger);
   if (existing.success) {
+    // That account may be frozen — SCIM can provision a user already
+    // deactivated (#253). Refuse before linking GitHub or minting a session,
+    // exactly as the OAuth callbacks do for an account they find directly.
+    if (existing.data.disabledAt || existing.data.deletingAt) {
+      logger.warn("Blocked OAuth signup completion — account disabled", {
+        userId: existing.data.id,
+        provider: record.provider,
+      });
+      await clearPendingSignup(c, token);
+      return c.redirect("/auth/login?error=account_disabled");
+    }
     logger.info("Email registered while username was being chosen; signing in", {
       userId: existing.data.id,
       provider: record.provider,

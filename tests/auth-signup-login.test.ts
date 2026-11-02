@@ -2,6 +2,9 @@ import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { authRouter } from "../src/routes/auth";
 import { emailAuthRouter } from "../src/routes/email-auth";
+import { recordAudit } from "../src/storage/audit";
+import type { UpsertIdentityInput } from "../src/storage/identities";
+import { upsertIdentity } from "../src/storage/identities";
 import type { Env, User } from "../src/types";
 import { NotFoundError } from "../src/utils/errors";
 import type { Logger } from "../src/utils/logger";
@@ -88,15 +91,6 @@ vi.mock("../src/storage/users", () => {
       return { success: true, data: user };
     }),
 
-    getUserByUsername: vi.fn(async (_db, username: string) => {
-      const users = getMockUsers();
-      const user = users.get(`username:${username.toLowerCase()}`);
-      if (!user) {
-        return { success: false, error: new NotFoundError("User", username) };
-      }
-      return { success: true, data: user };
-    }),
-
     getUserByGitHubId: vi.fn(async (_db, githubId: string) => {
       const users = getMockUsers();
       for (const user of users.values()) {
@@ -105,6 +99,15 @@ vi.mock("../src/storage/users", () => {
         }
       }
       return { success: false, error: new NotFoundError("User", githubId) };
+    }),
+
+    getUserByUsername: vi.fn(async (_db, username: string) => {
+      const users = getMockUsers();
+      const user = users.get(`username:${username.toLowerCase()}`);
+      if (!user) {
+        return { success: false, error: new NotFoundError("User", username) };
+      }
+      return { success: true, data: user };
     }),
 
     // Mirrors production: matches, links — and creates nothing. A GitHub
@@ -122,6 +125,11 @@ vi.mock("../src/storage/users", () => {
       // Check if user exists by email
       const existingByEmail = users.get(`email:${opts.email}`);
       if (existingByEmail) {
+        // Never link onto a frozen account; return it unlinked so the callback
+        // refuses the sign-in.
+        if (existingByEmail.disabledAt || existingByEmail.deletingAt) {
+          return { success: true, data: existingByEmail };
+        }
         // Link GitHub to existing user
         existingByEmail.githubId = opts.githubId;
         existingByEmail.githubUsername = opts.username;
@@ -168,6 +176,32 @@ vi.mock("../src/storage/sessions", () => ({
   getUserSessions: vi.fn(),
   deleteAllUserSessions: vi.fn(),
   refreshSession: vi.fn(),
+}));
+
+// Audit is mocked so the disabled-account tests can assert that a refused
+// login records NO session.created row.
+vi.mock("../src/storage/audit", () => ({
+  recordAudit: vi.fn(async () => ({ success: true, data: undefined })),
+}));
+
+// Identities are forward-provisioning for SSO: default to "nothing linked yet"
+// with successful persistence; tests assert on the upsert calls.
+vi.mock("../src/storage/identities", () => ({
+  upsertIdentity: vi.fn(async (_db: unknown, _logger: unknown, input: UpsertIdentityInput) => ({
+    success: true,
+    data: {
+      id: "idn_test",
+      createdAt: new Date().toISOString(),
+      ...input,
+      connectionId: input.connectionId ?? null,
+    },
+  })),
+  getIdentityByIssuerSubject: vi.fn(
+    async (_db: unknown, _logger: unknown, issuer: string, subject: string) => ({
+      success: false,
+      error: new NotFoundError("Identity", `${issuer}#${subject}`),
+    }),
+  ),
 }));
 
 // ============================================================================
@@ -1423,6 +1457,225 @@ describe("Auth Signup/Login Integration Tests", () => {
       vi.restoreAllMocks();
     });
 
+    function mockGitHubFetch(
+      user: { id: number; login: string },
+      emails: { email: string; primary: boolean; verified: boolean }[],
+    ) {
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ access_token: "gh_token" }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => user,
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => emails,
+        });
+    }
+
+    async function githubCallback(state: string, extraQuery = ""): Promise<Response> {
+      await env.STATE.put(`oauth_state:${state}`, "1", { expirationTtl: 600 });
+      return app.fetch(
+        request(`/auth/github/callback?code=test-code&state=${state}${extraQuery}`, {
+          headers: { Cookie: `stratum_oauth_state=${state}` },
+        }),
+        env,
+      );
+    }
+
+    it("refuses to link or create an account from unverified GitHub emails", async () => {
+      mockGitHubFetch({ id: 55555, login: "unverifieduser" }, [
+        { email: "unverified@example.com", primary: true, verified: false },
+      ]);
+
+      const res = await githubCallback("unverified-email-state");
+
+      expect(res.status).toBe(422);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain("No verified email");
+      const { signInGitHubUser } = await import("../src/storage/users");
+      expect(signInGitHubUser).not.toHaveBeenCalled();
+      const { createSession } = await import("../src/storage/sessions");
+      expect(createSession).not.toHaveBeenCalled();
+      expect(res.headers.get("set-cookie") ?? "").not.toContain("stratum_session");
+
+      vi.restoreAllMocks();
+    });
+
+    it("signs in an existing github_id-matched user whose emails are all unverified", async () => {
+      const { createUser } = await import("../src/storage/users");
+      await createUser(env.DB, "linked@example.com", {} as unknown as Logger, "linkeduser");
+      const user = mockUsers.get("email:linked@example.com");
+      if (!user) throw new Error("seed failed");
+      user.githubId = "77777";
+
+      mockGitHubFetch({ id: 77777, login: "linkeduser" }, [
+        { email: "unverified@example.com", primary: true, verified: false },
+      ]);
+
+      const res = await githubCallback("linked-unverified-state");
+
+      // The GitHub account id — not an email — is the credential here, so the
+      // returning user is not locked out by unverified addresses.
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/");
+      expect(res.headers.get("set-cookie")).toContain("stratum_session");
+      // The identity row records the account's own email, never the unverified one.
+      expect(upsertIdentity).toHaveBeenCalledWith(env.DB, expect.anything(), {
+        userId: user.id,
+        provider: "github",
+        issuer: "https://github.com",
+        subject: "77777",
+        email: "linked@example.com",
+      });
+
+      vi.restoreAllMocks();
+    });
+
+    it("persists an identities row on a verified GitHub sign-in", async () => {
+      const { createUser } = await import("../src/storage/users");
+      await createUser(env.DB, "github@example.com", {} as unknown as Logger, "githubuser");
+      mockGitHubFetch({ id: 12345, login: "testuser" }, [
+        { email: "github@example.com", primary: true, verified: true },
+      ]);
+
+      const res = await githubCallback("identity-row-state");
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/");
+      const created = mockUsers.get("email:github@example.com");
+      if (!created) throw new Error("seed failed");
+      expect(upsertIdentity).toHaveBeenCalledWith(env.DB, expect.anything(), {
+        userId: created.id,
+        provider: "github",
+        issuer: "https://github.com",
+        subject: "12345",
+        email: "github@example.com",
+      });
+
+      vi.restoreAllMocks();
+    });
+
+    it("links with a verified email when the primary email is unverified", async () => {
+      mockGitHubFetch({ id: 66666, login: "mixeduser" }, [
+        { email: "unverified-primary@example.com", primary: true, verified: false },
+        { email: "verified@example.com", primary: false, verified: true },
+      ]);
+
+      const res = await githubCallback("mixed-emails-state");
+
+      expect(res.status).toBe(302);
+      const { signInGitHubUser } = await import("../src/storage/users");
+      expect(signInGitHubUser).toHaveBeenCalledWith(
+        env.DB,
+        expect.objectContaining({ email: "verified@example.com" }),
+        expect.anything(),
+      );
+
+      vi.restoreAllMocks();
+    });
+
+    it("lowercases a mixed-case verified GitHub email so it matches the stored account", async () => {
+      const { createUser } = await import("../src/storage/users");
+      await createUser(env.DB, "cased@example.com", {} as unknown as Logger, "caseduser");
+
+      mockGitHubFetch({ id: 44444, login: "caseduser" }, [
+        { email: "Cased@Example.com", primary: true, verified: true },
+      ]);
+
+      const res = await githubCallback("cased-email-state");
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/");
+      const { signInGitHubUser } = await import("../src/storage/users");
+      expect(signInGitHubUser).toHaveBeenCalledWith(
+        env.DB,
+        expect.objectContaining({ email: "cased@example.com" }),
+        expect.anything(),
+      );
+
+      vi.restoreAllMocks();
+    });
+
+    it("beta gate: a returning github_id-matched user with unverified emails still signs in", async () => {
+      const gateEnv = makeEnv({
+        ...env,
+        BETA_GATE: "1",
+        REFERRAL_SERVICE_URL: "http://referral.test",
+      });
+      const { createUser } = await import("../src/storage/users");
+      await createUser(gateEnv.DB, "gated@example.com", {} as unknown as Logger, "gateduser");
+      const user = mockUsers.get("email:gated@example.com");
+      if (!user) throw new Error("seed failed");
+      user.githubId = "66677";
+
+      mockGitHubFetch({ id: 66677, login: "gateduser" }, [
+        { email: "unverified@example.com", primary: true, verified: false },
+      ]);
+      const state = "gate-linked-state";
+      await gateEnv.STATE.put(`oauth_state:${state}`, "1", { expirationTtl: 600 });
+
+      const res = await app.fetch(
+        request(`/auth/github/callback?code=test-code&state=${state}`, {
+          headers: { Cookie: `stratum_oauth_state=${state}` },
+        }),
+        gateEnv,
+      );
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/");
+      expect(res.headers.get("set-cookie")).toContain("stratum_session");
+
+      vi.restoreAllMocks();
+    });
+
+    it("beta gate: an unmatched user with a verified email is parked for the invite-gated form", async () => {
+      const gateEnv = makeEnv({
+        ...env,
+        BETA_GATE: "1",
+        REFERRAL_SERVICE_URL: "http://referral.test",
+      });
+      mockGitHubFetch({ id: 88811, login: "newgated" }, [
+        { email: "brandnew@example.com", primary: true, verified: true },
+      ]);
+      const state = "gate-new-state";
+      await gateEnv.STATE.put(`oauth_state:${state}`, "1", { expirationTtl: 600 });
+
+      const res = await app.fetch(
+        request(`/auth/github/callback?code=test-code&state=${state}`, {
+          headers: { Cookie: `stratum_oauth_state=${state}` },
+        }),
+        gateEnv,
+      );
+
+      expect(res.status).toBe(302);
+      // Nothing is created here; /auth/signup/complete demands the invite code.
+      expect(res.headers.get("location")).toBe("/auth/signup/complete");
+      expect(res.headers.get("set-cookie") ?? "").not.toContain("stratum_session");
+      expect(mockUsers.get("email:brandnew@example.com")).toBeUndefined();
+
+      vi.restoreAllMocks();
+    });
+
+    it("drops an off-origin next on the callback (redirects home)", async () => {
+      const { createUser } = await import("../src/storage/users");
+      await createUser(env.DB, "github@example.com", {} as unknown as Logger, "githubuser");
+      mockGitHubFetch({ id: 12345, login: "testuser" }, [
+        { email: "github@example.com", primary: true, verified: true },
+      ]);
+
+      const res = await githubCallback("next-param-state", "&next=%2F%2Fevil.com");
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/");
+
+      vi.restoreAllMocks();
+    });
+
     it("rejects invalid state parameter", async () => {
       const res = await app.fetch(
         request("/auth/github/callback?code=test-code&state=invalid-state"),
@@ -1590,6 +1843,245 @@ describe("Auth Signup/Login Integration Tests", () => {
 
       expect(res.status).toBe(302);
       expect(res.headers.get("location")).toContain("error=rate_limited");
+    });
+  });
+
+  // ============================================================================
+  // Disabled account enforcement (disabled_at) — no session mint, no mail,
+  // no session.created audit row on any refused login.
+  // ============================================================================
+
+  describe("Disabled account enforcement", () => {
+    const DISABLED_AT = "2026-08-01T00:00:00.000Z";
+
+    async function seedDisabledUser(email: string, username: string): Promise<User> {
+      const { createUser } = await import("../src/storage/users");
+      await createUser(env.DB, email, {} as unknown as Logger, username);
+      const user = mockUsers.get(`email:${email}`);
+      if (!user) throw new Error(`Failed to seed user ${email}`);
+      user.disabledAt = DISABLED_AT;
+      return user;
+    }
+
+    it("send-login answers with the enumeration-safe success but sends no mail", async () => {
+      await seedDisabledUser("disabled@example.com", "disableduser");
+
+      const res = await app.fetch(
+        request("/auth/email/send-login", {
+          method: "POST",
+          body: createFormData({ email: "disabled@example.com" }),
+        }),
+        env,
+      );
+
+      expect(res.status).toBe(302);
+      // Same response as an unknown address — disabled accounts are not an
+      // enumeration oracle.
+      expect(res.headers.get("location")).toContain("success=login_link_sent");
+      expect(env.EMAIL?.send).not.toHaveBeenCalled();
+      expect(await extractMagicLinkToken(env)).toBeNull();
+    });
+
+    it("legacy send answers with the uniform success but sends no mail", async () => {
+      await seedDisabledUser("disabled-legacy@example.com", "disabledlegacy");
+
+      const res = await app.fetch(
+        request("/auth/email/send", {
+          method: "POST",
+          body: createFormData({ email: "disabled-legacy@example.com" }),
+        }),
+        env,
+      );
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toContain("success=email_sent");
+      expect(env.EMAIL?.send).not.toHaveBeenCalled();
+      expect(await extractMagicLinkToken(env)).toBeNull();
+    });
+
+    async function seedDeletingUser(email: string, username: string): Promise<User> {
+      const { createUser } = await import("../src/storage/users");
+      await createUser(env.DB, email, {} as unknown as Logger, username);
+      const user = mockUsers.get(`email:${email}`);
+      if (!user) throw new Error(`Failed to seed user ${email}`);
+      user.deletingAt = "2026-08-01T00:00:00.000Z";
+      return user;
+    }
+
+    it("send-login treats a deleting account like a disabled one: uniform success, no mail", async () => {
+      await seedDeletingUser("deleting-send@example.com", "deletingsend");
+
+      const res = await app.fetch(
+        request("/auth/email/send-login", {
+          method: "POST",
+          body: createFormData({ email: "deleting-send@example.com" }),
+        }),
+        env,
+      );
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toContain("success=login_link_sent");
+      expect(env.EMAIL?.send).not.toHaveBeenCalled();
+      expect(await extractMagicLinkToken(env)).toBeNull();
+    });
+
+    it("legacy send treats a deleting account like a disabled one: uniform success, no mail", async () => {
+      await seedDeletingUser("deleting-legacy@example.com", "deletinglegacy");
+
+      const res = await app.fetch(
+        request("/auth/email/send", {
+          method: "POST",
+          body: createFormData({ email: "deleting-legacy@example.com" }),
+        }),
+        env,
+      );
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toContain("success=email_sent");
+      expect(env.EMAIL?.send).not.toHaveBeenCalled();
+      expect(await extractMagicLinkToken(env)).toBeNull();
+    });
+
+    it("verify hard-rejects a login link for a disabled account with no session or audit row", async () => {
+      await seedDisabledUser("disabled-verify@example.com", "disabledverify");
+      // A link minted BEFORE the account was disabled must still be refused.
+      magicStore.set("pre-disable-token", {
+        email: "disabled-verify@example.com",
+        intent: "login",
+        createdAt: Date.now(),
+        rememberMe: true,
+      });
+
+      const res = await app.fetch(verifyReq("pre-disable-token"), env);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toContain("error=account_disabled");
+      expect(res.headers.get("set-cookie")).toBeNull();
+      const { createSession } = await import("../src/storage/sessions");
+      expect(createSession).not.toHaveBeenCalled();
+      expect(recordAudit).not.toHaveBeenCalled();
+    });
+
+    it("verify refuses the signup-collides-with-existing-account fallback for a disabled account", async () => {
+      await seedDisabledUser("disabled-signup@example.com", "disabledsignup");
+      magicStore.set("signup-collision-token", {
+        email: "disabled-signup@example.com",
+        username: "someoneelse",
+        intent: "signup",
+        createdAt: Date.now(),
+        rememberMe: true,
+      });
+
+      const res = await app.fetch(verifyReq("signup-collision-token"), env);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toContain("error=account_disabled");
+      expect(res.headers.get("set-cookie")).toBeNull();
+      expect(recordAudit).not.toHaveBeenCalled();
+    });
+
+    it("GitHub callback refuses a disabled account before minting a session", async () => {
+      const user = await seedDisabledUser("disabled-github@example.com", "disabledgithub");
+      user.githubId = "99999";
+
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ access_token: "gh_token_disabled" }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ id: 99999, login: "disabledgithub" }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => [
+            { email: "disabled-github@example.com", primary: true, verified: true },
+          ],
+        });
+
+      const state = "disabled-github-state";
+      await env.STATE.put(`oauth_state:${state}`, "1", { expirationTtl: 600 });
+
+      const res = await app.fetch(
+        request(`/auth/github/callback?code=test-code&state=${state}`, {
+          headers: { Cookie: `stratum_oauth_state=${state}` },
+        }),
+        env,
+      );
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/auth/login?error=account_disabled");
+      expect(res.headers.get("set-cookie") ?? "").not.toContain("stratum_session");
+      const { createSession } = await import("../src/storage/sessions");
+      expect(createSession).not.toHaveBeenCalled();
+      expect(recordAudit).not.toHaveBeenCalled();
+
+      vi.restoreAllMocks();
+    });
+
+    it("GitHub callback refuses a disabled account matched by email WITHOUT linking github_id", async () => {
+      // signInGitHubUser must not link a GitHub id onto the frozen row — that
+      // would hand it a working credential at re-enable (the storage-level
+      // guard is covered in tests/users-disable.test.ts).
+      const user = await seedDisabledUser("disabled-nolink@example.com", "disablednolink");
+      expect(user.githubId).toBeUndefined();
+
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ access_token: "gh_token_nolink" }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ id: 88888, login: "disablednolink" }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => [
+            { email: "disabled-nolink@example.com", primary: true, verified: true },
+          ],
+        });
+
+      const state = "disabled-nolink-state";
+      await env.STATE.put(`oauth_state:${state}`, "1", { expirationTtl: 600 });
+
+      const res = await app.fetch(
+        request(`/auth/github/callback?code=test-code&state=${state}`, {
+          headers: { Cookie: `stratum_oauth_state=${state}` },
+        }),
+        env,
+      );
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/auth/login?error=account_disabled");
+      expect(res.headers.get("set-cookie") ?? "").not.toContain("stratum_session");
+      expect(user.githubId).toBeUndefined();
+
+      vi.restoreAllMocks();
+    });
+
+    it("verify hard-rejects a soft-deleting account the same as a disabled one", async () => {
+      const { createUser } = await import("../src/storage/users");
+      await createUser(env.DB, "deleting@example.com", {} as unknown as Logger, "deletinguser");
+      const user = mockUsers.get("email:deleting@example.com");
+      if (!user) throw new Error("seed failed");
+      user.deletingAt = "2026-08-01T00:00:00.000Z";
+      magicStore.set("deleting-user-token", {
+        email: "deleting@example.com",
+        intent: "login",
+        createdAt: Date.now(),
+        rememberMe: true,
+      });
+
+      const res = await app.fetch(verifyReq("deleting-user-token"), env);
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toContain("error=account_disabled");
+      expect(res.headers.get("set-cookie") ?? "").not.toContain("stratum_session");
+      expect(recordAudit).not.toHaveBeenCalled();
     });
   });
 });

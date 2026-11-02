@@ -10,6 +10,18 @@ export interface RateLimitOptions {
   requestsPerMinute?: number;
 }
 
+// SCIM sync traffic is bursty by nature: an Okta first import runs ~3
+// requests per user (userName-filtered GET, POST/PATCH, verify GET) plus
+// paging, back-to-back, so the global per-minute bucket would 429 mid-sync
+// and the IdP would mark users as failed. SCIM therefore gets its own
+// PER-CONNECTION fixed window: 3000 requests/hour gives a ~1000-user first
+// sync headroom in a single burst while still bounding a runaway client. The
+// hourly window keeps Retry-After bounded to at most an hour, and the fixed
+// window matches the existing limiter's shape. Keyed on the connection (not
+// user/IP) — one tenant's sync cannot starve another's.
+const SCIM_REQUESTS_PER_HOUR = 3000;
+const SCIM_WINDOW_SECONDS = 3600;
+
 export interface ImportRateLimitOptions {
   /** Maximum imports per user per time window (default: 1) */
   importsPerWindow?: number;
@@ -66,6 +78,49 @@ export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<
     const isAnalyticsIngest = isPostHogProxyPath(c.req.path) && !isPostHogSdkPath(c.req.path);
 
     if (isGitHttpPath(c.req.path) && isExemptGitRead(c.req.path, c.req.query("service"))) {
+      await next();
+      return;
+    }
+
+    // A SCIM caller (set only for a valid stratum_scim_* bearer) bypasses the
+    // per-user/IP bucketing for its own per-connection window — see
+    // SCIM_REQUESTS_PER_HOUR for the sizing rationale.
+    const scimConnectionId = c.get("scimConnectionId");
+    if (scimConnectionId) {
+      const windowBucket = Math.floor(Date.now() / (SCIM_WINDOW_SECONDS * 1000));
+      const key = `ratelimit:scim:${scimConnectionId}:${windowBucket}`;
+      const resetSeconds = (windowBucket + 1) * SCIM_WINDOW_SECONDS;
+      const scimRetryAfter = resetSeconds - Math.floor(Date.now() / 1000);
+
+      try {
+        const raw = await c.env.STATE.get(key);
+        const count = raw !== null ? Number.parseInt(raw, 10) : 0;
+        if (count >= SCIM_REQUESTS_PER_HOUR) {
+          logger.warn("SCIM rate limit exceeded", {
+            connectionId: scimConnectionId,
+            path: c.req.path,
+            count,
+          });
+          return c.json({ error: "Too many requests" }, 429, {
+            "Retry-After": String(scimRetryAfter),
+            "X-RateLimit-Limit": String(SCIM_REQUESTS_PER_HOUR),
+            "X-RateLimit-Remaining": "0",
+          });
+        }
+        await c.env.STATE.put(key, String(count + 1), {
+          expirationTtl: SCIM_WINDOW_SECONDS * 2,
+        });
+        c.header("X-RateLimit-Limit", String(SCIM_REQUESTS_PER_HOUR));
+        c.header("X-RateLimit-Remaining", String(SCIM_REQUESTS_PER_HOUR - count - 1));
+        c.header("X-RateLimit-Reset", String(resetSeconds));
+      } catch (err) {
+        // KV unavailable — allow the request, matching the global limiter.
+        logger.warn("SCIM rate limit check failed - allowing request", {
+          error: err instanceof Error ? err.message : String(err),
+          path: c.req.path,
+        });
+      }
+
       await next();
       return;
     }

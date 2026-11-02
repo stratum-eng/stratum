@@ -32,6 +32,18 @@ For programmatic access:
   endpoints (token management) refuse agent and scoped tokens alike — the one
   exception is `rotate-token`, [below](#the-legacy-token). Revoke one by
   deleting the agent (settings UI, or `DELETE /api/agents/{id}`).
+- **SCIM tokens**: `stratum_scim_xxxxx` — per-SSO-connection bearer accepted
+  only by the SCIM endpoints under `/scim/v2` (which accept no other
+  credential). Rotated by an org admin via
+  `POST /api/orgs/{slug}/sso/scim-token`; the plaintext is returned exactly
+  once.
+
+An account deactivated through SCIM is **disabled**, reversibly: every
+credential it holds — user tokens, agent tokens, OAuth grants, the session
+cookie, and git over HTTPS — is refused with `401` until the identity provider
+reactivates it. Reactivation restores the account's tokens, agents, and OAuth
+grants as they were, but deactivation deleted its browser sessions, so the user
+signs in again.
 
 ```bash
 curl -H "Authorization: Bearer stratum_user_xxxxx" \
@@ -79,8 +91,8 @@ scopes.
 
 `GET|POST /api/users/me/tokens`, `DELETE /api/users/me/tokens/{id}` and
 `POST /api/users/me/legacy-token/disable` accept the `stratum_session` cookie
-**only** — the cookie every web sign-in sets (magic link, GitHub, or Google
-OAuth). An API token calling them gets `403 SESSION_REQUIRED`, whatever its
+**only** — the cookie every web sign-in sets (magic link, GitHub or Google
+OAuth, or organization SSO at `/auth/sso`). An API token calling them gets `403 SESSION_REQUIRED`, whatever its
 scope. A token that could mint tokens, revoke its siblings, or turn off the
 legacy credential would make revocation meaningless — a lost machine would
 simply issue itself a replacement.

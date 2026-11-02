@@ -22,8 +22,14 @@ vi.mock("../src/storage/agents", () => ({
   getAgentByToken: vi.fn(),
 }));
 
+vi.mock("../src/storage/sessions", () => ({
+  getSession: vi.fn(),
+  deleteSession: vi.fn(),
+}));
+
 import { getAgentByToken } from "../src/storage/agents";
-import { getUserByToken } from "../src/storage/users";
+import { deleteSession, getSession } from "../src/storage/sessions";
+import { getUser, getUserByToken } from "../src/storage/users";
 
 function makeApp() {
   const app = new Hono<{ Bindings: Env }>();
@@ -153,5 +159,80 @@ describe("authMiddleware", () => {
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("Invalid token");
+  });
+});
+
+// disabled_at is reversible (unlike deleting_at): every path must reject while
+// it is set, and the SAME credential must work again once it is cleared.
+describe("authMiddleware — disabled_at enforcement", () => {
+  let app: ReturnType<typeof makeApp>;
+  let env: Env;
+
+  const liveUser = {
+    id: "usr_abc",
+    email: "test@example.com",
+    username: "test",
+    tokenHash: "hash",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  const disabledUser = { ...liveUser, disabledAt: "2026-08-01T00:00:00.000Z" };
+  const agent = {
+    id: "agt_xyz",
+    name: "my-agent",
+    ownerId: "usr_abc",
+    tokenHash: "hash",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  const session = { id: "sess_1", userId: "usr_abc", expiresAt: "2099-01-01T00:00:00.000Z" };
+
+  beforeEach(() => {
+    app = makeApp();
+    env = makeEnv();
+    vi.clearAllMocks();
+  });
+
+  it("rejects a disabled user's token with 401, then the SAME token works after re-enable", async () => {
+    const req = () => request("/test", { Authorization: "Bearer stratum_user_abc123" });
+
+    vi.mocked(getUserByToken).mockResolvedValueOnce({ success: true, data: disabledUser });
+    const denied = await app.fetch(req(), env);
+    expect(denied.status).toBe(401);
+    expect(((await denied.json()) as { error: string }).error).toBe("Invalid token");
+
+    vi.mocked(getUserByToken).mockResolvedValueOnce({ success: true, data: liveUser });
+    const allowed = await app.fetch(req(), env);
+    expect(allowed.status).toBe(200);
+    expect(((await allowed.json()) as { userId: string | null }).userId).toBe("usr_abc");
+  });
+
+  it("rejects an agent whose OWNER is disabled with 401, then the SAME token works after re-enable", async () => {
+    const req = () => request("/test", { Authorization: "Bearer stratum_agent_xyz123" });
+    vi.mocked(getAgentByToken).mockResolvedValue({ success: true, data: agent });
+
+    vi.mocked(getUser).mockResolvedValueOnce({ success: true, data: disabledUser });
+    const denied = await app.fetch(req(), env);
+    expect(denied.status).toBe(401);
+
+    vi.mocked(getUser).mockResolvedValueOnce({ success: true, data: liveUser });
+    const allowed = await app.fetch(req(), env);
+    expect(allowed.status).toBe(200);
+    expect(((await allowed.json()) as { agentId: string | null }).agentId).toBe("agt_xyz");
+  });
+
+  it("rejects a disabled user's session with 401 (session kept), then the SAME cookie works after re-enable", async () => {
+    const req = () => request("/test", { Cookie: "stratum_session=sess_1" });
+    vi.mocked(getSession).mockResolvedValue({ success: true, data: session });
+
+    vi.mocked(getUser).mockResolvedValueOnce({ success: true, data: disabledUser });
+    const denied = await app.fetch(req(), env);
+    expect(denied.status).toBe(401);
+    // Disable is reversible: the session row must survive so re-enabling
+    // restores access without a fresh login.
+    expect(deleteSession).not.toHaveBeenCalled();
+
+    vi.mocked(getUser).mockResolvedValueOnce({ success: true, data: liveUser });
+    const allowed = await app.fetch(req(), env);
+    expect(allowed.status).toBe(200);
+    expect(((await allowed.json()) as { userId: string | null }).userId).toBe("usr_abc");
   });
 });
