@@ -98,14 +98,10 @@ async function countNewPrivateProjects(
   username: string,
 ): Promise<number> {
   const own = getUserNamespace(username);
-  const seen = new Set<string>();
   let count = 0;
   for (const [index, request] of repos.entries()) {
     const { namespace, slug, visibility } = importTarget(request, username, index);
     if (visibility !== "private" || namespace !== own || !isValidSlug(slug)) continue;
-    // Two entries for the same slug make one project.
-    if (seen.has(slug)) continue;
-    seen.add(slug);
     const existing = await getProjectByPath(env.STATE, namespace, slug, logger);
     if (!existing.success) count++;
   }
@@ -380,6 +376,16 @@ app.post("/", async (c) => {
     )
   ) {
     return badRequest("visibility must be 'private' or 'public'");
+  }
+
+  // Two entries for one path would run two imports into one project — two
+  // import jobs, two repository writes — and the gauge counts it once.
+  const targets = new Set<string>();
+  for (const [index, repo] of body.repos.entries()) {
+    const { namespace, slug } = importTarget(repo, username, index);
+    const key = `${namespace}/${slug}`;
+    if (targets.has(key)) return badRequest(`Duplicate import target: ${key}`);
+    targets.add(key);
   }
 
   const userNamespace = getUserNamespace(username);

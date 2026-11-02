@@ -1183,6 +1183,21 @@ describe("the private project gauge through the import routes", () => {
     expect(raw.prepare("SELECT COUNT(*) AS n FROM import_jobs").get()).toEqual({ n: 0 });
   });
 
+  it("refuses a bulk import with two entries for the same project", async () => {
+    const userId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 5 } }));
+
+    const response = await authed(userId, "alice")("/bulk-import", {
+      repos: [
+        { url: "https://github.com/octo/a", slug: "same", branch: "main" },
+        { url: "https://github.com/octo/b", slug: "same", branch: "main" },
+      ],
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("Duplicate import target");
+  });
+
   it("does not charge a bulk import for public repos or projects that already exist", async () => {
     const userId = createUser(nextUserId());
     cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
