@@ -47,8 +47,13 @@ under [Deployments](#deployments).
       (#253; config via `/api/orgs/:slug/sso`, sign-in at `/auth/sso`). Still open: an SSO
       enforcement toggle (magic-link still works for corporate emails), SAML (if a customer
       requires it), SCIM Groups, and a management UI.
-- [ ] **Multi-tenancy and billing** — tenant isolation, usage metering, billing. Per-change
-      cost tracking already exists and provides the metering foundation.
+- [ ] **Multi-tenancy and billing** — usage metering, entitlements and enforcement have
+      shipped: attributed cost records, an owner-scoped `usage_periods` aggregate, a
+      `UsageMeter` Durable Object, an inert-by-default entitlements seam, observe-only
+      enforcement, BYOK for the `llm` evaluator, and per-account usage visibility. What
+      remains is the paid half — plan definitions and checkout live outside this repository
+      — plus org/seat billing, retention and storage limits, and a per-user cap on org
+      creation.
 - [ ] **Monitoring dashboard UI** — a UI over the existing `/api/admin/metrics` (queue
       depth, evaluation latency, error rates, event outbox lag).
 - [x] **Backup strategy for D1 and Artifacts** — daily and on-demand backups to R2 with a

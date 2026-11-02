@@ -1,6 +1,12 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import {
+  type EnforcementSubject,
+  checkGauge,
+  resolveEnforcementSubject,
+} from "../billing/enforcement";
+import { entitlementsEnabled } from "../billing/entitlements";
+import {
   importRateLimitMiddleware,
   rateLimitMiddleware,
   releaseImportLock,
@@ -11,6 +17,7 @@ import { recordAudit } from "../storage/audit";
 import { captureDeletionTarget, isTargetDeleting } from "../storage/deletion";
 import { createDeletionJob } from "../storage/deletion-jobs";
 import { listProjectEvents } from "../storage/events";
+import { countGaugeCharges, recordGaugeCharge } from "../storage/gauge-index";
 import {
   createBranchRef,
   deleteBranchRef,
@@ -59,12 +66,14 @@ import {
 import type { ArtifactsCreateResult, Env, ImportStatus, ProjectEntry } from "../types";
 import { getArtifactsRepoName, getUserNamespace, projectDefaultBranch } from "../types";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
+import { NEW_PROJECT_ERROR_PRIVATE_LIMIT } from "../ui/pages/new-project";
 import {
   canReadProject,
   canWriteProject,
   filterReadableProjects,
   isDirectOwner,
 } from "../utils/authz";
+import { getWaitUntil } from "../utils/execution-ctx";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
@@ -115,6 +124,94 @@ function parseGitHubRepo(url: string): { owner: string; repo: string } | null {
 // Helper to generate project ID
 function generateProjectId(): string {
   return crypto.randomUUID();
+}
+
+/**
+ * The most charged projects outside the personal namespace that one private
+ * creation will verify. Every indexed entry was written by the subject's own
+ * creation, so reaching this is self-inflicted — and a plan with a finite limit
+ * this large is not one this gauge exists for.
+ */
+export const MAX_GAUGE_CHARGES = 100;
+
+/**
+ * What counting a subject's private projects produced. `complete: false` means
+ * `count` is a lower bound — a read faulted, or verification stopped at
+ * {@link MAX_GAUGE_CHARGES} — and never that it could be above the truth.
+ */
+export interface GaugeCount {
+  count: number;
+  complete: boolean;
+}
+
+/**
+ * Count the private projects already charged to `subject`'s gauge.
+ *
+ * - **A pooled org** counts the private projects it owns, in its own namespace.
+ * - **A user** counts their personal namespace (owned by them or charged to
+ *   them) plus the `gauge-charge` index of projects they were charged for
+ *   elsewhere — in an org that does not pool.
+ *
+ * **Nothing a third party controls is read.** Org membership is granted by the
+ * org, not the member, so this never walks the orgs a user belongs to: being
+ * added to a hundred orgs costs them nothing and cannot refuse them. The index
+ * only grows by the subject's own creations (`src/storage/gauge-index.ts`).
+ *
+ * **Two failure directions, deliberately different.**
+ * A read that *faults* fails OPEN, per the PRD's billing rule
+ * (docs/research/monetization-and-byok.md, "Fail direction"): an outage of the
+ * billing machinery must not block a customer's work. Only what could not be
+ * read is dropped — the rest is a lower bound, and a lower bound already over
+ * the limit refuses, because that is an answer, not a fault.
+ * Past {@link MAX_GAUGE_CHARGES} verification stops: the verified charges are
+ * added on top of the personal count, so the floor is never below anything
+ * already counted, and the work per creation stays bounded. Reaching it takes
+ * the subject's own creations, so no one else can move it.
+ */
+async function countGaugedPrivateProjects(
+  env: Env,
+  logger: Logger,
+  opts: { subject: EnforcementSubject; personalNamespace: string; targetNamespace: string },
+): Promise<GaugeCount> {
+  const { subject, personalNamespace, targetNamespace } = opts;
+  const counts = (entry: ProjectEntry): boolean =>
+    entry.visibility === "private" &&
+    (entry.ownerId === subject.ownerId || entry.gaugeSubjectId === subject.ownerId);
+
+  const home = subject.ownerType === "org" ? targetNamespace : personalNamespace;
+  let complete = true;
+  let count = 0;
+  const listed = await listProjectsByNamespace(env.STATE, home, logger);
+  if (listed.success) {
+    count += listed.data.filter(counts).length;
+  } else {
+    complete = false;
+    logger.warn("Private project gauge: namespace unreadable; count is a lower bound", {
+      subjectId: subject.ownerId,
+      namespace: home,
+    });
+  }
+
+  if (subject.ownerType === "user") {
+    const charged = await countGaugeCharges(env.STATE, logger, {
+      subjectId: subject.ownerId,
+      excludeNamespace: personalNamespace,
+      max: MAX_GAUGE_CHARGES,
+    });
+    if (charged.success) {
+      // On overflow `charged.data.count` is MAX_GAUGE_CHARGES verified entries,
+      // so personal + that is a true floor, not a substitute for the personal
+      // count.
+      count += charged.data.count;
+      if (charged.data.overflow) complete = false;
+    } else {
+      complete = false;
+      logger.warn("Private project gauge: charge index unreadable; count is a lower bound", {
+        subjectId: subject.ownerId,
+      });
+    }
+  }
+  return { count, complete };
 }
 
 // POST /projects - Create a new project
@@ -179,6 +276,58 @@ app.post("/", async (c) => {
       return badRequest("visibility must be 'private' or 'public'");
     }
     visibility = body.visibility;
+  }
+
+  // The private-project gauge (PRD §8): a thing that exists rather than a thing
+  // that is spent, so it is counted on demand and there is nothing to reserve.
+  //
+  // **The counted set and the limit belong to the same subject**, which is the
+  // only reading that is not a hole in one direction or the other. Counting the
+  // TARGET namespace against the ACTOR's limit — what this did first — meant an
+  // actor at their limit created a free org and got a count of zero, the "ten
+  // orgs" reset §4a closes everywhere else; and the inverse bit just as hard,
+  // since being added to a busy org exhausted your personal gauge against
+  // projects you do not own. A project created into an org that does not pool
+  // is charged to the actor but OWNED by the org, so counting by owner alone let
+  // an actor create private projects there without limit. Each new entry
+  // therefore records the subject it was charged to (`gaugeSubjectId`); see
+  // `countGaugedPrivateProjects` for the counted set.
+  //
+  // Gated on `entitlementsEnabled` FIRST: the listing is a KV list of a whole
+  // namespace, and a self-hoster must not pay for it to feed a check that
+  // `checkGauge` would return `inert()` from anyway.
+  let gaugeSubjectId: string | undefined;
+  if (visibility === "private" && entitlementsEnabled(c.env)) {
+    const gaugeSubject = await resolveEnforcementSubject(c.env, logger, {
+      actorUserId: userId,
+      owner: { ownerId: owner.id, ownerType: owner.type },
+      waitUntil: getWaitUntil(c),
+    });
+    gaugeSubjectId = gaugeSubject?.ownerId;
+    if (gaugeSubject) {
+      const counted = await countGaugedPrivateProjects(c.env, logger, {
+        subject: gaugeSubject,
+        personalNamespace: getUserNamespace(username),
+        targetNamespace: namespace,
+      });
+      // A lower bound is passed as-is: it refuses exactly the limits it already
+      // meets, and an unlimited plan or observe-only behaves as usual.
+      const decision = await checkGauge(c.env, logger, {
+        subject: gaugeSubject,
+        count: "private_projects",
+        current: counted.count,
+        what: "Creating another private project",
+      });
+      if (!decision.admitted) {
+        // A browser submitting the new-project form must land back on the
+        // form, not on a raw JSON 403. The redirect carries a fixed code,
+        // never the reason text, so the query string cannot inject copy.
+        if (!contentType.includes("application/json")) {
+          return c.redirect(`/new?error=${NEW_PROJECT_ERROR_PRIVATE_LIMIT}`, 303);
+        }
+        return forbidden(decision.reason ?? "Private project limit reached");
+      }
+    }
   }
 
   const seed = body.seed === "true" || body.seed === true || c.req.query("seed") === "true";
@@ -258,6 +407,7 @@ app.post("/", async (c) => {
     remote: repo.remote,
     createdAt: new Date().toISOString(),
     visibility,
+    ...(gaugeSubjectId !== undefined ? { gaugeSubjectId } : {}),
   };
 
   // The claim goes into D1 before the KV entry so a username change cannot
@@ -265,6 +415,22 @@ app.post("/", async (c) => {
   if (owner.type === "user") {
     const claimed = await claimNamespace(c.env.DB, { ownerId: owner.id, namespace, slug }, logger);
     if (!claimed.success) return appError(claimed.error);
+  }
+
+  // Charged to the actor but stored under an org: index it under the actor so
+  // the gauge can find it without walking their memberships. Written BEFORE the
+  // project entry and fatal on failure, so a project charged to someone can
+  // never exist without its index entry — a missing entry would be a silent,
+  // repeatable under-count. The reverse order is harmless: an entry whose
+  // project never lands is pruned as NOT_FOUND on the next count.
+  if (owner.type === "org" && gaugeSubjectId !== undefined && gaugeSubjectId !== owner.id) {
+    const indexed = await recordGaugeCharge(c.env.STATE, logger, {
+      subjectId: gaugeSubjectId,
+      namespace,
+      slug,
+      projectId,
+    });
+    if (!indexed.success) return internalError("Failed to record the private project charge");
   }
 
   const setResult = await setProject(c.env.STATE, project, logger);

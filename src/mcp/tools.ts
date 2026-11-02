@@ -1,5 +1,5 @@
 /**
- * The eighteen tools the MCP server exposes.
+ * The nineteen tools the MCP server exposes.
  *
  * The full agent contribution loop: read a project, fork a workspace, commit,
  * open an evaluation-gated change, follow it through review to merge, and track
@@ -12,6 +12,16 @@
  * Tool DESCRIPTIONS are the only documentation a model gets, so they state the
  * refusals as well as the capabilities: a model that knows `stratum_review_change`
  * will reject its agent token asks a human instead of retrying nineteen times.
+ *
+ * The billing surface is READ-ONLY and stays that way. `stratum_get_usage`
+ * exists because an agent that can see 12% of its allowance left batches its
+ * changes, moves the project to its own provider key, or stops and asks its
+ * human — where an agent that cannot see it discovers the limit by hitting a
+ * wall. There is deliberately no upgrade, top-up or payment-method tool, and no
+ * `stratum_set_provider_key`: a limit an agent can raise is not a limit, and a
+ * credential must never pass through a model's context window (PRD §4c). Both
+ * refusals are stated in `stratum_get_usage`'s own description so a model reads
+ * them where it would otherwise go looking.
  */
 import type { StratumClient } from "./client";
 import { InvalidArgumentError, parseProjectRef } from "./client";
@@ -114,6 +124,12 @@ export function buildTools(client: StratumClient): ToolDef[] {
       "Identify the authenticated Stratum user. User credentials only — with an agent token this returns a 401; agents should already know who they are.",
       {},
       () => client.me(),
+    ),
+    tool(
+      "stratum_get_usage",
+      'Read this account\'s metered usage against its plan limits for the current billing period: per-meter consumption (LLM tokens, sandbox time, deploys), the limit on each, the rate ceilings, the period, and when it resets. A limit of -1 means unlimited, 0 means the plan forbids that meter outright; when a limit is unlimited there is no percentage to compute. Figures cover platform-billed usage only — spend on a project\'s own provider key (BYOK) is billed by that provider and is never counted against these allowances. `usedSource` says where each `used` figure comes from: "meter" is the live counter a limit is actually compared against, covering work in any namespace; "ledger" means those counters were unavailable and the figures are the usage recorded against this account alone, which excludes work recorded against an organization. An agent token reports its OWNER\'s allowance, because that is the account its evaluations are charged to. Read-only, and the only billing tool there is: nothing here can raise a limit, buy capacity, add a payment method or set a provider key, for the same reason agent tokens cannot submit review verdicts — a spend limit an agent can lift is not a limit. Do not look for one; hand the account owner https://docs.usestratum.dev and let a human do it in a browser.',
+      {},
+      () => client.getUsage(),
     ),
 
     // ── Projects ──────────────────────────────────────────────────────────

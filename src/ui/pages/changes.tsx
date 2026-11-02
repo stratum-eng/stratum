@@ -1,4 +1,5 @@
 import type { FC } from "hono/jsx";
+import type { UsageBannerNotice } from "../../billing/usage-banner";
 import { ProjectHeader } from "../components/project-header";
 import { Layout } from "../layout";
 
@@ -19,6 +20,8 @@ interface ChangesProps {
     createdAt: string;
   }>;
   user?: { id: string; email: string; username: string } | null;
+  /** The 80% warning, when this account has one. See `Layout`. */
+  usageNotice?: UsageBannerNotice | null;
 }
 
 function statusBadgeClass(status: string): string {
@@ -40,9 +43,15 @@ function statusBadgeClass(status: string): string {
   }
 }
 
-export const ChangesPage: FC<ChangesProps> = ({ project, changes, canWrite, user }) => {
+export const ChangesPage: FC<ChangesProps> = ({
+  project,
+  changes,
+  canWrite,
+  user,
+  usageNotice,
+}) => {
   return (
-    <Layout title={`Changes — ${project.name}`} user={user}>
+    <Layout title={`Changes — ${project.name}`} user={user} usageNotice={usageNotice}>
       <ProjectHeader project={project} active="changes" canWrite={canWrite ?? false} />
 
       {changes.length === 0 ? (

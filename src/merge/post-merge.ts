@@ -2,7 +2,7 @@ import { materializeTree } from "../evaluation/sandbox-evaluator";
 import type { EvalPolicy } from "../evaluation/types";
 import { emitEvent } from "../queue/events";
 import { updateChangeStatus } from "../storage/changes";
-import { recordCosts } from "../storage/costs";
+import { recordCosts, resolveBillingSubject } from "../storage/costs";
 import { freshRepoToken, getCommitParent, readRepoFiles, revertToCommit } from "../storage/git-ops";
 import type { Env, ProjectEntry } from "../types";
 import { projectDefaultBranch } from "../types";
@@ -85,12 +85,26 @@ export async function runPostMergeCheck(
       const run = await sandbox.run(command, {
         timeout: merge?.postMergeTimeoutMs ?? DEFAULT_POST_MERGE_TIMEOUT_MS,
       });
+      // Measured before the billing-subject read, so D1 latency is not billed
+      // as sandbox time.
+      const sandboxMs = Date.now() - runStartedAt;
+      const subject = await resolveBillingSubject(env.DB, logger, project);
       await recordCosts(
         env.DB,
         logger,
-        { project: project.name, projectId: project.id, changeId: opts.changeId },
+        {
+          project: project.name,
+          projectId: project.id,
+          changeId: opts.changeId,
+          ...(subject ?? {}),
+          // No `waitUntil`: this runs in the merge queue consumer, with no
+          // request to hang background work off, so delivery is best-effort
+          // inline (PRD §8). No actor either — a queue message names no user,
+          // so the check falls back to the recorded subject.
+          notify: { env },
+        },
         [
-          { kind: "sandbox_ms", quantity: Date.now() - runStartedAt },
+          { kind: "sandbox_ms", quantity: sandboxMs },
           { kind: "git_ops", quantity: 1 },
         ],
       );

@@ -155,6 +155,44 @@ and then fails at load. If your build genuinely needs lifecycle scripts
 Re-evaluating runs under the current defaults, and the default install timeout
 dropped from 120s to 90s. Re-check against `totalBudgetMs` above.
 
+### The `llm` gate fails with a reason about a provider
+
+These are all the same shape: the gate **ran and failed**, rather than being
+skipped, and the reason names its own cause. That is deliberate — a policy that
+requires AI review must not stop requiring it because the configuration is
+wrong, so none of these fall back to the operator's model.
+
+- **`provider "x" is not configured`** — `.stratum/policy.yaml` names a provider
+  this instance's operator has not put in `LLM_PROVIDERS`. Self-hosting, add it;
+  on someone else's instance, ask them which names they offer, or drop
+  `provider:` to use the instance's own binding.
+- **A missing or undecryptable key** — the project has no stored credential for
+  that provider, or the instance has no `DEPLOY_SECRET_KEY`. Re-enter the key in
+  the project's secret settings.
+- **After a `DEPLOY_SECRET_KEY` rotation** — rotating that key makes every stored
+  project secret undecryptable, deploy secrets and provider keys alike, so BYOK
+  projects block until each re-enters its key. This is the documented cost of a
+  rotation, not a fault.
+- **A redirect from the provider** — a 3xx is refused rather than followed,
+  because the allowlist validates the host a request is *sent* to and a redirect
+  would move the prompt and your API key somewhere unvalidated. Check the
+  `baseUrl` the operator configured; it usually means a missing `/v1`.
+- **Two `llm` entries** — a policy declaring the evaluator twice is refused
+  outright rather than one being picked. Keep one.
+
+### `... allowance is used up` or an evaluation rate limit
+
+Only reachable on an instance whose operator has configured a billing service
+**and** switched enforcement on. The reason names what ran out, when it resets,
+and both ways forward: bring your own provider key, or raise the plan. Your own
+key lifts the **token** allowance only. The hourly evaluation ceiling still
+applies whichever account owns the model key, because what it bounds is
+evaluation and Worker capacity on the instance rather than model spend.
+
+Check `/settings/usage` (or `GET /api/users/me/usage`, or `stratum_get_usage`
+over MCP) for what is left and when the period rolls over. Self-hosted, none of
+this is reachable: every allowance reads as unlimited and nothing is refused.
+
 ## Merging
 
 ### `STALE_BASE` / `STALE_WORKSPACE` / `WORKSPACE_UNVERIFIABLE`

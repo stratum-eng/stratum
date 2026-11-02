@@ -54,6 +54,9 @@ function makeStorage(): FakeDurableObjectStorage {
       values.set(key, structuredClone(value));
     },
     delete: async (key: string) => values.delete(key),
+    // Clears the alarm too, matching workerd: `delete_all_deletes_alarm` is
+    // the default from compatibility date 2026-02-24 and this Worker is on
+    // 2026-04-29, so one `deleteAll` empties an object's storage entirely.
     deleteAll: async () => {
       values.clear();
       alarm = null;

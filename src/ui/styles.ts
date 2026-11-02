@@ -1098,4 +1098,29 @@ input[type="checkbox"] { width: 1.15rem; height: 1.15rem; accent-color: var(--ac
 .site-footer a { color: var(--text-muted); }
 .site-footer a:hover { color: var(--accent-text); }
 .site-footer-sep { color: var(--text-faint); }
+
+/* Usage: the 80% banner in the shared chrome, and the /settings/usage page.
+   No dismiss control and no script — the banner is markup the layout either
+   renders or does not. */
+.usage-banner {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 0.5rem 1rem; margin-bottom: 1.5rem; padding: 0.75rem 1rem;
+  background: var(--warning-surface); border: 1px solid var(--warning-text);
+  border-radius: 6px; color: var(--warning-text); font-size: 0.85rem;
+}
+.usage-banner a { color: var(--warning-text); text-decoration: underline; white-space: nowrap; }
+
+.usage-meter { padding: 0.85rem 0; border-bottom: 1px solid var(--divider); }
+.usage-meter:first-of-type { padding-top: 0; }
+.usage-meter:last-child { border-bottom: none; padding-bottom: 0; }
+.usage-meter-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+  gap: 0.25rem 1rem; margin-bottom: 0.5rem;
+}
+.usage-meter-name { font-weight: 600; color: var(--text-primary); }
+.usage-meter-figure { font-size: 0.85rem; color: var(--text-body); }
+/* Words, not an empty bar: an unlimited meter has no fraction to draw. */
+.usage-unlimited { color: var(--success-text); }
+.usage-blocked { color: var(--error-text); }
+.usage-meter .progress-bar { margin-bottom: 0.5rem; }
 `;

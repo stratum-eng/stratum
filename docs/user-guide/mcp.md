@@ -158,7 +158,7 @@ vetted by anyone. A name you do not recognise should be disconnected.
 
 ## The tools
 
-Eighteen tools cover the full contribution loop. Project arguments take a
+Nineteen tools cover the full contribution loop. Project arguments take a
 `namespace/slug` reference (`@acme/api` and `acme/api` both work).
 
 **Identity and reading**
@@ -166,6 +166,7 @@ Eighteen tools cover the full contribution loop. Project arguments take a
 | Tool | What it does |
 |---|---|
 | `stratum_whoami` | Identify the authenticated **user** (calls `GET /api/users/me`, which refuses agent tokens). |
+| `stratum_get_usage` | This account's metered usage against its plan limits for the current period — per-meter consumption, the limit on each, the rate ceilings, and when the period resets. An agent token reports its **owner's** allowance, because that is the account its evaluations are charged to. |
 | `stratum_list_projects` | List projects in the caller's **own namespace** — org-namespace projects are not included, and an agent token gets an empty list. |
 | `stratum_get_project` | Project metadata — id, namespace, visibility, git remote. |
 | `stratum_list_files` | File paths at the HEAD of the default branch. |
@@ -211,6 +212,14 @@ anyway.
 | `stratum_list_issues` | List issues, optionally by status. |
 | `stratum_update_issue` | Update status, title, or body by issue number. |
 
+**The billing surface is read-only, and stays that way.** `stratum_get_usage` is
+the only tool that touches it: there is no tool to raise a limit, buy capacity,
+attach a payment method, or store a provider key. A spend limit an agent can
+lift is not a limit — the same line that keeps agent tokens from submitting
+review verdicts — and a provider credential must never pass through a model's
+context window. Those actions live in the web UI, where a human consents to them
+in a browser.
+
 ## What an agent token can — and cannot — do
 
 The server accepts either token kind, but the API behind it does not treat
@@ -218,9 +227,10 @@ them alike. With an **agent token**:
 
 - **Works:** the project reading tools (`get_project`, `list_files`,
   `get_file`, `get_activity`), `stratum_create_workspace`, `stratum_commit`,
-  `stratum_create_change`, `stratum_create_issue`, and `stratum_list_issues` —
-  an agent can do everything up to and including proposing a gated change and
-  opening issues about its work. Address projects by `namespace/slug`
+  `stratum_create_change`, `stratum_create_issue`, `stratum_list_issues`, and
+  `stratum_get_usage` (which reports the **owner's** allowance) — an agent can
+  do everything up to and including proposing a gated change and opening
+  issues about its work. Address projects by `namespace/slug`
   directly: `stratum_list_projects` returns an **empty list** on an agent
   token rather than the owner's projects, and `stratum_whoami` returns a 401.
 - **Always refused:** `stratum_merge_change`, `stratum_reject_change`,

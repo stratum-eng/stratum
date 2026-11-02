@@ -21,7 +21,7 @@ import type { EvalPolicy } from "../src/evaluation/types";
 import { buildEvaluators } from "../src/services/change-flow";
 import { type NodeFS, readTreeAtCommit } from "../src/storage/git-ops";
 import { MemoryFS } from "../src/storage/memory-fs";
-import type { Env, SandboxBinding, SandboxInstance } from "../src/types";
+import type { Env, ProjectEntry, SandboxBinding, SandboxInstance } from "../src/types";
 import { AppError } from "../src/utils/errors";
 import type { Logger } from "../src/utils/logger";
 import { err, ok } from "../src/utils/result";
@@ -786,8 +786,18 @@ describe("SandboxEvaluator — reason field", () => {
 
 describe("buildEvaluators — sandbox wiring", () => {
   const sandboxPolicy: EvalPolicy = { evaluators: [{ type: "sandbox" }] };
+  const project: ProjectEntry = {
+    id: "proj_sandbox",
+    name: "proj",
+    slug: "proj",
+    namespace: "@alice",
+    ownerId: "user_alice",
+    ownerType: "user",
+    remote: "https://artifacts.example.com/repos/proj",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
 
-  function findSandbox(evaluators: ReturnType<typeof buildEvaluators>) {
+  function findSandbox(evaluators: Awaited<ReturnType<typeof buildEvaluators>>) {
     const entry = evaluators.find((e) => e.type === "sandbox");
     expect(entry).toBeDefined();
     // biome-ignore lint/style/noNonNullAssertion: asserted above
@@ -795,7 +805,7 @@ describe("buildEvaluators — sandbox wiring", () => {
   }
 
   it("no SANDBOX binding → fails closed with an actionable wrangler.toml reason", async () => {
-    const evaluators = buildEvaluators({} as Env, sandboxPolicy, "proj", mockLogger, repo);
+    const evaluators = await buildEvaluators({} as Env, sandboxPolicy, project, mockLogger, repo);
     const result = await findSandbox(evaluators).evaluate("", sandboxPolicy, mockLogger);
     expect(result.success).toBe(true);
     if (!result.success) return;
@@ -807,10 +817,10 @@ describe("buildEvaluators — sandbox wiring", () => {
 
   it("SANDBOX binding without workspace repo access → fails closed", async () => {
     const { binding } = makeMockSandbox({ exitCode: 0 });
-    const evaluators = buildEvaluators(
+    const evaluators = await buildEvaluators(
       { SANDBOX: binding } as Env,
       sandboxPolicy,
-      "proj",
+      project,
       mockLogger,
     );
     const result = await findSandbox(evaluators).evaluate("", sandboxPolicy, mockLogger);
@@ -821,12 +831,12 @@ describe("buildEvaluators — sandbox wiring", () => {
     expect(binding.create).not.toHaveBeenCalled();
   });
 
-  it("SANDBOX binding + workspace repo access → a real SandboxEvaluator", () => {
+  it("SANDBOX binding + workspace repo access → a real SandboxEvaluator", async () => {
     const { binding } = makeMockSandbox({ exitCode: 0 });
-    const evaluators = buildEvaluators(
+    const evaluators = await buildEvaluators(
       { SANDBOX: binding } as Env,
       sandboxPolicy,
-      "proj",
+      project,
       mockLogger,
       repo,
     );

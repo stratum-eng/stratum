@@ -413,6 +413,38 @@ describe("'skipped' means only that nothing was configured", () => {
   });
 });
 
+describe("cost attribution", () => {
+  it("bills the tree read to the project's owner", async () => {
+    // `readTree` records a git op whether or not the read succeeds, so the
+    // attribution has to be on it either way — this is a metered path that
+    // never goes near an evaluator.
+    await run(MERGE_MESSAGE, { readFiles: readsTree(tree(null)) });
+
+    const costs = raw
+      .prepare("SELECT owner_id, owner_type, source, kind, change_id FROM cost_records")
+      .all() as unknown as Array<Record<string, unknown>>;
+    expect(costs).toHaveLength(1);
+    expect(costs[0]).toMatchObject({
+      kind: "git_ops",
+      // PROJECT is org-owned: the org is the payer, not the user who merged.
+      owner_id: "usr_alice",
+      owner_type: "org",
+      source: "platform",
+      change_id: CHANGE_ID,
+    });
+  });
+
+  it("still records the read when the tree could not be read", async () => {
+    await run(MERGE_MESSAGE, { readFiles: unreadableTree });
+
+    const costs = raw.prepare("SELECT owner_id FROM cost_records").all() as unknown as Array<{
+      owner_id: string | null;
+    }>;
+    expect(costs).toHaveLength(1);
+    expect(costs[0]?.owner_id).toBe("usr_alice");
+  });
+});
+
 describe("tenant scoping", () => {
   it("fails closed when the message carries no projectId", async () => {
     const readFiles = readsTree(tree());

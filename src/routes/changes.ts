@@ -1,5 +1,6 @@
 import { type Context, Hono } from "hono";
 import { diffTouchesProtectedConfig, loadPolicy } from "../evaluation";
+import { llmProviderCatalog } from "../evaluation/llm-providers";
 import type { EvalPolicy } from "../evaluation/types";
 import { GitHubClient } from "../github/client";
 import { buildEvaluationReport, reportEvaluationToGitHub } from "../github/sync";
@@ -9,6 +10,7 @@ import { enqueueMergeDeploy } from "../queue/deploy-queue";
 import { emitEvent } from "../queue/events";
 import type { MergeOutcome } from "../queue/merge-queue";
 import {
+  billingContextFor,
   buildEvaluators,
   createChangeWithEvaluation,
   resolveProjectHead,
@@ -24,7 +26,12 @@ import {
   mergeTransitionOpts,
   updateChangeStatus,
 } from "../storage/changes";
-import { type CostSample, getChangeCostSummary, recordCosts } from "../storage/costs";
+import {
+  type CostSample,
+  getChangeCostSummary,
+  recordCosts,
+  resolveBillingSubject,
+} from "../storage/costs";
 import { isTargetDeleting } from "../storage/deletion";
 import { listEvalRuns, recordEvalRuns } from "../storage/eval-runs";
 import {
@@ -129,6 +136,7 @@ async function loadMergePolicyCached(
         tok.data,
         logger,
         projectDefaultBranch(project),
+        llmProviderCatalog(env, logger),
       );
       if (cacheable) {
         policyCache.set(project.id, { policy: loaded, expires: Date.now() + POLICY_CACHE_TTL_MS });
@@ -800,6 +808,7 @@ app.post("/changes/:id/merge", async (c) => {
     });
   }
 
+  const mergeSubject = await resolveBillingSubject(c.env.DB, logger, project);
   await recordCosts(
     c.env.DB,
     logger,
@@ -809,6 +818,9 @@ app.post("/changes/:id/merge", async (c) => {
       projectId: change.projectId ?? project.id,
       changeId: id,
       workspace: change.workspace,
+      // The project's owner now, not the author of the change: this is the
+      // account the clone and push were spent against.
+      ...(mergeSubject ?? {}),
     },
     [{ kind: "git_ops", quantity: 2 }],
   );
@@ -1373,7 +1385,13 @@ app.post("/changes/:id/evaluate", async (c) => {
   if (!workspaceReadToken.success) return internalError(workspaceReadToken.error.message);
 
   const branch = projectDefaultBranch(project);
-  const policy = await loadPolicy(project.remote, projectReadToken.data, logger, branch);
+  const policy = await loadPolicy(
+    project.remote,
+    projectReadToken.data,
+    logger,
+    branch,
+    llmProviderCatalog(c.env, logger),
+  );
 
   const diffResult = await getDiffBetweenRepos(
     project.remote,
@@ -1397,16 +1415,30 @@ app.post("/changes/:id/evaluate", async (c) => {
     baseOid,
   } = diffResult.data;
 
-  const evaluators = buildEvaluators(c.env, policy, change.project, logger, {
-    remote: workspace.remote,
-    token: workspaceReadToken.data,
-    ref: evaluatedSha,
-  });
+  const evaluators = await buildEvaluators(
+    c.env,
+    policy,
+    project,
+    logger,
+    {
+      remote: workspace.remote,
+      token: workspaceReadToken.data,
+      ref: evaluatedSha,
+    },
+    getWaitUntil(c),
+  );
   // The base this re-evaluation's diff was built against — not `change.baseSha`,
   // which records the base at creation and is exactly the value that has gone
   // stale by the time a change is re-evaluated (#274).
+  // One resolution for both the meters and the ledger below (see
+  // `billingContextFor`): an agent-owned project's payer is a D1 walk, and
+  // resolving it twice would pay for it twice and could name two payers.
+  const evaluateSubject = await resolveBillingSubject(c.env.DB, logger, project);
   const { evalRuns, evalResult } = await runEvaluation(evaluators, diff, policy, logger, {
     baseSha: baseOid,
+    // This route is user-credentialed (agent tokens are rejected above), so the
+    // acting user is the caller — the subject PRD §4a checks a limit against.
+    billing: billingContextFor(evaluateSubject, project.id, userId),
   });
 
   const recordResult = await recordEvalRuns(c.env.DB, logger, id, evalRuns);
@@ -1427,6 +1459,8 @@ app.post("/changes/:id/evaluate", async (c) => {
       projectId: change.projectId ?? project.id,
       changeId: id,
       workspace: change.workspace,
+      ...(evaluateSubject ?? {}),
+      notify: { env: c.env, actorUserId: userId, waitUntil: getWaitUntil(c) },
     },
     evaluateCostSamples,
   );

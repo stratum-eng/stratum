@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
+import { warmEntitlements } from "../billing/entitlements";
 import { isGitHttpPath } from "../routes/git-http";
 import { isOAuthClientEndpoint } from "../routes/mcp-oauth";
 import { getAgentByToken } from "../storage/agents";
@@ -103,6 +104,22 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
   });
 
   c.set("logger", logger);
+
+  /**
+   * Pre-fetch the caller's plan limits for LATER requests (PRD §4).
+   *
+   * Called at every point below where an identity is established, because this
+   * is the only place that knows who is paying before the routes run. It is
+   * inert unless the cloud billing vars are set, never awaited (it schedules on
+   * `waitUntil` and is skipped outright when there is none), and nothing in this
+   * request reads the result — a warm that fails costs a later reader nothing
+   * but a fail-open default.
+   *
+   * An agent warms its OWNER, not itself: agents are not billing subjects.
+   */
+  const warmOwner = (ownerId: string): void => {
+    warmEntitlements(c.env, getWaitUntil(c), { ownerId, ownerType: "user" }, logger);
+  };
 
   // The git smart-HTTP router authenticates over HTTP Basic itself; let it own
   // the challenge instead of rejecting the non-Bearer header here.
@@ -276,6 +293,8 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         else await touch;
       }
 
+      warmOwner(user.id);
+
       logger.debug("Auth success - user", { userId: user.id, username: user.username, scope });
       await next();
       return;
@@ -319,6 +338,8 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
       // choice governs it — otherwise opting out could be defeated by routing
       // traffic through an agent. The owner row is already in hand.
       c.set("telemetryOptOut", ownerResult.data.telemetryOptOut === true);
+      warmOwner(agentResult.data.ownerId);
+
       logger.debug("Auth success - agent", {
         agentId: agentResult.data.id,
         ownerId: agentResult.data.ownerId,
@@ -444,6 +465,8 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
       if (waitUntil) waitUntil(touch);
       else await touch;
 
+      warmOwner(grant.data.user.id);
+
       logger.debug("Auth success - OAuth grant", {
         userId: grant.data.user.id,
         clientId: grant.data.clientId,
@@ -499,6 +522,8 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
           userResult.data.username ||
           (userResult.data.email.split("@")[0] ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
         c.set("username", username);
+        warmOwner(sessionResult.data.userId);
+
         logger.debug("Auth success - session", { userId: sessionResult.data.userId, username });
       }
     } else {

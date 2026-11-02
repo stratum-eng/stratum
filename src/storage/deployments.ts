@@ -618,8 +618,16 @@ export async function claimDeployment(
  * `lease_expires_at` is always cleared: a finished deployment holding a lease
  * would look reclaimable to the next consumer that read it.
  *
+ * `onlyIfUnclaimed` narrows that to rows nobody is running. The paths that
+ * write a terminal status WITHOUT claiming first — a refused guard, an
+ * exhausted allowance, a superseded row — run before `claimDeployment`, so
+ * another delivery of the same message may already hold the lease and be
+ * mid-deploy; `running` is not terminal, so without this they would overwrite
+ * its row and clear its lease, and the deploy would keep going with nothing
+ * left to record it. Callers that own the row through a claim must NOT set it.
+ *
  * @returns `true` when a row was written, `false` when the row was missing,
- *   in another project, or already terminal.
+ *   in another project, already terminal, or (with `onlyIfUnclaimed`) running.
  */
 export async function completeDeployment(
   db: D1Database,
@@ -633,6 +641,8 @@ export async function completeDeployment(
     logTail?: string | null;
     durationMs?: number | null;
     completedAt?: string;
+    /** Refuse a row another delivery has claimed and is running. */
+    onlyIfUnclaimed?: boolean;
   },
 ): Promise<Result<boolean, AppError>> {
   const completedAtResult = resolveTimestamp(opts.completedAt, "completedAt");
@@ -640,11 +650,12 @@ export async function completeDeployment(
   const completedAt = completedAtResult.data;
 
   const terminalList = TERMINAL_DEPLOYMENT_STATUSES.map(() => "?").join(", ");
+  const unclaimed = opts.onlyIfUnclaimed ? " AND status != 'running'" : "";
 
   try {
     const result = await db
       .prepare(
-        `UPDATE deployments SET status = ?, reason = ?, url = ?, log_tail = ?, duration_ms = ?, completed_at = ?, lease_expires_at = NULL WHERE id = ? AND project_id = ? AND status NOT IN (${terminalList})`,
+        `UPDATE deployments SET status = ?, reason = ?, url = ?, log_tail = ?, duration_ms = ?, completed_at = ?, lease_expires_at = NULL WHERE id = ? AND project_id = ? AND status NOT IN (${terminalList})${unclaimed}`,
       )
       .bind(
         opts.status,

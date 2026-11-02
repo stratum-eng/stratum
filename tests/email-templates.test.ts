@@ -1,7 +1,38 @@
 import { describe, expect, it } from "vitest";
-import { getMagicLinkEmail, wrapEmail } from "../src/email/templates";
+import { getMagicLinkEmail, getUsageThresholdEmail, wrapEmail } from "../src/email/templates";
 
 describe("Email Templates", () => {
+  describe("getUsageThresholdEmail", () => {
+    const data = {
+      meter: "llm_tokens_month",
+      used: 800,
+      limit: 1000,
+      percent: 80,
+      period: "2026-09",
+      resetsAt: "2026-10-01T00:00:00.000Z",
+    };
+
+    it("promises a refusal only where refusals actually happen", () => {
+      const binding = getUsageThresholdEmail({ ...data, enforcing: true });
+
+      expect(binding.text).toContain("stop\npassing until it refills");
+      expect(binding.html).toContain("stop passing until it refills");
+    });
+
+    it("says nothing is refused while the account is only being measured", () => {
+      // The mode this copy was written in and did not describe: billing
+      // configured, ENTITLEMENTS_ENFORCE off, nothing refused by anything.
+      const observing = getUsageThresholdEmail({ ...data, enforcing: false });
+
+      expect(observing.text).toContain("Nothing is refused");
+      expect(observing.text).not.toContain("stop\npassing until it refills");
+      expect(observing.html).not.toContain("stop passing until it refills");
+      // Still names both remedies: the mail is a heads-up either way.
+      expect(observing.text).toContain("raise your plan limits");
+      expect(observing.text).toContain("provider:");
+    });
+  });
+
   describe("getMagicLinkEmail", () => {
     it("should generate magic link email with all required fields", () => {
       const result = getMagicLinkEmail({

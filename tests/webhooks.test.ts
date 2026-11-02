@@ -390,6 +390,13 @@ describe("validateWebhookUrl", () => {
     expect(validateWebhookUrl("http://169.254.169.254/latest/meta-data").success).toBe(false);
     expect(validateWebhookUrl("http://[::1]/hook").success).toBe(false);
     expect(validateWebhookUrl("http://[fd00::1]/hook").success).toBe(false);
+    // Webhook delivery and the BYOK provider allowlist share one filter, so the
+    // non-global v6 ranges must be refused on this side too — asserted here
+    // rather than assumed, because these two callers have drifted apart before.
+    expect(validateWebhookUrl("http://[100::1]/hook").success).toBe(false);
+    expect(validateWebhookUrl("http://[2001:2::1]/hook").success).toBe(false);
+    expect(validateWebhookUrl("http://[2002:7f00:1::1]/hook").success).toBe(false);
+    expect(validateWebhookUrl("http://[64:ff9b::7f00:1]/hook").success).toBe(false);
     expect(validateWebhookUrl("http://internal-service/hook").success).toBe(false);
     expect(validateWebhookUrl("http://api.corp.internal/hook").success).toBe(false);
   });
@@ -416,5 +423,8 @@ describe("validateWebhookUrl", () => {
   it("SSRF: still accepts legitimate public IPv4 and hex-word domains", () => {
     expect(validateWebhookUrl("https://8.8.8.8/hook").success).toBe(true);
     expect(validateWebhookUrl("https://beef.cafe/hook").success).toBe(true);
+    // Contains "0x" but is a DNS name, not a hex IP literal.
+    expect(validateWebhookUrl("https://0xdeadbeef.example.com/hook").success).toBe(true);
+    expect(validateWebhookUrl("https://api-0xff.example.net/hook").success).toBe(true);
   });
 });
