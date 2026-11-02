@@ -720,6 +720,68 @@ describe("containment", () => {
   });
 });
 
+describe("a terminal event follows only a terminal write that landed", () => {
+  /** Sorted, because events stamped in the same millisecond have no stable order. */
+  function eventTypes(): string[] {
+    const events = raw.prepare("SELECT type FROM events").all() as unknown as Array<{
+      type: string;
+    }>;
+    return events.map((event) => event.type).sort();
+  }
+
+  /** A provider that, while the deploy is in flight, arranges for `f` to happen first. */
+  function acceptsAfter(f: () => void): DeployFetch {
+    const accepts = vercelAccepts();
+    return vi.fn(async (...args: Parameters<DeployFetch>) => {
+      f();
+      return accepts(...args);
+    });
+  }
+
+  it("emits no terminal event when the terminal write errors", async () => {
+    await storeSecrets({ VERCEL_TOKEN, VERCEL_PROJECT_ID: VERCEL_PROJECT });
+    // Installed after the claim, so only the terminal write is refused.
+    const breaksTheTerminalWrite = acceptsAfter(() => {
+      raw.exec(
+        "CREATE TRIGGER refuse_terminal BEFORE UPDATE OF status ON deployments WHEN NEW.status IN ('succeeded', 'failed') BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END",
+      );
+    });
+
+    await run(MERGE_MESSAGE, { fetch: breaksTheTerminalWrite });
+
+    expect(onlyRow().status).toBe("running");
+    expect(eventTypes()).toEqual(["deployment.requested"]);
+  });
+
+  it("emits no terminal event when the row was already terminal", async () => {
+    await storeSecrets({ VERCEL_TOKEN, VERCEL_PROJECT_ID: VERCEL_PROJECT });
+    // Another owner (a lease reaper, a concurrent delivery) finished the row first.
+    const finishedElsewhere = acceptsAfter(() => {
+      raw
+        .prepare(
+          "UPDATE deployments SET status = 'failed', reason = 'reaped', lease_expires_at = NULL",
+        )
+        .run();
+    });
+
+    await run(MERGE_MESSAGE, { fetch: finishedElsewhere });
+
+    const row = onlyRow();
+    expect(row.status).toBe("failed");
+    expect(row.reason).toBe("reaped");
+    expect(eventTypes()).toEqual(["deployment.requested"]);
+  });
+
+  it("still emits the terminal event when the write lands", async () => {
+    await storeSecrets({ VERCEL_TOKEN, VERCEL_PROJECT_ID: VERCEL_PROJECT });
+
+    await run();
+
+    expect(onlyRow().status).toBe("succeeded");
+    expect(eventTypes()).toEqual(["deployment.requested", "deployment.succeeded"]);
+  });
+});
+
 describe("approval", () => {
   it("creates a pending_approval row and does not run it", async () => {
     await storeSecrets({ VERCEL_TOKEN, VERCEL_PROJECT_ID: VERCEL_PROJECT });
