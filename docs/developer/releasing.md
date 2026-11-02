@@ -37,8 +37,10 @@ npm run release:prepare -- --bump minor       # or major / minor / patch
 
 This folds every `changelog.d/*.md` fragment into `## [Unreleased]`, moves the result
 into a new dated `## [X.Y.Z]` section, opens a fresh empty `Unreleased`, rewrites the
-compare links, bumps `version` in the root `package.json`, and deletes the fragments
-it consumed.
+compare links, bumps `version` in the root `package.json` and the matching root
+versions in `package-lock.json` (top-level `version` and `packages[""].version`), and
+deletes the fragments it consumed. The lockfile edit touches only those two fields; it
+does not re-resolve dependencies or need the network.
 
 The bump comes from the group headings across `Unreleased` and every fragment:
 
@@ -52,8 +54,9 @@ While the major version is `0`, an inferred major is clamped to a minor — per 
 `0.y.z` may break at any time. Reaching `1.0.0` is a deliberate act:
 `npm run release:prepare -- --bump major`.
 
-**2. Open the release PR.** Commit as `chore(release): vX.Y.Z`, get it reviewed and
-merged like any other change. The release PR is the last chance to reword entries —
+**2. Open the release PR.** Commit everything `prepare` changed (`CHANGELOG.md`,
+`package.json`, `package-lock.json`, and the deleted fragments) as
+`chore(release): vX.Y.Z`, get it reviewed and merged like any other change. The release PR is the last chance to reword entries —
 the changelog text *is* the release notes.
 
 **3. Publish.** Run the **Release** workflow (Actions → Release → Run workflow). It
@@ -91,7 +94,7 @@ republished.
 ## Checking the changelog
 
 ```bash
-npm run release:check                # structure + fragment validity + package.json agreement
+npm run release:check                # structure + fragments + package.json/lockfile agreement
 npm run release:notes                # print the newest release's notes
 npm run release:notes -- 0.1.0       # …or a specific version's
 npm run release:latest               # print the newest released version
@@ -100,11 +103,13 @@ npm run release:previous             # print the version below it (empty if none
 
 `release:check` catches exactly the failures this process exists to prevent: a version
 with no link definition, an undated or out-of-order release, a `package.json` that
-has drifted from the changelog, and a malformed `changelog.d/` fragment (no content, a
+has drifted from the changelog, a `package-lock.json` whose root versions have drifted
+from `package.json`, and a malformed `changelog.d/` fragment (no content, a
 `### Group` heading that isn't one of the seven Keep a Changelog groups, or a group
 with no bullets). `tests/changelog.test.ts` runs the same validation against the real
 `CHANGELOG.md` and every real fragment, so `npm test` fails before a malformed one can
-reach the release workflow.
+reach the release workflow. It also checks the real `package-lock.json` against
+`package.json`.
 
 ## Scope
 

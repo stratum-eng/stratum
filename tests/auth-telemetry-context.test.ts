@@ -122,6 +122,7 @@ describe("telemetry preference in the auth context", () => {
         data: {
           user: { ...liveUser, telemetryOptOut: true },
           scope: "read_write",
+          binding: { kind: "unbound" },
           tokenId: "tok_1",
         },
       });
@@ -135,7 +136,7 @@ describe("telemetry preference in the auth context", () => {
     it("reports opted in as false, never undefined", async () => {
       vi.mocked(resolveApiToken).mockResolvedValue({
         success: true,
-        data: { user: liveUser, scope: "read", tokenId: "tok_1" },
+        data: { user: liveUser, scope: "read", binding: { kind: "unbound" }, tokenId: "tok_1" },
       });
 
       expect(await optOutFor(bearer("stratum_user_abc"))).toBe(false);

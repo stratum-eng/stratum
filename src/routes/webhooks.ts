@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import type { StratumEvent } from "../queue/events";
 import { recordAudit } from "../storage/audit";
 import { getProjectByPath } from "../storage/state";
@@ -8,12 +8,18 @@ import {
   getWebhook,
   listDeliveries,
   listWebhooks,
+  regenerateWebhookSecret,
   setWebhookActive,
   webhookBelongsToProject,
 } from "../storage/webhooks";
 import type { Env, ProjectEntry } from "../types";
 import { SOURCE_FOOTER_HTML } from "../ui/components/source-footer";
-import { canWriteProject } from "../utils/authz";
+import {
+  type BindingContext,
+  canWriteProject,
+  credentialBindingFrom,
+  refuseProjectAccess,
+} from "../utils/authz";
 import { escapeHtml } from "../utils/html";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
@@ -70,7 +76,7 @@ async function requireProjectAdmin(
     env: Env;
     get: (key: "userId") => string | undefined;
     req: { param: (key: string) => string };
-  },
+  } & BindingContext,
   logger: Logger,
 ): Promise<ProjectAccess | AccessFailure> {
   const userId = c.get("userId");
@@ -88,8 +94,12 @@ async function requireProjectAdmin(
   const project = projectResult.data;
 
   // Webhook URLs and secrets are sensitive: writers only, even for reads.
-  if (!(await canWriteProject(c.env.DB, project, userId))) {
-    return { response: forbidden("Project access denied") };
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId))) {
+    return {
+      response: refuseProjectAccess(credentialBindingFrom(c), project, () =>
+        notFound("Project", `${namespace}/${slug}`),
+      ),
+    };
   }
 
   return { project };
@@ -116,6 +126,68 @@ function sanitizeEvents(value: unknown): string | null {
   const unknown = entries.filter((entry) => !SUBSCRIBABLE_EVENTS.includes(entry));
   if (unknown.length > 0) return null;
   return entries.join(",");
+}
+
+/**
+ * Every response that carries a plaintext signing secret goes through this.
+ * `no-store` keeps it out of the browser disk cache and any shared cache in
+ * between — `no-cache` would still permit storage, which is the opposite of
+ * what is wanted.
+ *
+ * Set on the Response rather than through `c.header()`, because `created()` /
+ * `ok()` return a bare `Response.json(...)` that never passes through the Hono
+ * context — a context header would silently miss the JSON path.
+ */
+function noStore(res: Response): Response {
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
+
+const COPY_SECRET_SCRIPT = `(function () {
+  var btn = document.getElementById('copy-secret');
+  var secret = document.getElementById('webhook-secret');
+  if (!btn || !secret) return;
+  btn.addEventListener('click', function () {
+    // Clipboard API can be missing (insecure context) or blocked by policy;
+    // fall back to selecting the value so a manual Ctrl/Cmd+C still works.
+    var fallback = function () {
+      var range = document.createRange();
+      range.selectNodeContents(secret);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      btn.textContent = 'Press Ctrl/Cmd+C';
+      setTimeout(function () { btn.textContent = 'Copy'; }, 3000);
+    };
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      fallback();
+      return;
+    }
+    navigator.clipboard.writeText(secret.textContent).then(function () {
+      btn.textContent = 'Copied';
+      setTimeout(function () { btn.textContent = 'Copy'; }, 2000);
+    }, fallback);
+  });
+})();`;
+
+/**
+ * Reveal-once page for a webhook signing secret, used on creation and on
+ * regeneration. The management page redacts the secret, so this is the only
+ * place a form-based user ever sees it: not persisted, not in the URL, with a
+ * copy control and a link back to the management page.
+ */
+function revealSecretPage(
+  c: Context<{ Bindings: Env }>,
+  opts: { heading: string; url: string; secret: string; backUrl: string; status: 200 | 201 },
+): Response {
+  const nonce = c.get("cspNonce") ?? "";
+  const heading = escapeHtml(opts.heading);
+  return noStore(
+    c.html(
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${heading} — Stratum</title><link rel="stylesheet" href="/ui.css"></head><body><main class="main" style="max-width:640px"><div class="card settings-token-reveal"><h3 style="margin-top:0">${heading}</h3><p class="settings-help"><strong>Copy the signing secret now — it will not be shown again.</strong></p><p class="settings-help">Payload URL: <code>${escapeHtml(opts.url)}</code></p><div class="token-reveal-row"><code class="settings-token" id="webhook-secret">${escapeHtml(opts.secret)}</code><button type="button" class="btn btn-small" id="copy-secret">Copy</button></div><p class="settings-help" style="margin-top:0.75rem">Verify each delivery's <code>X-Stratum-Signature</code> (HMAC-SHA256) with this secret.</p><p style="margin-top:1rem"><a href="${escapeHtml(opts.backUrl)}">&larr; Back to webhooks</a></p></div></main>${SOURCE_FOOTER_HTML}<script nonce="${escapeHtml(nonce)}">${COPY_SECRET_SCRIPT}</script></body></html>`,
+      opts.status,
+    ),
+  );
 }
 
 // POST /api/projects/:namespace/:slug/webhooks — Create a webhook
@@ -179,58 +251,16 @@ app.post("/:namespace/:slug/webhooks", async (c) => {
     detail: { project: project.name, url: webhookResult.data.url },
   });
 
-  // Both responses below carry the signing secret: the HTML page renders it and
-  // the JSON body returns it. `no-store` keeps it out of the browser disk cache
-  // and any shared cache in between — `no-cache` would still permit storage,
-  // which is the opposite of what is wanted.
-  //
-  // Set on the Response rather than through `c.header()`, because `created()`
-  // returns a bare `Response.json(...)` that never passes through the Hono
-  // context — a context header would silently miss the JSON path.
-  const noStore = (res: Response): Response => {
-    res.headers.set("Cache-Control", "no-store");
-    return res;
-  };
-
   if (!contentType.includes("application/json")) {
     // The management page redacts the signing secret, so a form-based creator
-    // would otherwise never see it. Show it exactly once here (not persisted,
-    // not in the URL) with a copy control and a link back to the management page.
-    const wh = webhookResult.data;
-    const backUrl = `/${project.namespace}/${project.slug}/webhooks`;
-    const nonce = c.get("cspNonce") ?? "";
-    const copyScript = `(function () {
-  var btn = document.getElementById('copy-secret');
-  var secret = document.getElementById('webhook-secret');
-  if (!btn || !secret) return;
-  btn.addEventListener('click', function () {
-    // Clipboard API can be missing (insecure context) or blocked by policy;
-    // fall back to selecting the value so a manual Ctrl/Cmd+C still works.
-    var fallback = function () {
-      var range = document.createRange();
-      range.selectNodeContents(secret);
-      var sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-      btn.textContent = 'Press Ctrl/Cmd+C';
-      setTimeout(function () { btn.textContent = 'Copy'; }, 3000);
-    };
-    if (!navigator.clipboard || !navigator.clipboard.writeText) {
-      fallback();
-      return;
-    }
-    navigator.clipboard.writeText(secret.textContent).then(function () {
-      btn.textContent = 'Copied';
-      setTimeout(function () { btn.textContent = 'Copy'; }, 2000);
-    }, fallback);
-  });
-})();`;
-    return noStore(
-      c.html(
-        `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Webhook created — Stratum</title><link rel="stylesheet" href="/ui.css"></head><body><main class="main" style="max-width:640px"><div class="card settings-token-reveal"><h3 style="margin-top:0">Webhook created</h3><p class="settings-help"><strong>Copy the signing secret now — it will not be shown again.</strong></p><p class="settings-help">Payload URL: <code>${escapeHtml(wh.url)}</code></p><div class="token-reveal-row"><code class="settings-token" id="webhook-secret">${escapeHtml(wh.secret)}</code><button type="button" class="btn btn-small" id="copy-secret">Copy</button></div><p class="settings-help" style="margin-top:0.75rem">Verify each delivery's <code>X-Stratum-Signature</code> (HMAC-SHA256) with this secret.</p><p style="margin-top:1rem"><a href="${escapeHtml(backUrl)}">&larr; Back to webhooks</a></p></div></main>${SOURCE_FOOTER_HTML}<script nonce="${escapeHtml(nonce)}">${copyScript}</script></body></html>`,
-        201,
-      ),
-    );
+    // would otherwise never see it. Show it exactly once here.
+    return revealSecretPage(c, {
+      heading: "Webhook created",
+      url: webhookResult.data.url,
+      secret: webhookResult.data.secret,
+      backUrl: `/${project.namespace}/${project.slug}/webhooks`,
+      status: 201,
+    });
   }
   // The secret is returned on creation; receivers verify X-Stratum-Signature with it.
   return noStore(created({ webhook: webhookResult.data }));
@@ -327,6 +357,58 @@ app.post("/:namespace/:slug/webhooks/:id/toggle", async (c) => {
     return c.redirect(`/${project.namespace}/${project.slug}/webhooks`, 302);
   }
   return ok({ id, active: !webhookResult.data.active });
+});
+
+// POST /api/projects/:namespace/:slug/webhooks/:id/regenerate-secret — Rotate the signing secret
+//
+// Replaces a lost or leaked secret without delete+recreate, which would change
+// the webhook id and drop its delivery history. The old secret stops signing
+// immediately; the new one is returned once, exactly like creation.
+app.post("/:namespace/:slug/webhooks/:id/regenerate-secret", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const access = await requireProjectAdmin(c, logger);
+  if ("response" in access) return access.response;
+  const { project } = access;
+  const id = c.req.param("id");
+
+  const webhookResult = await getWebhook(c.env.DB, logger, id);
+  if (!webhookResult.success) {
+    if (webhookResult.error.code === "NOT_FOUND") return notFound("Webhook", id);
+    return internalError(webhookResult.error.message);
+  }
+  if (!webhookBelongsToProject(webhookResult.data, project)) return notFound("Webhook", id);
+
+  const secretResult = await regenerateWebhookSecret(c.env.DB, logger, id);
+  if (!secretResult.success) {
+    if (secretResult.error.code === "NOT_FOUND") return notFound("Webhook", id);
+    return internalError(secretResult.error.message);
+  }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "webhook.secret_rotated",
+    actorType: "user",
+    actorId: c.get("userId"),
+    subject: id,
+    detail: { project: project.name },
+  });
+
+  const contentType = c.req.header("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return revealSecretPage(c, {
+      heading: "Webhook secret regenerated",
+      url: webhookResult.data.url,
+      secret: secretResult.data,
+      backUrl: `/${project.namespace}/${project.slug}/webhooks`,
+      status: 200,
+    });
+  }
+  return noStore(ok({ webhook: { ...webhookResult.data, secret: secretResult.data } }));
 });
 
 // DELETE /api/projects/:namespace/:slug/webhooks/:id — Delete a webhook

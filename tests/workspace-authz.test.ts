@@ -29,7 +29,8 @@ vi.mock("../src/storage/state", () => ({
   getProjectByPath: vi.fn(),
   listWorkspaces: vi.fn(),
 }));
-vi.mock("../src/utils/authz", () => ({
+vi.mock("../src/utils/authz", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/authz")>()),
   canWriteProject: vi.fn(),
   canWriteWorkspace: vi.fn(),
   canReadProject: vi.fn(),

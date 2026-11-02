@@ -26,6 +26,7 @@ vi.mock("../src/storage/api-tokens", () => ({
       data: {
         user: { id: "usr_1", email: "u@x.io", username: "u" },
         scope,
+        binding: { kind: "unbound" },
         tokenId: `tok_${scope}`,
       },
     };
