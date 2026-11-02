@@ -56,7 +56,7 @@ import { getProject, getWorkspace } from "../storage/state";
 import { getProjectSourceUrl } from "../storage/sync";
 import type { Change, Env, ProjectEntry } from "../types";
 import { projectDefaultBranch } from "../types";
-import { canReadProject, canWriteProject } from "../utils/authz";
+import { canReadProject, canWriteProject, credentialBindingFrom } from "../utils/authz";
 import { getWaitUntil } from "../utils/execution-ctx";
 import { newId } from "../utils/ids";
 import { createLogger } from "../utils/logger";
@@ -256,7 +256,7 @@ app.post("/projects/:name/changes", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canWriteProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return forbidden("Project access denied");
 
   // Refuse writes while the project (or its owner) is being deleted — otherwise a
@@ -340,7 +340,7 @@ app.get("/projects/:name/changes", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const statusParam = c.req.query("status");
@@ -411,7 +411,7 @@ app.get("/changes/:id", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const evalRunsResult = await listEvalRuns(c.env.DB, logger, id);
@@ -469,7 +469,7 @@ app.post("/changes/:id/merge", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canWriteProject(c.env.DB, project, userId)))
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
     return forbidden("Project access denied");
 
   // Branch protection: the policy's merge rules gate every merge path. Cached +
@@ -921,7 +921,7 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
     return internalError(projectResult.error.message);
   }
   const project = projectResult.data;
-  if (!(await canWriteProject(c.env.DB, project, userId)))
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
     return forbidden("Project access denied");
 
   const body = await readJsonWithLimit<{ changeIds?: unknown; force?: unknown }>(
@@ -1297,7 +1297,7 @@ app.post("/changes/:id/reject", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canWriteProject(c.env.DB, project, userId)))
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
     return forbidden("Project access denied");
 
   if (change.status === "merged") {
@@ -1360,7 +1360,7 @@ app.post("/changes/:id/evaluate", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canWriteProject(c.env.DB, project, userId)))
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
     return forbidden("Project access denied");
 
   if (change.status === "merged" || change.status === "rejected" || change.status === "promoted") {
@@ -1714,7 +1714,7 @@ app.post("/changes/:id/github-pr", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canWriteProject(c.env.DB, project, userId)))
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
     return forbidden("Project access denied");
 
   // Accept the generic sourceUrl or the legacy githubUrl — bulk-imported

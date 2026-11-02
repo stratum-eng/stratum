@@ -13,7 +13,7 @@ import {
 } from "../storage/issues";
 import { getProjectByPath } from "../storage/state";
 import type { Change, Env, ProjectEntry } from "../types";
-import { canReadProject, canWriteProject } from "../utils/authz";
+import { canReadProject, canWriteProject, credentialBindingFrom } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import type { Logger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
@@ -148,7 +148,7 @@ app.post("/:namespace/:slug/issues", async (c) => {
   const { project } = result;
 
   // Anyone who can read the project can open issues against it.
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return notFound("Project", `${project.namespace}/${project.slug}`);
   }
 
@@ -237,7 +237,7 @@ app.get("/:namespace/:slug/issues", async (c) => {
   if ("response" in result) return result.response;
   const { project } = result;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return notFound("Project", `${project.namespace}/${project.slug}`);
   }
 
@@ -305,7 +305,7 @@ app.get("/:namespace/:slug/issues/:number", async (c) => {
   if ("response" in result) return result.response;
   const { project } = result;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return notFound("Project", `${project.namespace}/${project.slug}`);
   }
 
@@ -345,7 +345,7 @@ app.patch("/:namespace/:slug/issues/:number", async (c) => {
   const { project } = result;
 
   // Editing and closing issues requires write access to the project.
-  if (!(await canWriteProject(c.env.DB, project, userId)))
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
     return forbidden("Project access denied");
 
   const number = parseIssueNumber(c.req.param("number"));
@@ -490,7 +490,7 @@ app.post("/:namespace/:slug/issues/:number/comments", async (c) => {
   const { project } = result;
 
   // Same bar as opening an issue: anyone who can read the project may comment.
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return notFound("Project", `${project.namespace}/${project.slug}`);
   }
 
@@ -567,7 +567,7 @@ app.get("/:namespace/:slug/issues/:number/comments", async (c) => {
   if ("response" in result) return result.response;
   const { project } = result;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return notFound("Project", `${project.namespace}/${project.slug}`);
   }
 
@@ -617,7 +617,7 @@ app.post("/:namespace/:slug/issues/:number/close", async (c) => {
   if ("response" in result) return result.response;
   const { project } = result;
 
-  if (!(await canWriteProject(c.env.DB, project, userId)))
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
     return forbidden("Project access denied");
 
   const number = parseIssueNumber(c.req.param("number"));

@@ -21,7 +21,12 @@ import {
 } from "../storage/state";
 import type { Env } from "../types";
 import { getArtifactsRepoName, projectDefaultBranch } from "../types";
-import { canReadProject, canWriteProject, canWriteWorkspace } from "../utils/authz";
+import {
+  canReadProject,
+  canWriteProject,
+  canWriteWorkspace,
+  credentialBindingFrom,
+} from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 import {
@@ -77,7 +82,7 @@ app.post("/:namespace/:slug/workspaces", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canWriteProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return forbidden("Project access denied");
 
   // Refuse creating a workspace/fork while the project is being deleted — a new
@@ -172,7 +177,7 @@ app.get("/:namespace/:slug/workspaces", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId)))
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
   const workspacesResult = await listWorkspaces(c.env.STATE, project.id, logger);
@@ -312,8 +317,21 @@ app.post("/:name/commit", async (c) => {
   }
   const project = projectResult.data;
 
-  const canWriteProj = await canWriteProject(c.env.DB, project, userId, agentOwnerId);
-  const canWriteWs = await canWriteWorkspace(c.env.DB, project, workspace, userId, agentOwnerId);
+  const canWriteProj = await canWriteProject(
+    c.env.DB,
+    project,
+    credentialBindingFrom(c),
+    userId,
+    agentOwnerId,
+  );
+  const canWriteWs = await canWriteWorkspace(
+    c.env.DB,
+    project,
+    workspace,
+    credentialBindingFrom(c),
+    userId,
+    agentOwnerId,
+  );
   if (!canWriteProj || !canWriteWs) {
     logger.warn("Commit denied — insufficient workspace write access", {
       workspaceName,
@@ -475,8 +493,21 @@ app.delete("/:name", async (c) => {
   }
   const project = projectResult.data;
 
-  const canWriteProj = await canWriteProject(c.env.DB, project, userId, agentOwnerId);
-  const canWriteWs = await canWriteWorkspace(c.env.DB, project, workspace, userId, agentOwnerId);
+  const canWriteProj = await canWriteProject(
+    c.env.DB,
+    project,
+    credentialBindingFrom(c),
+    userId,
+    agentOwnerId,
+  );
+  const canWriteWs = await canWriteWorkspace(
+    c.env.DB,
+    project,
+    workspace,
+    credentialBindingFrom(c),
+    userId,
+    agentOwnerId,
+  );
   if (!canWriteProj || !canWriteWs) {
     logger.warn("Delete denied — insufficient workspace write access", {
       workspaceName,

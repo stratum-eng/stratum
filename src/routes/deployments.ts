@@ -52,8 +52,14 @@ import {
   putSecret,
 } from "../storage/project-secrets";
 import { getProjectById, getProjectByPath } from "../storage/state";
-import type { Env, ProjectEntry } from "../types";
-import { canReadProject, canWriteProject, isProjectAdmin } from "../utils/authz";
+import type { CredentialBinding, Env, ProjectEntry } from "../types";
+import {
+  type BindingContext,
+  canReadProject,
+  canWriteProject,
+  credentialBindingFrom,
+  isProjectAdmin,
+} from "../utils/authz";
 import { AppError } from "../utils/errors";
 import { type Logger, createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
@@ -107,11 +113,11 @@ export function secretErrorMessage(code: string | undefined): string | undefined
 type AccessFailure = { response: Response };
 
 /** The subset of a Hono context these helpers read, so they stay unit-testable. */
-interface RouteContext {
+type RouteContext = {
   env: Env;
   get: (key: "userId" | "agentId" | "agentOwnerId") => string | undefined;
   req: { param: (key: string) => string };
-}
+} & BindingContext;
 
 function routeLogger(c: {
   get: (key: "userId") => string | undefined;
@@ -160,10 +166,14 @@ async function loadProject(
 export async function canManageSecrets(
   db: D1Database,
   project: ProjectEntry,
-  identity: { userId: string | undefined; agentId: string | undefined },
+  identity: {
+    userId: string | undefined;
+    agentId: string | undefined;
+    binding: CredentialBinding;
+  },
 ): Promise<boolean> {
   if (identity.agentId !== undefined || identity.userId === undefined) return false;
-  return await isProjectAdmin(db, project, identity.userId);
+  return await isProjectAdmin(db, project, identity.binding, identity.userId);
 }
 
 /**
@@ -187,7 +197,8 @@ async function requireSecretsAdmin(
   const loaded = await loadProject(c, logger);
   if ("response" in loaded) return loaded;
 
-  if (!(await canManageSecrets(c.env.DB, loaded.project, { userId, agentId: c.get("agentId") }))) {
+  const identity = { userId, agentId: c.get("agentId"), binding: credentialBindingFrom(c) };
+  if (!(await canManageSecrets(c.env.DB, loaded.project, identity))) {
     return { response: forbidden("Project access denied") };
   }
   return { project: loaded.project, userId };
@@ -440,7 +451,7 @@ projectApp.get("/:namespace/:slug/deployments", async (c) => {
 
   const userId = c.get("userId");
   const agentOwnerId = c.get("agentOwnerId");
-  if (!(await canReadProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return notFound("Project", `${project.namespace}/${project.slug}`);
   }
 
@@ -462,7 +473,13 @@ projectApp.get("/:namespace/:slug/deployments", async (c) => {
   });
   if (!result.success) return appError(result.error);
 
-  const includeLogTail = await canWriteProject(c.env.DB, project, userId, agentOwnerId);
+  const includeLogTail = await canWriteProject(
+    c.env.DB,
+    project,
+    credentialBindingFrom(c),
+    userId,
+    agentOwnerId,
+  );
   return ok({ deployments: result.data.map((entry) => toResponse(entry, includeLogTail)) });
 });
 
@@ -481,7 +498,7 @@ const deploymentApp = new Hono<{ Bindings: Env }>();
  * what a cross-tenant probe is looking for.
  */
 async function loadDeployment(
-  c: RouteContext & { req: { param: (key: string) => string } },
+  c: RouteContext,
   logger: Logger,
 ): Promise<{ deployment: Deployment; project: ProjectEntry } | AccessFailure> {
   const id = c.req.param("id");
@@ -499,7 +516,15 @@ async function loadDeployment(
   }
   const project = projectResult.data;
 
-  if (!(await canReadProject(c.env.DB, project, c.get("userId"), c.get("agentOwnerId")))) {
+  if (
+    !(await canReadProject(
+      c.env.DB,
+      project,
+      credentialBindingFrom(c),
+      c.get("userId"),
+      c.get("agentOwnerId"),
+    ))
+  ) {
     return { response: notFound("Deployment", id) };
   }
   return { deployment, project };
@@ -515,6 +540,7 @@ deploymentApp.get("/:id", async (c) => {
   const includeLogTail = await canWriteProject(
     c.env.DB,
     project,
+    credentialBindingFrom(c),
     c.get("userId"),
     c.get("agentOwnerId"),
   );
@@ -542,7 +568,7 @@ deploymentApp.post("/:id/approve", async (c) => {
   if ("response" in loaded) return loaded.response;
   const { deployment, project } = loaded;
 
-  if (!(await canWriteProject(c.env.DB, project, userId))) {
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId))) {
     return forbidden("Project access denied");
   }
 
@@ -646,7 +672,7 @@ deploymentApp.post("/:id/retry", async (c) => {
   if ("response" in loaded) return loaded.response;
   const { deployment, project } = loaded;
 
-  if (!(await canWriteProject(c.env.DB, project, userId, agentOwnerId))) {
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId))) {
     return forbidden("Project access denied");
   }
 
