@@ -368,6 +368,20 @@ app.post("/", async (c) => {
     return badRequest(`Invalid repository URLs: ${invalidUrls.join(", ")}`);
   }
 
+  // Anything but "public" is private to access checks, so a value the gauge
+  // does not recognise would create an uncounted private project. Refuse it,
+  // as the single-import route does.
+  if (
+    body.repos.some(
+      (repo) =>
+        repo.visibility !== undefined &&
+        repo.visibility !== "private" &&
+        repo.visibility !== "public",
+    )
+  ) {
+    return badRequest("visibility must be 'private' or 'public'");
+  }
+
   const userNamespace = getUserNamespace(username);
 
   // The private-project gauge, for the whole batch at once: the imports below

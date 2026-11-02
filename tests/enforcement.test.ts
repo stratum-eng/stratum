@@ -1167,6 +1167,22 @@ describe("the private project gauge through the import routes", () => {
     expect(raw.prepare("SELECT COUNT(*) AS n FROM import_jobs").get()).toEqual({ n: 0 });
   });
 
+  it("refuses a bulk entry whose visibility is neither private nor public", async () => {
+    // Access checks treat anything but "public" as private; an unrecognised
+    // value must not slip past a gauge that counts only "private".
+    const userId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 0 } }));
+
+    const response = await authed(userId, "alice")("/bulk-import", {
+      repos: [
+        { url: "https://github.com/octo/a", slug: "a", branch: "main", visibility: "PRIVATE" },
+      ],
+    });
+
+    expect(response.status).toBe(400);
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM import_jobs").get()).toEqual({ n: 0 });
+  });
+
   it("does not charge a bulk import for public repos or projects that already exist", async () => {
     const userId = createUser(nextUserId());
     cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
