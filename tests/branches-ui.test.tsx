@@ -666,6 +666,26 @@ describe("UI GET /:namespace/:slug — view cache on a snapshot miss", () => {
     expect(await res.text()).toContain("CLONED.md");
   });
 
+  it("never serves a deleted project's view to a new project created at the same path", async () => {
+    const env = makeEnv();
+    await seedProject(env, { id: "proj_old" });
+    const bg = backgroundCtx();
+    await app.fetch(req("/@owner/repo"), env, bg.ctx);
+    await bg.settle();
+
+    // Same namespace and slug, different project: its first view must clone,
+    // not show the old occupant's files as a "behind" page.
+    await seedProject(env, { id: "proj_new" });
+    advertise("e".repeat(40));
+    cloneReads("e".repeat(40), ["NEW_PROJECT.md"]);
+    const res = await app.fetch(req("/@owner/repo"), env, bg.ctx);
+
+    const html = await res.text();
+    expect(html).toContain("NEW_PROJECT.md");
+    expect(html).not.toContain("CLONED.md");
+    expect(html).not.toContain("Showing commit");
+  });
+
   it("does not cache a view whose file listing failed", async () => {
     const env = makeEnv();
     await seedProject(env);

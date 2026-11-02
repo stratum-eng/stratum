@@ -40,6 +40,7 @@ import { listSecretNames } from "../storage/project-secrets";
 import { getProvenance } from "../storage/provenance";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
 import {
+  type RepoViewCacheProject,
   claimRepoViewRefresh,
   readRepoViewCache,
   writeRepoViewCache,
@@ -1765,8 +1766,8 @@ async function loadRepoPageData(
   waitUntil: ((promise: Promise<unknown>) => void) | undefined,
   logger: Logger,
 ): Promise<RepoPageData> {
-  const cacheable = liveHead !== undefined && !!project.namespace && !!project.slug;
-  const cacheProject = { namespace: project.namespace ?? "", slug: project.slug ?? "" };
+  const cacheable = liveHead !== undefined && !!project.id;
+  const cacheProject = { id: project.id };
 
   if (cacheable) {
     const cached = await readRepoViewCache(kv, cacheProject, branch, logger);
@@ -1818,7 +1819,7 @@ async function loadRepoPageData(
  */
 async function refreshRepoView(
   kv: Env["STATE"],
-  cacheProject: { namespace: string; slug: string },
+  cacheProject: RepoViewCacheProject,
   remote: string,
   readToken: string,
   branch: string,

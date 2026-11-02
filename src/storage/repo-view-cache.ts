@@ -18,7 +18,12 @@ import type { RepoView } from "./git-ops";
  * no entry at all makes a viewer wait for a clone.
  */
 
-const CACHE_VERSION = 1;
+/**
+ * v2 keys by the project's immutable id rather than `namespace:slug`: a stale
+ * entry is now served, so a project deleted and recreated (or renamed into a
+ * freed path) must never read the previous occupant's view. v1 entries expire.
+ */
+const CACHE_VERSION = 2;
 const TTL_SECONDS = 7 * 24 * 60 * 60;
 /**
  * How long one background refresh holds the branch's refresh claim. KV's floor
@@ -37,16 +42,19 @@ export const REPO_VIEW_CACHE_MAX_BYTES = 5 * 1024 * 1024;
 
 type CachedRepoView = { v: typeof CACHE_VERSION } & RepoView & { files: string[] };
 
-function keySuffix(namespace: string, slug: string, branch: string): string {
-  return `${encodeURIComponent(namespace)}:${encodeURIComponent(slug)}:${encodeURIComponent(branch)}`;
+/** The project a cache entry belongs to, by its immutable id. */
+export type RepoViewCacheProject = { id: string };
+
+function keySuffix(projectId: string, branch: string): string {
+  return `${encodeURIComponent(projectId)}:${encodeURIComponent(branch)}`;
 }
 
-function repoViewKey(namespace: string, slug: string, branch: string): string {
-  return `repo_view:v${CACHE_VERSION}:${keySuffix(namespace, slug, branch)}`;
+function repoViewKey(projectId: string, branch: string): string {
+  return `repo_view:v${CACHE_VERSION}:${keySuffix(projectId, branch)}`;
 }
 
-function refreshClaimKey(namespace: string, slug: string, branch: string): string {
-  return `repo_view_refresh:${keySuffix(namespace, slug, branch)}`;
+function refreshClaimKey(projectId: string, branch: string): string {
+  return `repo_view_refresh:${keySuffix(projectId, branch)}`;
 }
 
 /**
@@ -59,13 +67,13 @@ function refreshClaimKey(namespace: string, slug: string, branch: string): strin
  */
 export async function readRepoViewCache(
   kv: KVNamespace,
-  project: { namespace: string; slug: string },
+  project: RepoViewCacheProject,
   branch: string,
   logger: Logger,
 ): Promise<(RepoView & { files: string[] }) | null> {
   let raw: string | null;
   try {
-    raw = await kv.get(repoViewKey(project.namespace, project.slug, branch));
+    raw = await kv.get(repoViewKey(project.id, branch));
   } catch (error) {
     logger.warn("KV error reading repo view cache", {
       branch,
@@ -102,7 +110,7 @@ export async function readRepoViewCache(
  */
 export async function writeRepoViewCache(
   kv: KVNamespace,
-  project: { namespace: string; slug: string },
+  project: RepoViewCacheProject,
   branch: string,
   view: RepoView,
   logger: Logger,
@@ -116,7 +124,7 @@ export async function writeRepoViewCache(
     return;
   }
   try {
-    await kv.put(repoViewKey(project.namespace, project.slug, branch), body, {
+    await kv.put(repoViewKey(project.id, branch), body, {
       expirationTtl: TTL_SECONDS,
     });
   } catch (error) {
@@ -165,11 +173,11 @@ function claimLocally(kv: KVNamespace, key: string): boolean {
  */
 export async function claimRepoViewRefresh(
   kv: KVNamespace,
-  project: { namespace: string; slug: string },
+  project: RepoViewCacheProject,
   branch: string,
   logger: Logger,
 ): Promise<boolean> {
-  const key = refreshClaimKey(project.namespace, project.slug, branch);
+  const key = refreshClaimKey(project.id, branch);
   if (!claimLocally(kv, key)) return false;
   try {
     if ((await kv.get(key)) !== null) return false;

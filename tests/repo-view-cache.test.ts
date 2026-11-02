@@ -16,7 +16,7 @@ const logger = {
   child: () => logger,
 } as unknown as Logger;
 
-const project = { namespace: "@owner", slug: "repo" };
+const project = { id: "proj_1" };
 const TIP = "a".repeat(40);
 
 function makeKV(): { kv: KVNamespace; store: Map<string, string> } {
@@ -154,7 +154,7 @@ describe("repo view cache", () => {
 
   it("defers to a claim another isolate wrote to KV", async () => {
     const { kv, store } = makeKV();
-    store.set("repo_view_refresh:%40owner:repo:main", "1");
+    store.set("repo_view_refresh:proj_1:main", "1");
 
     expect(await claimRepoViewRefresh(kv, project, "main", logger)).toBe(false);
   });
@@ -167,5 +167,12 @@ describe("repo view cache", () => {
     } as unknown as KVNamespace;
 
     expect(await claimRepoViewRefresh(kv, project, "main", logger)).toBe(false);
+  });
+
+  it("keys entries by project id, so a project recreated at the same path never reads the old one's view", async () => {
+    const { kv } = makeKV();
+    await writeRepoViewCache(kv, { id: "proj_old" }, "main", view(), logger);
+
+    expect(await readRepoViewCache(kv, { id: "proj_new" }, "main", logger)).toBeNull();
   });
 });
