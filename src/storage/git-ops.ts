@@ -795,6 +795,42 @@ function flattenRefTree(node: RemoteRefTree | undefined, prefix = ""): Record<st
   return out;
 }
 
+/**
+ * Fetches ONE remote tag into `fs`, creating the local `refs/tags/<name>` ref.
+ * Used by {@link cloneRepo}'s `includeTags` path, and exported so the live
+ * smoke tier (`tests/smoke/git-clone.test.ts`) exercises exactly these fetch
+ * options against a real smart-HTTP endpoint (#285).
+ *
+ * `tags: true` is load-bearing here, not redundant with `remoteRef`: with
+ * isomorphic-git 1.37.x a `singleBranch` fetch of `refs/tags/<name>` without
+ * it downloads the objects but never writes the local tag ref, so
+ * `collectRepoTags` silently sees no tag. Unit tests stub `git.fetch` and
+ * can't catch that; only the smoke test can.
+ */
+export function fetchRemoteTag(
+  fs: Parameters<typeof git.fetch>[0]["fs"],
+  remote: string,
+  token: string,
+  name: string,
+  opts: { fullHistory?: boolean; timeoutMs?: number; httpClient?: HttpClient } = {},
+): Promise<Awaited<ReturnType<typeof git.fetch>>> {
+  return withTimeout(
+    git.fetch({
+      fs,
+      http: opts.httpClient ?? http,
+      dir: DIR,
+      url: remote,
+      singleBranch: true,
+      remoteRef: `refs/tags/${name}`,
+      tags: true,
+      ...(opts.fullHistory ? {} : { depth: 50 }),
+      onAuth: makeAuth(token),
+    }),
+    opts.timeoutMs ?? TAG_FETCH_TIMEOUT_MS,
+    `cloneRepo: git.fetch tag ${name}`,
+  );
+}
+
 export async function cloneRepo(
   remote: string,
   token: string,
@@ -921,29 +957,19 @@ export async function cloneRepo(
 
     for (const name of tagNamesToFetch) {
       const tagFetch = await fromPromise(
-        withTimeout(
-          git.fetch({
-            fs,
-            http: httpClient,
-            dir: DIR,
-            url: remote,
-            singleBranch: true,
-            remoteRef: `refs/tags/${name}`,
-            tags: true,
-            ...(opts.fullHistory ? {} : { depth: 50 }),
-            onAuth: makeAuth(token),
-          }),
+        fetchRemoteTag(fs, remote, token, name, {
+          fullHistory: opts.fullHistory,
           // A caller's timeoutMs override (e.g. backup's 300s) is a
           // statement about how long ANY single network operation in this
           // clone may take, not just the main one — a full-history clone
           // with `includeTags: true` also drops each tag fetch's own depth
-          // limit above, so leaving this on the smaller default would have
-          // let a large/old-tagged repo's backup keep failing via a
-          // 15s-capped tag fetch despite the override existing precisely to
-          // give this clone more room (#332).
-          opts.timeoutMs ?? TAG_FETCH_TIMEOUT_MS,
-          `cloneRepo: git.fetch tag ${name}`,
-        ),
+          // limit, so leaving this on the smaller default would have let a
+          // large/old-tagged repo's backup keep failing via a 15s-capped tag
+          // fetch despite the override existing precisely to give this
+          // clone more room (#332).
+          timeoutMs: opts.timeoutMs,
+          httpClient,
+        }),
       );
       if (!tagFetch.success) {
         logger.error("Failed to fetch tag", tagFetch.error, { remote, tag: name });
