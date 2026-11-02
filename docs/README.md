@@ -35,6 +35,7 @@ docs/
 │   ├── code-review.md                  # Comment threads and review verdicts
 │   ├── issues.md                       # The built-in issue tracker
 │   ├── ci-integration.md               # Bring-your-own-CI guide
+│   ├── webhook-executor.md             # Running a webhook evaluator executor safely
 │   ├── troubleshooting.md              # Problem solving
 │   └── faq.md                          # Frequently asked questions
 ├── developer/                          # Developer Documentation
@@ -88,6 +89,7 @@ docs/
 4. [Code Review](user-guide/code-review.md)
 5. [Issues](user-guide/issues.md)
 6. [CI Integration (Bring Your Own CI)](user-guide/ci-integration.md)
+7. [Running a Webhook Evaluator Executor Safely](user-guide/webhook-executor.md)
 
 **Help:**
 - [Troubleshooting](user-guide/troubleshooting.md)
@@ -163,6 +165,7 @@ short stub that needs to be fleshed out.
 | User Guide - Code Review | ✅ Complete | High | 2026-08-31 |
 | User Guide - Issues | ✅ Complete | High | 2026-08-31 |
 | User Guide - CI Integration | ✅ Complete | High | 2026-08-31 |
+| User Guide - Webhook Executor Safety | ✅ Complete | High | 2026-11-02 |
 | User Guide - Troubleshooting | ✅ Complete | Medium | 2026-08-31 |
 | User Guide - FAQ | ✅ Complete | Medium | 2026-08-31 |
 | Developer - Architecture | ✅ Complete | High | 2026-08-31 |

@@ -31,6 +31,7 @@
     ["/guides/code-review/", "Comment threads, line anchors, and review verdicts"],
     ["/guides/issues/", "The built-in issue tracker"],
     ["/guides/ci-integration/", "Bring your own CI via the webhook evaluator"],
+    ["/guides/webhook-executor/", "Running a webhook evaluator executor safely"],
     ["/guides/deployments/", "Post-merge deploys to Cloudflare and Vercel"],
     ["/guides/cli/", "The Stratum CLI — the change flow from the terminal"],
     ["/guides/mcp/", "The MCP server — the eval-gated change flow for any MCP client"],
