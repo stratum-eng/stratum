@@ -19,9 +19,11 @@ agent and registering a new one.
 Agent tokens **do not expire** and are not scoped. The only way to revoke one is
 to delete the agent.
 
-Because of that, this route requires a browser session or the legacy API key.
-A scoped API token or an OAuth grant is refused with `403 SESSION_REQUIRED`:
-otherwise revoking that credential would leave behind an agent token it minted.
+This route therefore requires a browser session or the legacy API key. A scoped
+API token or an OAuth grant is refused with `403 SESSION_REQUIRED`: otherwise
+revoking that credential would leave behind an agent token it minted. (A
+read-only one never reaches that check; the scope check refuses it first with
+`403 TOKEN_SCOPE_INSUFFICIENT`.)
 
 ## Get Agent
 `GET /api/agents/{id}`
