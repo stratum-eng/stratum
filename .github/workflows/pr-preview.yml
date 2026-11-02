@@ -92,11 +92,26 @@ jobs:
         run: |
           KV_NAME="stratum-preview-state-pr-${{ env.PR_NUMBER }}"
           echo "Deleting KV namespace: $KV_NAME"
-          KV_LIST=$(curl -s -X GET \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json")
-          KV_ID=$(echo "$KV_LIST" | jq -r "[.result[]? // empty | select(.title == \"$KV_NAME\") | .id] | first // empty")
+          # The list endpoint pages (20 per page by default); reading only the
+          # first page misses this PR's namespace once the account has more.
+          # Stops on a short page (the documented contract), fails on any
+          # response that is not a successful JSON listing, and caps the walk.
+          find_kv() {
+            local page=1 per_page=100 resp id count
+            while [ "$page" -le 50 ]; do
+              resp=$(curl -sf -X GET \
+                "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces?per_page=${per_page}&page=${page}" \
+                -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || return 1
+              echo "$resp" | jq -e '.success == true and (.result | type == "array")' >/dev/null 2>&1 || return 1
+              id=$(echo "$resp" | jq -r --arg t "$1" '[.result[] | select(.title == $t) | .id] | first // empty')
+              if [ -n "$id" ]; then echo "$id"; return 0; fi
+              count=$(echo "$resp" | jq -r '.result | length')
+              [ "$count" -lt "$per_page" ] && return 0
+              page=$((page + 1))
+            done
+            return 1
+          }
+          KV_ID=$(find_kv "$KV_NAME") || { echo "❌ Could not list KV namespaces"; exit 1; }
           if [ -n "$KV_ID" ] && [ "$KV_ID" != "null" ]; then
             DELETE_RESPONSE=$(curl -s -X DELETE \
               "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${KV_ID}" \
@@ -248,13 +263,26 @@ jobs:
         run: |
           KV_NAME="stratum-preview-state-pr-${{ env.PR_NUMBER }}"
           
-          # Check if KV namespace exists
-          KV_LIST=$(curl -s -X GET \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            -H "Content-Type: application/json")
-          
-          KV_ID=$(echo "$KV_LIST" | jq -r "[.result[]? // empty | select(.title == \"$KV_NAME\") | .id] | first // empty")
+          # The list endpoint pages (20 per page by default); reading only the
+          # first page misses this PR's namespace once the account has more.
+          # Stops on a short page (the documented contract), fails on any
+          # response that is not a successful JSON listing, and caps the walk.
+          find_kv() {
+            local page=1 per_page=100 resp id count
+            while [ "$page" -le 50 ]; do
+              resp=$(curl -sf -X GET \
+                "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces?per_page=${per_page}&page=${page}" \
+                -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || return 1
+              echo "$resp" | jq -e '.success == true and (.result | type == "array")' >/dev/null 2>&1 || return 1
+              id=$(echo "$resp" | jq -r --arg t "$1" '[.result[] | select(.title == $t) | .id] | first // empty')
+              if [ -n "$id" ]; then echo "$id"; return 0; fi
+              count=$(echo "$resp" | jq -r '.result | length')
+              [ "$count" -lt "$per_page" ] && return 0
+              page=$((page + 1))
+            done
+            return 1
+          }
+          KV_ID=$(find_kv "$KV_NAME") || { echo "❌ Could not list KV namespaces"; exit 1; }
           
           if [ -n "$KV_ID" ] && [ "$KV_ID" != "null" ]; then
             echo "Found existing KV namespace: $KV_ID"
@@ -270,9 +298,11 @@ jobs:
             KV_ID=$(echo "$KV_RESPONSE" | jq -r '.result.id // empty')
             
             if [ -z "$KV_ID" ] || [ "$KV_ID" = "null" ]; then
-              echo "Warning: Failed to create KV namespace, continuing without KV"
+              # Fail rather than deploy without STATE: every page that reads
+              # projects would 500, and the preview would still report "ready".
+              echo "❌ Failed to create KV namespace"
               echo "Response: $KV_RESPONSE"
-              echo "kv_id=" >> $GITHUB_OUTPUT
+              exit 1
             else
               echo "Created KV namespace: $KV_ID"
               echo "kv_id=$KV_ID" >> $GITHUB_OUTPUT

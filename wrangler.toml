@@ -180,7 +180,7 @@ REPO_DO_ENABLED = "false"
 # Set these to your own host when self-hosting (and register the callback URLs
 # in your GitHub/Google OAuth apps):
 OAUTH_REDIRECT_URI = "http://localhost:8787/auth/github/callback"
-# GOOGLE_REDIRECT_URI = "https://your-app.example.com/auth/google/callback"
+GOOGLE_REDIRECT_URI = "http://localhost:8787/auth/google/callback"
 # Closed-beta gate (hosted-only; leave unset/commented for ungated self-hosting).
 # The gate turns ON only when BETA_GATE = "1" AND REFERRAL_SERVICE_URL is set.
 #
@@ -502,6 +502,7 @@ REPO_DO_ENABLED = "true"
 # flip production once validated end-to-end against real Artifacts.
 GIT_PUSH_GATED_ENABLED = "true"
 OAUTH_REDIRECT_URI = "https://staging.app.usestratum.dev/auth/github/callback"
+GOOGLE_REDIRECT_URI = "https://staging.app.usestratum.dev/auth/google/callback"
 EMAIL_FROM_ADDRESS = "noreply@staging.app.usestratum.dev"
 # Closed beta — validate the invite gate on staging before prod. Points at the
 # live stratum-landing Worker (see [env.production.vars] cutover note).

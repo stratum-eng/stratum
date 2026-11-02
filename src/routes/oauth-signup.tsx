@@ -44,7 +44,7 @@ export interface PendingSignup {
   suggestedUsername: string | null;
   /** Present for GitHub, so the account is linked as it is created. */
   github?: { id: string; login: string };
-  /** Same-origin path to land on afterwards (GitHub's `next`), already validated. */
+  /** Same-origin path to land on afterwards (the OAuth start URL's `next`), already validated. */
   next?: string;
   createdAt: number;
 }
@@ -201,7 +201,7 @@ async function issueSessionAndRedirect(
   });
   sessionLogger.info("OAuth signup complete, session created", { provider: record.provider });
   // Consumed unconditionally so a stale destination never survives into the
-  // next sign-in; GitHub's own `next` still wins when it was given.
+  // next sign-in; a `next` from the OAuth start URL still wins when given.
   const remembered = consumePostLoginRedirect(c, "/");
   return c.redirect(record.next ?? remembered);
 }

@@ -34,12 +34,18 @@ const MAX_AGE_SECONDS = 600;
  * and `/\evil.com` is the point: both are read as *protocol-relative* by
  * browsers, so a naive "starts with /" check is an open redirect, and an open
  * redirect on a login flow is a credential-phishing primitive.
+ *
+ * The check runs on the *normalized* path too, because that — not `raw` — is
+ * what callers put in the Location header. URL parsing resolves dot segments,
+ * so `/.//evil.com`, `/a/..//evil.com` and `/%2e//evil.com` all pass a check
+ * on the raw string and stay same-origin, yet normalize to `//evil.com`.
  */
 export function isSafeRedirectTarget(raw: string, requestUrl: string): boolean {
-  if (!/^\/[^/\\]/.test(raw)) return false;
+  if (!/^\/(?![/\\])/.test(raw)) return false;
   try {
     const origin = new URL(requestUrl).origin;
-    return new URL(raw, origin).origin === origin;
+    const url = new URL(raw, origin);
+    return url.origin === origin && !/^\/[/\\]/.test(url.pathname);
   } catch {
     return false;
   }
