@@ -23,6 +23,10 @@
   under more than one hostname.
 
 ### Security
-- API tokens, agent tokens, MCP OAuth grants, SCIM tokens, and git over HTTPS
-  are **not** subject to the second factor. They are possession-based,
-  scoped, and revocable. Revoke any you no longer trust.
+- API tokens, the legacy API key, agent tokens, MCP OAuth grants, SCIM tokens,
+  and git over HTTPS are **not** subject to the second factor. They are not all
+  scoped: the legacy key and agent tokens carry full account access. Revoke,
+  rotate, or disable any you no longer trust.
+- **Recovery codes** are 12 characters (about 59 bits). They are stored as
+  per-user hashes, keyed with HMAC when the optional `RECOVERY_CODE_PEPPER`
+  secret is set. Each code works once.

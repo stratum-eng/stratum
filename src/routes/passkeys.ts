@@ -111,6 +111,12 @@ app.post("/registration/verify", async (c) => {
         {
           passkey: outcome.passkey,
           ...(outcome.recoveryCodes !== undefined ? { recoveryCodes: outcome.recoveryCodes } : {}),
+          ...(outcome.recoveryCodesFailed
+            ? {
+                recoveryCodesError:
+                  "Your passkey was added, but recovery codes could not be generated. Generate them now at /settings/security.",
+              }
+            : {}),
         },
         201,
       );

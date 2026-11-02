@@ -3,10 +3,10 @@ import { enforceSameOrigin } from "../middleware/csrf";
 import {
   type PendingSignIn,
   clearPendingSignIn,
-  hashRecoveryCode,
   mintBrowserSession,
   readPendingSignIn,
   recordPendingFailure,
+  recoveryCodeCandidates,
 } from "../services/second-factor";
 import {
   type CeremonyFailure,
@@ -136,7 +136,7 @@ function TwoFactorPage(props: { nonce: string; error?: string }) {
                   name="code"
                   class="tf-input"
                   autocomplete="one-time-code"
-                  placeholder="xxxxx-xxxxx"
+                  placeholder="xxxx-xxxx-xxxx"
                   required
                 />
                 <button type="submit" class="tf-btn tf-btn-secondary">
@@ -302,7 +302,12 @@ app.post("/recovery", async (c) => {
   const raw = typeof form.code === "string" ? form.code : "";
   const spent =
     raw.trim().length > 0 && raw.length <= 64
-      ? await consumeRecoveryCode(c.env.DB, logger, userId, await hashRecoveryCode(raw))
+      ? await consumeRecoveryCode(
+          c.env.DB,
+          logger,
+          userId,
+          await recoveryCodeCandidates(raw, userId, c.env.RECOVERY_CODE_PEPPER),
+        )
       : { success: true as const, data: false };
   if (!spent.success) return c.redirect("/auth/login?error=verify_failed");
   if (!spent.data) {

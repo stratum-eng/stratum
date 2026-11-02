@@ -298,14 +298,18 @@ export async function consumeRecoveryCode(
   db: D1Database,
   logger: Logger,
   userId: string,
-  codeHash: string,
+  codeHashes: string[],
 ): Promise<Result<boolean, AppError>> {
+  if (codeHashes.length === 0) return ok(false);
   try {
+    // LIMIT-free on purpose: at most one row can match, since a code's hashes
+    // are unique per user and the candidates are forms of the SAME code.
+    const placeholders = codeHashes.map(() => "?").join(", ");
     const result = await db
       .prepare(
-        "UPDATE recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS NULL",
+        `UPDATE recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash IN (${placeholders}) AND used_at IS NULL`,
       )
-      .bind(new Date().toISOString(), userId, codeHash)
+      .bind(new Date().toISOString(), userId, ...codeHashes)
       .run();
     return ok((result.meta?.changes ?? 0) > 0);
   } catch (error) {

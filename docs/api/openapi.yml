@@ -3752,6 +3752,12 @@ paths:
                   recoveryCodes:
                     type: array
                     items: { type: string }
+                  recoveryCodesError:
+                    type: string
+                    description: >
+                      Present when the passkey was saved but its first recovery
+                      codes could not be issued; generate them with
+                      `POST /api/users/me/passkeys/recovery-codes`.
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":

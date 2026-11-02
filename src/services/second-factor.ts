@@ -28,7 +28,8 @@ import { type Result, err, ok } from "../utils/result";
  *
  * Non-interactive credentials — API tokens, agent tokens, MCP OAuth grants,
  * git over HTTPS — never pass through here and are not subject to a second
- * factor; they are already possession-based, scoped, and revocable.
+ * factor. Each is a credential the user already holds and can revoke or
+ * rotate; see docs/api/authentication.md for what each one may reach.
  */
 
 export const SESSION_COOKIE = "stratum_session";
@@ -244,11 +245,12 @@ export function isFreshSession(createdAt: string | undefined, now = Date.now()):
 /** Crockford-style alphabet: no 0/O, 1/I/L confusion when read off paper. */
 const RECOVERY_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
 
-const RECOVERY_CODE_LENGTH = 10;
+const RECOVERY_CODE_LENGTH = 12;
 
 function randomRecoveryCode(): string {
   // Rejection sampling: bytes at or above the largest multiple of the alphabet
-  // size are discarded, so every character is uniformly likely (~49 bits).
+  // size are discarded, so every character is uniformly likely: 12 characters
+  // of a 31-letter alphabet is ~59 bits.
   const limit = 256 - (256 % RECOVERY_ALPHABET.length);
   let out = "";
   while (out.length < RECOVERY_CODE_LENGTH) {
@@ -257,7 +259,7 @@ function randomRecoveryCode(): string {
       out += RECOVERY_ALPHABET[b % RECOVERY_ALPHABET.length];
     }
   }
-  return `${out.slice(0, 5)}-${out.slice(5)}`;
+  return `${out.slice(0, 4)}-${out.slice(4, 8)}-${out.slice(8)}`;
 }
 
 /** Case- and separator-insensitive, so a code typed as printed always matches. */
@@ -265,8 +267,47 @@ export function normalizeRecoveryCode(input: string): string {
   return input.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-export async function hashRecoveryCode(code: string): Promise<string> {
-  return hashToken(`recovery:${normalizeRecoveryCode(code)}`);
+/**
+ * The stored form of a recovery code.
+ *
+ * Bound to the user: the hashed input includes the user id, so a stolen
+ * `recovery_codes` table cannot be attacked in one pass across every account —
+ * each guess is good for one user only. Keyed when the operator configures
+ * `RECOVERY_CODE_PEPPER`: an HMAC under a secret that never sits in D1 (or in a
+ * D1 backup), so the table alone is not enough to test guesses at all. The
+ * pepper is optional; without it the hash is a user-bound SHA-256.
+ */
+export async function hashRecoveryCode(
+  code: string,
+  userId: string,
+  pepper?: string,
+): Promise<string> {
+  const input = `recovery:v1:${userId}:${normalizeRecoveryCode(code)}`;
+  if (!pepper) return hashToken(input);
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(pepper),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(input)));
+  return `hmac:${Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/**
+ * Every stored form a typed code may match: the keyed hash when a pepper is
+ * configured, and the unkeyed one — so codes issued before an operator added
+ * the pepper keep working until they are spent or regenerated.
+ */
+export async function recoveryCodeCandidates(
+  code: string,
+  userId: string,
+  pepper?: string,
+): Promise<string[]> {
+  const unkeyed = await hashRecoveryCode(code, userId);
+  return pepper ? [await hashRecoveryCode(code, userId, pepper), unkeyed] : [unkeyed];
 }
 
 /**
@@ -277,9 +318,10 @@ export async function issueRecoveryCodes(
   db: D1Database,
   logger: Logger,
   userId: string,
+  pepper?: string,
 ): Promise<Result<string[], AppError>> {
   const codes = Array.from({ length: RECOVERY_CODE_COUNT }, randomRecoveryCode);
-  const hashes = await Promise.all(codes.map(hashRecoveryCode));
+  const hashes = await Promise.all(codes.map((code) => hashRecoveryCode(code, userId, pepper)));
   const saved = await replaceRecoveryCodes(db, logger, userId, hashes);
   if (!saved.success) return err(saved.error);
   return ok(codes);

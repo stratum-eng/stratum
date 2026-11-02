@@ -187,11 +187,19 @@ for its members (`PUT /api/orgs/{slug}/security`). The requirement covers only
 second factor gets `403 SECOND_FACTOR_REQUIRED` there, and keeps all of its
 other access.
 
-**Non-interactive credentials are not subject to a second factor.** This
-includes API tokens, the legacy key, agent tokens, OAuth grants, SCIM tokens,
-and git over HTTPS. Each is a credential you already hold, and each is scoped
-and revocable. Treat them like passwords. See
-[Passkeys and two-factor sign-in](../user-guide/passkeys.md).
+**Non-interactive credentials are not subject to a second factor.** They are
+not all scoped, so treat every one of them like a password:
+
+| Credential | What it can reach | How to cut it off |
+|------------|-------------------|-------------------|
+| Named API token (`stratum_user_…`) | `read` or `read_write`, as chosen when it was created | Revoke it individually; it can also expire |
+| Legacy API key | Full `read_write` account access, no scope, never expires | Rotate it (invalidates the old key) or disable it permanently; it cannot be revoked on its own |
+| Agent token (`stratum_agent_…`) | The owning user's full access, no scope | Revoke the agent |
+| MCP OAuth grant (`stratum_mcp_…`) | `mcp:read` or `mcp:write`; never the admin API | Disconnect the app in settings, or `POST /oauth/revoke` |
+| SCIM token (`stratum_scim_…`) | Only `/scim/v2` for one org's SSO connection | An org admin rotates it |
+| git over HTTPS | Whatever the token it presents can reach | Revoke that token |
+
+See [Passkeys and two-factor sign-in](../user-guide/passkeys.md).
 
 ## Anonymous access
 

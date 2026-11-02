@@ -302,7 +302,7 @@ describe("passkeys as a second factor", () => {
       }[];
       expect(codeRows).toHaveLength(10);
       const firstCode = body.recoveryCodes?.[0] ?? "";
-      expect(codeRows.map((r) => r.code_hash)).toContain(await hashRecoveryCode(firstCode));
+      expect(codeRows.map((r) => r.code_hash)).toContain(await hashRecoveryCode(firstCode, USER));
       expect(codeRows.map((r) => r.code_hash)).not.toContain(firstCode);
       // The registering session now counts as second-factor verified.
       const session = raw.prepare("SELECT second_factor FROM sessions").get() as {
@@ -484,7 +484,59 @@ describe("passkeys as a second factor", () => {
       });
       expect(res.headers.get("Location")).toBe("/auth/2fa?error=invalid_code");
       expect(cookieFrom(res, "stratum_session")).toBeUndefined();
-      expect(normalizeRecoveryCode(code)).toHaveLength(10);
+      expect(normalizeRecoveryCode(code)).toHaveLength(12);
+    });
+
+    it("binds recovery-code hashes to the user, and keys them when a pepper is set", async () => {
+      const a = await hashRecoveryCode("abcd-efgh-jkmn", "usr_a");
+      expect(await hashRecoveryCode("ABCD EFGH JKMN", "usr_a")).toBe(a);
+      expect(await hashRecoveryCode("abcd-efgh-jkmn", "usr_b")).not.toBe(a);
+      const keyed = await hashRecoveryCode("abcd-efgh-jkmn", "usr_a", "pepper-1");
+      expect(keyed).toMatch(/^hmac:[0-9a-f]{64}$/);
+      expect(await hashRecoveryCode("abcd-efgh-jkmn", "usr_a", "pepper-2")).not.toBe(keyed);
+    });
+
+    it("does not accept one user's recovery code for another account", async () => {
+      const { body } = await enroll(await freshSession());
+      await enroll(await freshSession("usr_bob"));
+      const pending = await primary("usr_bob");
+      const res = await req("/auth/2fa/recovery", {
+        method: "POST",
+        cookie: pending,
+        body: new URLSearchParams({ code: body.recoveryCodes?.[0] ?? "" }),
+      });
+      expect(res.headers.get("Location")).toBe("/auth/2fa?error=invalid_code");
+    });
+
+    it("keys stored codes with RECOVERY_CODE_PEPPER and still accepts pre-pepper codes", async () => {
+      const { body: before } = await enroll(await freshSession());
+      const unkeyedCode = before.recoveryCodes?.[0] ?? "";
+
+      env.RECOVERY_CODE_PEPPER = "test-pepper";
+      // A pre-pepper code keeps working after the operator adds the secret.
+      let pending = await primary();
+      let res = await req("/auth/2fa/recovery", {
+        method: "POST",
+        cookie: pending,
+        body: new URLSearchParams({ code: unkeyedCode }),
+      });
+      expect(res.headers.get("Location")).toBe("/landing");
+
+      // Newly issued codes are stored keyed, and work.
+      const cookie = `stratum_session=${cookieFrom(res, "stratum_session")}`;
+      const regen = await req("/api/users/me/passkeys/recovery-codes", { method: "POST", cookie });
+      const { recoveryCodes } = (await regen.json()) as { recoveryCodes: string[] };
+      const stored = (
+        raw.prepare("SELECT code_hash FROM recovery_codes").all() as { code_hash: string }[]
+      ).map((r) => r.code_hash);
+      expect(stored.every((h) => h.startsWith("hmac:"))).toBe(true);
+      pending = await primary();
+      res = await req("/auth/2fa/recovery", {
+        method: "POST",
+        cookie: pending,
+        body: new URLSearchParams({ code: recoveryCodes[0] ?? "" }),
+      });
+      expect(res.headers.get("Location")).toBe("/landing");
     });
 
     it("voids the parked sign-in after repeated failures", async () => {
@@ -518,6 +570,54 @@ describe("passkeys as a second factor", () => {
   });
 
   describe("managing passkeys", () => {
+    it("keeps a registration whose recovery codes fail to issue, audited and verified", async () => {
+      const cookie = await freshSession();
+      const realDb = env.DB;
+      env.DB = {
+        ...realDb,
+        prepare: realDb.prepare.bind(realDb),
+        batch: async () => {
+          throw new Error("D1 batch unavailable");
+        },
+      } as unknown as D1Database;
+      const { body } = await enroll(cookie);
+      env.DB = realDb;
+      const result = body as { recoveryCodes?: string[]; recoveryCodesError?: string };
+      expect(result.recoveryCodes).toBeUndefined();
+      expect(result.recoveryCodesError).toMatch(/settings\/security/);
+      expect(raw.prepare("SELECT COUNT(*) AS n FROM webauthn_credentials").get()).toEqual({ n: 1 });
+      expect(auditActions(raw)).toContain("passkey.registered");
+      const session = raw.prepare("SELECT second_factor FROM sessions").get() as {
+        second_factor: string;
+      };
+      expect(session.second_factor).toBe("passkey");
+      // The page's recovery path works: codes can be generated afterwards.
+      const regen = await req("/api/users/me/passkeys/recovery-codes", { method: "POST", cookie });
+      expect(regen.status).toBe(201);
+    });
+
+    it("reports a removal as done, and audits it, even if code cleanup fails", async () => {
+      const cookie = await freshSession();
+      const { body } = await enroll(cookie);
+      const realDb = env.DB;
+      env.DB = {
+        ...realDb,
+        batch: realDb.batch.bind(realDb),
+        prepare: (sql: string) => {
+          if (sql.startsWith("DELETE FROM recovery_codes")) throw new Error("D1 write failed");
+          return realDb.prepare(sql);
+        },
+      } as unknown as D1Database;
+      const res = await req(`/api/users/me/passkeys/${body.passkey.id}`, {
+        method: "DELETE",
+        cookie,
+      });
+      env.DB = realDb;
+      expect(res.status).toBe(200);
+      expect(raw.prepare("SELECT COUNT(*) AS n FROM webauthn_credentials").get()).toEqual({ n: 0 });
+      expect(auditActions(raw)).toContain("passkey.removed");
+    });
+
     it("renames and removes a passkey; removing the last also clears recovery codes", async () => {
       const cookie = await freshSession();
       const { body } = await enroll(cookie);
@@ -574,7 +674,7 @@ describe("passkeys as a second factor", () => {
       const hashes = (
         raw.prepare("SELECT code_hash FROM recovery_codes").all() as { code_hash: string }[]
       ).map((r) => r.code_hash);
-      expect(hashes).not.toContain(await hashRecoveryCode(body.recoveryCodes?.[0] ?? ""));
+      expect(hashes).not.toContain(await hashRecoveryCode(body.recoveryCodes?.[0] ?? "", USER));
       expect(auditActions(raw)).toContain("recovery_codes.regenerated");
     });
 

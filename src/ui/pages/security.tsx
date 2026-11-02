@@ -64,6 +64,10 @@ const PAGE_SCRIPT = `(function () {
       });
       var result = await verRes.json();
       if (!verRes.ok) throw result;
+      if (result.recoveryCodesError) {
+        say(result.recoveryCodesError);
+        return;
+      }
       if (result.recoveryCodes && codesCard && codesList) {
         codesList.textContent = "";
         result.recoveryCodes.forEach(function (code) {

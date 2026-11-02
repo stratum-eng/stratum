@@ -67,9 +67,17 @@ before and never ask for a passkey:
 - MCP / OAuth grants for connected editors and agents (`stratum_mcp_…`)
 - `git` over HTTPS, which authenticates with a token
 
-Each of these is a credential you already hold. Each can be scoped and revoked
-from **Settings**. Revoke any token you no longer trust. An API token cannot read or
-change your passkeys.
+These credentials are not all limited in what they can do:
+
+- A named API token is `read` or `read_write`, can expire, and can be revoked on
+  its own.
+- The legacy API key has full read-write access and never expires. You can
+  rotate it or disable it, but not revoke it on its own.
+- An agent token has your full access until you revoke the agent.
+- An MCP grant is `mcp:read` or `mcp:write` until you disconnect the app.
+
+Treat each one like a password, and revoke or disable any you no longer trust
+from **Settings**. No token can read or change your passkeys.
 
 ## Requiring a second factor for an organization
 
@@ -142,3 +150,9 @@ of the request. If an instance can be reached under more than one hostname, set
 `APP_URL` (for example, `https://app.usestratum.dev`) to bind every passkey to
 one origin. Passkeys registered under a different hostname do not work after the
 change.
+
+Recovery codes are stored as per-user hashes. To key those hashes with a secret
+that is never stored in D1 or in backups, set the optional `RECOVERY_CODE_PEPPER`
+secret (`wrangler secret put RECOVERY_CODE_PEPPER`). Codes issued before you set
+it keep working. If you later change or remove the secret, codes issued under it
+stop working, and users must generate new ones from Settings → Security.

@@ -129,7 +129,13 @@ export async function beginPasskeyRegistration(
 }
 
 export type FinishRegistrationOutcome =
-  | { kind: "ok"; passkey: PasskeySummary; recoveryCodes?: string[] }
+  | {
+      kind: "ok";
+      passkey: PasskeySummary;
+      recoveryCodes?: string[];
+      /** The passkey was saved, but its recovery codes could not be issued. */
+      recoveryCodesFailed?: true;
+    }
   | { kind: "refused"; refusal: SensitiveRefusal }
   | { kind: "invalid"; message: string; status: 400 | 409 }
   | { kind: "error"; error: AppError };
@@ -188,20 +194,8 @@ export async function finishPasskeyRegistration(
     return { kind: "error", error: saved.error };
   }
 
-  let recoveryCodes: string[] | undefined;
-  if (isFirst) {
-    // The first passkey turns the second factor on, so this is the moment a
-    // lost device would otherwise become a locked account: issue the codes
-    // now, and show them exactly once.
-    const codes = await issueRecoveryCodes(c.env.DB, logger, userId);
-    if (!codes.success) return { kind: "error", error: codes.error };
-    recoveryCodes = codes.data;
-    // The user just proved possession of the authenticator from this session;
-    // treat it as verified so they are not bounced by an org policy.
-    const sessionId = getCookie(c, SESSION_COOKIE);
-    if (sessionId) await markSessionSecondFactor(c.env.DB, sessionId, "passkey", logger);
-  }
-
+  // The passkey exists from here on, so everything that records that fact
+  // happens before anything that can still fail.
   await recordAudit(c.env.DB, logger, {
     action: "passkey.registered",
     actorType: "user",
@@ -209,11 +203,24 @@ export async function finishPasskeyRegistration(
     subject: saved.data.id,
     detail: { name, first: isFirst },
   });
-  return {
-    kind: "ok",
-    passkey: toPasskeySummary(saved.data),
-    ...(recoveryCodes !== undefined ? { recoveryCodes } : {}),
-  };
+  const passkey = toPasskeySummary(saved.data);
+  if (!isFirst) return { kind: "ok", passkey };
+
+  // The user just proved possession of the authenticator from this session;
+  // treat it as verified so an org requiring a second factor admits it.
+  const sessionId = getCookie(c, SESSION_COOKIE);
+  if (sessionId) await markSessionSecondFactor(c.env.DB, sessionId, "passkey", logger);
+
+  // The first passkey turns the second factor on, so this is the moment a lost
+  // device would otherwise become a locked account: issue the codes now, and
+  // show them exactly once. A failure here does not undo the registration —
+  // the passkey works — so it is reported alongside it, not instead of it.
+  const codes = await issueRecoveryCodes(c.env.DB, logger, userId, c.env.RECOVERY_CODE_PEPPER);
+  if (!codes.success) {
+    logger.error("Passkey saved but recovery codes could not be issued", codes.error, { userId });
+    return { kind: "ok", passkey, recoveryCodesFailed: true };
+  }
+  return { kind: "ok", passkey, recoveryCodes: codes.data };
 }
 
 export type RenameOutcome = "renamed" | "not_found" | "invalid_name";
@@ -275,11 +282,7 @@ export async function removeUserPasskey(
   if (!deleted.success) return { kind: "error", error: deleted.error };
   if (!deleted.data) return { kind: "not_found" };
   const remaining = all.data.length - 1;
-  if (remaining === 0) {
-    const cleared = await deleteRecoveryCodes(c.env.DB, logger, userId);
-    if (!cleared.success) return { kind: "error", error: cleared.error };
-  }
-
+  // The passkey is gone: record that first, whatever the cleanup below does.
   await recordAudit(c.env.DB, logger, {
     action: "passkey.removed",
     actorType: "user",
@@ -287,6 +290,17 @@ export async function removeUserPasskey(
     subject: passkeyId,
     detail: { remaining },
   });
+  if (remaining === 0) {
+    // Non-fatal. Orphaned codes only matter if a passkey is enrolled again, and
+    // the first enrollment replaces the whole set; the removal itself happened
+    // and must be reported as such.
+    const cleared = await deleteRecoveryCodes(c.env.DB, logger, userId);
+    if (!cleared.success) {
+      logger.error("Passkey removed but recovery codes were not cleared", cleared.error, {
+        userId,
+      });
+    }
+  }
   return { kind: "removed", remaining };
 }
 
@@ -306,7 +320,7 @@ export async function regenerateUserRecoveryCodes(
   if (count.data === 0) return { kind: "no_passkey" };
   const refusal = checkSensitiveSession(c, true);
   if (refusal) return { kind: "refused", refusal };
-  const codes = await issueRecoveryCodes(c.env.DB, logger, userId);
+  const codes = await issueRecoveryCodes(c.env.DB, logger, userId, c.env.RECOVERY_CODE_PEPPER);
   if (!codes.success) return { kind: "error", error: codes.error };
   await recordAudit(c.env.DB, logger, {
     action: "recovery_codes.regenerated",

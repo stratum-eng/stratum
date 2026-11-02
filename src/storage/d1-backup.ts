@@ -22,7 +22,10 @@ export const BACKUP_TABLES: readonly string[] = [
   // Passkeys and recovery-code hashes (migration 056, #256). Backed up for the
   // same reason as api_tokens: a restore that silently dropped them would turn
   // off every account's second factor with no signal to anyone. Both hold no
-  // secret — a public key, and SHA-256 hashes of high-entropy codes.
+  // plaintext secret: a public key, and per-user hashes of ~59-bit recovery
+  // codes (HMAC-keyed when RECOVERY_CODE_PEPPER is set, a secret that is NOT
+  // in any backup). Without the pepper a stolen backup still allows an offline
+  // guess per user, which is why codes are single-use and regenerable.
   "webauthn_credentials",
   "recovery_codes",
   // MCP OAuth (#349), FK-ordered: `oauth_clients` has no parent, and
