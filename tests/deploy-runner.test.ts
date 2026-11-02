@@ -780,6 +780,16 @@ describe("a terminal event follows only a terminal write that landed", () => {
     expect(onlyRow().status).toBe("succeeded");
     expect(eventTypes()).toEqual(["deployment.requested", "deployment.succeeded"]);
   });
+
+  it("emits deployment.failed when the provider rejects and the write lands", async () => {
+    await storeSecrets({ VERCEL_TOKEN, VERCEL_PROJECT_ID: VERCEL_PROJECT });
+
+    await run(MERGE_MESSAGE, { fetch: vercelRejectsEchoingTheToken() });
+
+    expect(onlyRow().status).toBe("failed");
+    // Both events carry the same frozen clock, so compare as a set.
+    expect([...eventTypes()].sort()).toEqual(["deployment.failed", "deployment.requested"]);
+  });
 });
 
 describe("approval", () => {
