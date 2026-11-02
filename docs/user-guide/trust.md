@@ -162,9 +162,16 @@ the `BACKUPS` R2 bucket:
   hold unmerged work, are not snapshotted. Their KV registry records are backed
   up, but their Git contents are not. Commits that have not been merged into the
   project are not in any backup.
-- **Retention:** the newest `BACKUP_RETENTION` complete runs (default **14**)
-  are kept, and older runs are pruned by the backup job itself. On-demand runs
-  count toward this number the same way scheduled runs do.
+- **Retention:** the newest `BACKUP_RETENTION` runs (default **14**) are kept,
+  and older runs are pruned by the backup job itself. On-demand runs count
+  toward this number the same way scheduled runs do. A run counts once its
+  `_manifest.json` is written, which means only that the run finished, **not
+  that it is restorable**. A run where a table, the KV export or a repository
+  failed still writes its manifest with `healthy: false` and still takes a
+  slot, so a stretch of failed runs can prune the last good one (#401). Before
+  relying on a run, check `healthy` in its manifest or the `backup.run` audit
+  entry, or check the restore plan's `restorable` result, and alert on
+  unhealthy runs.
 
 **Retention has to cover the rotation, or some repositories have no backup.**
 Each run stores packs only for the projects in that run's slice. With `P`
