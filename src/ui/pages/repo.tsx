@@ -120,6 +120,12 @@ interface RepoProps {
   /** Branch names for the switcher. Empty hides it — the listing is best-effort
    * and its failure must not take the repo page down. */
   branchNames?: string[];
+  /**
+   * Set when this is a cached view of an earlier commit, served while a
+   * background read catches it up: the commit the view shows. Rendered as a
+   * notice so a reader who just pushed knows why their change is not here yet.
+   */
+  behindAt?: string;
 }
 
 function getProviderIcon(provider?: GitProvider): string {
@@ -195,6 +201,7 @@ export const RepoPage: FC<RepoProps> = ({
   refName,
   defaultBranch,
   branchNames = [],
+  behindAt,
 }) => {
   const hasSource = !!project.sourceUrl;
   const currentRef = refName ?? defaultBranch;
@@ -356,6 +363,13 @@ export const RepoPage: FC<RepoProps> = ({
           branch={importProgress.branch}
           nonce={nonce}
         />
+      )}
+
+      {behindAt && (
+        <output class="repo-behind-notice">
+          Showing commit <code>{behindAt.slice(0, 7)}</code> while newer changes load. Refresh in a
+          few seconds to see them.
+        </output>
       )}
 
       <div class="repo-layout">

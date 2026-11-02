@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getOrgAccessLevel } from "../src/storage/orgs";
 import type { ProjectEntry, WorkspaceEntry } from "../src/types";
 import {
+  UNBOUND,
   canReadProject,
   canWriteProject,
   canWriteWorkspace,
@@ -51,35 +52,39 @@ describe("org project authorization", () => {
 
   it("keeps user-owned semantics without touching the database", async () => {
     const project = makeProject({});
-    expect(await canWriteProject(db, project, "user_owner")).toBe(true);
-    expect(await canWriteProject(db, project, "user_other")).toBe(false);
-    expect(await canReadProject(db, project, "user_other")).toBe(false);
-    expect(await canReadProject(db, makeProject({ visibility: "public" }), undefined)).toBe(true);
+    expect(await canWriteProject(db, project, UNBOUND, "user_owner")).toBe(true);
+    expect(await canWriteProject(db, project, UNBOUND, "user_other")).toBe(false);
+    expect(await canReadProject(db, project, UNBOUND, "user_other")).toBe(false);
+    expect(
+      await canReadProject(db, makeProject({ visibility: "public" }), UNBOUND, undefined),
+    ).toBe(true);
     expect(getOrgAccessLevel).not.toHaveBeenCalled();
   });
 
   it("grants read to any org member and denies non-members", async () => {
     vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("read");
-    expect(await canReadProject(db, orgProject, "user_member")).toBe(true);
+    expect(await canReadProject(db, orgProject, UNBOUND, "user_member")).toBe(true);
 
     vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("none");
-    expect(await canReadProject(db, orgProject, "user_stranger")).toBe(false);
+    expect(await canReadProject(db, orgProject, UNBOUND, "user_stranger")).toBe(false);
   });
 
   it("requires write/admin level for org project writes", async () => {
     vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("read");
-    expect(await canWriteProject(db, orgProject, "user_member")).toBe(false);
+    expect(await canWriteProject(db, orgProject, UNBOUND, "user_member")).toBe(false);
 
     vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("write");
-    expect(await canWriteProject(db, orgProject, "user_team_writer")).toBe(true);
+    expect(await canWriteProject(db, orgProject, UNBOUND, "user_team_writer")).toBe(true);
 
     vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("admin");
-    expect(await canWriteProject(db, orgProject, "user_admin")).toBe(true);
+    expect(await canWriteProject(db, orgProject, UNBOUND, "user_admin")).toBe(true);
   });
 
   it("agents inherit their owning user's org access", async () => {
     vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("write");
-    expect(await canWriteProject(db, orgProject, undefined, "user_agent_owner")).toBe(true);
+    expect(await canWriteProject(db, orgProject, UNBOUND, undefined, "user_agent_owner")).toBe(
+      true,
+    );
     expect(getOrgAccessLevel).toHaveBeenCalledWith(
       db,
       expect.any(Object),
@@ -89,7 +94,7 @@ describe("org project authorization", () => {
   });
 
   it("denies anonymous callers on private org projects", async () => {
-    expect(await canReadProject(db, orgProject, undefined)).toBe(false);
+    expect(await canReadProject(db, orgProject, UNBOUND, undefined)).toBe(false);
     expect(getOrgAccessLevel).not.toHaveBeenCalled();
   });
 
@@ -103,7 +108,7 @@ describe("org project authorization", () => {
       makeProject({ id: "5", ownerId: "user_other" }),
     ];
 
-    const readable = await filterReadableProjects(db, projects, "user_me");
+    const readable = await filterReadableProjects(db, projects, UNBOUND, "user_me");
     expect(readable.map((p) => p.id)).toEqual(["1", "2", "3", "4"]);
     // org_1 and org_2 — one lookup each despite three org projects.
     expect(getOrgAccessLevel).toHaveBeenCalledTimes(2);
@@ -118,11 +123,11 @@ describe("org project authorization", () => {
       importCompleted: false,
     });
 
-    const readable = await filterReadableProjects(db, [incomplete], "user_member");
+    const readable = await filterReadableProjects(db, [incomplete], UNBOUND, "user_member");
     expect(readable).toHaveLength(0);
 
     vi.mocked(getOrgAccessLevel).mockResolvedValue("write");
-    const writable = await filterReadableProjects(db, [incomplete], "user_writer");
+    const writable = await filterReadableProjects(db, [incomplete], UNBOUND, "user_writer");
     expect(writable).toHaveLength(1);
   });
 });
@@ -145,20 +150,20 @@ describe("filterMemberProjects (personal dashboard scope)", () => {
       makeProject({ id: "pub_org", ownerId: "org_2", ownerType: "org", visibility: "public" }),
     ];
 
-    const mine = await filterMemberProjects(db, projects, "user_me");
+    const mine = await filterMemberProjects(db, projects, UNBOUND, "user_me");
     expect(mine.map((p) => p.id)).toEqual(["mine", "myorg"]);
   });
 
   it("still includes my own project even when it is public", async () => {
     vi.mocked(getOrgAccessLevel).mockResolvedValue("none");
     const projects = [makeProject({ id: "mine_pub", ownerId: "user_me", visibility: "public" })];
-    const mine = await filterMemberProjects(db, projects, "user_me");
+    const mine = await filterMemberProjects(db, projects, UNBOUND, "user_me");
     expect(mine.map((p) => p.id)).toEqual(["mine_pub"]);
   });
 
   it("returns an empty list for an unauthenticated caller", async () => {
     const projects = [makeProject({ id: "pub", ownerId: "user_other", visibility: "public" })];
-    const mine = await filterMemberProjects(db, projects);
+    const mine = await filterMemberProjects(db, projects, UNBOUND);
     expect(mine).toHaveLength(0);
     // No actor — no org lookups needed.
     expect(getOrgAccessLevel).not.toHaveBeenCalled();
@@ -167,7 +172,7 @@ describe("filterMemberProjects (personal dashboard scope)", () => {
   it("excludes org projects the caller is not a member of", async () => {
     vi.mocked(getOrgAccessLevel).mockResolvedValue("none");
     const projects = [makeProject({ id: "foreign_org", ownerId: "org_x", ownerType: "org" })];
-    const mine = await filterMemberProjects(db, projects, "user_me");
+    const mine = await filterMemberProjects(db, projects, UNBOUND, "user_me");
     expect(mine).toHaveLength(0);
   });
 });
@@ -188,16 +193,16 @@ describe("isProjectAdmin", () => {
   });
 
   it("grants the direct owner without touching the database", async () => {
-    expect(await isProjectAdmin(db, makeProject({}), "user_owner")).toBe(true);
+    expect(await isProjectAdmin(db, makeProject({}), UNBOUND, "user_owner")).toBe(true);
     expect(getOrgAccessLevel).not.toHaveBeenCalled();
   });
 
   it("requires admin (not merely write) on org projects", async () => {
     vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("write");
-    expect(await isProjectAdmin(db, orgProject, "user_writer")).toBe(false);
+    expect(await isProjectAdmin(db, orgProject, UNBOUND, "user_writer")).toBe(false);
 
     vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("admin");
-    expect(await isProjectAdmin(db, orgProject, "user_admin")).toBe(true);
+    expect(await isProjectAdmin(db, orgProject, UNBOUND, "user_admin")).toBe(true);
   });
 });
 
@@ -209,43 +214,45 @@ describe("canWriteWorkspace (S1 per-workspace ownership)", () => {
   it("allows the creator (effective user matches createdByUserId)", async () => {
     const ws = makeWorkspace({ createdByUserId: "user_creator" });
     // User-owned project; creator is not the owner. No DB call needed.
-    expect(await canWriteWorkspace(db, makeProject({}), ws, "user_creator")).toBe(true);
+    expect(await canWriteWorkspace(db, makeProject({}), ws, UNBOUND, "user_creator")).toBe(true);
     expect(getOrgAccessLevel).not.toHaveBeenCalled();
   });
 
   it("allows an agent whose owner created the workspace (shared principal)", async () => {
     const ws = makeWorkspace({ createdByUserId: "user_creator" });
-    expect(await canWriteWorkspace(db, makeProject({}), ws, undefined, "user_creator")).toBe(true);
+    expect(
+      await canWriteWorkspace(db, makeProject({}), ws, UNBOUND, undefined, "user_creator"),
+    ).toBe(true);
   });
 
   it("denies a non-creator project writer (org write, not admin)", async () => {
     // Not the creator → falls through to the admin check, which write-level fails.
     vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("write");
     const ws = makeWorkspace({ createdByUserId: "user_creator" });
-    expect(await canWriteWorkspace(db, orgProject, ws, "user_writer")).toBe(false);
+    expect(await canWriteWorkspace(db, orgProject, ws, UNBOUND, "user_writer")).toBe(false);
   });
 
   it("allows a project admin to override any workspace they did not create", async () => {
     vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("admin");
     const ws = makeWorkspace({ createdByUserId: "user_creator" });
-    expect(await canWriteWorkspace(db, orgProject, ws, "user_admin")).toBe(true);
+    expect(await canWriteWorkspace(db, orgProject, ws, UNBOUND, "user_admin")).toBe(true);
   });
 
   it("legacy workspace (no creator) + non-admin → denied (fail closed)", async () => {
     vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("write");
     const ws = makeWorkspace(); // no createdByUserId
-    expect(await canWriteWorkspace(db, orgProject, ws, "user_writer")).toBe(false);
+    expect(await canWriteWorkspace(db, orgProject, ws, UNBOUND, "user_writer")).toBe(false);
   });
 
   it("legacy workspace (no creator) + admin → allowed", async () => {
     vi.mocked(getOrgAccessLevel).mockResolvedValueOnce("admin");
     const ws = makeWorkspace(); // no createdByUserId
-    expect(await canWriteWorkspace(db, orgProject, ws, "user_admin")).toBe(true);
+    expect(await canWriteWorkspace(db, orgProject, ws, UNBOUND, "user_admin")).toBe(true);
   });
 
   it("the direct owner of a user-owned project may write a legacy workspace", async () => {
     const ws = makeWorkspace();
-    expect(await canWriteWorkspace(db, makeProject({}), ws, "user_owner")).toBe(true);
+    expect(await canWriteWorkspace(db, makeProject({}), ws, UNBOUND, "user_owner")).toBe(true);
     expect(getOrgAccessLevel).not.toHaveBeenCalled();
   });
 });

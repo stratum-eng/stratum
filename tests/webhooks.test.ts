@@ -6,6 +6,7 @@ import {
   deleteWebhook,
   listDeliveries,
   listWebhooks,
+  regenerateWebhookSecret,
   setWebhookActive,
   webhookBelongsToProject,
   webhookMatchesEvent,
@@ -247,6 +248,40 @@ describe("deliverEventToWebhooks", () => {
     expect(deliveries).toHaveLength(1);
     expect(deliveries[0]?.status).toBe("success");
     expect(deliveries[0]?.status_code).toBe(200);
+  });
+
+  it("signs with the regenerated secret, never the old one, after a rotation", async () => {
+    const { env, webhook, db } = await setup();
+    fetchMock.mockResolvedValue(new Response("ok", { status: 200 }));
+    const oldSecret = webhook.secret;
+
+    const rotated = await regenerateWebhookSecret(db, mockLogger, webhook.id);
+    expect(rotated.success).toBe(true);
+    if (!rotated.success) return;
+    const newSecret = rotated.data;
+    // Same generator as creation, and genuinely a new value.
+    expect(newSecret).toMatch(/^stm_whsec_[0-9a-f]{32}$/);
+    expect(newSecret).not.toBe(oldSecret);
+
+    await deliverEventToWebhooks(env, makeEvent(), mockLogger);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const signature = (init.headers as Record<string, string>)["X-Stratum-Signature"];
+    expect(signature).toBe(await signPayload(newSecret, init.body as string));
+    expect(signature).not.toBe(await signPayload(oldSecret, init.body as string));
+  });
+
+  it("reports NOT_FOUND, not a fresh secret, when the webhook is already gone", async () => {
+    // Deleted between the route's lookup and the UPDATE: revealing a "new"
+    // secret for a webhook that no longer exists would be a lie.
+    const { db } = makeWebhooksD1();
+
+    const rotated = await regenerateWebhookSecret(db, mockLogger, "wh_missing");
+
+    expect(rotated.success).toBe(false);
+    if (rotated.success) return;
+    expect(rotated.error.code).toBe("NOT_FOUND");
   });
 
   it("records failure on non-2xx responses and network errors without throwing", async () => {

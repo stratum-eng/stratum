@@ -3,6 +3,11 @@ import type { Context } from "hono";
 import { buildUsageReport } from "../billing/usage-report";
 import { cannotMintLegacyCredential } from "../middleware/auth";
 import {
+  describeTokenBindings,
+  parseBindingRequest,
+  resolveBindingRequest,
+} from "../services/token-binding";
+import {
   MAX_TOKEN_EXPIRY_DAYS,
   MIN_TOKEN_EXPIRY_DAYS,
   createApiToken,
@@ -20,6 +25,7 @@ import {
   rotateUserToken,
 } from "../storage/users";
 import type { ApiTokenScope, Env } from "../types";
+import { credentialBindingFrom } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 import { badRequest, internalError, notFound, ok } from "../utils/response";
@@ -195,7 +201,16 @@ app.get("/me/tokens", async (c) => {
 
   const result = await listApiTokens(c.env.DB, logger, access.userId);
   if (!result.success) return internalError(result.error.message);
-  return ok({ tokens: result.data });
+  // A bound token (#323) carries a human-readable label next to its ids, so a
+  // caller auditing their tokens need not resolve project ids themselves.
+  const labels = await describeTokenBindings(c.env, logger, result.data);
+  return ok({
+    tokens: result.data.map((token) =>
+      token.binding === undefined
+        ? token
+        : { ...token, binding: { ...token.binding, label: labels.get(token.id) ?? "" } },
+    ),
+  });
 });
 
 // POST /api/users/me/tokens — mint a named token. The plaintext is returned
@@ -211,7 +226,13 @@ app.post("/me/tokens", async (c) => {
   const access = requireSession(c);
   if ("response" in access) return access.response;
 
-  type TokenBody = { name?: unknown; scope?: unknown; expiresInDays?: unknown };
+  type TokenBody = {
+    name?: unknown;
+    scope?: unknown;
+    expiresInDays?: unknown;
+    project?: unknown;
+    org?: unknown;
+  };
   const parsed = await readJsonWithLimit<TokenBody>(c, MAX_TOKEN_BODY_BYTES, logger).catch(
     (): TokenBody => ({}),
   );
@@ -220,7 +241,7 @@ app.post("/me/tokens", async (c) => {
     return badRequest("Request body must be a JSON object");
   }
 
-  const { name, scope, expiresInDays } = parsed;
+  const { name, scope, expiresInDays, project, org } = parsed;
   if (typeof name !== "string" || name.trim().length === 0 || name.length > 100) {
     return badRequest("name must be a non-empty string of at most 100 characters");
   }
@@ -239,6 +260,24 @@ app.post("/me/tokens", async (c) => {
     );
   }
 
+  // Optional binding to one project or org (#323). The creator must be able to
+  // reach the target; an unreachable one is a 404 like a missing one.
+  const bindingRequest = parseBindingRequest(project, org);
+  if (!bindingRequest.success) return badRequest(bindingRequest.error.message);
+  const resolvedBinding = await resolveBindingRequest(c.env, logger, {
+    userId: access.userId,
+    creatorBinding: credentialBindingFrom(c),
+    request: bindingRequest.data,
+  });
+  if (!resolvedBinding.success) {
+    if (resolvedBinding.error.statusCode === 400) return badRequest(resolvedBinding.error.message);
+    if (resolvedBinding.error.statusCode === 404) {
+      return c.json({ error: resolvedBinding.error.message, code: "NOT_FOUND" }, 404);
+    }
+    logger.error("Failed to resolve token binding", resolvedBinding.error);
+    return internalError("Could not check the requested binding");
+  }
+
   const result = await createApiToken(c.env.DB, logger, {
     userId: access.userId,
     name: name.trim(),
@@ -246,6 +285,7 @@ app.post("/me/tokens", async (c) => {
     // should not be handed the ability to write.
     scope: (scope ?? "read") as ApiTokenScope,
     ...(expiresInDays !== undefined ? { expiresInDays } : {}),
+    ...(resolvedBinding.data !== null ? { binding: resolvedBinding.data.binding } : {}),
   });
   if (!result.success) {
     // A rejected name or expiry is a 400; only the active-token cap is a 409.
@@ -267,18 +307,26 @@ app.post("/me/tokens", async (c) => {
     // The token id is the audit subject, matching the settings-form routes —
     // `subject` is what an audit query filters on; `detail` is not indexed.
     subject: result.data.token.id,
-    detail: { scope: result.data.token.scope },
+    detail: {
+      scope: result.data.token.scope,
+      ...(result.data.token.binding !== undefined ? { binding: result.data.token.binding } : {}),
+    },
   });
+
+  const token =
+    result.data.token.binding !== undefined && resolvedBinding.data !== null
+      ? {
+          ...result.data.token,
+          binding: { ...result.data.token.binding, label: resolvedBinding.data.label },
+        }
+      : result.data.token;
 
   // The plaintext exists nowhere else after this response, so it must not be
   // cached anywhere on the way back.
-  return new Response(
-    JSON.stringify({ token: result.data.token, plaintext: result.data.plaintext }),
-    {
-      status: 201,
-      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-    },
-  );
+  return new Response(JSON.stringify({ token, plaintext: result.data.plaintext }), {
+    status: 201,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
 });
 
 // DELETE /api/users/me/tokens/:id — revoke one of the caller's own tokens.

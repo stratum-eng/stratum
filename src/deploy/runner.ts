@@ -694,15 +694,28 @@ async function runOneDeployment(
       });
     }
 
-    await emitDeploymentEvent(
-      ctx,
-      deployment,
-      terminal.status === "succeeded" ? "deployment.succeeded" : "deployment.failed",
-      {
-        ...(terminal.url !== undefined ? { url: terminal.url } : {}),
-        ...(writtenReason !== null ? { reason: writtenReason } : {}),
-      },
-    );
+    // The event announces what the row now says, so it goes out only when the
+    // terminal write actually landed. A write that errored leaves the row
+    // `running` for the lease reaper, and one that matched nothing means the row
+    // was already terminal; either way a webhook consumer would otherwise act on
+    // an outcome the database does not record. Same rule as `failWithoutRunning`.
+    if (completed.success && completed.data) {
+      await emitDeploymentEvent(
+        ctx,
+        deployment,
+        terminal.status === "succeeded" ? "deployment.succeeded" : "deployment.failed",
+        {
+          ...(terminal.url !== undefined ? { url: terminal.url } : {}),
+          ...(writtenReason !== null ? { reason: writtenReason } : {}),
+        },
+      );
+    } else {
+      logger.warn("Terminal status was not written; not emitting a terminal event", {
+        deploymentId: deployment.id,
+        projectId: project.id,
+        status: terminal.status,
+      });
+    }
   }
 
   const record: DeployRunRecord = {
