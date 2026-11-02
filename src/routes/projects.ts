@@ -8,6 +8,11 @@ import {
 } from "../middleware/rate-limit";
 import { emitEvent } from "../queue/events";
 import { syncOrImportProject } from "../services/project-sync";
+import {
+  getCommitLogPreferNative,
+  kvTreeListingCache,
+  listFilesInRepoPreferNative,
+} from "../storage/artifacts-reads";
 import { recordAudit } from "../storage/audit";
 import { captureDeletionTarget, isTargetDeleting } from "../storage/deletion";
 import { createDeletionJob } from "../storage/deletion-jobs";
@@ -17,11 +22,9 @@ import {
   createBranchRef,
   deleteBranchRef,
   freshRepoToken,
-  getCommitLog,
   importFromGitHub,
   initAndPush,
   isValidBranchName,
-  listFilesInRepo,
   listRepoBranches,
   listRepoTags,
   resolveBranchRef,
@@ -1038,7 +1041,14 @@ app.get("/:namespace/:slug/files", async (c) => {
   const ref = await resolveRequestedRef(c, project, readToken.data, logger);
   if ("response" in ref) return ref.response;
 
-  const filesResult = await listFilesInRepo(project.remote, readToken.data, logger, ref.branch);
+  const filesResult = await listFilesInRepoPreferNative(
+    c.env.ARTIFACTS,
+    project.remote,
+    readToken.data,
+    logger,
+    ref.branch,
+    project.id ? { treeCache: kvTreeListingCache(c.env.STATE, project.id, logger) } : {},
+  );
   if (!filesResult.success) {
     logger.error("Failed to list files in repo", filesResult.error);
     return internalError(filesResult.error.message);
@@ -1100,6 +1110,7 @@ app.get("/:namespace/:slug/content", async (c) => {
     filePath,
     logger,
     ref.branch,
+    c.env.ARTIFACTS,
   );
   if (!contentResult.success) {
     return internalError(contentResult.error.message);
@@ -1165,7 +1176,14 @@ app.get("/:namespace/:slug/log", async (c) => {
   const ref = await resolveRequestedRef(c, project, readToken.data, logger);
   if ("response" in ref) return ref.response;
 
-  const logResult = await getCommitLog(project.remote, readToken.data, logger, depth, ref.branch);
+  const logResult = await getCommitLogPreferNative(
+    c.env.ARTIFACTS,
+    project.remote,
+    readToken.data,
+    logger,
+    depth,
+    ref.branch,
+  );
   if (!logResult.success) {
     logger.error("Failed to get commit log", logResult.error);
     return internalError(logResult.error.message);

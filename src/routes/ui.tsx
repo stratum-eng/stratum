@@ -14,6 +14,7 @@ import {
   listApiTokens,
   revokeApiToken,
 } from "../storage/api-tokens";
+import { kvTreeListingCache, loadRepoViewPreferNative } from "../storage/artifacts-reads";
 import { recordAudit } from "../storage/audit";
 import { listComments, listReviews } from "../storage/change-reviews";
 import { getChange, listChanges } from "../storage/changes";
@@ -27,7 +28,6 @@ import {
   getDiffBetweenRepos,
   listRepoBranches,
   listRepoTags,
-  loadRepoView,
   resolveBranchRef,
 } from "../storage/git-ops";
 import { getImportProgress } from "../storage/imports";
@@ -1172,6 +1172,7 @@ app.get("/p/:name", async (c) => {
     if (tokenResult.success) {
       const data = await loadRepoPageData(
         c.env.STATE,
+        c.env.ARTIFACTS,
         project,
         tokenResult.data,
         projectDefaultBranch(project),
@@ -1760,6 +1761,7 @@ type RepoPageData = {
  */
 async function loadRepoPageData(
   kv: Env["STATE"],
+  artifacts: Env["ARTIFACTS"],
   project: ProjectEntry,
   readToken: string,
   branch: string,
@@ -1775,7 +1777,9 @@ async function loadRepoPageData(
     const current = cached?.headSha === liveHead;
     if (cached && (current || waitUntil)) {
       if (!current && waitUntil) {
-        waitUntil(refreshRepoView(kv, cacheProject, project.remote, readToken, branch, logger));
+        waitUntil(
+          refreshRepoView(kv, artifacts, cacheProject, project.remote, readToken, branch, logger),
+        );
       }
       return {
         files: cached.files,
@@ -1787,7 +1791,19 @@ async function loadRepoPageData(
     }
   }
 
-  const viewResult = await loadRepoView(project.remote, readToken, logger, branch);
+  const viewResult = await loadRepoViewPreferNative(
+    artifacts,
+    project.remote,
+    readToken,
+    logger,
+    branch,
+    project.id
+      ? {
+          treeCache: kvTreeListingCache(kv, project.id, logger),
+          ...(waitUntil ? { waitUntil } : {}),
+        }
+      : {},
+  );
   if (!viewResult.success) {
     // Repo may be empty or unreachable — render with empty data
     logger.warn("Error loading repo data", { error: viewResult.error.message });
@@ -1820,6 +1836,7 @@ async function loadRepoPageData(
  */
 async function refreshRepoView(
   kv: Env["STATE"],
+  artifacts: Env["ARTIFACTS"],
   cacheProject: RepoViewCacheProject,
   remote: string,
   readToken: string,
@@ -1828,7 +1845,17 @@ async function refreshRepoView(
 ): Promise<void> {
   try {
     if (!(await claimRepoViewRefresh(kv, cacheProject, branch, logger))) return;
-    const viewResult = await loadRepoView(remote, readToken, logger, branch);
+    // Already off the response path, so the listing writes are simply awaited.
+    const viewResult = await loadRepoViewPreferNative(
+      artifacts,
+      remote,
+      readToken,
+      logger,
+      branch,
+      {
+        treeCache: kvTreeListingCache(kv, cacheProject.id, logger),
+      },
+    );
     if (!viewResult.success) {
       logger.warn("Background repo view refresh failed", {
         branch,
@@ -2504,6 +2531,7 @@ app.get("/:namespace/:slug/blob/*", async (c) => {
     filePath,
     logger,
     branch,
+    c.env.ARTIFACTS,
   );
   if (!contentResult.success) {
     return c.html(errorPage(500, "Error loading file.", userResult), 500);
@@ -2685,6 +2713,7 @@ app.get("/:namespace/:slug", async (c) => {
     const liveHead = switcherBranches?.find((b) => b.name === branch)?.oid ?? refResolution.oid;
     const data = await loadRepoPageData(
       c.env.STATE,
+      c.env.ARTIFACTS,
       project,
       cloneToken,
       branch,

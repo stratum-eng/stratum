@@ -463,6 +463,7 @@ describe("UI GET /:namespace/:slug/blob/* — ?ref=", () => {
       "src/index.ts",
       expect.anything(),
       "release/2.x",
+      env.ARTIFACTS,
     );
     const html = await res.text();
     // The query string never leaks into the wildcard file path.
@@ -483,6 +484,7 @@ describe("UI GET /:namespace/:slug/blob/* — ?ref=", () => {
       "src/index.ts",
       expect.anything(),
       "trunk",
+      env.ARTIFACTS,
     );
     expect(vi.mocked(resolveBranchRef)).not.toHaveBeenCalled();
   });
