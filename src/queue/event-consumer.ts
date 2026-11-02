@@ -113,6 +113,16 @@ export const stagedTreeGcHandler: EventHandler = {
       }
       throw changeResult.error;
     }
+    // The event can arrive late. By then a GitHub changes-requested review may
+    // have moved the change to needs_changes and re-evaluation onward, and an
+    // active change still needs its pinned tree to merge.
+    if (changeResult.data.status !== "rejected") {
+      logger.debug("Change no longer rejected; staged-tree GC skipped", {
+        changeId,
+        status: changeResult.data.status,
+      });
+      return;
+    }
 
     const key = await deletePinnedStagedTreeForChange(
       env.REPO_OBJECTS,

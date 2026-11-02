@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { processEvent } from "../src/queue/event-consumer";
+import type { EventRecord } from "../src/storage/events";
 import { deletePinnedStagedTreeForChange } from "../src/storage/staged-tree-gc";
 import type { Change, Env } from "../src/types";
 import type { Logger } from "../src/utils/logger";
@@ -38,6 +39,51 @@ function changeDb(row: Record<string, unknown>): D1Database {
     })),
   } as unknown as D1Database;
 }
+
+function changeRow(status: string): Record<string, unknown> {
+  return {
+    id: "chg_1",
+    project: "demo",
+    project_id: "project-1",
+    workspace: "feature",
+    status,
+    agent_id: null,
+    eval_score: null,
+    eval_passed: null,
+    eval_reason: null,
+    base_sha: null,
+    evaluated_sha: "evaluated-sha",
+    evaluated_tree_oid: null,
+    agent_model: null,
+    agent_prompt_hash: null,
+    workspace_head_sha: "evaluated-sha",
+    created_at: "2026-08-24T00:00:00.000Z",
+    merged_at: null,
+    github_owner: null,
+    github_repo: null,
+    github_branch: null,
+    github_pr_number: null,
+    github_pr_url: null,
+    github_pr_state: null,
+    github_head_sha: null,
+    github_comment_id: null,
+    promoted_at: null,
+    promoted_by: null,
+  };
+}
+
+const rejectedEvent: EventRecord = {
+  id: "evt_1",
+  type: "change.rejected",
+  project: "demo",
+  projectId: "project-1",
+  actorType: "user",
+  payload: { changeId: "chg_1" },
+  status: "pending",
+  attempts: 0,
+  createdAt: "2026-08-24T00:00:00.000Z",
+  completedHandlers: ["analytics", "issue-autoclose", "webhooks"],
+};
 
 describe("staged-tree GC", () => {
   it("deletes only the rejected change's pinned sha copy", async () => {
@@ -86,57 +132,28 @@ describe("staged-tree GC", () => {
     await bucket.put("repos/project-1/ws/feature/sha/evaluated-sha", "pinned");
     await bucket.put("repos/project-1/ws/feature/sha/newer-sha", "newer");
 
-    const db = changeDb({
-      id: "chg_1",
-      project: "demo",
-      project_id: "project-1",
-      workspace: "feature",
-      status: "rejected",
-      agent_id: null,
-      eval_score: null,
-      eval_passed: null,
-      eval_reason: null,
-      base_sha: null,
-      evaluated_sha: "evaluated-sha",
-      evaluated_tree_oid: null,
-      agent_model: null,
-      agent_prompt_hash: null,
-      workspace_head_sha: "evaluated-sha",
-      created_at: "2026-08-24T00:00:00.000Z",
-      merged_at: null,
-      github_owner: null,
-      github_repo: null,
-      github_branch: null,
-      github_pr_number: null,
-      github_pr_url: null,
-      github_pr_state: null,
-      github_head_sha: null,
-      github_comment_id: null,
-      promoted_at: null,
-      promoted_by: null,
-    });
+    const db = changeDb(changeRow("rejected"));
 
     // Dispatched through the registry, not the handler, so dropping the GC
     // handler from it fails this test. The handlers ahead of it are marked
     // done, so only the GC handler runs against this minimal env.
-    await processEvent(
-      { DB: db, REPO_OBJECTS: bucket } as unknown as Env,
-      {
-        id: "evt_1",
-        type: "change.rejected",
-        project: "demo",
-        projectId: "project-1",
-        actorType: "user",
-        payload: { changeId: "chg_1" },
-        status: "pending",
-        attempts: 0,
-        createdAt: "2026-08-24T00:00:00.000Z",
-        completedHandlers: ["analytics", "issue-autoclose", "webhooks"],
-      },
-      logger,
-    );
+    await processEvent({ DB: db, REPO_OBJECTS: bucket } as unknown as Env, rejectedEvent, logger);
 
     expect(bucket.store.has("repos/project-1/ws/feature/sha/evaluated-sha")).toBe(false);
     expect(bucket.store.has("repos/project-1/ws/feature/sha/newer-sha")).toBe(true);
+  });
+  it("leaves the tree alone when the change is no longer rejected", async () => {
+    // A late event: a GitHub changes-requested review moved the change on, and
+    // it may yet merge from this tree.
+    const bucket = makeFakeR2();
+    await bucket.put("repos/project-1/ws/feature/sha/evaluated-sha", "pinned");
+
+    await processEvent(
+      { DB: changeDb(changeRow("needs_changes")), REPO_OBJECTS: bucket } as unknown as Env,
+      rejectedEvent,
+      logger,
+    );
+
+    expect(bucket.store.has("repos/project-1/ws/feature/sha/evaluated-sha")).toBe(true);
   });
 });
