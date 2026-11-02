@@ -36,7 +36,8 @@ docs/
 │   ├── issues.md                       # The built-in issue tracker
 │   ├── ci-integration.md               # Bring-your-own-CI guide
 │   ├── troubleshooting.md              # Problem solving
-│   └── faq.md                          # Frequently asked questions
+│   ├── faq.md                          # Frequently asked questions
+│   └── trust.md                        # Security architecture, subprocessors, data residency
 ├── developer/                          # Developer Documentation
 │   ├── README.md                       # Developer guide overview
 │   ├── architecture.md                 # System architecture (comprehensive)
@@ -92,6 +93,7 @@ docs/
 **Help:**
 - [Troubleshooting](user-guide/troubleshooting.md)
 - [FAQ](user-guide/faq.md)
+- [Trust, Security Architecture, and Data Residency](user-guide/trust.md)
 
 ### For API Consumers
 
@@ -165,6 +167,7 @@ short stub that needs to be fleshed out.
 | User Guide - CI Integration | ✅ Complete | High | 2026-08-31 |
 | User Guide - Troubleshooting | ✅ Complete | Medium | 2026-08-31 |
 | User Guide - FAQ | ✅ Complete | Medium | 2026-08-31 |
+| User Guide - Trust and Data Residency | ✅ Complete | High | 2026-11-02 |
 | Developer - Architecture | ✅ Complete | High | 2026-08-31 |
 | Developer - Deployment | ✅ Complete | Medium | 2026-08-31 |
 | Developer - Local Setup | 🚧 Outline | High | 2026-08-29 |

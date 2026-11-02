@@ -182,6 +182,7 @@ export default defineConfig({
             { label: "MCP server", slug: "guides/mcp" },
             { label: "Troubleshooting", slug: "guides/troubleshooting" },
             { label: "FAQ", slug: "guides/faq" },
+            { label: "Trust and data residency", slug: "guides/trust" },
           ],
         },
         {
