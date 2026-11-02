@@ -14,7 +14,11 @@ import type { Logger } from "../src/utils/logger";
 import { makeSqliteD1 } from "./helpers/sqlite-d1";
 
 vi.mock("../src/storage/users", () => ({ getUser: vi.fn() }));
-vi.mock("../src/storage/state", () => ({ deleteProject: vi.fn(), getProjectByPath: vi.fn() }));
+vi.mock("../src/storage/state", () => ({
+  deleteProject: vi.fn(),
+  getProjectByPath: vi.fn(),
+  namespaceHasProjects: vi.fn(),
+}));
 vi.mock("../src/storage/deletion", () => ({ captureDeletionTarget: vi.fn() }));
 vi.mock("../src/storage/deletion-jobs", () => ({ createDeletionJob: vi.fn() }));
 
@@ -26,8 +30,9 @@ import {
   confirmOwnerNamespace,
   ownerHasClaims,
   releaseNamespaceClaim,
+  usernameNamespaceTaken,
 } from "../src/storage/project-namespace";
-import { deleteProject, getProjectByPath } from "../src/storage/state";
+import { deleteProject, getProjectByPath, namespaceHasProjects } from "../src/storage/state";
 import { getUser } from "../src/storage/users";
 import type { ProjectEntry } from "../src/types";
 
@@ -445,5 +450,77 @@ describe("stale namespace claims", () => {
     const claims = await ownerHasClaims({ DB: refreshing, STATE: kv }, "usr_1", logger, later());
     expect(claims.success && claims.data).toBe(false);
     expect(raw.prepare("SELECT count(*) AS n FROM namespace_claims").get()).toEqual({ n: 1 });
+  });
+});
+
+/**
+ * The other direction from ownerHasClaims: not "may this account give up its
+ * name" but "is this name free to take". Users and orgs share the `@name`
+ * namespace, and a namespace can outlive the account that named it.
+ */
+describe("usernameNamespaceTaken", () => {
+  const empty = { success: true as const, data: false };
+  const nonEmpty = { success: true as const, data: true };
+
+  beforeEach(() => {
+    vi.mocked(namespaceHasProjects).mockResolvedValue(empty);
+  });
+
+  it("reports a free name as free", async () => {
+    const { db } = makeSqliteD1();
+    const taken = await usernameNamespaceTaken({ DB: db, STATE: kv }, "bob", logger);
+    expect(taken.success && taken.data).toBe(false);
+    expect(namespaceHasProjects).toHaveBeenCalledWith(kv, "@bob", logger);
+  });
+
+  it("treats an org slug as taken", async () => {
+    const { db, raw } = makeSqliteD1();
+    raw
+      .prepare("INSERT INTO users (id, email, username, token_hash) VALUES (?, ?, ?, ?)")
+      .run("usr_9", "o@b.com", "owner", "h");
+    raw
+      .prepare("INSERT INTO orgs (id, name, slug, owner_id) VALUES (?, ?, ?, ?)")
+      .run("org_1", "Acme", "acme", "usr_9");
+    const taken = await usernameNamespaceTaken({ DB: db, STATE: kv }, "acme", logger);
+    expect(taken.success && taken.data).toBe(true);
+  });
+
+  it("treats a live claim on the namespace as taken, whoever holds it", async () => {
+    const { db } = makeSqliteD1();
+    await claimNamespace(db, { ownerId: "usr_2", namespace: "@bob", slug: "proj" }, logger);
+    const taken = await usernameNamespaceTaken({ DB: db, STATE: kv }, "bob", logger);
+    expect(taken.success && taken.data).toBe(true);
+  });
+
+  it("ignores a stale claim with no project behind it", async () => {
+    vi.mocked(getProjectByPath).mockResolvedValue(missing);
+    const { db } = makeSqliteD1();
+    await claimNamespace(db, { ownerId: "usr_2", namespace: "@bob", slug: "proj" }, logger);
+    const taken = await usernameNamespaceTaken({ DB: db, STATE: kv }, "bob", logger, later());
+    expect(taken.success && taken.data).toBe(false);
+  });
+
+  it("treats projects left in KV under the namespace as taken", async () => {
+    vi.mocked(namespaceHasProjects).mockResolvedValue(nonEmpty);
+    const { db } = makeSqliteD1();
+    const taken = await usernameNamespaceTaken({ DB: db, STATE: kv }, "bob", logger);
+    expect(taken.success && taken.data).toBe(true);
+  });
+
+  it("fails closed when D1 cannot be read", async () => {
+    const broken = {
+      prepare: () => ({
+        bind: () => ({
+          first: async () => {
+            throw new Error("D1 down");
+          },
+          all: async () => {
+            throw new Error("D1 down");
+          },
+        }),
+      }),
+    } as unknown as D1Database;
+    const taken = await usernameNamespaceTaken({ DB: broken, STATE: kv }, "bob", logger);
+    expect(taken.success).toBe(false);
   });
 });

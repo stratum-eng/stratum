@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cannotMintLegacyCredential } from "../middleware/auth";
 import { createAgent, deleteAgent, getAgent, listAgents } from "../storage/agents";
 import { recordAudit } from "../storage/audit";
 import type { Env } from "../types";
@@ -22,6 +23,22 @@ app.post("/", async (c) => {
   if (!userId) {
     logger.warn("Unauthorized attempt to create agent");
     return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  // An agent token never expires and is not tied to the credential that minted
+  // it, so a scoped token or OAuth grant that could create agents would outlive
+  // its own revocation — the same hazard the legacy-key rotate routes refuse.
+  if (cannotMintLegacyCredential(c)) {
+    logger.warn("Agent creation rejected - delegated credential cannot mint agent tokens", {
+      userId,
+    });
+    return c.json(
+      {
+        error: "A scoped API token or OAuth grant cannot create agents",
+        code: "SESSION_REQUIRED",
+      },
+      403,
+    );
   }
 
   const body = await readJsonWithLimit<{

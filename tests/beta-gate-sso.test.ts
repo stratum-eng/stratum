@@ -18,6 +18,12 @@ import { COMPLETE_SIGNUP_PATH, oauthSignupRouter } from "../src/routes/oauth-sig
 import type { Env, User } from "../src/types";
 import { makeFakeKV } from "./helpers/fake-kv";
 
+// The shared `@name` namespace check has its own tests; here every name is free.
+vi.mock("../src/storage/project-namespace", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/storage/project-namespace")>()),
+  usernameNamespaceTaken: vi.fn(async () => ({ success: true, data: false })),
+}));
+
 vi.mock("../src/storage/users", () => ({
   createUser: vi.fn(),
   // Read by the analytics capture on a completed signup.

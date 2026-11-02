@@ -8,6 +8,7 @@ import { getMagicLinkEmail } from "../email/templates";
 import { enforceSameOrigin } from "../middleware/csrf";
 import { recordAudit } from "../storage/audit";
 import { consumeMagicLink, createMagicLink } from "../storage/magic-links";
+import { usernameNamespaceTaken } from "../storage/project-namespace";
 import { createSession } from "../storage/sessions";
 import { createUser, getUserByEmail, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
@@ -288,6 +289,13 @@ app.post("/send-signup", async (c) => {
   const existingUserByUsername = await getUserByUsername(c.env.DB, username, logger);
   if (existingUserByUsername.success) {
     logger.warn("Username already taken", { username });
+    return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
+  }
+  // An org slug or a namespace still holding projects is taken too: `@name`
+  // is one namespace space shared by users and orgs.
+  const namespaceTaken = await usernameNamespaceTaken(c.env, username, logger);
+  if (!namespaceTaken.success || namespaceTaken.data) {
+    logger.warn("Username namespace unavailable", { username });
     return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
   }
 
@@ -639,6 +647,11 @@ app.post("/verify", async (c) => {
       const existingUserByUsername = await getUserByUsername(c.env.DB, username, logger);
       if (existingUserByUsername.success) {
         logger.error("Username taken during signup verification", undefined, { username });
+        return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
+      }
+      const namespaceTaken = await usernameNamespaceTaken(c.env, username, logger);
+      if (!namespaceTaken.success || namespaceTaken.data) {
+        logger.warn("Username namespace unavailable at signup verification", { username });
         return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
       }
 

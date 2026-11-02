@@ -14,6 +14,12 @@ import { makeMagicLinkLimiters } from "./helpers/magic-link-limiter";
 const mockUsers = new Map<string, User>();
 let mockUserIdCounter = 0;
 
+// The shared `@name` namespace check has its own tests; here every name is free.
+vi.mock("../src/storage/project-namespace", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/storage/project-namespace")>()),
+  usernameNamespaceTaken: vi.fn(async () => ({ success: true, data: false })),
+}));
+
 vi.mock("../src/storage/users", () => {
   // Use a function to get the mockUsers map lazily to avoid issues with test isolation
   const getMockUsers = () => {

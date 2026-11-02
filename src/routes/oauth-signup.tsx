@@ -23,6 +23,7 @@ import type { AuthKind } from "../analytics/events";
 import { admitAndDeliverCodes, betaGateEnabled, validateInviteCode } from "../beta/gate";
 import { enforceSameOrigin } from "../middleware/csrf";
 import { recordAudit } from "../storage/audit";
+import { usernameNamespaceTaken } from "../storage/project-namespace";
 import { createSession, getSession } from "../storage/sessions";
 import { createUser, getUserByEmail, getUserByUsername, linkGitHub } from "../storage/users";
 import type { Env } from "../types";
@@ -404,6 +405,11 @@ app.post("/", async (c) => {
 
   const taken = await getUserByUsername(c.env.DB, username, logger);
   if (taken.success) return formError(c, "username_taken", username);
+  // Shared `@name` space: an org slug or a namespace with projects is taken too.
+  const namespaceTaken = await usernameNamespaceTaken(c.env, username, logger);
+  if (!namespaceTaken.success || namespaceTaken.data) {
+    return formError(c, "username_taken", username);
+  }
 
   const created = await createUser(c.env.DB, record.email, logger, username);
   if (!created.success) {
