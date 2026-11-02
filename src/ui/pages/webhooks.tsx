@@ -13,6 +13,8 @@ interface WebhooksPageProps {
   webhooks: Array<{ webhook: Omit<Webhook, "secret">; deliveries: WebhookDelivery[] }>;
   subscribableEvents: string[];
   user?: { id: string; email: string; username: string } | null;
+  /** Per-request CSP nonce — required so the regenerate confirm script passes `script-src`. */
+  nonce: string;
 }
 
 const DeliveryRow: FC<{ delivery: WebhookDelivery }> = ({ delivery }) => (
@@ -34,6 +36,7 @@ export const WebhooksPage: FC<WebhooksPageProps> = ({
   webhooks,
   subscribableEvents,
   user,
+  nonce,
 }) => {
   const base = `/api/projects/${project.namespace}/${project.slug}/webhooks`;
   return (
@@ -98,6 +101,15 @@ export const WebhooksPage: FC<WebhooksPageProps> = ({
                     {webhook.active ? "Disable" : "Enable"}
                   </button>
                 </form>
+                <form
+                  method="post"
+                  action={`${base}/${webhook.id}/regenerate-secret`}
+                  class="webhook-regenerate-form"
+                >
+                  <button type="submit" class="btn btn-small">
+                    Regenerate secret
+                  </button>
+                </form>
                 <form method="post" action={`${base}/${webhook.id}/delete`}>
                   <button type="submit" class="btn btn-small btn-danger">
                     Delete
@@ -106,7 +118,8 @@ export const WebhooksPage: FC<WebhooksPageProps> = ({
               </div>
             </div>
             <p class="webhook-meta">
-              Events: <code>{webhook.events}</code> · Secret: <code>shown once on creation</code>
+              Events: <code>{webhook.events}</code> · Secret:{" "}
+              <code>shown once on creation or regeneration</code>
             </p>
             {deliveries.length > 0 && (
               <details class="webhook-deliveries">
@@ -120,6 +133,28 @@ export const WebhooksPage: FC<WebhooksPageProps> = ({
             )}
           </div>
         ))
+      )}
+      {webhooks.length > 0 && (
+        <script
+          nonce={nonce}
+          dangerouslySetInnerHTML={{
+            __html: `
+            // Progressive enhancement only: regenerating invalidates the current
+            // secret immediately, so every receiver verifying with it starts
+            // rejecting deliveries. Without JS the form still posts.
+            (function () {
+              var forms = document.querySelectorAll('.webhook-regenerate-form');
+              for (var i = 0; i < forms.length; i++) {
+                forms[i].addEventListener('submit', function (event) {
+                  if (!confirm('Regenerate this webhook\'s signing secret? The current secret stops working immediately, and receivers must be updated with the new one.')) {
+                    event.preventDefault();
+                  }
+                });
+              }
+            })();
+          `,
+          }}
+        />
       )}
     </Layout>
   );
