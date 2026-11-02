@@ -28,7 +28,7 @@ vi.mock("../src/storage/git-ops", () => ({
   // Real key layout (pure helpers) so key-construction assertions are meaningful.
   stagedTreeKey: (projectId: string, workspace: string) => `repos/${projectId}/ws/${workspace}`,
   stagedTreeShaKey: (projectId: string, workspace: string, sha: string) =>
-    `repos/${projectId}/ws/${workspace}/sha/${sha}`,
+    `staged-sha/${projectId}/${workspace}/${sha}`,
 }));
 vi.mock("../src/storage/provenance", () => ({
   recordProvenance: vi.fn(async () => ({ success: true, data: undefined })),
@@ -425,7 +425,7 @@ describe("RepoDO.mergeViaR2 sha-keyed staged trees (#124)", () => {
   const EVAL_TREE = "e".repeat(40);
   const NEWER_TREE = "f".repeat(40);
   const LATEST_KEY = "repos/proj_1/ws/ws_1";
-  const SHA_KEY = "repos/proj_1/ws/ws_1/sha/pinned-sha";
+  const SHA_KEY = "staged-sha/proj_1/ws_1/pinned-sha";
 
   let deleted: string[];
   let bucket: { delete: ReturnType<typeof vi.fn> };

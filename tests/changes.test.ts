@@ -2170,7 +2170,7 @@ describe("POST /api/projects/:name/changes/merge-batch", () => {
     await Promise.all(waitUntils);
     expect(r2Deletes.sort()).toEqual([
       "repos/proj_test123/ws/fix-bug",
-      "repos/proj_test123/ws/fix-bug/sha/wshead1",
+      "staged-sha/proj_test123/fix-bug/wshead1",
     ]);
   });
 

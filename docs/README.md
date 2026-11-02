@@ -62,7 +62,8 @@ docs/
 ├── runbooks/                           # Operational runbooks
 │   ├── artifacts-scaling.md
 │   ├── backup-restore.md
-│   └── d1-migration-reconciliation.md
+│   ├── d1-migration-reconciliation.md
+│   └── staged-tree-retention.md        # R2 lifecycle for staged-tree copies
 └── archive/                            # Historical documents
     ├── README.md                       # Archive index
     ├── AUDIT.md                        # UI/UX architecture audit (2026-05-02)

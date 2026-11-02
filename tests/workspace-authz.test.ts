@@ -43,7 +43,7 @@ vi.mock("../src/storage/git-ops", () => ({
   stageWorkspaceTree: vi.fn(),
   stagedTreeKey: (projectId: string, workspace: string) => `repos/${projectId}/ws/${workspace}`,
   stagedTreeShaKey: (projectId: string, workspace: string, sha: string) =>
-    `repos/${projectId}/ws/${workspace}/sha/${sha}`,
+    `staged-sha/${projectId}/${workspace}/${sha}`,
 }));
 vi.mock("../src/queue/events", () => ({ emitEvent: vi.fn(async () => undefined) }));
 
@@ -163,7 +163,7 @@ describe("POST /api/workspaces/:name/commit — authorization", () => {
     expect(vi.mocked(stageWorkspaceTree).mock.calls[0]?.[1]).toBe(`repos/${PROJECT_ID}/ws/fix-bug`);
     // ... plus the sha-keyed copy of the same value, keyed by the new commit sha.
     expect(puts).toEqual([
-      { key: `repos/${PROJECT_ID}/ws/fix-bug/sha/sha_new`, value: stagedValue },
+      { key: `staged-sha/${PROJECT_ID}/fix-bug/sha_new`, value: stagedValue },
     ]);
     // The DO hot index is still seeded.
     expect(stageTree).toHaveBeenCalledTimes(1);

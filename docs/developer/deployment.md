@@ -82,6 +82,11 @@ Staging has no backup cron; trigger runs manually via `POST /api/admin/backup`
 to validate the restore path (including the Artifacts push, which CI cannot
 cover).
 
+Staging also binds `REPO_OBJECTS` (`stratum-repo-objects-staging`) for the fast
+merge path. Any bucket bound as `REPO_OBJECTS` needs the `staged-sha/` lifecycle
+rule from the [staged-tree retention runbook](../runbooks/staged-tree-retention.md).
+Without it, staged-tree copies for unmerged commits are never reclaimed.
+
 ## Deployment Process
 
 ### Manual Deployment
