@@ -146,7 +146,7 @@ export const WebhooksPage: FC<WebhooksPageProps> = ({
               var forms = document.querySelectorAll('.webhook-regenerate-form');
               for (var i = 0; i < forms.length; i++) {
                 forms[i].addEventListener('submit', function (event) {
-                  if (!confirm('Regenerate this webhook\'s signing secret? The current secret stops working immediately, and receivers must be updated with the new one.')) {
+                  if (!confirm("Regenerate this webhook's signing secret? The current secret stops working immediately, and receivers must be updated with the new one.")) {
                     event.preventDefault();
                   }
                 });

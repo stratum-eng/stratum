@@ -44,6 +44,32 @@ describe("webhooks management page — regenerate secret", () => {
     expect(html).not.toMatch(/onsubmit=/i);
   });
 
+  it("emits a confirm script that parses and blocks the submit when declined", () => {
+    // A syntax error in this script is silent: the browser drops it, no
+    // listener is attached, and the secret rotates without asking.
+    const match = render(true).match(/<script nonce="test-nonce">([\s\S]*?)<\/script>/);
+    expect(match).not.toBeNull();
+    const source = match?.[1] ?? "";
+
+    const listeners: Array<(event: { preventDefault: () => void }) => void> = [];
+    const form = {
+      addEventListener: (_type: string, fn: (event: { preventDefault: () => void }) => void) =>
+        listeners.push(fn),
+    };
+    const document = { querySelectorAll: () => [form] };
+    const confirm = () => false;
+    new Function("document", "confirm", source)(document, confirm);
+
+    expect(listeners).toHaveLength(1);
+    let prevented = false;
+    listeners[0]?.({
+      preventDefault: () => {
+        prevented = true;
+      },
+    });
+    expect(prevented).toBe(true);
+  });
+
   it("renders no confirm script when there are no webhooks", () => {
     expect(render(false)).not.toContain("webhook-regenerate-form");
   });
