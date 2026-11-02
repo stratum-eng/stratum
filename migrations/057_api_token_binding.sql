@@ -1,0 +1,21 @@
+-- Bind an API token to one project or one org (#323): the project/org half of
+-- #254's `read/write × project/org` scope. 042 delivered read/write.
+--
+-- Both columns NULL = account-wide, which is what every token minted before
+-- this migration is, so no existing token changes behaviour.
+--
+-- One project OR one org per token, not a set: the resolver has a single value
+-- to compare, and a narrower credential is one more token away.
+--
+-- `binding_id` is the project's stable id (projects live in KV, so there is no
+-- foreign key to declare) or `orgs.id`. Deliberately no ON DELETE: a token
+-- bound to a project or org that no longer exists matches nothing and is
+-- therefore inert, which is the safe direction to fail in. Re-pointing it at
+-- whatever later reuses the name would not be.
+--
+-- A table CHECK tying the two columns together cannot be added by ALTER TABLE
+-- in SQLite, so the resolver enforces "both or neither" instead, and REJECTS a
+-- half-set row rather than reading it as unbound: a malformed binding must fail
+-- closed, never widen into an account-wide credential.
+ALTER TABLE api_tokens ADD COLUMN binding_kind TEXT CHECK (binding_kind IN ('project', 'org'));
+ALTER TABLE api_tokens ADD COLUMN binding_id TEXT;

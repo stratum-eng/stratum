@@ -170,6 +170,7 @@ describe("telemetry opt-out — git smart-HTTP", () => {
         },
         scope: "read",
         tokenId: "tok_1",
+        binding: { kind: "unbound" },
       },
     });
     const captured = stubCapture();
@@ -195,6 +196,7 @@ describe("telemetry opt-out — git smart-HTTP", () => {
         },
         scope: "read",
         tokenId: "tok_1",
+        binding: { kind: "unbound" },
       },
     });
     const captured = stubCapture();
