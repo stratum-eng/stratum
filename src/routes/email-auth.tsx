@@ -657,6 +657,10 @@ app.post("/verify", async (c) => {
 
       // Create new user with selected username
       const createResult = await createUser(c.env.DB, email, logger, username);
+      if (!createResult.success && createResult.error.statusCode === 409) {
+        logger.warn("Username taken at insert during signup verification", { username });
+        return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
+      }
       if (!createResult.success) {
         logger.error("Failed to create user", undefined, { emailHash, username });
         return emailAuthRedirect(c, "error", "signup_failed", "/auth/signup");

@@ -112,10 +112,18 @@ export async function createUser(
       username = validation.data;
     }
 
-    await db
-      .prepare("INSERT INTO users (id, email, username, token_hash) VALUES (?, ?, ?, ?)")
-      .bind(id, email, username, tokenHash)
+    // Users and orgs share the `@name` namespace. The org check sits in the
+    // INSERT so an org created after a route's preflight cannot end up sharing
+    // this name (createOrg and renameUser guard the other directions).
+    const inserted = await db
+      .prepare(
+        "INSERT INTO users (id, email, username, token_hash) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM orgs WHERE slug = ?)",
+      )
+      .bind(id, email, username, tokenHash, username)
       .run();
+    if ((inserted.meta?.changes ?? 0) === 0) {
+      return err(new AppError("That username is already taken.", "CONFLICT", 409, { username }));
+    }
 
     const user: User = {
       id,

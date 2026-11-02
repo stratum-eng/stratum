@@ -412,6 +412,9 @@ app.post("/", async (c) => {
   }
 
   const created = await createUser(c.env.DB, record.email, logger, username);
+  if (!created.success && created.error.statusCode === 409) {
+    return formError(c, "username_taken", username);
+  }
   if (!created.success) {
     logger.error("Failed to create user from OAuth signup", created.error, {
       provider: record.provider,

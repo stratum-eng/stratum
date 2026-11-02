@@ -6,7 +6,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOrg } from "../src/storage/orgs";
 import { claimNamespace } from "../src/storage/project-namespace";
-import { getUser, renameUser, setUserDisplayName } from "../src/storage/users";
+import { createUser, getUser, renameUser, setUserDisplayName } from "../src/storage/users";
 import type { Logger } from "../src/utils/logger";
 import { makeSqliteD1 } from "./helpers/sqlite-d1";
 
@@ -223,6 +223,18 @@ describe("the shared @name namespace, enforced in the write", () => {
     expect(!renamed.success && renamed.error.statusCode).toBe(409);
     const user = await getUser(db, "usr_1", mockLogger);
     expect(user.success && user.data.username).toBe("alice");
+  });
+
+  it("refuses a new user whose name an org took after the signup preflight", async () => {
+    const { db, raw } = makeSqliteD1();
+    seed(raw);
+    const org = await createOrg(db, mockLogger, "usr_1", "Acme", "acme");
+    expect(org.success).toBe(true);
+    const created = await createUser(db, "bob@example.com", mockLogger, "acme");
+    expect(created.success).toBe(false);
+    expect(!created.success && created.error.statusCode).toBe(409);
+    const count = raw.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number };
+    expect(count.n).toBe(1);
   });
 
   it("refuses an org whose slug is a username, writing nothing", async () => {
