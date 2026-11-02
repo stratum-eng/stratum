@@ -16,10 +16,29 @@ import { getProjectByPath } from "./state";
  *
  * Entries are hints, not truth: every read re-checks the live project and
  * prunes an entry whose project is gone, public, or charged to someone else.
- * A deletion or visibility change therefore needs no hook here, and a stale
- * entry can never over-count.
+ * A deletion or visibility change therefore needs no hook here. The one
+ * exception is a young entry with no project yet ({@link GAUGE_CHARGE_GRACE_MS}),
+ * which counts: an abandoned creation can over-count for that window at most,
+ * which beats the alternative of a concurrent read pruning a live charge.
  */
 const GAUGE_CHARGE_PREFIX = "gauge-charge:";
+
+/**
+ * How long an entry whose project reads NOT_FOUND still counts, and is never
+ * pruned. The entry is written before its project (see the creation route), so
+ * a count landing in between — or on an edge KV has not reached yet — sees no
+ * project behind a perfectly good charge. Same window and reasoning as
+ * `CLAIM_GRACE_MS` in project-namespace.ts (not imported: that module reaches
+ * this one through deletion.ts).
+ */
+export const GAUGE_CHARGE_GRACE_MS = 15 * 60 * 1000;
+
+/** What an index entry stores. */
+interface GaugeChargeValue {
+  projectId: string;
+  /** ISO time the entry was written; drives {@link GAUGE_CHARGE_GRACE_MS}. */
+  createdAt: string;
+}
 
 function chargeKey(subjectId: string, namespace: string, slug: string): string {
   return `${GAUGE_CHARGE_PREFIX}${subjectId}:${namespace}:${slug}`;
@@ -29,10 +48,14 @@ function chargeKey(subjectId: string, namespace: string, slug: string): string {
 export async function recordGaugeCharge(
   kv: KVNamespace,
   logger: Logger,
-  opts: { subjectId: string; namespace: string; slug: string; projectId: string },
+  opts: { subjectId: string; namespace: string; slug: string; projectId: string; nowMs?: number },
 ): Promise<Result<void, AppError>> {
+  const value: GaugeChargeValue = {
+    projectId: opts.projectId,
+    createdAt: new Date(opts.nowMs ?? Date.now()).toISOString(),
+  };
   try {
-    await kv.put(chargeKey(opts.subjectId, opts.namespace, opts.slug), opts.projectId);
+    await kv.put(chargeKey(opts.subjectId, opts.namespace, opts.slug), JSON.stringify(value));
     return ok(undefined);
   } catch (error) {
     const appError = new AppError(
@@ -96,9 +119,24 @@ export interface GaugeChargeCount {
 export async function countGaugeCharges(
   kv: KVNamespace,
   logger: Logger,
-  opts: { subjectId: string; excludeNamespace: string; max: number },
+  opts: { subjectId: string; excludeNamespace: string; max: number; nowMs?: number },
 ): Promise<Result<GaugeChargeCount, AppError>> {
   const prefix = `${GAUGE_CHARGE_PREFIX}${opts.subjectId}:`;
+  const nowMs = opts.nowMs ?? Date.now();
+  // Whether an entry is inside its grace window. An unreadable or unparsable
+  // value is treated as old, so it is verified like any other rather than
+  // counting forever.
+  const isYoung = async (key: string): Promise<boolean> => {
+    const raw = await kv.get(key);
+    if (raw === null) return false;
+    try {
+      const parsed = JSON.parse(raw) as Partial<GaugeChargeValue>;
+      const age = nowMs - Date.parse(String(parsed.createdAt));
+      return age >= 0 && age < GAUGE_CHARGE_GRACE_MS;
+    } catch {
+      return false;
+    }
+  };
   try {
     const listed = await kv.list({ prefix, limit: opts.max + 1 });
     const keys = listed.keys.map((k) => k.name);
@@ -111,13 +149,19 @@ export async function countGaugeCharges(
         const slug = rest.slice(sep + 1);
         if (namespace === opts.excludeNamespace) return false;
         const project = await getProjectByPath(kv, namespace, slug, logger);
+        // No project yet behind a young entry: the creation is in flight, or
+        // KV has not settled here. It counts as it stands and is not pruned.
+        if (!project.success && project.error.code === "NOT_FOUND" && (await isYoung(key))) {
+          return true;
+        }
         const stillCharged =
           project.success &&
           project.data.visibility === "private" &&
           project.data.gaugeSubjectId === opts.subjectId;
-        // Prune only what is known to be over: a project that is gone, or one
-        // that exists and is no longer charged here. An unreadable entry is
-        // left for the next read rather than erased on a transient fault.
+        // Prune only what is known to be over: a project gone past the grace
+        // window, or one that exists and is no longer charged here. An
+        // unreadable entry is left for the next read rather than erased on a
+        // transient fault.
         const knownStale = project.success || project.error.code === "NOT_FOUND";
         if (!stillCharged && knownStale) await kv.delete(key);
         return stillCharged;

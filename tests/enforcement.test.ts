@@ -31,7 +31,7 @@ import { rateLimitMiddleware } from "../src/middleware/rate-limit";
 import { MAX_GAUGE_CHARGES, projectsRouter } from "../src/routes/projects";
 import { recordCosts } from "../src/storage/costs";
 import { insertDeployment } from "../src/storage/deployments";
-import { recordGaugeCharge } from "../src/storage/gauge-index";
+import { GAUGE_CHARGE_GRACE_MS, recordGaugeCharge } from "../src/storage/gauge-index";
 import { setProject } from "../src/storage/state";
 import { getOwnerMeterTotals, upsertUsage } from "../src/storage/usage";
 import type { Env, ProjectEntry } from "../src/types";
@@ -771,13 +771,14 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
   });
 
   /** An org project charged to `actor`, indexed as the creation route does. */
-  async function seedChargedOrgProject(slug: string, actor: string): Promise<void> {
+  async function seedChargedOrgProject(slug: string, actor: string, nowMs = NOW): Promise<void> {
     await seedProject("@acme", slug, { ownerId: ORG_ID, ownerType: "org" }, actor);
     const indexed = await recordGaugeCharge(kv, logger, {
       subjectId: actor,
       namespace: "@acme",
       slug,
       projectId: `prj_@acme_${slug}`,
+      nowMs,
     });
     if (!indexed.success) throw indexed.error;
   }
@@ -899,12 +900,12 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
     expect(await kv.get("project:@acme:fresh")).toBeNull();
   });
 
-  it("prunes a charge whose project is gone, so it never over-counts", async () => {
+  it("prunes a charge whose project is gone past the grace window", async () => {
     const userId = createUser(nextUserId());
     seedOrg(userId);
     cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
     await seedChargedOrgProject("one", userId);
-    await seedChargedOrgProject("gone", userId);
+    await seedChargedOrgProject("gone", userId, NOW - GAUGE_CHARGE_GRACE_MS - 1);
     await kv.delete("project:@acme:gone");
 
     const response = await projectApp(userId, "alice")({ name: "two", visibility: "private" });
@@ -912,6 +913,26 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
     expect(response.status).not.toBe(403);
     expect(await kv.get(`gauge-charge:${userId}:@acme:gone`)).toBeNull();
     expect(await kv.get(`gauge-charge:${userId}:@acme:one`)).not.toBeNull();
+  });
+
+  it("counts, and keeps, a young charge whose project is not written yet", async () => {
+    // The window between the index write and setProject: a concurrent count
+    // that pruned here would leave the project it is about to store uncounted.
+    const userId = createUser(nextUserId());
+    seedOrg(userId);
+    cachePlan("user", userId, plan({ counts: { private_projects: 1 } }));
+    const indexed = await recordGaugeCharge(kv, logger, {
+      subjectId: userId,
+      namespace: "@acme",
+      slug: "in-flight",
+      projectId: "prj_in_flight",
+    });
+    if (!indexed.success) throw indexed.error;
+
+    const response = await projectApp(userId, "alice")({ name: "other", visibility: "private" });
+
+    expect(response.status).toBe(403);
+    expect(await kv.get(`gauge-charge:${userId}:@acme:in-flight`)).not.toBeNull();
   });
 
   it("still refuses when a faulted read leaves a lower bound already at the limit", async () => {
@@ -966,7 +987,8 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
     expect(response.status).toBe(201);
     const stored = JSON.parse((await kv.get("project:@acme:fresh")) ?? "null") as ProjectEntry;
     expect(stored).toMatchObject({ ownerId: ORG_ID, ownerType: "org", gaugeSubjectId: userId });
-    expect(await kv.get(`gauge-charge:${userId}:@acme:fresh`)).toBe(stored.id);
+    const charge = JSON.parse((await kv.get(`gauge-charge:${userId}:@acme:fresh`)) ?? "null");
+    expect(charge).toMatchObject({ projectId: stored.id });
   });
 
   it("sends a browser form submission back to the form, not to a JSON 403", async () => {
