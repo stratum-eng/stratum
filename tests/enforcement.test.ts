@@ -15,7 +15,7 @@
  *   known to be paid, and every usage read for a check is `source = 'platform'`.
  */
 import { Hono } from "hono";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   checkGauge,
   checkMeter,
@@ -81,6 +81,14 @@ beforeEach(() => {
   scheduled = [];
   logged.length = 0;
   vi.clearAllMocks();
+  // Paths through LLMEvaluator read the wall clock for the period; pin it to
+  // NOW so assertions against PERIOD don't rot when the calendar moves on.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
