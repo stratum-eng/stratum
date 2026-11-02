@@ -193,6 +193,10 @@ export interface Env {
    * path: the provider appends `/messages` or `/chat/completions` to whatever
    * this names, so a `baseUrl` missing the `/v1` 404s on every call. */
   LLM_PROVIDERS?: string;
+  /** Encrypts org SSO client secrets at rest (PBKDF2 + AES-GCM, SSO-specific
+   * salt). Unset → the whole SSO surface (admin API, login) returns 501. Kept
+   * separate from the GitHub token secret for blast-radius isolation. */
+  SSO_ENCRYPTION_SECRET?: string;
   ANALYTICS?: AnalyticsEngineDataset;
   SANDBOX?: SandboxBinding;
   AI?: AiBinding;
@@ -527,6 +531,13 @@ export interface User {
    * Absent/null on live accounts. See PRD "Grace window".
    */
   deletingAt?: string;
+  /**
+   * When set (ISO timestamp), the account is disabled — reversibly, unlike the
+   * destructive `deletingAt`. All credentials are inert while set (auth,
+   * git smart-HTTP, and every login flow reject); `enableUser` clears it and
+   * the same credentials work again. Set by SCIM deprovisioning.
+   */
+  disabledAt?: string;
   /**
    * When true, the user has opted out of product analytics: no PostHog event is
    * exported for their requests or for domain events they author (#257).

@@ -1,9 +1,10 @@
 # Stratum Current Capabilities
 
-Last updated: 2026-09-04 — reflects completion of the master-plan feature roadmap
+Last updated: 2026-11-02 — reflects completion of the master-plan feature roadmap
 (Phases 0–3 plus the code-level Phase 4 hardening items), plus post-merge
-deployments, scoped API tokens, the MCP server and browser-based CLI login, and
-the Git LFS and submodule limitations recorded below.
+deployments, scoped API tokens, the MCP server and browser-based CLI login,
+enterprise OIDC SSO + SCIM provisioning (#253), and the Git LFS and submodule
+limitations recorded below.
 
 > **Read the caveats, not just the bullets.** Two capabilities below exist in
 > code but cannot be used on a stock instance, because the Cloudflare Sandboxes
@@ -147,12 +148,29 @@ environment (`wrangler.toml:84-85`), so it works out of the box.
   days, individually revocable, 20 active per user —
   `src/storage/api-tokens.ts:15-21`); agent tokens bounded by an owning user's
   access. A `read` token is refused on every non-`GET`/`HEAD` request before
-  routing (`src/middleware/auth.ts:227-241`) and on `git push`.
+  routing (`src/middleware/auth.ts:227-241`) and on `git push`. OAuth logins
+  persist a stable (issuer, subject) identity per provider — GitHub links to an
+  existing account only via a verified email.
 - Stratum is itself an **OAuth 2.1 authorization server** (RFC 7591 dynamic
   registration, PKCE `S256` only): grants carry `mcp:read`/`mcp:write`, a
   1-hour access token and a rotating 30-day refresh token capped at 180 days
   absolute (`src/storage/oauth.ts:58-71`), and are revocable at
   `POST /oauth/revoke` or from **Settings → Connected applications**.
+- Enterprise SSO: one OIDC connection per org, configured by an org
+  admin/owner via `PUT/GET/DELETE /api/orgs/:slug/sso` (plus
+  `verify-domains`, `enable`/`disable`, and `scim-token` sub-endpoints).
+  Email domains must be DNS-TXT-verified (checked over DoH) before enabling.
+  Users sign in at `/auth/sso` (org slug or work email) via authorization-code
+  + PKCE; verified-domain emails are JIT-provisioned into the org. Requires
+  the `SSO_ENCRYPTION_SECRET` secret (endpoints 501 without it). No
+  enforcement toggle yet: magic-link login still works for corporate emails.
+- SCIM 2.0 Users provisioning at `/scim/v2` (per-connection
+  `stratum_scim_*` bearer): Users CRUD with userName/externalId eq filters,
+  adopt-existing-account semantics, and reversible deactivation
+  (`users.disabled_at`) enforced at every credential path — legacy and scoped
+  API tokens, OAuth grants, agent tokens, session cookies, git smart-HTTP, and
+  all login flows — with session purge on deactivation. SCIM Groups are not
+  implemented.
 - CSRF protection (Origin/Referer enforcement for session-cookie mutations),
   API key rotation, settings UI for API token, agent token and OAuth grant
   management. Token management endpoints accept the browser session **only**
@@ -202,11 +220,12 @@ environment (`wrangler.toml:84-85`), so it works out of the box.
 - Deployments have no build step, no preview environment and no rollback, and
   the deploy DLQ has no consumer.
 - Phase 4 operational items remain: load testing at 1000+ concurrent workspaces,
-  D1 hot/cold rotation, SSO/SAML, and the rest of multi-tenancy/billing for
+  D1 hot/cold rotation, and the rest of multi-tenancy/billing for
   a managed offering — the metering, entitlement and enforcement machinery above is
   in the tree, but plan definitions, checkout and subscription state are not,
   and there is no org billing UI, no seat model, and no retention or storage
-  limit.
+  limit. OIDC SSO + SCIM shipped; SAML, SCIM Groups, an SSO enforcement toggle,
+  and an SSO management UI (API only today) remain.
 - Durability is covered: D1 and KV identity back up to R2 daily and on demand,
   along with the reachable history of a rotating slice of repos (coverage rotates
   across runs under a per-run cap), with a tested restore path

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { constantTimeEqual, generateApiKey, hashToken, verifyToken } from "../src/utils/crypto";
+import {
+  SSO_SECRET_SALT,
+  constantTimeEqual,
+  decryptToken,
+  encryptToken,
+  generateApiKey,
+  hashToken,
+  verifyToken,
+} from "../src/utils/crypto";
 
 describe("constantTimeEqual", () => {
   it("returns true for identical strings", () => {
@@ -61,5 +69,31 @@ describe("generateApiKey", () => {
     const prefix = "stratum_user";
     const key = await generateApiKey(prefix);
     expect(key).toHaveLength(prefix.length + 1 + 32);
+  });
+});
+
+describe("encryptToken / decryptToken salt parameterization", () => {
+  const secret = "test-encryption-secret";
+  const plaintext = "gho_sensitive_github_token";
+
+  it("default salt path round-trips", async () => {
+    const ciphertext = await encryptToken(plaintext, secret);
+    expect(await decryptToken(ciphertext, secret)).toBe(plaintext);
+  });
+
+  it("default salt is byte-compatible with the explicit historical GitHub salt", async () => {
+    // Existing GitHub-token ciphertexts were produced under the previously
+    // hardcoded salt; the parameterization must not change that key material.
+    const githubSalt = "stratum-github-token-salt";
+    const viaDefault = await encryptToken(plaintext, secret);
+    const viaExplicit = await encryptToken(plaintext, secret, githubSalt);
+    expect(await decryptToken(viaDefault, secret, githubSalt)).toBe(plaintext);
+    expect(await decryptToken(viaExplicit, secret)).toBe(plaintext);
+  });
+
+  it("SSO salt round-trips and is not decryptable under the default salt", async () => {
+    const ciphertext = await encryptToken(plaintext, secret, SSO_SECRET_SALT);
+    expect(await decryptToken(ciphertext, secret, SSO_SECRET_SALT)).toBe(plaintext);
+    expect(await decryptToken(ciphertext, secret)).toBeNull();
   });
 });

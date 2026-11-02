@@ -32,6 +32,19 @@ vi.mock("../src/storage/audit", () => ({
   recordAudit: vi.fn().mockResolvedValue({ success: true, data: undefined }),
 }));
 
+// No linked (issuer, subject) identity: Google sign-in falls through to the
+// verified-email match these tests exercise (#253).
+vi.mock("../src/storage/identities", async () => {
+  const { NotFoundError } = await import("../src/utils/errors");
+  return {
+    getIdentityByIssuerSubject: vi.fn(async () => ({
+      success: false,
+      error: new NotFoundError("Identity", "none"),
+    })),
+    upsertIdentity: vi.fn(async () => ({ success: true, data: undefined })),
+  };
+});
+
 vi.mock("../src/beta/gate", () => ({
   betaGateEnabled: vi.fn(() => false),
   validateInviteCode: vi.fn(),
@@ -324,6 +337,49 @@ describe("OAuth signup: choosing a username", () => {
       expect(kvOf(env).store.get(`oauth_state:${state}`)).toBe("1");
     });
 
+    // `/` included: an explicit request for home must not read as "no destination"
+    // and lose to the remembered cookie.
+    it.each(["/p/demo?tab=1", "/"])(
+      "carries next=%s given to /auth/google through the username step, over the cookie",
+      async (next) => {
+        const app = makeApp();
+        const env = makeEnv();
+        mockGoogle("jane@example.com");
+
+        const start = await app.fetch(
+          new Request(`http://localhost/auth/google?next=${encodeURIComponent(next)}`),
+          env,
+        );
+        const state = cookieValue(start, "stratum_oauth_state") ?? "";
+        expect(start.headers.get("Location")).not.toContain("next");
+
+        const parked = await app.fetch(
+          new Request(`http://localhost/auth/google/callback?code=ok&state=${state}`, {
+            headers: { Cookie: `stratum_oauth_state=${state}` },
+          }),
+          env,
+        );
+        expect(parked.headers.get("Location")).toBe(COMPLETE);
+        const token = cookieValue(parked, "stratum_pending_signup") ?? "";
+        expect(pendingRecord(env, token).next).toBe(next);
+
+        const res = await post(
+          app,
+          env,
+          token,
+          { username: "jane" },
+          {
+            Origin: "http://localhost",
+            Cookie: `stratum_pending_signup=${token}; redirect_after_login=%2Foauth%2Fauthorize%3Fx%3D1`,
+          },
+        );
+
+        expect(res.headers.get("Location")).toBe(next);
+        // The competing cookie lost, and is spent anyway.
+        expect(cookieLine(res, "redirect_after_login")).toContain("Max-Age=0");
+      },
+    );
+
     it("suggests nothing when the GitHub handle cannot become a username", async () => {
       const app = makeApp();
       const env = makeEnv();
@@ -424,7 +480,9 @@ describe("OAuth signup: choosing a username", () => {
       const token = cookieValue(res, "stratum_pending_signup") ?? "";
       expect(pendingRecord(env, token)).toMatchObject({
         provider: "google",
-        email: "Jane.Doe+work@example.com",
+        // Normalized like every other sign-in path, so the account it becomes
+        // is found by the magic-link flow's lowercased lookup.
+        email: "jane.doe+work@example.com",
         suggestedUsername: "janedoework",
       });
       expect(pendingRecord(env, token).github).toBeUndefined();
@@ -764,6 +822,27 @@ describe("OAuth signup: choosing a username", () => {
         expect.anything(),
       );
       expect(createSession).toHaveBeenCalledWith(env.DB, "usr_1", expect.anything(), false);
+      expect(kvOf(env).store.has(`pending_signup:${token}`)).toBe(false);
+    });
+
+    it("refuses, without linking or signing in, when the meanwhile-registered account is disabled", async () => {
+      // SCIM can provision an account already deactivated (#253); finishing a
+      // parked OAuth signup must not become a way into it.
+      const app = makeApp();
+      const env = makeEnv();
+      const token = park(env, GITHUB_RECORD);
+      vi.mocked(getUserByEmail).mockResolvedValue({
+        success: true,
+        data: user({ id: "usr_1", disabledAt: "2026-08-01T00:00:00.000Z" }),
+      });
+
+      const res = await post(app, env, token, { username: "chosen" });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toBe("/auth/login?error=account_disabled");
+      expect(linkGitHub).not.toHaveBeenCalled();
+      expect(createSession).not.toHaveBeenCalled();
+      expect(createUser).not.toHaveBeenCalled();
       expect(kvOf(env).store.has(`pending_signup:${token}`)).toBe(false);
     });
 

@@ -194,22 +194,23 @@ async function authenticate(
       return { userId: scoped.data.user.id, tokenScope: scoped.data.scope };
     }
     const result = await getUserByToken(c.env.DB, token, logger);
-    // A soft-deleting account's credentials stop working immediately over git
-    // too — the HTTP middleware rejects it, but git smart-HTTP owns its own auth
-    // and must apply the same gate, or an erasure-requested user keeps clone/push
-    // access until the cascade lands.
-    if (!result.success || result.data.deletingAt) return null;
+    // A soft-deleting or disabled account's credentials stop working
+    // immediately over git too — the HTTP middleware rejects them, but git
+    // smart-HTTP owns its own auth and must apply the same gate, or a
+    // deprovisioned user keeps clone/push access to private code.
+    if (!result.success || result.data.deletingAt || result.data.disabledAt) return null;
     c.set?.("telemetryOptOut", result.data.telemetryOptOut === true);
     // The legacy credential predates scopes and carries full account power.
     return { userId: result.data.id, tokenScope: "read_write" };
   }
   const result = await getAgentByToken(c.env.DB, token, logger);
   if (!result.success) return null;
-  // An agent inherits its owner's access, so a deleting owner's agent must stop
-  // working too — otherwise it's an authenticated git write channel that outlives
-  // the account it belongs to. Fail CLOSED on the owner lookup: an unresolved or
-  // deleting owner yields no identity. getUser can reject on a D1 error, which
-  // would otherwise escape authenticate's documented no-500 contract, so catch it.
+  // An agent inherits its owner's access, so a deleting or disabled owner's
+  // agent must stop working too — otherwise it's an authenticated git write
+  // channel that outlives the account's access. Fail CLOSED on the owner
+  // lookup: an unresolved, deleting, or disabled owner yields no identity.
+  // getUser can reject on a D1 error, which would otherwise escape
+  // authenticate's documented no-500 contract, so catch it.
   let owner: Awaited<ReturnType<typeof getUser>>;
   try {
     owner = await getUser(c.env.DB, result.data.ownerId, logger);
@@ -220,7 +221,7 @@ async function authenticate(
     });
     return null;
   }
-  if (!owner.success || owner.data.deletingAt) return null;
+  if (!owner.success || owner.data.deletingAt || owner.data.disabledAt) return null;
   // An agent's git traffic inherits its owner's telemetry choice, matching the
   // way it inherits the owner's access.
   c.set?.("telemetryOptOut", owner.data.telemetryOptOut === true);

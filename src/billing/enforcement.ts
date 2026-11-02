@@ -282,7 +282,7 @@ const RECONCILE_MEMO_LIMIT = 1_000;
  * life of the isolate, so a counter behind the ledger stayed behind it and the
  * subject spent the difference twice.
  *
- * `source = "platform"` is not optional here and not a detail: migration 050
+ * `source = "platform"` is not optional here and not a detail: migration 054
  * keys usage on `(owner_id, period, meter, source)` exactly so a project paying
  * its own provider bill is not charged against the hosted allowance, and a sum
  * that omitted the filter would hand that distinction straight back (Goal 5).

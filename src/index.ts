@@ -35,13 +35,16 @@ import { mcpRouter } from "./routes/mcp";
 import { mcpOAuthRouter } from "./routes/mcp-oauth";
 import { metricsRouter } from "./routes/metrics";
 import { oauthSignupRouter } from "./routes/oauth-signup";
+import { orgSsoRouter } from "./routes/org-sso";
 import { orgsRouter } from "./routes/orgs";
 import { posthogProxyRouter } from "./routes/posthog-proxy";
 import { projectsRouter } from "./routes/projects";
 import { restoreRouter } from "./routes/restore";
 import { reviewsRouter } from "./routes/reviews";
+import { scimRouter } from "./routes/scim";
 import { sessionRouter } from "./routes/sessions";
 import { signupRouter } from "./routes/signup";
+import { ssoRouter } from "./routes/sso";
 import { syncRouter } from "./routes/sync";
 import { syncManagementRouter } from "./routes/sync-management";
 import { uiRouter } from "./routes/ui";
@@ -126,6 +129,12 @@ app.get("/dev-login", async (c) => {
       userId = createResult.data.user.id;
       logger.info("Dev login: Created new user", { userId });
     } else {
+      // Parity with the real login flows: no session mint for a disabled or
+      // deleting account, even behind the localhost dev gate.
+      if (userResult.data.disabledAt || userResult.data.deletingAt) {
+        logger.warn("Dev login refused — account disabled", { userId: userResult.data.id });
+        return c.json({ error: "Account is disabled" }, 403);
+      }
       userId = userResult.data.id;
       logger.info("Dev login: Using existing user", { userId });
     }
@@ -208,6 +217,9 @@ app.get("/ui/changes/:id", (c) => {
 });
 
 app.route("/auth", authRouter);
+// OIDC SSO login flow (picker, /:slug/start, /callback) — same global
+// middleware chain as the other auth routes.
+app.route("/auth/sso", ssoRouter);
 app.route("/auth/email", emailAuthRouter);
 app.route("/auth/login", loginRouter);
 app.route("/auth/signup", signupRouter);
@@ -227,9 +239,14 @@ app.route("/api/agents", agentsRouter);
 app.route("/api", changesRouter);
 app.route("/api", reviewsRouter);
 app.route("/api/orgs", orgsRouter);
+// Org SSO admin API (/api/orgs/:slug/sso) — same authMiddleware chain as /api/orgs.
+app.route("/api/orgs", orgSsoRouter);
 app.route("/api", syncRouter);
 app.route("/api", syncManagementRouter);
 app.route("/api/bulk-import", bulkImportRouter);
+// SCIM 2.0 Users (#253) — stratum_scim_* bearer only; every handler fails
+// closed unless authMiddleware resolved a SCIM connection.
+app.route("/scim/v2", scimRouter);
 app.route("/api/webhooks/github", githubWebhookRouter);
 
 // The remote MCP endpoint and the OAuth 2.1 authorization server that fronts it

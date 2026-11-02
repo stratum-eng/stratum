@@ -3,11 +3,14 @@ import type { Env, ProjectEntry, WorkspaceEntry } from "../types";
 import { type AppError, toAppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+import { recordAudit } from "./audit";
 import { findActiveJobForTarget } from "./deletion-jobs";
 import { deleteGaugeCharges } from "./gauge-index";
 import { artifactsRepoNameFromRemote } from "./git-ops";
+import { deleteIdentitiesForUser } from "./identities";
 import { deleteOAuthDataForUser } from "./oauth";
 import { deleteAllUserSessions } from "./sessions";
+import { reenableUsersForConnectionRemoval } from "./sso";
 import { listProjects } from "./state";
 
 /**
@@ -512,7 +515,7 @@ export async function deleteProjectCascade(
     // ENFORCEMENT subject (a user, or a paid org) and never on a project, so a
     // project deletion must not touch it. Purging it here would refund the
     // month by deleting a project — exactly what keeping `usage_periods` out of
-    // PROJECT_SCOPED_TABLES prevents (migration 050). The ACCOUNT cascade
+    // PROJECT_SCOPED_TABLES prevents (migration 054). The ACCOUNT cascade
     // erases it, and nothing else does.
 
     // 5) KV last, project entry very last: as long as the entry exists, the
@@ -793,7 +796,7 @@ async function resolveOrgOwnership(
   }
 
   // No other members: the org is empty. Cascade its owned projects, then delete
-  // the org and any residual membership/team rows so no orphan survives.
+  // the org and any residual membership/team/SSO rows so no orphan survives.
   logger.info("Deleting empty org during account erasure", { orgId: org.id });
   const projectsResult = await listProjects(env.STATE, logger);
   if (projectsResult.success) {
@@ -810,6 +813,59 @@ async function resolveOrgOwnership(
     .bind(org.id)
     .run();
   await db.prepare("DELETE FROM teams WHERE org_id = ?").bind(org.id).run();
+  // SSO children before the org row: scim_members hangs off the connection, so
+  // it must go first or the connection delete would orphan its member mappings.
+  // identities.connection_id is a soft reference (no FK) that can belong to
+  // JIT-provisioned users who are no longer org members — null it, don't leave
+  // it dangling at a deleted connection id.
+  await db
+    .prepare(
+      "UPDATE identities SET connection_id = NULL WHERE connection_id IN (SELECT id FROM org_sso_connections WHERE org_id = ?)",
+    )
+    .bind(org.id)
+    .run();
+  // Removing a connection is a clean rollback, never a permanent lockout:
+  // users its SCIM deactivated (possibly no longer org members) get their
+  // accounts back before the mapping rows vanish — the same set-based helper
+  // (with the cross-connection vote guard) as DELETE /api/orgs/:slug/sso
+  // (src/routes/org-sso.ts). The erased user is excluded: their account is
+  // being deleted anyway. org_id is UNIQUE, so the org has at most one
+  // connection.
+  const connectionRow = await db
+    .prepare("SELECT id FROM org_sso_connections WHERE org_id = ?")
+    .bind(org.id)
+    .first<{ id: string }>();
+  if (connectionRow) {
+    const reenabled = await reenableUsersForConnectionRemoval(db, logger, connectionRow.id, {
+      excludeUserId: userId,
+    });
+    if (!reenabled.success) {
+      residuals.push(`org:${org.id}:scim-reenable-batch`);
+      // Keep the connection, its active=0 votes, and the org row: deleting
+      // them now would leave the users this connection disabled locked out
+      // for good. The org survives, so a re-drive re-enters here and retries;
+      // every step above is an idempotent delete.
+      return;
+    }
+    await recordAudit(db, logger, {
+      action: "sso.connection.deleted",
+      actorType: "system",
+      subject: org.id,
+      detail: {
+        via: "org.deleted",
+        orgId: org.id,
+        connectionId: connectionRow.id,
+        reenabledUserIds: reenabled.data,
+      },
+    });
+  }
+  await db
+    .prepare(
+      "DELETE FROM scim_members WHERE connection_id IN (SELECT id FROM org_sso_connections WHERE org_id = ?)",
+    )
+    .bind(org.id)
+    .run();
+  await db.prepare("DELETE FROM org_sso_connections WHERE org_id = ?").bind(org.id).run();
   // The org's usage aggregate goes with the org, and ONLY on this branch: where
   // a successor was promoted above, the org survives and so must its
   // consumption — a change of owner is not a fresh monthly allowance.
@@ -870,7 +926,7 @@ async function cascadeOwnedProject(
  * GDPR-grade account erasure. Order is load-bearing:
  *   1. delete owned projects (so only cross-project rows remain to anonymize),
  *   2. anonymize the remainder,
- *   3. drop agents / sessions / memberships,
+ *   3. drop agents / sessions / memberships / identities / SCIM mappings,
  *   4. resolve sole-owner orgs (promote or delete — never blocks),
  *   5. delete the users row LAST (frees email/username/token_hash/github_id
  *      uniques only once everything else is gone).
@@ -908,9 +964,13 @@ export async function deleteAccountCascade(
     // account that had ever minted a token (#254). They are credentials, so
     // they must go regardless: a row named "jane's macbook" outliving an
     // erasure request is itself a retention bug.
+    //
+    // External identities and SCIM rows must also go before the users row, so a
+    // future signup by the same IdP subject is neither blocked nor hijacked by a
+    // dangling mapping (#253).
     await db.prepare("DELETE FROM agents WHERE owner_id = ?").bind(userId).run();
     await db.prepare("DELETE FROM api_tokens WHERE user_id = ?").bind(userId).run();
-    // The owner-scoped usage aggregate (migration 050). Erasing the account is
+    // The owner-scoped usage aggregate (migration 054). Erasing the account is
     // the ONLY event that may clear it: `usage_periods` is deliberately outside
     // `PROJECT_SCOPED_TABLES` because an allowance a user can reset by deleting
     // the project that burned it is not an allowance. Here the subject itself is
@@ -940,6 +1000,9 @@ export async function deleteAccountCascade(
     if (!sessions.success) residuals.push(`account:sessions:${sessions.error.code}`);
     await db.prepare("DELETE FROM org_members WHERE user_id = ?").bind(userId).run();
     await db.prepare("DELETE FROM team_members WHERE user_id = ?").bind(userId).run();
+    const identities = await deleteIdentitiesForUser(db, logger, userId);
+    if (!identities.success) residuals.push(`account:identities:${identities.error.code}`);
+    await db.prepare("DELETE FROM scim_members WHERE user_id = ?").bind(userId).run();
 
     // 4) Sole-owner org fallback (after membership rows are gone so an empty org
     //    is correctly detected). Never blocks erasure.

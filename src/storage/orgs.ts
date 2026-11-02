@@ -173,6 +173,42 @@ export async function addOrgMember(
   }
 }
 
+/**
+ * Add a user to an org only if they are not already a member (`ON CONFLICT DO
+ * NOTHING`). Exists for the SSO adopt/JIT login path: unlike `addOrgMember`,
+ * which overwrites the stored role on conflict, a sign-in must never downgrade
+ * an existing owner/admin to the default role.
+ */
+export async function ensureOrgMember(
+  db: D1Database,
+  logger: Logger,
+  orgId: string,
+  userId: string,
+  role: "member" | "admin" = "member",
+): Promise<Result<void, Error>> {
+  logger.info("Ensuring org member", { orgId, userId, role });
+
+  try {
+    const joinedAt = new Date().toISOString();
+    await db
+      .prepare(
+        "INSERT INTO org_members (org_id, user_id, role, joined_at) VALUES (?, ?, ?, ?) ON CONFLICT (org_id, user_id) DO NOTHING",
+      )
+      .bind(orgId, userId, role, joinedAt)
+      .run();
+
+    logger.info("Org member ensured", { orgId, userId, role });
+    return ok(undefined);
+  } catch (error) {
+    logger.error("Failed to ensure org member", error instanceof Error ? error : undefined, {
+      orgId,
+      userId,
+      role,
+    });
+    return err(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
 export async function removeOrgMember(
   db: D1Database,
   logger: Logger,

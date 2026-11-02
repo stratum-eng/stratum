@@ -38,6 +38,10 @@ const EXPECTED_CORE_TABLES = [
   "teams",
   "webhooks",
   "audit_log",
+  "identities",
+  "org_sso_connections",
+  "scim_members",
+  "oidc_login_states",
 ];
 
 // 024 was duplicated historically and is already applied to production under

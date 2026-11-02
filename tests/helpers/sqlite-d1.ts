@@ -22,6 +22,8 @@ interface WrappedStmt {
   run(): Promise<{ success: boolean; meta: { changes: number } }>;
   first<T>(): Promise<T | null>;
   all<T>(): Promise<{ results: T[]; success: boolean; meta: Record<string, never> }>;
+  /** What D1's `batch` yields per statement: rows (for RETURNING) and changes. */
+  batchResult(): { results: unknown[]; success: boolean; meta: { changes: number } };
 }
 
 /**
@@ -49,6 +51,16 @@ export function makeSqliteD1(): { db: D1Database; raw: DatabaseSync } {
         success: true,
         meta: {},
       }),
+      batchResult: () => {
+        // A RETURNING statement yields rows, like D1; anything else reports
+        // its change count with an empty result set.
+        if (/\bRETURNING\b/i.test(sql)) {
+          const rows = raw.prepare(sql).all(...binds);
+          return { results: rows, success: true, meta: { changes: rows.length } };
+        }
+        const result = raw.prepare(sql).run(...binds);
+        return { results: [], success: true, meta: { changes: Number(result.changes) } };
+      },
     };
   }
 
@@ -59,7 +71,7 @@ export function makeSqliteD1(): { db: D1Database; raw: DatabaseSync } {
       raw.exec("BEGIN");
       try {
         const results = [];
-        for (const stmt of statements) results.push(await stmt.run());
+        for (const stmt of statements) results.push(stmt.batchResult());
         raw.exec("COMMIT");
         return results;
       } catch (error) {

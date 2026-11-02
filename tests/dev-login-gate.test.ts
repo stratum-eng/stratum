@@ -55,6 +55,23 @@ describe("SEC-5: /dev-login gating", () => {
     expect(res.status).toBe(302);
   });
 
+  it("refuses a disabled account even when the gate is open", async () => {
+    const { getUserByEmail } = await import("../src/storage/users");
+    vi.mocked(getUserByEmail).mockResolvedValueOnce({
+      success: true,
+      data: {
+        id: "usr_dev",
+        email: "dev@example.com",
+        disabledAt: "2026-08-01T00:00:00.000Z",
+      },
+    } as Awaited<ReturnType<typeof getUserByEmail>>);
+
+    const res = await app.fetch(devLoginRequest(), makeEnv({ DEV_LOGIN_ENABLED: "true" }));
+    expect(res.status).toBe(403);
+    // No session cookie may be minted for the refused disabled account.
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
   it("stays forbidden on a non-localhost host even when enabled", async () => {
     const res = await app.fetch(
       new Request("https://app.usestratum.dev/dev-login?email=dev@example.com", { method: "GET" }),

@@ -856,6 +856,7 @@ interface ResolvedOAuthRow {
   user_token_hash: string;
   user_created_at: string;
   deleting_at: string | null;
+  disabled_at: string | null;
   telemetry_opt_out: number | null;
   grant_id: string;
   client_id: string;
@@ -885,7 +886,7 @@ export async function resolveOAuthAccessToken(
     row = await db
       .prepare(
         `SELECT u.id AS user_id, u.email, u.username, u.github_id, u.github_username,
-                u.token_hash AS user_token_hash, u.created_at AS user_created_at, u.deleting_at,
+                u.token_hash AS user_token_hash, u.created_at AS user_created_at, u.deleting_at, u.disabled_at,
                 u.telemetry_opt_out,
                 t.id AS grant_id, t.client_id, t.scope AS token_scope,
                 t.access_expires_at, t.last_used_at, t.revoked_at
@@ -904,6 +905,9 @@ export async function resolveOAuthAccessToken(
   if (!row) return err(new NotFoundError("Token", "by-token"));
   if (row.revoked_at !== null) return err(new NotFoundError("Token", "revoked"));
   if (row.deleting_at !== null) return err(new NotFoundError("Token", "owner-deleting"));
+  // A SCIM-disabled owner is as inert as a deleting one (#253); the column is
+  // NULL on enabled accounts, and `!= null` also tolerates a stub row without it.
+  if (row.disabled_at != null) return err(new NotFoundError("Token", "owner-disabled"));
   if (isExpired(row.access_expires_at)) return err(new NotFoundError("Token", "expired"));
 
   const user: User = {

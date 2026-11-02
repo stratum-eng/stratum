@@ -44,7 +44,7 @@ export interface PendingSignup {
   suggestedUsername: string | null;
   /** Present for GitHub, so the account is linked as it is created. */
   github?: { id: string; login: string };
-  /** Same-origin path to land on afterwards (GitHub's `next`), already validated. */
+  /** Same-origin path to land on afterwards (the OAuth start URL's `next`), already validated. */
   next?: string;
   createdAt: number;
 }
@@ -201,7 +201,7 @@ async function issueSessionAndRedirect(
   });
   sessionLogger.info("OAuth signup complete, session created", { provider: record.provider });
   // Consumed unconditionally so a stale destination never survives into the
-  // next sign-in; GitHub's own `next` still wins when it was given.
+  // next sign-in; a `next` from the OAuth start URL still wins when given.
   const remembered = consumePostLoginRedirect(c, "/");
   return c.redirect(record.next ?? remembered);
 }
@@ -373,6 +373,17 @@ app.post("/", async (c) => {
   // this is a sign-in, not a second account; the parked record is spent.
   const existing = await getUserByEmail(c.env.DB, record.email, logger);
   if (existing.success) {
+    // That account may be frozen — SCIM can provision a user already
+    // deactivated (#253). Refuse before linking GitHub or minting a session,
+    // exactly as the OAuth callbacks do for an account they find directly.
+    if (existing.data.disabledAt || existing.data.deletingAt) {
+      logger.warn("Blocked OAuth signup completion — account disabled", {
+        userId: existing.data.id,
+        provider: record.provider,
+      });
+      await clearPendingSignup(c, token);
+      return c.redirect("/auth/login?error=account_disabled");
+    }
     logger.info("Email registered while username was being chosen; signing in", {
       userId: existing.data.id,
       provider: record.provider,

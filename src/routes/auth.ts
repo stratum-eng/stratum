@@ -2,9 +2,13 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { captureAuthCompleted } from "../analytics/auth";
 import { recordAudit } from "../storage/audit";
+import { getIdentityByIssuerSubject, upsertIdentity } from "../storage/identities";
 import { createSession, deleteSession, getSession } from "../storage/sessions";
-import { getUserByEmail, signInGitHubUser } from "../storage/users";
+import { getUser, getUserByEmail, getUserByGitHubId, signInGitHubUser } from "../storage/users";
 import type { Env } from "../types";
+import { constantTimeEqual } from "../utils/crypto";
+import { NotFoundError } from "../utils/errors";
+import type { Logger } from "../utils/logger";
 import { createLogger } from "../utils/logger";
 import { consumePostLoginRedirect, isSafeRedirectTarget } from "../utils/post-login-redirect";
 import { beginPendingSignup, suggestUsername } from "./oauth-signup";
@@ -14,14 +18,38 @@ const app = new Hono<{ Bindings: Env }>();
 const OAUTH_STATE_COOKIE = "stratum_oauth_state";
 const OAUTH_STATE_TTL_SECONDS = 600;
 
-/** Constant-time string equality — OAuth state values are attacker-influenced. */
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+// Canonical issuer values for the identities table (see src/storage/identities.ts).
+// RESERVED: the OIDC connection-registration flow (org SSO) must reject these
+// issuers — an org-supplied connection claiming either could re-point rows in
+// the GitHub/Google identity namespace via upsertIdentity's ON CONFLICT.
+const GITHUB_ISSUER = "https://github.com";
+const GOOGLE_ISSUER = "https://accounts.google.com";
+
+/**
+ * Record the external identity for a completed OAuth sign-in. Non-fatal by
+ * design: identity rows are forward-provisioning for SSO (backfilled lazily at
+ * login), while GitHub login is still keyed off users.github_id and Google
+ * falls back to email match — so a storage blip here must not lock anyone out.
+ * The next successful login retries the upsert.
+ */
+async function recordOAuthIdentity(
+  db: D1Database,
+  logger: Logger,
+  input: {
+    userId: string;
+    provider: "github" | "google";
+    issuer: string;
+    subject: string;
+    email: string;
+  },
+): Promise<void> {
+  const result = await upsertIdentity(db, logger, input);
+  if (!result.success) {
+    logger.error("Failed to upsert OAuth identity; continuing login", result.error, {
+      provider: input.provider,
+      userId: input.userId,
+    });
   }
-  return diff === 0;
 }
 
 /**
@@ -63,7 +91,7 @@ async function consumeOAuthState(
   state: string,
 ): Promise<{ next?: string } | null> {
   const cookieState = getCookie(c, OAUTH_STATE_COOKIE);
-  if (!cookieState || !timingSafeEqual(cookieState, state)) {
+  if (!cookieState || !constantTimeEqual(cookieState, state)) {
     return null;
   }
   deleteCookie(c, OAUTH_STATE_COOKIE, { path: "/auth" });
@@ -207,18 +235,41 @@ app.get("/github/callback", async (c) => {
   }
 
   const githubUser = await userRes.json<{ id: number; login: string }>();
-  const emails = await emailsRes.json<{ email: string; primary: boolean; verified: boolean }[]>();
+  const emailsBody = await emailsRes.json<unknown>();
+  // A 200 with a non-array body (proxy error page, API drift) must not throw —
+  // the empty list already has correct semantics below.
+  const emails = (Array.isArray(emailsBody) ? emailsBody : []) as {
+    email: string;
+    primary: boolean;
+    verified: boolean;
+  }[];
 
   // Only an address the provider has verified may identify an account. GitHub
   // lets a user list any address unverified, so matching on one would let
   // anyone reach an existing account by adding its owner's email to their own
   // profile — and would create new accounts under emails nobody has proven.
-  const verifiedEmail =
-    emails.find((e) => e.primary && e.verified)?.email ?? emails.find((e) => e.verified)?.email;
+  // Lowercased so the match hits accounts stored via the magic-link flow,
+  // which normalizes.
+  const verifiedEmail = (
+    emails.find((e) => e.primary && e.verified)?.email ?? emails.find((e) => e.verified)?.email
+  )
+    ?.trim()
+    .toLowerCase();
 
-  if (!verifiedEmail) {
-    logger.warn("No verified email found on GitHub account", { githubId: githubUser.id });
-    return c.json({ error: "No verified email found on GitHub account" }, 422);
+  const githubId = String(githubUser.id);
+
+  // A returning, already-linked user's credential is the GitHub account id
+  // itself, so they are not locked out because GitHub currently lists no
+  // verified address. That path only ever matches by id — it links and creates
+  // nothing — so the verified-email rule still governs every email match.
+  let signInEmail = verifiedEmail;
+  if (!signInEmail) {
+    const linked = await getUserByGitHubId(c.env.DB, githubId, logger);
+    if (!linked.success) {
+      logger.warn("No verified email found on GitHub account", { githubId: githubUser.id });
+      return c.json({ error: "No verified email found on GitHub account" }, 422);
+    }
+    signInEmail = linked.data.email;
   }
 
   // A `next` given to /auth/github rides in the state record, since GitHub
@@ -228,7 +279,6 @@ app.get("/github/callback", async (c) => {
   // else — the MCP consent screen, say — uses to get back to its request.
   const nextPath = consumed.next ?? safeNextPath(next, c.req.url);
 
-  const githubId = String(githubUser.id);
   // Finds by GitHub id or links by verified email, and creates nothing: an
   // identity with no account comes back as `null`. That decision is made once,
   // inside `signInGitHubUser`, rather than duplicated here — a second copy of
@@ -236,7 +286,7 @@ app.get("/github/callback", async (c) => {
   // two disagree.
   const userResult = await signInGitHubUser(
     c.env.DB,
-    { githubId, email: verifiedEmail, username: githubUser.login },
+    { githubId, email: signInEmail, username: githubUser.login },
     logger,
   );
 
@@ -246,6 +296,12 @@ app.get("/github/callback", async (c) => {
   }
 
   if (userResult.data === null) {
+    // Only reachable without a verified email if the id-linked account vanished
+    // between the two lookups; never park a signup on an unproven address.
+    if (!verifiedEmail) {
+      logger.warn("No verified email found on GitHub account", { githubId: githubUser.id });
+      return c.json({ error: "No verified email found on GitHub account" }, 422);
+    }
     // First time we have seen this person: nothing is created until they have
     // chosen a username (and, under the closed beta, presented an invite code).
     logger.info("New GitHub identity; asking for a username", { githubId });
@@ -258,9 +314,29 @@ app.get("/github/callback", async (c) => {
     });
   }
 
-  logger.info("Signing in GitHub user", { githubId });
   const user = userResult.data;
+
+  // A disabled (or deleting) account must not sign in: refuse BEFORE minting a
+  // session, so no stratum_session cookie and no session.created audit row
+  // exist for it. `signInGitHubUser` already declined to link a GitHub id onto
+  // such a row, so re-enabling it later does not hand it a new credential.
+  if (user.disabledAt || user.deletingAt) {
+    logger.warn("Blocked GitHub sign-in — account disabled", { userId: user.id });
+    return c.redirect("/auth/login?error=account_disabled");
+  }
+
+  logger.info("Signing in GitHub user", { githubId });
   const sessionLogger = logger.child({ userId: user.id });
+
+  await recordOAuthIdentity(c.env.DB, sessionLogger, {
+    userId: user.id,
+    provider: "github",
+    issuer: GITHUB_ISSUER,
+    subject: githubId,
+    // The account's own email when GitHub lists no verified one — an
+    // unverified address is never recorded.
+    email: signInEmail,
+  });
 
   const sessionResult = await createSession(c.env.DB, user.id, sessionLogger);
   if (sessionResult.success) {
@@ -315,7 +391,7 @@ app.get("/google", async (c) => {
     return c.json({ error: "Google OAuth is not configured" }, 501);
   }
 
-  const state = await issueOAuthState(c, c.env.STATE);
+  const state = await issueOAuthState(c, c.env.STATE, safeNextPath(c.req.query("next"), c.req.url));
 
   const params = new URLSearchParams({
     client_id: clientId,
@@ -350,7 +426,8 @@ app.get("/google/callback", async (c) => {
   if (!state) {
     return c.json({ error: "Missing state parameter" }, 400);
   }
-  if ((await consumeOAuthState(c, c.env.STATE, state)) === null) {
+  const consumed = await consumeOAuthState(c, c.env.STATE, state);
+  if (consumed === null) {
     logger.warn("Invalid, expired, or unbound state", { statePrefix: state.slice(0, 8) });
     return c.json({ error: "Invalid or expired state" }, 400);
   }
@@ -392,29 +469,99 @@ app.get("/google/callback", async (c) => {
   }
 
   const googleUser = await userRes.json<{
-    sub: string;
+    sub?: string;
     email?: string;
     email_verified?: boolean;
   }>();
 
-  if (!googleUser.email || googleUser.email_verified !== true) {
-    logger.warn("Google account has no verified email");
-    return c.json({ error: "No verified email on Google account" }, 422);
+  if (!googleUser.sub) {
+    logger.error("Google userinfo response missing sub");
+    return c.json({ error: "Failed to fetch Google user data" }, 502);
   }
 
-  // Google identity maps onto the email-based account model: an existing
-  // account with this email is reused — the same semantics as magic-link
-  // sign-in. A new one is created only once its owner has chosen a username.
-  const existing = await getUserByEmail(c.env.DB, googleUser.email, logger);
-  if (!existing.success) {
-    logger.info("New Google identity; asking for a username");
-    return beginPendingSignup(c, {
-      provider: "google",
-      email: googleUser.email,
-      suggestedUsername: suggestUsername(googleUser.email.split("@")[0] ?? ""),
-    });
+  // Lowercased so matching hits accounts stored via the magic-link flow, which
+  // normalizes; identities.email is normalized the same way in storage.
+  const googleEmail = googleUser.email?.trim().toLowerCase();
+
+  // Resolve by the stable (issuer, sub) pair first — the identity persisted at
+  // a prior login. The sub, not the email, is the credential for a returning
+  // linked user (mirroring github_id-first above), so the verified-email
+  // requirement applies only to the email-match/create paths below. Only
+  // NotFound falls through to email matching; a storage failure fails the
+  // login closed, because falling through could email-match (or JIT-create) a
+  // duplicate account for an already-linked subject.
+  const identityLookup = await getIdentityByIssuerSubject(
+    c.env.DB,
+    logger,
+    GOOGLE_ISSUER,
+    googleUser.sub,
+  );
+  if (!identityLookup.success && !(identityLookup.error instanceof NotFoundError)) {
+    logger.error("Google identity lookup failed", identityLookup.error);
+    return c.json({ error: "Failed to sign in" }, 500);
   }
-  const userId = existing.data.id;
+
+  let userId: string;
+  let identityEmail: string;
+  if (identityLookup.success) {
+    // An identity row must point at a live user (account deletion cascades
+    // through deleteIdentitiesForUser) — treat a dangling row as an error, not
+    // as license to fall through and start a duplicate signup.
+    const identityUser = await getUser(c.env.DB, identityLookup.data.userId, logger);
+    if (!identityUser.success) {
+      logger.error("Google identity points at a missing user", identityUser.error, {
+        identityId: identityLookup.data.id,
+      });
+      return c.json({ error: "Failed to sign in" }, 500);
+    }
+    // A disabled (or deleting) account must not sign in: refuse BEFORE minting
+    // a session, so no stratum_session cookie and no session.created audit row
+    // exist for it.
+    if (identityUser.data.disabledAt || identityUser.data.deletingAt) {
+      logger.warn("Blocked Google sign-in — account disabled", { userId: identityUser.data.id });
+      return c.redirect("/auth/login?error=account_disabled");
+    }
+    userId = identityUser.data.id;
+    // Refresh the identity email only from a verified claim; otherwise keep
+    // the account's stored email.
+    identityEmail =
+      googleEmail && googleUser.email_verified === true ? googleEmail : identityUser.data.email;
+  } else {
+    // Email match and account creation trust the Google email only when
+    // verified — an unverified address is attacker-claimable.
+    if (!googleEmail || googleUser.email_verified !== true) {
+      logger.warn("Google account has no verified email");
+      return c.json({ error: "No verified email on Google account" }, 422);
+    }
+    identityEmail = googleEmail;
+    // Unlinked Google identity maps onto the email-based account model: an
+    // existing account with this (verified) email is reused — the same
+    // semantics as magic-link sign-in. A new one is created only once its
+    // owner has chosen a username.
+    const existing = await getUserByEmail(c.env.DB, googleEmail, logger);
+    if (!existing.success) {
+      logger.info("New Google identity; asking for a username");
+      return beginPendingSignup(c, {
+        provider: "google",
+        email: googleEmail,
+        suggestedUsername: suggestUsername(googleEmail.split("@")[0] ?? ""),
+        ...(consumed.next !== undefined ? { next: consumed.next } : {}),
+      });
+    }
+    if (existing.data.disabledAt || existing.data.deletingAt) {
+      logger.warn("Blocked Google sign-in — account disabled", { userId: existing.data.id });
+      return c.redirect("/auth/login?error=account_disabled");
+    }
+    userId = existing.data.id;
+  }
+
+  await recordOAuthIdentity(c.env.DB, logger.child({ userId }), {
+    userId,
+    provider: "google",
+    issuer: GOOGLE_ISSUER,
+    subject: googleUser.sub,
+    email: identityEmail,
+  });
 
   const sessionLogger = logger.child({ userId });
   const sessionResult = await createSession(c.env.DB, userId, sessionLogger);
@@ -445,7 +592,10 @@ app.get("/google/callback", async (c) => {
   });
 
   sessionLogger.info("Google OAuth successful, session created");
-  return c.redirect(consumePostLoginRedirect(c, "/"));
+  // As for GitHub: a `next` carried on the state wins, and the post-login
+  // cookie is consumed regardless so it cannot outlive this sign-in.
+  const remembered = consumePostLoginRedirect(c, "/");
+  return c.redirect(consumed.next ?? remembered);
 });
 
 // Logout is state-changing, so it happens on POST (the nav renders a form and

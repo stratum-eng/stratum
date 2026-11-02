@@ -173,7 +173,7 @@ describe("buildUsageReport", () => {
 
   it("does not count BYOK spend as hosted consumption", async () => {
     // Goal 5: a project paying its own provider bill must not see that spend
-    // eat an allowance it never touched. Migration 050 keys `source` into the
+    // eat an allowance it never touched. Migration 054 keys `source` into the
     // primary key precisely so this sum can exclude it.
     await cacheLimits("usr_1", { llm_tokens_month: 1000 });
     await record("usr_1", "llm_tokens_month", 100, "platform");

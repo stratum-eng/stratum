@@ -21,7 +21,7 @@
  *   them was full. So `used` is the counter where there is one, floored by the
  *   ledger — which is exactly the pair `checkMeter` compares against a limit,
  *   since `reconcileFloor` raises the counter to the same filtered D1 sum.
- * - **Consumption is `source = 'platform'` only.** Migration 050 keys usage on
+ * - **Consumption is `source = 'platform'` only.** Migration 054 keys usage on
  *   `(owner_id, period, meter, source)` precisely so BYOK spend accumulates
  *   apart, and Goal 5 says it is not under the hosted allowance. Summing both
  *   would tell someone their own provider bill had eaten an allowance it never

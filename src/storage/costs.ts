@@ -75,7 +75,7 @@ interface SummaryRow {
  * change creation, merge and deploy; an unresolvable owner must cost the
  * attribution, never the change. Every failure returns `null` and logs — a row
  * with a NULL owner is honest about being unattributed, which is why migration
- * 049 leaves those columns nullable.
+ * 053 leaves those columns nullable.
  *
  * @param owner - A `ProjectEntry`, or any object carrying its owner fields
  * @returns The billing subject, or `null` when none can be named
@@ -152,7 +152,7 @@ async function accumulateUsage(
   // Be clear about what that costs, because it is not free and there is no job
   // that repairs it: this aggregate cannot be rebuilt from `cost_records` (the
   // project cascade deletes those rows and leaves these standing — see
-  // migration 050), so a failed upsert is a permanent under-count of that
+  // migration 054), so a failed upsert is a permanent under-count of that
   // owner's month. Accepted because the alternative is failing a merge over an
   // accounting write, which is the worse trade in both directions.
   const subject: BillingSubject = { ownerId: opts.ownerId, ownerType: opts.ownerType };
