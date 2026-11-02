@@ -23,16 +23,18 @@ import {
   settleMeter,
 } from "../src/billing/enforcement";
 import { type Entitlements, UNLIMITED, UnlimitedEntitlements } from "../src/billing/entitlements";
+import { MAX_GAUGE_CHARGES } from "../src/billing/private-project-gauge";
 import { runDeployMessage } from "../src/deploy/runner";
 import { LLMEvaluator } from "../src/evaluation/llm-evaluator";
 import type { LlmProvider } from "../src/evaluation/llm-provider";
 import type { EvalPolicy, EvaluationContext } from "../src/evaluation/types";
 import { rateLimitMiddleware } from "../src/middleware/rate-limit";
-import { MAX_GAUGE_CHARGES, projectsRouter } from "../src/routes/projects";
+import { bulkImportRouter } from "../src/routes/bulk-import";
+import { projectsRouter } from "../src/routes/projects";
 import { recordCosts } from "../src/storage/costs";
 import { insertDeployment } from "../src/storage/deployments";
 import { GAUGE_CHARGE_GRACE_MS, recordGaugeCharge } from "../src/storage/gauge-index";
-import { setProject } from "../src/storage/state";
+import { getProjectByPath, setProject } from "../src/storage/state";
 import { getOwnerMeterTotals, upsertUsage } from "../src/storage/usage";
 import type { Env, ProjectEntry } from "../src/types";
 import type { Logger } from "../src/utils/logger";
@@ -1060,6 +1062,158 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
 
     expect(list).not.toHaveBeenCalled();
     list.mockRestore();
+  });
+});
+
+describe("the private project gauge through the import routes", () => {
+  const SOURCE = "https://github.com/octo/widget";
+
+  function authed(userId: string, username: string) {
+    const application = new Hono<{ Bindings: Env }>();
+    application.use("*", async (c, next) => {
+      c.set("userId", userId);
+      c.set("username", username);
+      await next();
+    });
+    application.route("/projects", projectsRouter);
+    application.route("/bulk-import", bulkImportRouter);
+    return (path: string, body: unknown) =>
+      application.fetch(
+        new Request(`https://t.test${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        makeEnv({
+          ENTITLEMENTS_ENFORCE: "1",
+          // A request that gets past the gauge fails here instead, which is
+          // how "not refused" is asserted.
+          ARTIFACTS: {
+            create: async () => {
+              throw new Error("artifacts unavailable in this test");
+            },
+          },
+          IMPORT_QUEUE: { send: vi.fn() },
+        } as unknown as Partial<Env>),
+      );
+  }
+
+  async function seedPrivate(namespace: string, slug: string, ownerId: string): Promise<void> {
+    const stored = await setProject(
+      kv,
+      {
+        id: `prj_${slug}`,
+        name: slug,
+        slug,
+        namespace,
+        ownerId,
+        ownerType: "user",
+        remote: "https://acct.artifacts.cloudflare.net/git/acct/x.git",
+        createdAt: "2026-09-01T00:00:00.000Z",
+        visibility: "private",
+      },
+      logger,
+    );
+    if (!stored.success) throw stored.error;
+  }
+
+  it("refuses a private single import at the limit, before anything is created", async () => {
+    const userId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 1 } }));
+    await seedPrivate("@alice", "one", userId);
+
+    const response = await authed(userId, "alice")("/projects/@alice/two/import", {
+      url: SOURCE,
+      branch: "main",
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain("plan allows 1");
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM import_jobs").get()).toEqual({ n: 0 });
+    expect((await getProjectByPath(kv, "@alice", "two", logger)).success).toBe(false);
+  });
+
+  it("admits a private single import under the limit, and a public one at it", async () => {
+    const userId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 1 } }));
+    const post = authed(userId, "alice");
+
+    const under = await post("/projects/@alice/two/import", { url: SOURCE, branch: "main" });
+    expect(under.status).not.toBe(403);
+
+    await seedPrivate("@alice", "one", userId);
+    const pub = await post("/projects/@alice/three/import", {
+      url: SOURCE,
+      branch: "main",
+      visibility: "public",
+    });
+    expect(pub.status).not.toBe(403);
+  });
+
+  it("refuses a bulk import whose private repos would cross the limit, all of it", async () => {
+    const userId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    await seedPrivate("@alice", "one", userId);
+
+    const response = await authed(userId, "alice")("/bulk-import", {
+      repos: [
+        { url: "https://github.com/octo/a", slug: "a", branch: "main" },
+        { url: "https://github.com/octo/b", slug: "b", branch: "main" },
+      ],
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain("Creating 2 more private projects");
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM import_jobs").get()).toEqual({ n: 0 });
+  });
+
+  it("refuses a bulk entry whose visibility is neither private nor public", async () => {
+    // Access checks treat anything but "public" as private; an unrecognised
+    // value must not slip past a gauge that counts only "private".
+    const userId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 0 } }));
+
+    const response = await authed(userId, "alice")("/bulk-import", {
+      repos: [
+        { url: "https://github.com/octo/a", slug: "a", branch: "main", visibility: "PRIVATE" },
+      ],
+    });
+
+    expect(response.status).toBe(400);
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM import_jobs").get()).toEqual({ n: 0 });
+  });
+
+  it("refuses a bulk import with two entries for the same project", async () => {
+    const userId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 5 } }));
+
+    const response = await authed(userId, "alice")("/bulk-import", {
+      repos: [
+        { url: "https://github.com/octo/a", slug: "same", branch: "main" },
+        { url: "https://github.com/octo/b", slug: "same", branch: "main" },
+      ],
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("Duplicate import target");
+  });
+
+  it("does not charge a bulk import for public repos or projects that already exist", async () => {
+    const userId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    await seedPrivate("@alice", "one", userId);
+
+    // One already exists (a re-run), one is public, one is new: only the new
+    // private one counts, and 1 + 1 fits a limit of 2.
+    const response = await authed(userId, "alice")("/bulk-import", {
+      repos: [
+        { url: "https://github.com/octo/one", slug: "one", branch: "main" },
+        { url: "https://github.com/octo/b", slug: "b", branch: "main", visibility: "public" },
+        { url: "https://github.com/octo/c", slug: "c", branch: "main" },
+      ],
+    });
+
+    expect(response.status).toBe(201);
   });
 });
 

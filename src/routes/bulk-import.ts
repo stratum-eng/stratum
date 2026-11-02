@@ -4,6 +4,8 @@
  */
 
 import { Hono } from "hono";
+import { entitlementsEnabled } from "../billing/entitlements";
+import { checkPrivateProjectGauge } from "../billing/private-project-gauge";
 import {
   detectProvider,
   isValidRepoUrl,
@@ -19,7 +21,9 @@ import {
 import { getProjectByPath, setProject } from "../storage/state";
 import type { ArtifactsCreateResult, BulkImportJob, Env, ProjectEntry } from "../types";
 import { getArtifactsRepoName, getUserNamespace } from "../types";
+import { getWaitUntil } from "../utils/execution-ctx";
 import { createLogger } from "../utils/logger";
+import type { Logger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 import { badRequest, created, forbidden, notFound, ok, unauthorized } from "../utils/response";
 import { isValidNamespace, isValidSlug, validateCloneDepth } from "../utils/validation";
@@ -67,6 +71,43 @@ function extractSlugFromUrl(url: string): string | null {
   return parsed.info.repo.replace(/[^a-zA-Z0-9-_]/g, "-").toLowerCase();
 }
 
+/** Where one requested repo would land, as {@link processRepoImport} resolves it. */
+function importTarget(
+  request: RepoImportRequest,
+  username: string,
+  index: number,
+): { namespace: string; slug: string; visibility: "private" | "public" } {
+  return {
+    namespace: request.namespace || getUserNamespace(username),
+    slug: request.slug || extractSlugFromUrl(request.url) || `repo-${index}`,
+    visibility: request.visibility || "private",
+  };
+}
+
+/**
+ * How many private projects this batch would actually create: entries that
+ * will fail the own-namespace or slug checks create nothing, and neither does
+ * one whose project already exists (it is reported as a success untouched).
+ * A re-run after a partial import is therefore not charged for what the first
+ * run already made.
+ */
+async function countNewPrivateProjects(
+  env: Env,
+  logger: Logger,
+  repos: RepoImportRequest[],
+  username: string,
+): Promise<number> {
+  const own = getUserNamespace(username);
+  let count = 0;
+  for (const [index, request] of repos.entries()) {
+    const { namespace, slug, visibility } = importTarget(request, username, index);
+    if (visibility !== "private" || namespace !== own || !isValidSlug(slug)) continue;
+    const existing = await getProjectByPath(env.STATE, namespace, slug, logger);
+    if (!existing.success) count++;
+  }
+  return count;
+}
+
 /**
  * Process a single repo import (async background job). Exported for tests.
  */
@@ -78,6 +119,7 @@ export async function processRepoImport(
   username: string,
   index: number,
   total: number,
+  gaugeSubjectId?: string,
 ): Promise<{ success: boolean; error?: string; repo: string }> {
   const logger = createLogger({
     requestId: jobId,
@@ -87,9 +129,7 @@ export async function processRepoImport(
   });
 
   const { url } = request;
-  const namespace = request.namespace || getUserNamespace(username);
-  const slug = request.slug || extractSlugFromUrl(url) || `repo-${index}`;
-  const visibility = request.visibility || "private";
+  const { namespace, slug, visibility } = importTarget(request, username, index);
 
   // Update job progress
   const job = bulkImportJobs.get(jobId);
@@ -205,6 +245,7 @@ export async function processRepoImport(
       sourceRepo: parsed?.info.repo,
       sourceDefaultBranch: branch,
       visibility,
+      ...(visibility === "private" && gaugeSubjectId !== undefined ? { gaugeSubjectId } : {}),
     };
 
     // Claim before the KV write, as project creation does.
@@ -323,7 +364,52 @@ app.post("/", async (c) => {
     return badRequest(`Invalid repository URLs: ${invalidUrls.join(", ")}`);
   }
 
+  // Anything but "public" is private to access checks, so a value the gauge
+  // does not recognise would create an uncounted private project. Refuse it,
+  // as the single-import route does.
+  if (
+    body.repos.some(
+      (repo) =>
+        repo.visibility !== undefined &&
+        repo.visibility !== "private" &&
+        repo.visibility !== "public",
+    )
+  ) {
+    return badRequest("visibility must be 'private' or 'public'");
+  }
+
+  // Two entries for one path would run two imports into one project — two
+  // import jobs, two repository writes — and the gauge counts it once.
+  const targets = new Set<string>();
+  for (const [index, repo] of body.repos.entries()) {
+    const { namespace, slug } = importTarget(repo, username, index);
+    const key = `${namespace}/${slug}`;
+    if (targets.has(key)) return badRequest(`Duplicate import target: ${key}`);
+    targets.add(key);
+  }
+
   const userNamespace = getUserNamespace(username);
+
+  // The private-project gauge, for the whole batch at once: the imports below
+  // run concurrently, so checking each one would let a batch admitted one at a
+  // time land well past the limit. A batch that does not fit is refused before
+  // any of it is created. Gated first so a self-hoster pays no existence reads.
+  let gaugeSubjectId: string | undefined;
+  if (entitlementsEnabled(c.env)) {
+    const adding = await countNewPrivateProjects(c.env, logger, body.repos, username);
+    if (adding > 0) {
+      const gauge = await checkPrivateProjectGauge(c.env, logger, {
+        actorUserId: userId,
+        username,
+        owner: { id: userId, type: "user" },
+        targetNamespace: userNamespace,
+        waitUntil: getWaitUntil(c),
+        adding,
+      });
+      if (!gauge.admitted) return forbidden(gauge.reason);
+      gaugeSubjectId = gauge.gaugeSubjectId;
+    }
+  }
 
   // Create bulk import job
   const jobId = generateProjectId();
@@ -352,20 +438,27 @@ app.post("/", async (c) => {
   // Process imports in background
   // Note: In production, this should be queued to a background worker
   const importPromises = repos.map((repoRequest, index) =>
-    processRepoImport(c.env, jobId, repoRequest, userId, username, index, repos.length).then(
-      (result) => {
-        if (!result.success && result.error) {
-          const currentJob = bulkImportJobs.get(jobId);
-          if (currentJob) {
-            currentJob.errors.push({
-              repo: result.repo,
-              error: result.error,
-            });
-          }
+    processRepoImport(
+      c.env,
+      jobId,
+      repoRequest,
+      userId,
+      username,
+      index,
+      repos.length,
+      gaugeSubjectId,
+    ).then((result) => {
+      if (!result.success && result.error) {
+        const currentJob = bulkImportJobs.get(jobId);
+        if (currentJob) {
+          currentJob.errors.push({
+            repo: result.repo,
+            error: result.error,
+          });
         }
-        return result;
-      },
-    ),
+      }
+      return result;
+    }),
   );
 
   // Wait for all imports to complete
