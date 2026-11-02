@@ -58,6 +58,7 @@ vi.mock("../src/beta/gate", () => ({
 }));
 
 import { admitAndDeliverCodes, betaGateEnabled, validateInviteCode } from "../src/beta/gate";
+import { usernameNamespaceTaken } from "../src/storage/project-namespace";
 import { createSession, getSession } from "../src/storage/sessions";
 import {
   createUser,
@@ -793,6 +794,22 @@ describe("OAuth signup: choosing a username", () => {
       const res = await post(app, env, token, { username: "octo" });
 
       expect(res.headers.get("Location")).toBe(`${COMPLETE}?error=username_taken&username=octo`);
+      expect(createUser).not.toHaveBeenCalled();
+      expect(kvOf(env).store.has(`pending_signup:${token}`)).toBe(true);
+    });
+
+    it("reports a failed namespace lookup as a failure, not as a taken name", async () => {
+      const app = makeApp();
+      const env = makeEnv();
+      const token = park(env, GITHUB_RECORD);
+      vi.mocked(usernameNamespaceTaken).mockResolvedValueOnce({
+        success: false,
+        error: new Error("kv down") as never,
+      });
+
+      const res = await post(app, env, token, { username: "octo" });
+
+      expect(res.headers.get("Location")).toBe(`${COMPLETE}?error=signup_failed&username=octo`);
       expect(createUser).not.toHaveBeenCalled();
       expect(kvOf(env).store.has(`pending_signup:${token}`)).toBe(true);
     });

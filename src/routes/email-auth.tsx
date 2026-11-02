@@ -294,7 +294,11 @@ app.post("/send-signup", async (c) => {
   // An org slug or a namespace still holding projects is taken too: `@name`
   // is one namespace space shared by users and orgs.
   const namespaceTaken = await usernameNamespaceTaken(c.env, username, logger);
-  if (!namespaceTaken.success || namespaceTaken.data) {
+  if (!namespaceTaken.success) {
+    logger.error("Failed to check username namespace", namespaceTaken.error, { username });
+    return emailAuthRedirect(c, "error", "signup_failed", "/auth/signup");
+  }
+  if (namespaceTaken.data) {
     logger.warn("Username namespace unavailable", { username });
     return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
   }
@@ -678,7 +682,15 @@ app.post("/verify", async (c) => {
         return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
       }
       const namespaceTaken = await usernameNamespaceTaken(c.env, username, logger);
-      if (!namespaceTaken.success || namespaceTaken.data) {
+      if (!namespaceTaken.success) {
+        logger.error(
+          "Failed to check username namespace at signup verification",
+          namespaceTaken.error,
+          { username },
+        );
+        return emailAuthRedirect(c, "error", "signup_failed", "/auth/signup");
+      }
+      if (namespaceTaken.data) {
         logger.warn("Username namespace unavailable at signup verification", { username });
         return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
       }

@@ -622,6 +622,26 @@ describe("Auth Signup/Login Integration Tests", () => {
         expect(env.EMAIL?.send).not.toHaveBeenCalled();
       });
 
+      it("reports a failed namespace lookup as a failure, not as a taken name", async () => {
+        const { usernameNamespaceTaken } = await import("../src/storage/project-namespace");
+        vi.mocked(usernameNamespaceTaken).mockResolvedValueOnce({
+          success: false,
+          error: new Error("kv down") as never,
+        });
+
+        const res = await app.fetch(
+          request("/auth/email/send-signup", {
+            method: "POST",
+            body: createFormData({ email: "newemail@example.com", username: "freshname" }),
+          }),
+          env,
+        );
+
+        expect(res.status).toBe(302);
+        expect(res.headers.get("location")).toContain("error=signup_failed");
+        expect(env.EMAIL?.send).not.toHaveBeenCalled();
+      });
+
       it("signup fails with invalid username format", async () => {
         const formData = createFormData({
           email: "newuser@example.com",
