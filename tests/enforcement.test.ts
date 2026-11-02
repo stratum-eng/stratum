@@ -40,6 +40,13 @@ import { makeFakeKV } from "./helpers/fake-kv";
 import { makeSqliteD1 } from "./helpers/sqlite-d1";
 import { makeUsageMeters } from "./helpers/usage-meter";
 
+// Only the initial push is stubbed, so a private creation that passes the gauge
+// can complete; everything else in git-ops stays real.
+vi.mock("../src/storage/git-ops", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/storage/git-ops")>()),
+  initAndPush: vi.fn(async () => ({ success: true, data: "sha_init" })),
+}));
+
 const PERIOD = "2026-09";
 const NOW = Date.UTC(2026, 8, 15, 12, 0, 0);
 
@@ -669,7 +676,7 @@ describe("reconciling the counter against the ledger", () => {
 describe("the private project gauge through POST /projects (PRD §4a)", () => {
   const ORG_ID = "org_acme";
 
-  function projectApp(userId: string, username: string) {
+  function projectApp(userId: string, username: string, artifacts?: Env["ARTIFACTS"]) {
     const application = new Hono<{ Bindings: Env }>();
     application.use("*", async (c, next) => {
       c.set("userId", userId);
@@ -696,7 +703,7 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
           ENTITLEMENTS_ENFORCE: "1",
           // Never reached by a refusal; a creation that gets past the gauge
           // fails here instead, which is how "not refused" is asserted.
-          ARTIFACTS: {
+          ARTIFACTS: artifacts ?? {
             create: async () => {
               throw new Error("artifacts unavailable in this test");
             },
@@ -709,6 +716,7 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
     namespace: string,
     slug: string,
     owner: { ownerId: string; ownerType: "user" | "org" },
+    gaugeSubjectId?: string,
   ): Promise<void> {
     const stored = await setProject(
       kv,
@@ -722,6 +730,7 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
         remote: "https://acct.artifacts.cloudflare.net/git/acct/x.git",
         createdAt: "2026-09-01T00:00:00.000Z",
         visibility: "private",
+        ...(gaugeSubjectId !== undefined ? { gaugeSubjectId } : {}),
       },
       logger,
     );
@@ -758,6 +767,55 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
 
     expect(response.status).toBe(403);
     expect(await response.text()).toContain("plan allows 2");
+  });
+
+  it("counts private projects the actor created in an org that does not pool", async () => {
+    // The org owns them, but the actor was charged for them: counting by owner
+    // alone let an actor create private projects there without limit.
+    const userId = createUser(nextUserId());
+    seedOrg(userId);
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    await seedProject("@acme", "one", { ownerId: ORG_ID, ownerType: "org" }, userId);
+    await seedProject("@acme", "two", { ownerId: ORG_ID, ownerType: "org" }, userId);
+
+    const response = await projectApp(
+      userId,
+      "alice",
+    )({
+      name: "three",
+      visibility: "private",
+      org: "acme",
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toContain("plan allows 2");
+  });
+
+  it("records the charged subject on a private project created into an org", async () => {
+    const userId = createUser(nextUserId());
+    seedOrg(userId);
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    const artifacts = {
+      create: async (name: string) => ({
+        name,
+        remote: `https://artifacts.test/${name}.git`,
+        token: "tok",
+      }),
+    } as unknown as Env["ARTIFACTS"];
+
+    const response = await projectApp(
+      userId,
+      "alice",
+      artifacts,
+    )({
+      name: "fresh",
+      visibility: "private",
+      org: "acme",
+    });
+
+    expect(response.status).toBe(201);
+    const stored = JSON.parse((await kv.get("project:@acme:fresh")) ?? "null") as ProjectEntry;
+    expect(stored).toMatchObject({ ownerId: ORG_ID, ownerType: "org", gaugeSubjectId: userId });
   });
 
   it("sends a browser form submission back to the form, not to a JSON 403", async () => {

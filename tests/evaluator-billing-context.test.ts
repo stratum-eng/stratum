@@ -536,7 +536,24 @@ describe("createChangeWithEvaluation passes the project through", () => {
     });
   });
 
-  it("carries no billing subject for an agent-owned project", async () => {
+  it("bills an agent-owned project's owning user", async () => {
+    const { getAgent } = await import("../src/storage/agents");
+    vi.mocked(getAgent).mockResolvedValueOnce({
+      success: true,
+      data: { id: "agent_bot", ownerId: "user_bot_owner" } as never,
+    });
+    await create(projectEntry({ ownerId: "agent_bot", ownerType: "agent" }));
+    expect(secretScanContext()?.billing).toEqual({
+      ownerId: "user_bot_owner",
+      ownerType: "user",
+      projectId: "proj_abc",
+      actorUserId: "user_alice",
+    });
+  });
+
+  it("carries no billing subject when an agent's owner cannot be resolved", async () => {
+    // The module-level `getAgent` mock answers NOT_FOUND, so the walk yields
+    // nobody to charge.
     await create(projectEntry({ ownerId: "agent_bot", ownerType: "agent" }));
     const context = secretScanContext();
     // The base is still pinned: dropping the billing subject must not drop the

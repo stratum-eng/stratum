@@ -467,8 +467,9 @@ Every merged change keeps:
   snapshotted at change creation, and the evaluation score, per merged commit.
 - **Evaluator evidence** — the full per-evaluator results (score, findings,
   duration), linked by change and browsable in the UI.
-- **Cost records** — estimated resource usage per change: LLM tokens, sandbox
-  execution time, and git operations.
+- **Cost records** — resource usage per change: LLM tokens (as the provider
+  reported them, or an estimate marked as such), sandbox execution time, and
+  git operations.
 
 If a change was linked to an issue, the issue auto-closes on merge.
 

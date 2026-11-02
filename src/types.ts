@@ -329,6 +329,13 @@ export interface ProjectEntry {
   autoSyncEnabled?: boolean;
   syncFrequency?: number; // Minutes between auto-syncs
   visibility?: "private" | "public";
+  /**
+   * The billing subject (user or pooled org id) whose private-project gauge
+   * this project was counted against at creation. Differs from `ownerId` when a
+   * user creates into an org that does not pool. Absent on entries created
+   * before it existed, or while entitlements were off.
+   */
+  gaugeSubjectId?: string;
   // False while the initial import is in flight; true once it completes.
   // Absent on legacy projects — treated as true for backward compatibility.
   importCompleted?: boolean;

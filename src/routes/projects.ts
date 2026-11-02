@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { checkGauge, resolveEnforcementSubject } from "../billing/enforcement";
+import {
+  type EnforcementSubject,
+  checkGauge,
+  resolveEnforcementSubject,
+} from "../billing/enforcement";
 import { entitlementsEnabled } from "../billing/entitlements";
 import {
   importRateLimitMiddleware,
@@ -40,7 +44,7 @@ import {
   recoverStalledImport,
   updateImportStatus,
 } from "../storage/imports";
-import { getOrgAccessLevel, getOrgBySlug } from "../storage/orgs";
+import { getOrgAccessLevel, getOrgBySlug, listOrgsForUser } from "../storage/orgs";
 import {
   claimNamespace,
   confirmOwnerNamespace,
@@ -121,6 +125,49 @@ function generateProjectId(): string {
   return crypto.randomUUID();
 }
 
+/**
+ * How many private projects already count against `subject`'s gauge, or null
+ * when the listing failed (the caller fails open).
+ *
+ * - **A pooled org** counts the private projects it owns, in its own namespace.
+ * - **A user** counts what they own personally plus anything recorded as
+ *   charged to them (`gaugeSubjectId`) in an org they belong to, so creating
+ *   into an org that does not pool cannot sidestep the limit, and other
+ *   members' projects in a busy org are never counted against them.
+ *
+ * Entries written before `gaugeSubjectId` existed carry none, and an org one
+ * then counts for nobody but its owner. That under-count is the fail-open
+ * direction this layer chooses everywhere else.
+ */
+async function countGaugedPrivateProjects(
+  env: Env,
+  logger: Logger,
+  opts: { subject: EnforcementSubject; personalNamespace: string; targetNamespace: string },
+): Promise<number | null> {
+  const { subject, personalNamespace, targetNamespace } = opts;
+  const counts = (entry: ProjectEntry): boolean =>
+    entry.visibility === "private" &&
+    (entry.ownerId === subject.ownerId || entry.gaugeSubjectId === subject.ownerId);
+
+  if (subject.ownerType === "org") {
+    const listed = await listProjectsByNamespace(env.STATE, targetNamespace, logger);
+    return listed.success ? listed.data.filter(counts).length : null;
+  }
+
+  const namespaces = new Set([personalNamespace]);
+  const orgs = await listOrgsForUser(env.DB, logger, subject.ownerId);
+  if (!orgs.success) return null;
+  for (const org of orgs.data) namespaces.add(`@${org.slug}`);
+
+  let total = 0;
+  for (const ns of namespaces) {
+    const listed = await listProjectsByNamespace(env.STATE, ns, logger);
+    if (!listed.success) return null;
+    total += listed.data.filter(counts).length;
+  }
+  return total;
+}
+
 // POST /projects - Create a new project
 // Body: { name: string, visibility?: "private" | "public", files?: Record<string, string>, seed?: boolean }
 app.post("/", async (c) => {
@@ -194,36 +241,36 @@ app.post("/", async (c) => {
   // actor at their limit created a free org and got a count of zero, the "ten
   // orgs" reset §4a closes everywhere else; and the inverse bit just as hard,
   // since being added to a busy org exhausted your personal gauge against
-  // projects you do not own. So the namespace listed is the subject's own: the
-  // actor's personal namespace for the actor (§4a's usual answer), and the org's
-  // for an org positively known to pool. KV has no index by owner, and a
-  // namespace listing is exactly "everything this subject owns" without one.
+  // projects you do not own. A project created into an org that does not pool
+  // is charged to the actor but OWNED by the org, so counting by owner alone let
+  // an actor create private projects there without limit. Each new entry
+  // therefore records the subject it was charged to (`gaugeSubjectId`); see
+  // `countGaugedPrivateProjects` for the counted set.
   //
   // Gated on `entitlementsEnabled` FIRST: the listing is a KV list of a whole
   // namespace, and a self-hoster must not pay for it to feed a check that
   // `checkGauge` would return `inert()` from anyway.
+  let gaugeSubjectId: string | undefined;
   if (visibility === "private" && entitlementsEnabled(c.env)) {
     const gaugeSubject = await resolveEnforcementSubject(c.env, logger, {
       actorUserId: userId,
       owner: { ownerId: owner.id, ownerType: owner.type },
       waitUntil: getWaitUntil(c),
     });
-    // An org subject can only be the pooled one (§4a), and its namespace is the
-    // one being created into; anything else is the actor, whose namespace is
-    // their own — never the target's.
-    const gaugeNamespace =
-      gaugeSubject?.ownerType === "org" ? namespace : getUserNamespace(username);
+    gaugeSubjectId = gaugeSubject?.ownerId;
     if (gaugeSubject) {
-      const existing = await listProjectsByNamespace(c.env.STATE, gaugeNamespace, logger);
+      const current = await countGaugedPrivateProjects(c.env, logger, {
+        subject: gaugeSubject,
+        personalNamespace: getUserNamespace(username),
+        targetNamespace: namespace,
+      });
       // A failed listing does not block a creation: the gauge is a limit, not a
       // correctness rule, and this layer fails open by design.
-      if (existing.success) {
+      if (current !== null) {
         const decision = await checkGauge(c.env, logger, {
           subject: gaugeSubject,
           count: "private_projects",
-          current: existing.data.filter(
-            (entry) => entry.visibility === "private" && entry.ownerId === gaugeSubject.ownerId,
-          ).length,
+          current,
           what: "Creating another private project",
         });
         if (!decision.admitted) {
@@ -316,6 +363,7 @@ app.post("/", async (c) => {
     remote: repo.remote,
     createdAt: new Date().toISOString(),
     visibility,
+    ...(gaugeSubjectId !== undefined ? { gaugeSubjectId } : {}),
   };
 
   // The claim goes into D1 before the KV entry so a username change cannot

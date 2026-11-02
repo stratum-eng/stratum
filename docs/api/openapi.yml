@@ -3125,7 +3125,7 @@ paths:
                       type: object
                       required: [rate, limit, unlimited]
                       properties:
-                        rate: { type: string, enum: [evaluations_per_hour] }
+                        rate: { type: string, enum: [requests_per_minute, evaluations_per_hour] }
                         limit: { type: integer }
                         unlimited: { type: boolean }
         "401":
