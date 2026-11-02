@@ -3780,6 +3780,15 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >-
+            The private repositories in the batch would take the account past its
+            private-project limit. The whole batch is refused and nothing is
+            imported. Public repositories and projects that already exist do not
+            count.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
     get:
       operationId: listBulkImportJobs
       tags: [bulk-import]

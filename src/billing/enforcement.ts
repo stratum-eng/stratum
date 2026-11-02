@@ -503,16 +503,24 @@ export async function settleMeter(
 export async function checkGauge(
   env: Env,
   logger: Logger,
-  opts: { subject: EnforcementSubject; count: CountKey; current: number; what: string },
+  opts: {
+    subject: EnforcementSubject;
+    count: CountKey;
+    current: number;
+    what: string;
+    /** How many this action adds at once — a bulk import's whole batch. Defaults to 1. */
+    adding?: number;
+  },
 ): Promise<EnforcementDecision> {
   if (!entitlementsEnabled(env)) return inert();
+  const adding = opts.adding ?? 1;
   const entitlements = await entitlementsFor(env, logger, opts.subject);
   const limit = entitlements.counts[opts.count];
   const enforcing = enforcementBinding(env);
   // Same reading of a limit as the meter: `-1` unlimited, `0` a hard block,
   // anything not a usable limit admits rather than blocking on a bad payload.
   const usable = Number.isInteger(limit) && limit >= 0;
-  const refused = usable && opts.current + 1 > limit;
+  const refused = usable && opts.current + adding > limit;
 
   const decision: EnforcementDecision = {
     admitted: !refused || !enforcing,
