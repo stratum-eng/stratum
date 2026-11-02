@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { UNLIMITED } from "../billing/entitlements";
+import { type CountKey, UNLIMITED } from "../billing/entitlements";
 import type { MeterKey } from "../storage/usage";
 import type { Env } from "../types";
 import { type Logger, createLogger } from "../utils/logger";
@@ -21,6 +21,32 @@ const PERIOD_KEY = "period";
  * dropped when the hour it happened to be written in expires.
  */
 const RATE_KEY = "rate";
+
+/**
+ * The gauge holds: creations admitted against a counted gauge whose result is
+ * not yet visible to the count. Kept apart from both records above because its
+ * lifetime is minutes, not a month or an hour; see {@link GaugeHold}.
+ */
+const GAUGE_KEY = "gauge";
+
+/**
+ * How long a gauge hold stands with nobody releasing it. Long enough to cover a
+ * creation that is still running — a bulk import's background repos included —
+ * and short enough that a creation whose release never arrived (an isolate
+ * evicted mid-request, a release RPC that failed) stops counting on its own.
+ * The same window, for the same reason, as `GAUGE_CHARGE_GRACE_MS` in
+ * `src/storage/gauge-index.ts`: a charge younger than that counts with no
+ * project behind it, and a hold is the same promise made one step earlier.
+ */
+export const GAUGE_HOLD_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * The most holds one subject's object keeps at once. Unreachable while a limit
+ * binds — every admitted hold fits under the limit — so this exists for
+ * observe-only, where refused holds are kept for measurement and nothing else
+ * would bound them. Past it a creation is still decided, just not held.
+ */
+const MAX_GAUGE_HOLDS = 500;
 
 /**
  * How long after a window closes the object waits before erasing what belongs
@@ -124,6 +150,52 @@ export interface MeterReserveOutcome {
   count: number;
 }
 
+/**
+ * One creation admitted against a counted gauge (`private_projects`) whose
+ * result the caller's count cannot see yet.
+ *
+ * A gauge is counted on demand, so two creations that both count before either
+ * one's project is written both see room for one more — check-then-act against
+ * a listing. A hold is what the second one sees instead: the first creation's
+ * claim on a slot, from the moment it was admitted until it lands.
+ *
+ * Keyed by `path` (namespace/slug) and not merely counted, because the end of a
+ * hold and the start of the count do not line up: a project is written, then
+ * its hold is released, and a count landing in between sees both. The caller
+ * passes the paths its count already includes, and a hold for one of them is
+ * not counted twice — so a release that arrives late, or never, cannot
+ * double-charge a project that has landed.
+ */
+interface GaugeHold {
+  gauge: CountKey;
+  /** One per admission; a release names the admission it ends. */
+  token: string;
+  /** `namespace/slug` of the project this slot is held for. */
+  path: string;
+  /** This object's clock, ms. Past it the hold no longer counts and is swept. */
+  expiresAt: number;
+}
+
+interface GaugeRecord {
+  holds: GaugeHold[];
+}
+
+export interface GaugeReserveOutcome {
+  /** What the limit says about `current + pending + adding`. */
+  admitted: boolean;
+  /**
+   * Whether this admission's paths are now held, and so need releasing. False
+   * for a binding refusal, an unlimited or malformed limit (nothing to bound),
+   * malformed input, and past {@link MAX_GAUGE_HOLDS}.
+   */
+  held: boolean;
+  /**
+   * Slots held by earlier admissions and not already in the caller's count, at
+   * the time of the decision. Reported for logging; callers gate on `admitted`.
+   */
+  pending: number;
+}
+
 export interface MeterSnapshot {
   /** Echoed back so a caller cannot mistake a rolled-over read for a live one. */
   period: string;
@@ -170,6 +242,15 @@ export function usageMeterName(subjectType: "user" | "org", subjectId: string): 
  * is bought for. `reserve` takes an UPPER BOUND before the spend and admits or
  * refuses it atomically; `settle` applies the signed difference once the real
  * cost is known. `MagicLinkRateLimiter.refund` is the model for the second half.
+ *
+ * ## Gauge holds
+ *
+ * A counted gauge (`private_projects`) is not spent, so it has no counter here;
+ * the caller counts what exists. It still has the same race, one step removed:
+ * two creations that count before either lands both see room. `reserveGauge`
+ * serializes the decision through this object and holds the admitted slots
+ * until `releaseGauge` says the creation landed or failed, or
+ * {@link GAUGE_HOLD_TTL_MS} passes. See {@link GaugeHold}.
  *
  * ## The subject is the ENFORCEMENT subject, and this object does not choose it
  *
@@ -394,6 +475,115 @@ export class UsageMeter extends DurableObject<Env> {
   }
 
   /**
+   * Atomically decides a gauge creation against what is counted AND what is
+   * held, and holds this creation's slots when it is admitted.
+   *
+   * The gauge itself is counted by the caller — a KV listing this object
+   * cannot do and should not, since it would put a namespace listing behind
+   * the subject's serialization point. What this object adds is the one thing
+   * a count cannot see: creations that were admitted and have not landed.
+   * Admitted only when `current + pending + paths.length` fits the limit,
+   * where `pending` excludes expired holds and holds whose path is in
+   * `counted`.
+   *
+   * A non-binding (observe-only) caller passes `countRefused`, as `reserve`
+   * does: the creation goes ahead regardless, so leaving it unheld would let
+   * the next decision measure against a total that is already wrong.
+   *
+   * Malformed input admits and holds nothing, per the class doc comment. Holds
+   * expire on this object's clock rather than the caller's, so two callers
+   * with skewed clocks cannot disagree about whether a hold is still live.
+   *
+   * @param gauge - Which counted gauge this is
+   * @param token - Unique per admission; {@link releaseGauge} names it
+   * @param paths - `namespace/slug` of each project this admission creates
+   * @param current - The caller's count of what already exists
+   * @param counted - The paths that count includes, so their holds are not counted twice
+   * @param limit - `-1` unlimited, `0` a hard block, otherwise a ceiling
+   * @param opts.countRefused - Hold the paths even when the limit refuses them
+   * @returns The decision, whether anything is now held, and the pending total
+   */
+  async reserveGauge(
+    gauge: CountKey,
+    token: string,
+    paths: string[],
+    current: number,
+    counted: string[],
+    limit: number,
+    opts: { countRefused?: boolean } = {},
+  ): Promise<GaugeReserveOutcome> {
+    const unique = [...new Set(Array.isArray(paths) ? paths : [])].filter(
+      (path) => typeof path === "string" && path !== "",
+    );
+    const base = usableQuantity(current);
+    if (base === null || typeof token !== "string" || token === "" || unique.length === 0) {
+      warn("Usage meter gauge reserve admitted: input is not usable", {
+        gauge,
+        current: String(current),
+        paths: unique.length,
+      });
+      return { admitted: true, held: false, pending: 0 };
+    }
+    const nowMs = Date.now();
+    const record = await this.ctx.storage.get<GaugeRecord>(GAUGE_KEY);
+    const live = liveHolds(record, nowMs);
+    const alreadyCounted = new Set(Array.isArray(counted) ? counted : []);
+    const pending = live.filter(
+      (hold) => hold.gauge === gauge && !alreadyCounted.has(hold.path),
+    ).length;
+    const decision = limitAdmits(base + pending, unique.length, limit);
+    if (decision.malformed) {
+      warn("Usage meter gauge reserve admitted: limit is not a usable limit", {
+        gauge,
+        limit: String(limit),
+      });
+    }
+    // Nothing to bound: an unlimited or malformed limit admits everything, so
+    // a hold would only cost storage and a sweep.
+    const bounded = !decision.malformed && limit !== UNLIMITED;
+    const keep = bounded && (decision.admitted || opts.countRefused === true);
+    if (!keep) return { admitted: decision.admitted, held: false, pending };
+    if (live.length + unique.length > MAX_GAUGE_HOLDS) {
+      warn("Usage meter gauge hold skipped: too many holds outstanding", {
+        gauge,
+        outstanding: live.length,
+        adding: unique.length,
+      });
+      return { admitted: decision.admitted, held: false, pending };
+    }
+    const expiresAt = nowMs + GAUGE_HOLD_TTL_MS;
+    const added = unique.map((path): GaugeHold => ({ gauge, token, path, expiresAt }));
+    await this.ctx.storage.put<GaugeRecord>(GAUGE_KEY, { holds: [...live, ...added] });
+    await this.armCleanup(expiresAt);
+    return { admitted: decision.admitted, held: true, pending };
+  }
+
+  /**
+   * Ends holds taken by one {@link reserveGauge} admission: all of them, or
+   * only `paths`. Called once a creation has landed — its project is now in
+   * the count, so holding it as well would charge it twice — or has failed.
+   *
+   * Releasing what is not held is a no-op, so a caller can release every path
+   * it might have reserved without tracking which ones actually were.
+   *
+   * @param gauge - The gauge the admission was against
+   * @param token - The admission's token
+   * @param paths - Only these paths; omitted, every path the admission holds
+   */
+  async releaseGauge(gauge: CountKey, token: string, paths?: string[]): Promise<void> {
+    const record = await this.ctx.storage.get<GaugeRecord>(GAUGE_KEY);
+    if (!record || !Array.isArray(record.holds)) return;
+    const only = Array.isArray(paths) ? new Set(paths) : null;
+    const holds = liveHolds(record, Date.now()).filter(
+      (hold) =>
+        !(hold.gauge === gauge && hold.token === token && (only === null || only.has(hold.path))),
+    );
+    if (holds.length === record.holds.length) return;
+    if (holds.length === 0) await this.ctx.storage.delete(GAUGE_KEY);
+    else await this.ctx.storage.put<GaugeRecord>(GAUGE_KEY, { holds });
+  }
+
+  /**
    * Deletion-cascade RPC: DO storage is only reachable from inside the class,
    * so the ACCOUNT cascade calls this to drop the counters of a subject that no
    * longer exists. Deliberately not called by the project cascade — an
@@ -442,6 +632,20 @@ export class UsageMeter extends DurableObject<Env> {
       } else {
         await this.ctx.storage.put<RateRecord>(RATE_KEY, pruned.record);
         nextAlarm = nextAlarm === null ? pruned.expiresAt : Math.max(nextAlarm, pruned.expiresAt);
+      }
+    }
+
+    const gauge = await this.ctx.storage.get<GaugeRecord>(GAUGE_KEY);
+    if (gauge) {
+      const live = liveHolds(gauge, nowMs);
+      if (live.length === 0) {
+        await this.ctx.storage.delete(GAUGE_KEY);
+      } else {
+        if (live.length !== gauge.holds?.length) {
+          await this.ctx.storage.put<GaugeRecord>(GAUGE_KEY, { holds: live });
+        }
+        const latest = Math.max(...live.map((hold) => hold.expiresAt));
+        nextAlarm = nextAlarm === null ? latest : Math.max(nextAlarm, latest);
       }
     }
 
@@ -742,6 +946,16 @@ function sum(buckets: RateBuckets): number {
   let total = 0;
   for (const quantity of Object.values(buckets)) total += quantity;
   return total;
+}
+
+/**
+ * The holds in `record` that have not expired. A malformed record (a key from
+ * an older shape of this class) reads as holding nothing rather than throwing,
+ * so it cannot turn a creation into an error.
+ */
+function liveHolds(record: GaugeRecord | undefined, nowMs: number): GaugeHold[] {
+  if (!record || !Array.isArray(record.holds)) return [];
+  return record.holds.filter((hold) => Number.isFinite(hold.expiresAt) && hold.expiresAt > nowMs);
 }
 
 /** When a bucket stops counting toward any window, plus the cleanup grace. */

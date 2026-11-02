@@ -34,6 +34,7 @@
  * spend is RECORDED against. See {@link resolveEnforcementSubject}.
  */
 import {
+  type GaugeReserveOutcome,
   type MeterReserveOutcome,
   type RateMeterKey,
   type UsageMeterKey,
@@ -495,8 +496,36 @@ export async function settleMeter(
 }
 
 /**
+ * What a gauge decision holds while its creations are in flight; see
+ * {@link checkGauge}.
+ */
+export interface GaugeHoldRequest {
+  /** Unique per admission. {@link releaseGauge} names it. */
+  token: string;
+  /** `namespace/slug` of each thing being created. Its length is what is added. */
+  paths: string[];
+  /** The paths `current` already includes, so a landed hold is not counted twice. */
+  counted: string[];
+}
+
+/**
  * Evaluate a counted gauge — a thing that exists rather than a thing that is
- * spent, so there is nothing to reserve and nothing to settle.
+ * spent, so there is nothing to settle.
+ *
+ * **Without `hold`** this is a pure comparison of `current + adding` against
+ * the limit: check-then-act, so two creations that both count before either
+ * lands are both admitted.
+ *
+ * **With `hold`** the decision is made by the subject's `UsageMeter` object,
+ * which serializes it against every other held creation for that subject and
+ * holds the admitted slots until {@link releaseGauge} or a TTL. `adding` is
+ * then `hold.paths.length`. An unlimited limit is not sent to the object at
+ * all — there is nothing to bound, and a self-hoster never gets this far.
+ *
+ * The object being unreachable, or the binding absent, falls back to the
+ * comparison above — exactly the behaviour before holds existed — per the
+ * PRD's fail direction (docs/research/monetization-and-byok.md): a billing
+ * outage may loosen a limit, never block a creation the count alone admits.
  *
  * @param opts.current - How many the subject already has, counted by the caller
  */
@@ -510,30 +539,114 @@ export async function checkGauge(
     what: string;
     /** How many this action adds at once — a bulk import's whole batch. Defaults to 1. */
     adding?: number;
+    hold?: GaugeHoldRequest;
   },
 ): Promise<EnforcementDecision> {
   if (!entitlementsEnabled(env)) return inert();
-  const adding = opts.adding ?? 1;
+  const adding = opts.hold ? opts.hold.paths.length : (opts.adding ?? 1);
   const entitlements = await entitlementsFor(env, logger, opts.subject);
   const limit = entitlements.counts[opts.count];
   const enforcing = enforcementBinding(env);
   // Same reading of a limit as the meter: `-1` unlimited, `0` a hard block,
   // anything not a usable limit admits rather than blocking on a bad payload.
   const usable = Number.isInteger(limit) && limit >= 0;
-  const refused = usable && opts.current + adding > limit;
+
+  const held =
+    usable && opts.hold ? await holdGauge(env, logger, opts, opts.hold, limit, enforcing) : null;
+  const refused = held ? !held.admitted : usable && opts.current + adding > limit;
 
   const decision: EnforcementDecision = {
     admitted: !refused || !enforcing,
     refused,
     enforcing,
     checked: true,
-    reserved: false,
+    reserved: held?.held ?? false,
     limit,
-    count: opts.current,
+    count: opts.current + (held?.pending ?? 0),
   };
   if (refused) decision.reason = gaugeRefusalReason(opts.what, limit);
   record(logger, opts.subject, opts.count, decision, entitlements.plan);
   return decision;
+}
+
+/**
+ * The serialized half of {@link checkGauge}. Null when the object cannot
+ * decide — no binding, or an RPC that threw — so the caller falls back to the
+ * stateless comparison.
+ */
+async function holdGauge(
+  env: Env,
+  logger: Logger,
+  opts: { subject: EnforcementSubject; count: CountKey; current: number },
+  hold: GaugeHoldRequest,
+  limit: number,
+  enforcing: boolean,
+): Promise<GaugeReserveOutcome | null> {
+  const meterNamespace = env.USAGE_METER;
+  if (!meterNamespace) {
+    logger.warn("Gauge decision not serialized: USAGE_METER binding is not configured", {
+      count: opts.count,
+    });
+    return null;
+  }
+  try {
+    const stub = meterNamespace.get(
+      meterNamespace.idFromName(usageMeterName(opts.subject.ownerType, opts.subject.ownerId)),
+    );
+    // Observe-only holds what it refuses, for the reason `checkMeter` counts
+    // it: the creation goes ahead, and the next decision must see it.
+    return await stub.reserveGauge(
+      opts.count,
+      hold.token,
+      hold.paths,
+      opts.current,
+      hold.counted,
+      limit,
+      { countRefused: !enforcing },
+    );
+  } catch (error) {
+    logger.warn("Usage meter unreachable; gauge decided on the count alone", {
+      subjectId: opts.subject.ownerId,
+      subjectType: opts.subject.ownerType,
+      count: opts.count,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * End holds a {@link checkGauge} admission took: every path, or only `paths`.
+ * Call it once each creation has landed (its entry is written, so the count
+ * now includes it) or failed.
+ *
+ * Never rejects, for the reason {@link settleMeter} does not: it runs in a
+ * `finally`, and a metering fault must not replace a creation's response. An
+ * unreleased hold over-counts until it expires, and only for paths not yet in
+ * the count — a landed project is not counted twice either way.
+ */
+export async function releaseGauge(
+  env: Env,
+  logger: Logger,
+  opts: { subject: EnforcementSubject; count: CountKey; token: string; paths?: string[] },
+): Promise<void> {
+  if (!entitlementsEnabled(env)) return;
+  const meterNamespace = env.USAGE_METER;
+  if (!meterNamespace) return;
+  try {
+    const stub = meterNamespace.get(
+      meterNamespace.idFromName(usageMeterName(opts.subject.ownerType, opts.subject.ownerId)),
+    );
+    await stub.releaseGauge(opts.count, opts.token, opts.paths);
+  } catch (error) {
+    logger.warn("Usage meter unreachable; gauge hold left to expire", {
+      subjectId: opts.subject.ownerId,
+      subjectType: opts.subject.ownerType,
+      count: opts.count,
+      paths: opts.paths?.length ?? null,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /**

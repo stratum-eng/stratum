@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { checkPrivateProjectGauge } from "../billing/private-project-gauge";
+import {
+  type GaugeRelease,
+  checkPrivateProjectGauge,
+  gaugePath,
+} from "../billing/private-project-gauge";
 import {
   importRateLimitMiddleware,
   rateLimitMiddleware,
@@ -185,15 +189,22 @@ app.post("/", async (c) => {
     visibility = body.visibility;
   }
 
+  const slug = slugify(String(body.name));
+
   // The private-project gauge (PRD §8). Every path that creates a private
   // project goes through the same check; see billing/private-project-gauge.ts.
+  // An admission holds a slot until the `finally` at the bottom ends it, on
+  // every exit: by then the project entry is either written (and counted) or
+  // never will be.
   let gaugeSubjectId: string | undefined;
+  let releaseGaugeHold: GaugeRelease | undefined;
   if (visibility === "private") {
     const gauge = await checkPrivateProjectGauge(c.env, logger, {
       actorUserId: userId,
       username,
       owner,
       targetNamespace: namespace,
+      paths: [gaugePath(namespace, slug)],
       waitUntil: getWaitUntil(c),
     });
     if (!gauge.admitted) {
@@ -206,157 +217,164 @@ app.post("/", async (c) => {
       return forbidden(gauge.reason);
     }
     gaugeSubjectId = gauge.gaugeSubjectId;
+    releaseGaugeHold = gauge.release;
   }
 
-  const seed = body.seed === "true" || body.seed === true || c.req.query("seed") === "true";
-  const files =
-    body.files !== undefined
-      ? isStringRecord(body.files)
-        ? body.files
-        : null
-      : seed
-        ? DEFAULT_FILES
-        : { ".gitkeep": "" };
-
-  if (files === null)
-    return badRequest("files must be an object of string paths to string contents");
-
-  const slug = slugify(String(body.name));
-
-  // Validate slug length after slugification
-  if (!isValidSlug(slug)) {
-    return badRequest("Slug too long (max 100 characters)");
-  }
-  const projectId = generateProjectId();
-
-  // Check if project already exists
-  const existingResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
-  if (existingResult.success) {
-    return badRequest(`Project '${slug}' already exists in your namespace`);
-  }
-
-  // Create Artifacts repo with namespaced name
-  const artifactsRepoName = getArtifactsRepoName(namespace, slug);
-  let repo: Awaited<ReturnType<typeof c.env.ARTIFACTS.create>>;
   try {
-    repo = await c.env.ARTIFACTS.create(artifactsRepoName);
-  } catch (artifactsError) {
-    const msg = artifactsError instanceof Error ? artifactsError.message : String(artifactsError);
-    if (msg.includes("already exists")) {
-      // Orphaned Artifacts repo from a previous failed attempt (KV write failed after Artifacts
-      // create succeeded). Delete it and recreate — ARTIFACTS.get() returns a JsRpcStub where
-      // property accesses are lazy JsRpcProperty objects that can't be used as plain strings.
-      try {
-        await c.env.ARTIFACTS.delete(artifactsRepoName);
-        repo = await c.env.ARTIFACTS.create(artifactsRepoName);
-      } catch (recoveryError) {
-        logger.error(
-          "Failed to delete and recreate Artifacts repo",
-          recoveryError instanceof Error ? recoveryError : undefined,
-          { artifactsRepoName, error: recoveryError },
-        );
-        return internalError(
-          `Failed to recover repository: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
-        );
-      }
-    } else {
-      logger.error(
-        "Failed to create Artifacts repo",
-        artifactsError instanceof Error ? artifactsError : undefined,
-        { artifactsRepoName, msg },
-      );
-      return internalError(`Failed to create repository: ${msg}`);
+    const seed = body.seed === "true" || body.seed === true || c.req.query("seed") === "true";
+    const files =
+      body.files !== undefined
+        ? isStringRecord(body.files)
+          ? body.files
+          : null
+        : seed
+          ? DEFAULT_FILES
+          : { ".gitkeep": "" };
+
+    if (files === null)
+      return badRequest("files must be an object of string paths to string contents");
+
+    // Validate slug length after slugification
+    if (!isValidSlug(slug)) {
+      return badRequest("Slug too long (max 100 characters)");
     }
-  }
+    const projectId = generateProjectId();
 
-  const initResult = await initAndPush(repo.remote, repo.token, files, "Initial commit", logger);
-  if (!initResult.success) {
-    logger.error("Failed to initialize and push repository", initResult.error);
-    return internalError(initResult.error.message);
-  }
+    // Check if project already exists
+    const existingResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+    if (existingResult.success) {
+      return badRequest(`Project '${slug}' already exists in your namespace`);
+    }
 
-  const project: ProjectEntry = {
-    id: projectId,
-    name: String(body.name),
-    slug,
-    namespace,
-    ownerId: owner.id,
-    ownerType: owner.type,
-    remote: repo.remote,
-    createdAt: new Date().toISOString(),
-    visibility,
-    ...(gaugeSubjectId !== undefined ? { gaugeSubjectId } : {}),
-  };
+    // Create Artifacts repo with namespaced name
+    const artifactsRepoName = getArtifactsRepoName(namespace, slug);
+    let repo: Awaited<ReturnType<typeof c.env.ARTIFACTS.create>>;
+    try {
+      repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+    } catch (artifactsError) {
+      const msg = artifactsError instanceof Error ? artifactsError.message : String(artifactsError);
+      if (msg.includes("already exists")) {
+        // Orphaned Artifacts repo from a previous failed attempt (KV write failed after Artifacts
+        // create succeeded). Delete it and recreate — ARTIFACTS.get() returns a JsRpcStub where
+        // property accesses are lazy JsRpcProperty objects that can't be used as plain strings.
+        try {
+          await c.env.ARTIFACTS.delete(artifactsRepoName);
+          repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+        } catch (recoveryError) {
+          logger.error(
+            "Failed to delete and recreate Artifacts repo",
+            recoveryError instanceof Error ? recoveryError : undefined,
+            { artifactsRepoName, error: recoveryError },
+          );
+          return internalError(
+            `Failed to recover repository: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+          );
+        }
+      } else {
+        logger.error(
+          "Failed to create Artifacts repo",
+          artifactsError instanceof Error ? artifactsError : undefined,
+          { artifactsRepoName, msg },
+        );
+        return internalError(`Failed to create repository: ${msg}`);
+      }
+    }
 
-  // The claim goes into D1 before the KV entry so a username change cannot
-  // slip between the two; see storage/project-namespace.ts.
-  if (owner.type === "user") {
-    const claimed = await claimNamespace(c.env.DB, { ownerId: owner.id, namespace, slug }, logger);
-    if (!claimed.success) return appError(claimed.error);
-  }
+    const initResult = await initAndPush(repo.remote, repo.token, files, "Initial commit", logger);
+    if (!initResult.success) {
+      logger.error("Failed to initialize and push repository", initResult.error);
+      return internalError(initResult.error.message);
+    }
 
-  // Charged to the actor but stored under an org: index it under the actor so
-  // the gauge can find it without walking their memberships. Written BEFORE the
-  // project entry and fatal on failure, so a project charged to someone can
-  // never exist without its index entry — a missing entry would be a silent,
-  // repeatable under-count. The reverse order is harmless: an entry whose
-  // project never lands is pruned as NOT_FOUND on the next count.
-  if (owner.type === "org" && gaugeSubjectId !== undefined && gaugeSubjectId !== owner.id) {
-    const indexed = await recordGaugeCharge(c.env.STATE, logger, {
-      subjectId: gaugeSubjectId,
+    const project: ProjectEntry = {
+      id: projectId,
+      name: String(body.name),
+      slug,
+      namespace,
+      ownerId: owner.id,
+      ownerType: owner.type,
+      remote: repo.remote,
+      createdAt: new Date().toISOString(),
+      visibility,
+      ...(gaugeSubjectId !== undefined ? { gaugeSubjectId } : {}),
+    };
+
+    // The claim goes into D1 before the KV entry so a username change cannot
+    // slip between the two; see storage/project-namespace.ts.
+    if (owner.type === "user") {
+      const claimed = await claimNamespace(
+        c.env.DB,
+        { ownerId: owner.id, namespace, slug },
+        logger,
+      );
+      if (!claimed.success) return appError(claimed.error);
+    }
+
+    // Charged to the actor but stored under an org: index it under the actor so
+    // the gauge can find it without walking their memberships. Written BEFORE the
+    // project entry and fatal on failure, so a project charged to someone can
+    // never exist without its index entry — a missing entry would be a silent,
+    // repeatable under-count. The reverse order is harmless: an entry whose
+    // project never lands is pruned as NOT_FOUND on the next count.
+    if (owner.type === "org" && gaugeSubjectId !== undefined && gaugeSubjectId !== owner.id) {
+      const indexed = await recordGaugeCharge(c.env.STATE, logger, {
+        subjectId: gaugeSubjectId,
+        namespace,
+        slug,
+        projectId,
+      });
+      if (!indexed.success) return internalError("Failed to record the private project charge");
+    }
+
+    const setResult = await setProject(c.env.STATE, project, logger);
+    if (!setResult.success) {
+      logger.error("Failed to set project", setResult.error);
+      if (owner.type === "user") await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
+      return internalError(setResult.error.message);
+    }
+
+    // The username on this request was read at auth time, before the repository
+    // was created; see confirmOwnerNamespace for the rename it may have crossed.
+    if (owner.type === "user") {
+      const confirmed = await confirmOwnerNamespace(c.env, owner.id, project, logger);
+      if (!confirmed.success) return appError(confirmed.error);
+    }
+
+    logger.info("Project created", {
+      projectId,
       namespace,
       slug,
-      projectId,
+      visibility,
     });
-    if (!indexed.success) return internalError("Failed to record the private project charge");
+
+    await emitEvent(
+      c.env.DB,
+      c.env.EVENTS_QUEUE,
+      { type: "project.created", project: project.name },
+      { type: "user", id: userId },
+      logger,
+      project.id,
+    );
+
+    // A browser form lands on the new project; API callers keep the JSON body.
+    // (The import endpoint below does the same.)
+    if (!contentType.includes("application/json")) {
+      return c.redirect(`/${namespace}/${slug}`, 303);
+    }
+
+    return created({
+      id: projectId,
+      name: project.name,
+      namespace,
+      slug,
+      path: `/${namespace}/${slug}`,
+      remote: repo.remote,
+      commit: initResult.data,
+      visibility,
+    });
+  } finally {
+    await releaseGaugeHold?.();
   }
-
-  const setResult = await setProject(c.env.STATE, project, logger);
-  if (!setResult.success) {
-    logger.error("Failed to set project", setResult.error);
-    if (owner.type === "user") await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
-    return internalError(setResult.error.message);
-  }
-
-  // The username on this request was read at auth time, before the repository
-  // was created; see confirmOwnerNamespace for the rename it may have crossed.
-  if (owner.type === "user") {
-    const confirmed = await confirmOwnerNamespace(c.env, owner.id, project, logger);
-    if (!confirmed.success) return appError(confirmed.error);
-  }
-
-  logger.info("Project created", {
-    projectId,
-    namespace,
-    slug,
-    visibility,
-  });
-
-  await emitEvent(
-    c.env.DB,
-    c.env.EVENTS_QUEUE,
-    { type: "project.created", project: project.name },
-    { type: "user", id: userId },
-    logger,
-    project.id,
-  );
-
-  // A browser form lands on the new project; API callers keep the JSON body.
-  // (The import endpoint below does the same.)
-  if (!contentType.includes("application/json")) {
-    return c.redirect(`/${namespace}/${slug}`, 303);
-  }
-
-  return created({
-    id: projectId,
-    name: project.name,
-    namespace,
-    slug,
-    path: `/${namespace}/${slug}`,
-    remote: repo.remote,
-    commit: initResult.data,
-    visibility,
-  });
 });
 
 // GET /projects - List projects for the authenticated user
@@ -468,6 +486,10 @@ app.post(
       method: c.req.method,
     });
 
+    // Set once the gauge admits a private import; the `finally` below ends its
+    // hold on every exit, because by then the project entry is either written
+    // (and counted) or never will be.
+    let releaseGaugeHold: GaugeRelease | undefined;
     try {
       const userId = c.get("userId");
       const username = c.get("username");
@@ -649,10 +671,12 @@ app.post(
           username,
           owner: { id: userId, type: "user" },
           targetNamespace: namespace,
+          paths: [gaugePath(namespace, slug)],
           waitUntil: getWaitUntil(c),
         });
         if (!gauge.admitted) return forbidden(gauge.reason);
         gaugeSubjectId = gauge.gaugeSubjectId;
+        releaseGaugeHold = gauge.release;
       }
 
       // Generate project ID
@@ -829,6 +853,8 @@ app.post(
       logger.error("[import] Error:", err instanceof Error ? err : undefined);
       const message = err instanceof Error ? err.message : String(err);
       return internalError(message);
+    } finally {
+      await releaseGaugeHold?.();
     }
   },
 );
