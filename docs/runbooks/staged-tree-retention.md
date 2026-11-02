@@ -71,5 +71,5 @@ aws s3 rm "s3://stratum-repo-objects-staging/repos/" --recursive \
 Run it with `--dryrun` first and check that every listed key contains `/sha/`.
 
 Wait until changes evaluated before the deploy have merged or closed. Until then,
-their only copy is at the old key. The new code doesn't read it, so those changes
+their only commit-keyed copy is at the old key. The new code doesn't read it, so those changes
 merge through the fallbacks above, and the case above applies to them as well.
