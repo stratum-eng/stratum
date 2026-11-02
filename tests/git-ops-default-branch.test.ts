@@ -310,22 +310,25 @@ describe("loadRepoView", () => {
    */
   function failAfterClone(method: "readdir" | "readFile", path: string): void {
     let cloned = false;
-    // biome-ignore lint/suspicious/noExplicitAny: mocked isomorphic-git default export
-    const mockedGit = git as any;
-    const clone = mockedGit.clone;
-    vi.spyOn(mockedGit, "clone").mockImplementationOnce(async (args: unknown) => {
+    const clone = git.clone;
+    vi.spyOn(git, "clone").mockImplementationOnce(async (args) => {
       await clone(args);
       cloned = true;
     });
+    const fails = (target: string) => cloned && target === path;
     const toNodeFS = MemoryFS.prototype.toNodeFS;
     vi.spyOn(MemoryFS.prototype, "toNodeFS").mockImplementationOnce(function (this: MemoryFS) {
       const nodeFs = toNodeFS.call(this);
-      const real = nodeFs.promises[method] as (...args: unknown[]) => Promise<unknown>;
-      // biome-ignore lint/suspicious/noExplicitAny: swapping one method on the fs facade
-      (nodeFs.promises as any)[method] = (target: string, ...rest: unknown[]) => {
-        if (cloned && target === path) return Promise.reject(new Error(`EIO: ${target}`));
-        return real.call(nodeFs.promises, target, ...rest);
-      };
+      const promises = nodeFs.promises;
+      if (method === "readdir") {
+        const readdir = promises.readdir;
+        promises.readdir = (target) =>
+          fails(target) ? Promise.reject(new Error(`EIO: ${target}`)) : readdir(target);
+      } else {
+        const readFile = promises.readFile;
+        promises.readFile = (target, options) =>
+          fails(target) ? Promise.reject(new Error(`EIO: ${target}`)) : readFile(target, options);
+      }
       return nodeFs;
     });
   }
@@ -340,8 +343,7 @@ describe("loadRepoView", () => {
   });
 
   it("is incomplete when the log read fails, but still lists files", async () => {
-    // biome-ignore lint/suspicious/noExplicitAny: mocked isomorphic-git default export
-    vi.spyOn(git as any, "log").mockRejectedValueOnce(new Error("corrupt pack"));
+    vi.spyOn(git, "log").mockRejectedValueOnce(new Error("corrupt pack"));
     const result = await loadRepoView(remote, "tok", logger, "master");
     expect(result.success).toBe(true);
     if (!result.success) return;
