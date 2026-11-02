@@ -677,12 +677,20 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
       await next();
     });
     application.route("/projects", projectsRouter);
-    return (body: Record<string, unknown>) =>
+    return (body: Record<string, unknown>, as: "json" | "form" = "json") =>
       application.fetch(
         new Request("https://t.test/projects", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          ...(as === "json"
+            ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+            : {
+                body: new URLSearchParams(
+                  Object.entries(body).map(([key, value]): [string, string] => [
+                    key,
+                    String(value),
+                  ]),
+                ),
+              }),
         }),
         makeEnv({
           ENTITLEMENTS_ENFORCE: "1",
@@ -750,6 +758,21 @@ describe("the private project gauge through POST /projects (PRD §4a)", () => {
 
     expect(response.status).toBe(403);
     expect(await response.text()).toContain("plan allows 2");
+  });
+
+  it("sends a browser form submission back to the form, not to a JSON 403", async () => {
+    const userId = createUser(nextUserId());
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    await seedProject("@alice", "one", { ownerId: userId, ownerType: "user" });
+    await seedProject("@alice", "two", { ownerId: userId, ownerType: "user" });
+
+    const response = await projectApp(userId, "alice")(
+      { name: "three", visibility: "private" },
+      "form",
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/new?error=private_project_limit");
   });
 
   it("does not spend your gauge on projects you do not own", async () => {

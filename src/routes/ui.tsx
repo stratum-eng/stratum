@@ -73,7 +73,7 @@ import { ErrorPage } from "../ui/pages/error";
 import { FileViewerPage } from "../ui/pages/file-viewer";
 import { HomePage } from "../ui/pages/home";
 import { IssueDetailPage, IssuesPage, NewIssuePage } from "../ui/pages/issues";
-import { NewProjectPage } from "../ui/pages/new-project";
+import { NewProjectPage, newProjectErrorMessage } from "../ui/pages/new-project";
 import { ProjectSettingsPage } from "../ui/pages/project-settings";
 import { RepoPage } from "../ui/pages/repo";
 import {
@@ -255,7 +255,14 @@ app.get("/new", async (c) => {
   }
 
   logger.debug("Rendering new project page");
-  return c.html(<NewProjectPage user={user} nonce={c.get("cspNonce") ?? ""} />);
+  const error = newProjectErrorMessage(c.req.query("error"));
+  return c.html(
+    <NewProjectPage
+      user={user}
+      nonce={c.get("cspNonce") ?? ""}
+      {...(error !== undefined ? { error } : {})}
+    />,
+  );
 });
 
 async function loadAgentSummaries(

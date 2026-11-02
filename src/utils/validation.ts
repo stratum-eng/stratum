@@ -278,10 +278,11 @@ function isPrivateIpLiteral(hostname: string): boolean {
 }
 
 function privateIpv4Reason(host: string): string | null {
-  // Only inspect hosts that look like a numeric IP literal (all digits/dots, or
-  // containing a hex "0x"). A real DNS name — even a hex-word one like
-  // "beef.cafe" — has other letters and is left to the DNS-name checks.
-  const looksNumeric = /^[0-9.]+$/.test(host) || /0x/i.test(host);
+  // Only inspect hosts that look like a numeric IP literal: every label decimal
+  // digits or a 0x-prefixed hex number. A real DNS name — a hex-word one like
+  // "beef.cafe", or one that merely contains "0x" like "0xdeadbeef.example.com"
+  // — has some other label and is left to the DNS-name checks.
+  const looksNumeric = /^(?:0x[0-9a-f]*|[0-9]*)(?:\.(?:0x[0-9a-f]*|[0-9]*))*$/i.test(host);
   if (!looksNumeric) return null;
 
   // Accept ONLY canonical dotted-decimal IPv4; integer/hex/octal/short forms are

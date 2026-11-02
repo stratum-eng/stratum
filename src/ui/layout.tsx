@@ -1,5 +1,5 @@
 import type { FC } from "hono/jsx";
-import type { UsageBannerNotice } from "../billing/usage-banner";
+import { type UsageBannerNotice, usedPercent } from "../billing/usage-banner";
 import { meterTitle } from "../billing/usage-report";
 import { SourceFooter } from "./components/source-footer";
 
@@ -55,7 +55,7 @@ const UsageBanner: FC<{ notice: UsageBannerNotice }> = ({ notice }) => (
   // carries the same implicit ARIA role to a screen reader.
   <output class="usage-banner">
     <span>
-      You have used {notice.percent}% of this account's monthly{" "}
+      You have used {usedPercent(notice)}% of this account's monthly{" "}
       {meterTitle(notice.meter).toLowerCase()} allowance for {notice.period} (
       {notice.used.toLocaleString("en-US")} of {notice.limit.toLocaleString("en-US")}).{" "}
       {notice.enforcing

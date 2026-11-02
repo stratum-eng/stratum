@@ -38,10 +38,9 @@ export function repoDoConfigError(
  * nothing in production, which is worse than being off, because nobody goes
  * looking for a limit they believe is already applied.
  *
- * `BILLING_SERVICE_SECRET` is not checked here: it is a Wrangler secret rather
- * than a var, so a deploy that has the URL and not the secret is an operational
- * state to fix, not a config file to reread — and `entitlementsEnabled` already
- * treats it as off.
+ * Both `BILLING_SERVICE_URL` and `BILLING_SERVICE_SECRET` are checked, because
+ * `entitlementsEnabled` requires both: a deploy that sets only one reports the
+ * seam as off and admits every decision.
  */
 export function entitlementsConfigError(
   env: Pick<Env, "ENTITLEMENTS_ENFORCE" | "BILLING_SERVICE_URL" | "BILLING_SERVICE_SECRET">,

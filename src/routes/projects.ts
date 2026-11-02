@@ -61,6 +61,7 @@ import {
 import type { ArtifactsCreateResult, Env, ImportStatus, ProjectEntry } from "../types";
 import { getArtifactsRepoName, getUserNamespace, projectDefaultBranch } from "../types";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
+import { NEW_PROJECT_ERROR_PRIVATE_LIMIT } from "../ui/pages/new-project";
 import {
   canReadProject,
   canWriteProject,
@@ -226,6 +227,12 @@ app.post("/", async (c) => {
           what: "Creating another private project",
         });
         if (!decision.admitted) {
+          // A browser submitting the new-project form must land back on the
+          // form, not on a raw JSON 403. The redirect carries a fixed code,
+          // never the reason text, so the query string cannot inject copy.
+          if (!contentType.includes("application/json")) {
+            return c.redirect(`/new?error=${NEW_PROJECT_ERROR_PRIVATE_LIMIT}`, 303);
+          }
           return forbidden(decision.reason ?? "Private project limit reached");
         }
       }

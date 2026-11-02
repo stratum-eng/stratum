@@ -423,5 +423,8 @@ describe("validateWebhookUrl", () => {
   it("SSRF: still accepts legitimate public IPv4 and hex-word domains", () => {
     expect(validateWebhookUrl("https://8.8.8.8/hook").success).toBe(true);
     expect(validateWebhookUrl("https://beef.cafe/hook").success).toBe(true);
+    // Contains "0x" but is a DNS name, not a hex IP literal.
+    expect(validateWebhookUrl("https://0xdeadbeef.example.com/hook").success).toBe(true);
+    expect(validateWebhookUrl("https://api-0xff.example.net/hook").success).toBe(true);
   });
 });

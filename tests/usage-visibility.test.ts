@@ -11,7 +11,7 @@
  * is a claim about authorization and not about a data structure.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { loadUsageBanner } from "../src/billing/usage-banner";
+import { loadUsageBanner, usedPercent } from "../src/billing/usage-banner";
 import { noticeUsageThresholds } from "../src/billing/usage-notifications";
 import { buildUsageReport } from "../src/billing/usage-report";
 import app from "../src/index";
@@ -321,6 +321,13 @@ describe("the 80% banner", () => {
       percent: 80,
       period: PERIOD,
     });
+  });
+
+  it("states the share actually used, not the threshold that was crossed", () => {
+    // The first stored crossing can land well past 80%; the banner prints this
+    // next to "(900 of 1,000)", so it must be the same ratio.
+    expect(usedPercent({ used: 900, limit: 1000 })).toBe(90);
+    expect(usedPercent({ used: 1250, limit: 1000 })).toBe(125);
   });
 
   it("does not appear below 80%", async () => {

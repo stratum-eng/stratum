@@ -115,7 +115,9 @@ environment (`wrangler.toml:84-85`), so it works out of the box.
   outside this repository. Enforcement is additionally observe-only unless
   `ENTITLEMENTS_ENFORCE=1`: a decision is evaluated and recorded, and admits.
 - Limits are checked against the **acting user** (an agent resolves to its
-  owner), not the project's owner, so an allowance follows the person; recording
+  owner), not the project's owner, so an allowance follows the person. The one
+  exception is an organization whose plan is positively known to pool usage:
+  for that organization's projects the organization is the subject. Recording
   still names the true owner, so the ledger is unaffected.
 - Visibility: `/settings/usage`, an 80%-of-a-meter banner and one email per
   crossing, `stratum_get_usage` over MCP, and `GET /api/users/me/usage`. The
@@ -132,9 +134,10 @@ environment (`wrangler.toml:84-85`), so it works out of the box.
 - Issue tracker with per-project numbering and auto-close when a linked change
   merges. Bidirectional GitHub sync (inbound webhooks, outbound PR promotion).
 - Remote **MCP server** at `/mcp` (a protected resource of the OAuth server
-  above), advertising `tools` only — 18 tools spanning whoami, projects, files,
-  activity, workspaces, commits, changes (create/list/get/review/merge/reject)
-  and issues (`src/mcp/tools.ts:113-288`). The tools call the same route
+  above), advertising `tools` only — 19 tools spanning whoami, usage, projects,
+  files, activity, workspaces, commits, changes
+  (create/list/get/review/merge/reject) and issues (`buildTools` in
+  `src/mcp/tools.ts`). The tools call the same route
   handlers as the REST API, so scope and agent-identity rules apply unchanged.
 
 ## Auth & security

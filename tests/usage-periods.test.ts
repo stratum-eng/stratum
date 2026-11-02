@@ -323,6 +323,19 @@ describe("getOwnerUsageSummary", () => {
     ]);
   });
 
+  it("skips a row written by a meter this build does not know", async () => {
+    const { db, raw } = makeSqliteD1();
+    await upsertUsage(db, logger, ALICE, PERIOD, [{ meter: "llm_tokens_month", quantity: 1 }]);
+    raw
+      .prepare(
+        "INSERT INTO usage_periods (owner_id, owner_type, period, meter, quantity, updated_at) VALUES (?, 'user', ?, 'storage_bytes', 5, '2026-09-01T00:00:00.000Z')",
+      )
+      .run("user_alice", PERIOD);
+
+    const summary = await getOwnerUsageSummary(db, logger, "user_alice", PERIOD);
+    expect(summary.success && summary.data.map((e) => e.meter)).toEqual(["llm_tokens_month"]);
+  });
+
   it("returns an empty summary for an owner that has consumed nothing", async () => {
     const { db } = makeSqliteD1();
     const summary = await getOwnerUsageSummary(db, logger, "user_nobody", PERIOD);

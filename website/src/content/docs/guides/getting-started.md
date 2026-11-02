@@ -303,8 +303,8 @@ Two more consequences to know before you switch:
   front of it.
 - **On a hosted instance, your own key lifts the token allowance and nothing
   else.** The evaluation rate ceiling below is independent of who is billed for
-  tokens: it bounds evaluation and Worker capacity, which is the operator's
-  whoever owns the model account.
+  tokens: it bounds evaluation and Worker capacity, which are the operator's
+  no matter who owns the model account.
 
 ### Usage limits on a hosted instance
 

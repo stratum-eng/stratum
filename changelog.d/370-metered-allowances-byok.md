@@ -62,7 +62,9 @@
   repository. One design note that outlives the billing service: a limit is
   checked against the **person who ran the evaluation**, not the project's owner,
   so an allowance follows you across your own and your organizations' projects,
-  and creating another organization does not hand you a fresh one.
+  and creating another organization does not hand you a fresh one. The one
+  exception is an organization whose plan is positively known to pool usage:
+  its projects draw on the organization's allowance instead.
 
 ### Changed
 

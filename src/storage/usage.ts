@@ -270,17 +270,28 @@ export async function getOwnerUsageSummary(
       )
       .bind(ownerId, period)
       .all<UsageRow>();
-    return ok(
-      result.results.map((row) => ({
-        // Cast, not validated: the column carries no CHECK on purpose (see
-        // migration 050), so a row written by a future meter this build does
-        // not know about reads through rather than failing the whole summary.
-        meter: row.meter as MeterKey,
+    const summary: UsageSummaryEntry[] = [];
+    for (const row of result.results) {
+      // Validated, not cast: the column carries no CHECK on purpose (see
+      // migration 050), so a row written by a future meter this build does not
+      // know is skipped rather than handed out under a type that rules it out,
+      // and rather than failing the whole summary.
+      if (!isMeterKey(row.meter)) {
+        logger.warn("Usage summary skipped: unknown meter in usage_periods", {
+          ownerId,
+          period,
+          meter: String(row.meter),
+        });
+        continue;
+      }
+      summary.push({
+        meter: row.meter,
         source: row.source as CostSource,
         quantity: row.quantity,
         updatedAt: row.updated_at,
-      })),
-    );
+      });
+    }
+    return ok(summary);
   } catch (error) {
     const appError =
       error instanceof AppError

@@ -227,9 +227,10 @@ them alike. With an **agent token**:
 
 - **Works:** the project reading tools (`get_project`, `list_files`,
   `get_file`, `get_activity`), `stratum_create_workspace`, `stratum_commit`,
-  `stratum_create_change`, `stratum_create_issue`, and `stratum_list_issues` —
-  an agent can do everything up to and including proposing a gated change and
-  opening issues about its work. Address projects by `namespace/slug`
+  `stratum_create_change`, `stratum_create_issue`, `stratum_list_issues`, and
+  `stratum_get_usage` (which reports the **owner's** allowance) — an agent can
+  do everything up to and including proposing a gated change and opening
+  issues about its work. Address projects by `namespace/slug`
   directly: `stratum_list_projects` returns an **empty list** on an agent
   token rather than the owner's projects, and `stratum_whoami` returns a 401.
 - **Always refused:** `stratum_merge_change`, `stratum_reject_change`,

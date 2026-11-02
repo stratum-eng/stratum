@@ -85,6 +85,9 @@ export async function runPostMergeCheck(
       const run = await sandbox.run(command, {
         timeout: merge?.postMergeTimeoutMs ?? DEFAULT_POST_MERGE_TIMEOUT_MS,
       });
+      // Measured before the billing-subject read, so D1 latency is not billed
+      // as sandbox time.
+      const sandboxMs = Date.now() - runStartedAt;
       const subject = await resolveBillingSubject(env.DB, logger, project);
       await recordCosts(
         env.DB,
@@ -101,7 +104,7 @@ export async function runPostMergeCheck(
           notify: { env },
         },
         [
-          { kind: "sandbox_ms", quantity: Date.now() - runStartedAt },
+          { kind: "sandbox_ms", quantity: sandboxMs },
           { kind: "git_ops", quantity: 1 },
         ],
       );

@@ -62,6 +62,19 @@ export interface StoredUsageBanner {
   period: string;
 }
 
+/**
+ * The share of the limit `used` represents, floored to a whole percent.
+ *
+ * Derived rather than read from `percent`: that field is the threshold (80),
+ * and the first stored crossing can be well past it, so printing it next to
+ * "(900 of 1,000)" states two different ratios in one sentence. Not capped at
+ * 100 — under observe-only the total can exceed the limit, and saying so is
+ * the point. `parseNotice` rejects a limit of zero or less.
+ */
+export function usedPercent(notice: Pick<StoredUsageBanner, "used" | "limit">): number {
+  return Math.floor((notice.used / notice.limit) * 100);
+}
+
 /** What a rendered banner says: a stored crossing plus what it means right now. */
 export interface UsageBannerNotice extends StoredUsageBanner {
   /**

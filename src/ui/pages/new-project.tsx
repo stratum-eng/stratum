@@ -1,6 +1,22 @@
 import type { FC } from "hono/jsx";
 import { Layout } from "../layout";
 
+/** `?error=` code for a form submission refused by the private project gauge. */
+export const NEW_PROJECT_ERROR_PRIVATE_LIMIT = "private_project_limit";
+
+const NEW_PROJECT_ERRORS: Record<string, string> = {
+  [NEW_PROJECT_ERROR_PRIVATE_LIMIT]:
+    "This account's plan does not allow another private project. Make this one public, remove or make public one you already have, or raise this account's plan limits.",
+};
+
+/**
+ * Maps a `?error=` code to its copy. Only known codes render, so the query
+ * string can select a message but never supply one.
+ */
+export function newProjectErrorMessage(code: string | undefined): string | undefined {
+  return code !== undefined ? NEW_PROJECT_ERRORS[code] : undefined;
+}
+
 interface NewProjectProps {
   user?: { id: string; email: string; username: string } | null;
   error?: string;
