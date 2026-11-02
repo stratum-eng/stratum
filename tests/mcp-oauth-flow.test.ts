@@ -301,7 +301,9 @@ describe("authorization", () => {
     }
   });
 
-  it("redirects PKCE and scope failures back to the verified URI, echoing state", async () => {
+  // Registration is open, so a "verified" redirect URI can be anyone's site:
+  // redirecting a malformed request there before consent is an open redirect.
+  it("renders PKCE and scope failures instead of redirecting to the client", async () => {
     const { json } = await register();
     const base = `${ORIGIN}/oauth/authorize?response_type=code&client_id=${json.client_id}&redirect_uri=${encodeURIComponent(REDIRECT)}&state=xyz`;
 
@@ -315,10 +317,9 @@ describe("authorization", () => {
         new Request(base + query, { headers: { Cookie: sessionCookie } }),
         env,
       );
-      expect(response.status).toBe(302);
-      const location = new URL(response.headers.get("location") ?? "");
-      expect(location.searchParams.get("error")).toBe(expected);
-      expect(location.searchParams.get("state")).toBe("xyz");
+      expect(response.status).toBe(400);
+      expect(response.headers.get("location")).toBeNull();
+      expect(await response.text()).toContain(`Invalid request (${expected})`);
     }
   });
 
@@ -326,8 +327,9 @@ describe("authorization", () => {
     const { json } = await register();
     const url = `${ORIGIN}/oauth/authorize?response_type=code&client_id=${json.client_id}&redirect_uri=${encodeURIComponent(REDIRECT)}&code_challenge=${CHALLENGE}&code_challenge_method=S256&resource=${encodeURIComponent("https://elsewhere.example/mcp")}`;
     const response = await app.fetch(new Request(url, { headers: { Cookie: sessionCookie } }), env);
-    const location = new URL(response.headers.get("location") ?? "");
-    expect(location.searchParams.get("error")).toBe("invalid_target");
+    expect(response.status).toBe(400);
+    expect(response.headers.get("location")).toBeNull();
+    expect(await response.text()).toContain("Invalid request (invalid_target)");
   });
 
   it("returns access_denied when the user cancels", async () => {
