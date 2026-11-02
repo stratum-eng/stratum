@@ -10,8 +10,8 @@
   account (and signing up) only checked other usernames. Renaming to an org's slug, or
   to a name whose namespace still held another account's projects, gave the account a
   namespace it did not own, and the import routes, which authorize by that namespace,
-  then accepted it. Renames, signups and `GET /api/users/check-username` now treat an
-  org slug, a live project claim, or existing projects under `@name` as taken.
+  then accepted it. Renames, signups, org creation and `GET /api/users/check-username` now
+  treat an org slug, a live project claim, or existing projects under `@name` as taken.
 - **The OAuth authorize endpoint is no longer an open redirect.** Client registration is
   open, so anyone could register a client whose redirect URI was their own site and then
   link users to `/oauth/authorize` with a malformed request, which bounced them straight

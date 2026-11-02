@@ -8,6 +8,7 @@ import {
   listOrgsForUser,
   removeOrgMember,
 } from "../storage/orgs";
+import { usernameNamespaceTaken } from "../storage/project-namespace";
 import {
   addTeamMember,
   createTeam,
@@ -58,6 +59,17 @@ app.post("/", async (c) => {
   const existingUser = await getUserByUsername(c.env.DB, body.slug, logger);
   if (existingUser.success) {
     return badRequest("slug is already taken by a user namespace");
+  }
+  // The same `@name` space can still hold another account's projects or a live
+  // claim after that account moved off the name; an org landing there would
+  // own a namespace full of someone else's work.
+  const namespaceTaken = await usernameNamespaceTaken(c.env, body.slug, logger);
+  if (!namespaceTaken.success) {
+    logger.error("Could not check the org slug's namespace", namespaceTaken.error);
+    return c.json({ error: "Failed to create organization" }, 500);
+  }
+  if (namespaceTaken.data) {
+    return badRequest("slug is already taken");
   }
 
   const orgResult = await createOrg(c.env.DB, logger, userId, body.name, body.slug);
