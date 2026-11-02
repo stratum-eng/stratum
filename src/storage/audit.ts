@@ -351,29 +351,61 @@ export async function listAuditLog(
 }
 
 /**
- * Has an entry with this action and subject been written since `sinceIso`?
- * The dedupe probe for high-volume events (failed authentication). Fails OPEN
- * to "no": a probe error records a possible duplicate rather than dropping
- * the event.
+ * Record an entry unless one with the same (action, subject, org scope) was
+ * written at or after `sinceIso` — the dedupe for high-volume events (failed
+ * authentication). Returns whether a row was written.
+ *
+ * The guard and the insert are ONE statement (`INSERT … SELECT … WHERE NOT
+ * EXISTS`), so concurrent callers cannot both pass a separate probe and each
+ * write: SQLite/D1 executes a statement atomically, and the second one sees the
+ * first one's row. The org scope is part of the key with `IS`, so an
+ * unscoped row only suppresses unscoped rows and one org's failure never
+ * hides another org's.
+ *
+ * Fails OPEN: if the guarded insert itself errors, it falls back to a plain
+ * `recordAudit` — a possible duplicate row is acceptable, a dropped
+ * failed-auth event is not. If that also fails, recordAudit has logged it.
  */
-export async function hasRecentAudit(
+export async function recordAuditOncePerWindow(
   db: D1Database,
   logger: Logger,
-  opts: { action: AuditAction; subject: string; sinceIso: string },
+  opts: RecordAuditOptions & { subject: string },
+  sinceIso: string,
 ): Promise<boolean> {
+  const scope = resolveAuditScope(opts);
   try {
-    const row = await db
+    const result = await db
       .prepare(
-        "SELECT 1 AS hit FROM audit_log WHERE action = ? AND subject = ? AND created_at >= ? LIMIT 1",
+        `INSERT INTO audit_log (id, action, actor_type, actor_id, subject, detail, created_at, org_id, project_id)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE NOT EXISTS (
+            SELECT 1 FROM audit_log
+             WHERE action = ? AND subject = ? AND org_id IS ? AND created_at >= ?
+          )`,
       )
-      .bind(opts.action, opts.subject, opts.sinceIso)
-      .first<{ hit: number }>();
-    return row !== null && row !== undefined;
+      .bind(
+        newId("aud"),
+        opts.action,
+        opts.actorType,
+        opts.actorId ?? null,
+        opts.subject,
+        JSON.stringify(opts.detail ?? {}),
+        new Date().toISOString(),
+        scope.orgId,
+        scope.projectId,
+        opts.action,
+        opts.subject,
+        scope.orgId,
+        sinceIso,
+      )
+      .run();
+    return (result.meta?.changes ?? 0) > 0;
   } catch (error) {
-    logger.warn("Audit dedupe probe failed; recording anyway", {
+    logger.warn("Guarded audit insert failed; recording without dedupe", {
       action: opts.action,
       error: error instanceof Error ? error.message : String(error),
     });
-    return false;
+    const fallback = await recordAudit(db, logger, opts);
+    return fallback.success;
   }
 }

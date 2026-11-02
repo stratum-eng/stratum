@@ -3056,6 +3056,10 @@ paths:
         always a complete window.
       parameters:
         - $ref: "#/components/parameters/AuditAction"
+        - name: actor
+          in: query
+          schema: { type: string }
+          description: Filter by actor id
         - $ref: "#/components/parameters/AuditSince"
         - $ref: "#/components/parameters/AuditUntil"
       responses:

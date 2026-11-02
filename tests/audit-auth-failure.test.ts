@@ -6,7 +6,7 @@ import { createAgent } from "../src/storage/agents";
 import { createApiToken, revokeApiToken } from "../src/storage/api-tokens";
 import { consumeMagicLink, createMagicLink } from "../src/storage/magic-links";
 import type { Env } from "../src/types";
-import { AUTH_FAILURE_DEDUPE_MS } from "../src/utils/auth-audit";
+import { AUTH_FAILURE_DEDUPE_MS, recordAuthFailure } from "../src/utils/auth-audit";
 import { hashToken } from "../src/utils/crypto";
 import { createLogger } from "../src/utils/logger";
 import { makeFakeKV } from "./helpers/fake-kv";
@@ -185,6 +185,50 @@ function verify(token: string): Promise<Response> {
     ),
   );
 }
+
+describe("dedupe window", () => {
+  const sso = (orgId?: string) => ({
+    method: "sso" as const,
+    reason: "account_disabled",
+    actorType: "user" as const,
+    actorId: "usr_alice",
+    subject: "usr_alice",
+    ...(orgId !== undefined ? { orgId } : {}),
+  });
+
+  it("keys on org scope: one org's failure never suppresses another's", async () => {
+    await recordAuthFailure(env.DB, logger, sso("org_a"));
+    await recordAuthFailure(env.DB, logger, sso("org_b"));
+    await recordAuthFailure(env.DB, logger, sso("org_a"));
+    // Unscoped matches only unscoped, in both directions.
+    await recordAuthFailure(env.DB, logger, sso());
+    await recordAuthFailure(env.DB, logger, sso());
+
+    expect(failures().map((r) => r.org_id)).toEqual(["org_a", "org_b", null]);
+  });
+
+  it("writes exactly one row when failures race", async () => {
+    // With a separate probe-then-insert, every caller would pass the probe
+    // before any insert landed; the guarded single-statement insert cannot.
+    await Promise.all(
+      Array.from({ length: 5 }, () => recordAuthFailure(env.DB, logger, sso("org_a"))),
+    );
+    expect(failures()).toHaveLength(1);
+  });
+
+  it("fails open when the guarded insert errors", async () => {
+    const realPrepare = env.DB.prepare.bind(env.DB);
+    const flaky = {
+      ...env.DB,
+      prepare: (sql: string) => {
+        if (sql.includes("WHERE NOT EXISTS")) throw new Error("guard down");
+        return realPrepare(sql);
+      },
+    } as D1Database;
+    await recordAuthFailure(flaky, logger, sso("org_a"));
+    expect(failures()).toHaveLength(1);
+  });
+});
 
 describe("magic links", () => {
   it("records a reused link against the account it was minted for", async () => {

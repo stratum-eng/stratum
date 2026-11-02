@@ -132,12 +132,16 @@ async function exportOrgAudit(
     );
   }
 
+  // Every filter the JSON read honours (except paging) applies here too, so
+  // `?format=ndjson` is the same query, not a broader one.
+  const actorId = c.req.query("actor");
   const base: AuditQuery = {
     orgId,
     since,
     until,
     limit: AUDIT_PAGE_MAX,
     ...(filters.action !== undefined ? { action: filters.action } : {}),
+    ...(actorId ? { actorId } : {}),
   };
   const first = await queryAuditLog(c.env.DB, logger, base);
   if (!first.success) return internalError(first.error.message);

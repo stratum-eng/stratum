@@ -256,9 +256,25 @@ describe("audit log immutability (#255)", () => {
       "UPDATE audit_log SET actor_id = 'usr_someone_else'",
       // Anonymizing is allowed only on its own, never bundled with an edit.
       `UPDATE audit_log SET actor_id = '${DELETED_USER_SENTINEL}', action = 'x'`,
+      // NULL must not slip through a three-valued WHEN and erase attribution.
+      "UPDATE audit_log SET actor_id = NULL",
+      "UPDATE audit_log SET org_id = NULL",
+      "UPDATE audit_log SET subject = 'x'",
     ]) {
       expect(() => raw.prepare(sql).run(), sql).toThrow(/append-only/);
     }
+    const row = raw.prepare("SELECT actor_id, org_id FROM audit_log").get();
+    expect(row).toEqual({ actor_id: "usr_1", org_id: "org_a" });
+  });
+
+  it("refuses to 'anonymize' a system row that never had an actor", async () => {
+    const { db, raw } = makeSqliteD1();
+    await recordAudit(db, mockLogger, { action: "backup.run", actorType: "system" });
+    expect(() =>
+      raw.prepare(`UPDATE audit_log SET actor_id = '${DELETED_USER_SENTINEL}'`).run(),
+    ).toThrow(/append-only/);
+    const row = raw.prepare("SELECT actor_id FROM audit_log").get();
+    expect(row).toEqual({ actor_id: null });
   });
 
   it("still allows right-to-erasure anonymization of actor_id, and only once", async () => {

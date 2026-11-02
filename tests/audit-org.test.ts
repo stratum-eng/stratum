@@ -289,6 +289,29 @@ describe("NDJSON export", () => {
     expect((await readNdjson(res)).map((r) => r.id)).toEqual(["aud_a"]);
   });
 
+  it("honours the actor filter on both export routes", async () => {
+    const orgId = await createOrg("alice", "acme");
+    const inWindow = new Date(Date.now() - 60_000).toISOString();
+    seed(orgId, inWindow, "aud_alice");
+    raw
+      .prepare(
+        "INSERT INTO audit_log (id, action, actor_type, actor_id, subject, detail, created_at, org_id) VALUES ('aud_bob', 'token.rotated', 'user', 'usr_bob', NULL, '{}', ?, ?)",
+      )
+      .run(inWindow, orgId);
+
+    for (const path of [
+      "/api/orgs/acme/audit/export?actor=usr_bob",
+      "/api/orgs/acme/audit?format=ndjson&actor=usr_bob",
+    ]) {
+      const res = await call("alice", "GET", path);
+      expect(res.status, path).toBe(200);
+      expect(
+        (await readNdjson(res)).map((r) => r.id),
+        path,
+      ).toEqual(["aud_bob"]);
+    }
+  });
+
   it("refuses a window longer than 90 days", async () => {
     await createOrg("alice", "acme");
     const res = await call(

@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import { hasRecentAudit, recordAudit } from "../storage/audit";
+import { recordAuditOncePerWindow } from "../storage/audit";
 import { getWaitUntil } from "./execution-ctx";
 import type { Logger } from "./logger";
 
@@ -18,13 +18,16 @@ import type { Logger } from "./logger";
  *    identifies nobody, answers no "who tried to get into OUR account"
  *    question, and costs an attacker nothing to send — it goes to the
  *    structured log only, never the audit table.
- * 2. **One row per subject per minute.** Before writing, a cheap probe on
- *    (action, subject, created_at) checks whether the same credential/account
- *    already failed within `AUTH_FAILURE_DEDUPE_MS`; if so the event is
- *    dropped. A leaked-then-revoked token hammered by a script yields at most
- *    one row a minute, which is enough to see that it is happening and when
- *    it stopped. The probe fails open (records), so an outage cannot hide
- *    failures.
+ * 2. **One row per subject per org scope per minute.** The insert is guarded
+ *    in the same statement (`recordAuditOncePerWindow`): if the same
+ *    credential/account already failed within `AUTH_FAILURE_DEDUPE_MS` in the
+ *    same org scope (unscoped matching only unscoped), nothing is written —
+ *    atomically, so concurrent failures cannot each slip past the check. A
+ *    leaked-then-revoked token hammered by a script yields at most one row a
+ *    minute, enough to see that it is happening and when it stopped; and one
+ *    org's SSO failure never hides another org's. If the guarded insert
+ *    errors it falls back to a plain insert (fail open), so an outage of the
+ *    guard cannot hide failures.
  */
 export const AUTH_FAILURE_DEDUPE_MS = 60_000;
 
@@ -59,19 +62,19 @@ export async function recordAuthFailure(
   failure: AuthFailure,
 ): Promise<void> {
   const sinceIso = new Date(Date.now() - AUTH_FAILURE_DEDUPE_MS).toISOString();
-  if (
-    await hasRecentAudit(db, logger, { action: "auth.failed", subject: failure.subject, sinceIso })
-  ) {
-    return;
-  }
-  await recordAudit(db, logger, {
-    action: "auth.failed",
-    actorType: failure.actorType,
-    ...(failure.actorId !== undefined ? { actorId: failure.actorId } : {}),
-    subject: failure.subject,
-    ...(failure.orgId !== undefined ? { orgId: failure.orgId } : {}),
-    detail: { method: failure.method, reason: failure.reason, ...(failure.detail ?? {}) },
-  });
+  await recordAuditOncePerWindow(
+    db,
+    logger,
+    {
+      action: "auth.failed",
+      actorType: failure.actorType,
+      ...(failure.actorId !== undefined ? { actorId: failure.actorId } : {}),
+      subject: failure.subject,
+      ...(failure.orgId !== undefined ? { orgId: failure.orgId } : {}),
+      detail: { method: failure.method, reason: failure.reason, ...(failure.detail ?? {}) },
+    },
+    sinceIso,
+  );
 }
 
 /**
