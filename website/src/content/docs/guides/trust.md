@@ -217,7 +217,7 @@ The code does not check this inequality or warn when it fails.
 | Data | Retention |
 |------|-----------|
 | Accounts, projects, repositories, changes, issues | Until deleted by the user or owner |
-| Account deletion (`DELETE /api/users/me`) | Deletes the account and its owned projects (including their Artifacts repositories), revokes tokens and sessions, and anonymizes contributions to other people's projects. See [Users API](/reference/endpoints/#delete-account) |
+| Account deletion (`DELETE /api/users/me`) | Deletes the account and its owned projects (including their Artifacts repositories), revokes tokens and sessions, and anonymizes contributions to other people's projects and audit log entries. See [Users API](/reference/endpoints/#delete-account) |
 | Import job records | Pruned after 30 days by the daily housekeeping cron |
 | Workspaces | Swept by the daily TTL sweep when they expire |
 | Rate-limit counters, OAuth state, caches in KV | Short KV TTLs (minutes to a day) |
@@ -338,7 +338,12 @@ What exists today, and can be pointed to in a review:
 - Private vulnerability reporting through GitHub Security Advisories.
 - An audit log of sensitive operations (sessions, token and agent lifecycle,
   webhooks, and similar — `src/storage/audit.ts`), documented account erasure,
-  and a tested backup and restore runbook.
+  and a tested backup and restore runbook. The log is append-only, enforced by
+  the database, **except for erasure of personal identifiers**: deleting an
+  account rewrites that account's id and email to `deleted-user` wherever an
+  entry names them. That is a deliberate trade-off: the trail keeps every event,
+  but it can no longer say which erased person it was. Free-text fields and
+  usernames are not rewritten.
 - A threat model for the sandbox evaluator
   ([ADR 007](https://github.com/stratum-eng/stratum/blob/main/docs/adr/007-sandbox-evaluator-threat-model.md)) and for BYOK LLM
   providers ([ADR 008](https://github.com/stratum-eng/stratum/blob/main/docs/adr/008-llm-provider-byok-threat-model.md)).

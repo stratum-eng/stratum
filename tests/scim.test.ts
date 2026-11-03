@@ -197,10 +197,16 @@ function scimRowOf(
     .get(connId, userId) as { scim_external_id: string | null; active: number } | undefined;
 }
 
-function auditActions(subject: string): Array<{ action: string; actor_type: string }> {
+/**
+ * Audit rows about a user. SCIM lifecycle events name the user in detail and
+ * the connection in subject (#425); a failed sign-in still keys on the account.
+ */
+function auditActions(userId: string): Array<{ action: string; actor_type: string }> {
   return raw
-    .prepare("SELECT action, actor_type FROM audit_log WHERE subject = ? ORDER BY rowid")
-    .all(subject) as Array<{ action: string; actor_type: string }>;
+    .prepare(
+      "SELECT action, actor_type FROM audit_log WHERE subject = ? OR json_extract(detail, '$.userId') = ? ORDER BY rowid",
+    )
+    .all(userId, userId) as Array<{ action: string; actor_type: string }>;
 }
 
 describe("getSsoConnectionByScimTokenHash", () => {

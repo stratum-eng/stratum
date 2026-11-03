@@ -106,7 +106,15 @@ mismatch, email outside the verified domains, a disabled account). Repeats
 for the same account or connection are collapsed to at most one entry per
 minute.
 
+**Who an entry is about.** An entry's `subject` is the thing acted on, never a
+person: member and role events carry the org id (team membership events the
+team id), and SCIM provisioning events carry the SSO connection id. The member
+or provisioned user is named in `detail.userId`. Entries written before this
+change carried the user id in `subject`.
+
 **Immutability.** The audit log is append-only: there is no API to edit or
 delete an entry, and the database rejects updates and deletes. The single
-exception is account erasure, which replaces the erased person's actor id
-with `deleted-user` and changes nothing else.
+exception is account erasure, which replaces the erased person's id and email
+with `deleted-user` — in the actor, the subject, and any value in `detail` —
+and changes nothing else. The database accepts that rewrite only for an
+account that is being deleted, and only to the `deleted-user` sentinel.

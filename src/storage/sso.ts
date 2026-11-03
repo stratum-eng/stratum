@@ -1192,19 +1192,19 @@ export async function deprovisionUser(
   // Audit detail only — a lookup failure must not fail a completed deprovision.
   const agentsResult = await listAgents(db, userId, logger);
   const agentIds = agentsResult.success ? agentsResult.data.map((agent) => agent.id) : [];
-  const detail = { via: "scim", connectionId, agentIds };
+  const detail = { via: "scim", connectionId, userId, agentIds };
   const orgId = await connectionOrgId(db, logger, connectionId);
   await recordAudit(db, logger, {
     action: "scim.user.deactivated",
     actorType: "system",
-    subject: userId,
+    subject: connectionId,
     ...orgId,
     detail,
   });
   await recordAudit(db, logger, {
     action: "user.disabled",
     actorType: "system",
-    subject: userId,
+    subject: connectionId,
     ...orgId,
     detail,
   });
@@ -1256,12 +1256,12 @@ export async function reactivateUser(
     if (!enableResult.success) return err(enableResult.error);
   }
 
-  const detail = { via: "scim", connectionId };
+  const detail = { via: "scim", connectionId, userId };
   const orgId = await connectionOrgId(db, logger, connectionId);
   await recordAudit(db, logger, {
     action: "scim.user.reactivated",
     actorType: "system",
-    subject: userId,
+    subject: connectionId,
     ...orgId,
     detail,
   });
@@ -1269,7 +1269,7 @@ export async function reactivateUser(
     await recordAudit(db, logger, {
       action: "user.enabled",
       actorType: "system",
-      subject: userId,
+      subject: connectionId,
       ...orgId,
       detail,
     });

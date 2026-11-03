@@ -224,12 +224,18 @@ describe("audit log immutability (#255)", () => {
     expect(mutating).toEqual([]);
   });
 
-  it("no source file issues an UPDATE or DELETE against audit_log", () => {
+  it("only the erasure cascade issues an UPDATE against audit_log, and nothing DELETEs", () => {
     expect(Object.keys(sourceFiles).length).toBeGreaterThan(50);
-    const offenders = Object.entries(sourceFiles)
-      .filter(([, sql]) => /\b(UPDATE\s+audit_log|DELETE\s+FROM\s+audit_log)\b/i.test(sql))
+    const updaters = Object.entries(sourceFiles)
+      .filter(([, sql]) => /\bUPDATE\s+audit_log\b/i.test(sql))
       .map(([path]) => path);
-    expect(offenders).toEqual([]);
+    // `eraseUserFromAuditLog` (#425) — the trigger in migration 061 is what
+    // bounds it; this pins that no second writer appears.
+    expect(updaters).toEqual(["../src/storage/deletion.ts"]);
+    const deleters = Object.entries(sourceFiles)
+      .filter(([, sql]) => /\bDELETE\s+FROM\s+audit_log\b/i.test(sql))
+      .map(([path]) => path);
+    expect(deleters).toEqual([]);
   });
 
   it("the database refuses DELETE on audit_log", async () => {

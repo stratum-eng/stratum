@@ -130,11 +130,13 @@ describe("org membership and team changes are audited into the org's trail", () 
     const roleChange = entries.find((e) => e.action === "org.member.role_changed");
     expect(roleChange).toMatchObject({
       actorId: "usr_alice",
-      subject: "usr_bob",
-      detail: { role: "admin", previousRole: "member" },
+      // The member is named in detail, not subject (#425), so erasure has one
+      // place to look and subject stays a non-personal id.
+      subject: roleChange?.orgId,
+      detail: { userId: "usr_bob", role: "admin", previousRole: "member" },
     });
     const removal = entries.find((e) => e.action === "org.member.removed");
-    expect(removal?.detail).toEqual({ previousRole: "admin" });
+    expect(removal?.detail).toEqual({ userId: "usr_bob", previousRole: "admin" });
   });
 });
 
