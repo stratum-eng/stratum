@@ -236,7 +236,11 @@ beforeEach(async () => {
         : {}),
     });
     if (!change.success) return err(new AppError("create failed", "DATABASE_ERROR", 500));
+    if (args.queueRun) {
+      return ok({ mode: "queued", change: change.data, runId: args.queueRun.runId } as never);
+    }
     return ok({
+      mode: "evaluated",
       change: change.data,
       evalResult: { score: 1, passed: true, reason: "stub" },
       evalRuns: [],
