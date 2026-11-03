@@ -393,6 +393,25 @@ export async function processIssueImportMessage(
   const token = await resolveIssueImportToken(env, project);
   if (!token.success) return ok(await failRun(env, logger, run.id, token.error.message));
 
+  const client = new GitHubClient(token.data, logger);
+  // Re-checked on every page, not only when the run was queued: a run spans
+  // many messages and rate-limit waits, and a repository made private midway
+  // must stop being copied with the instance credential. Fails closed — a
+  // failed check counts as "not public".
+  const visibility = await client.getRepoVisibility(repo.owner, repo.repo);
+  if (!visibility.success || visibility.private) {
+    return ok(
+      await failRun(
+        env,
+        logger,
+        run.id,
+        visibility.success
+          ? "The GitHub repository is no longer public"
+          : "Could not confirm the GitHub repository is still public",
+      ),
+    );
+  }
+
   await recordIssueImportProgress(env.DB, logger, run.id, { status: "running", message: null });
 
   const step = await importPage(
@@ -403,7 +422,7 @@ export async function processIssueImportMessage(
       project,
       owner: repo.owner,
       repo: repo.repo,
-      client: new GitHubClient(token.data, logger),
+      client,
     },
     message.page,
   );

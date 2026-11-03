@@ -456,6 +456,38 @@ describe("GitHub issue import job", () => {
     expect(run.success && run.data?.message).toMatch(/source changed/);
   });
 
+  it("stops when the repository is made private between pages", async () => {
+    gh.issues = Array.from({ length: ISSUES_PER_PAGE + 3 }, (_, i) => ghIssue(i + 1));
+    const ctx = await makeEnv();
+    const run = await createIssueImportRun(ctx.db, logger, {
+      projectId: PROJECT_ID,
+      githubRepo: REPO,
+      initiatedBy: "user_owner",
+    });
+    if (!run.success) throw new Error(run.error.message);
+    const message = (page: number): IssueImportJobMessage => ({
+      type: "github.issues.import",
+      runId: run.data.id,
+      projectId: PROJECT_ID,
+      namespace: "testns",
+      slug: "widgets",
+      page,
+      timestamp: new Date().toISOString(),
+    });
+    const first = await processIssueImportMessage(ctx.env, message(1), logger);
+    expect(first.success && first.data).toBe("continued");
+
+    gh.isPrivate = true;
+    const second = await processIssueImportMessage(ctx.env, message(2), logger);
+    expect(second.success && second.data).toBe("failed");
+    const after = await getIssueImportRun(ctx.db, logger, run.data.id);
+    expect(after.success && after.data?.message).toMatch(/no longer public/);
+    const issues = await listIssues(ctx.db, logger, "widgets", undefined, {
+      projectId: PROJECT_ID,
+    });
+    expect(issues.success && issues.data).toHaveLength(ISSUES_PER_PAGE);
+  });
+
   it("fails the run when GitHub is not configured", async () => {
     seedRepo();
     const ctx = await makeEnv();
