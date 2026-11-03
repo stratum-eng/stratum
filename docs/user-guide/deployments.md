@@ -378,9 +378,11 @@ happens to be stored beside your credentials, not as a credential.
 
 Secrets are per project, encrypted at rest (AES-GCM, with the project id and
 secret name bound as additional authenticated data), and there is **no read
-path** — no API, UI or CLI surface returns a stored value. Two things decrypt
-them: the deploy runner, and the `llm` evaluator when a project brings its own
-model key ([Getting started](getting-started.md#bringing-your-own-model-key)).
+path** — no API, UI or CLI surface returns a stored value. Three things decrypt
+them: the deploy runner, the `llm` evaluator when a project brings its own
+model key ([Getting started](getting-started.md#bringing-your-own-model-key)),
+and the `webhook` evaluator when its `secretRef` names the secret it signs
+requests with.
 
 - **In the UI:** *Project → Settings → Deploy secrets*. Add by name and value;
   delete by name. Values are never rendered back.

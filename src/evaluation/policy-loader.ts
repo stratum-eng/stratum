@@ -691,8 +691,12 @@ function sanitizeEvaluator(
     // let the entry fall back to an unsigned (or literal-signed) request.
     if (source.secretRef !== undefined) {
       if (typeof source.secretRef !== "string" || !isSigningSecretName(source.secretRef)) {
+        // Never the value: an author may paste the raw key here by mistake.
         logger.warn("Dropping webhook evaluator entry with an invalid secretRef", {
-          submitted: forLog(source.secretRef),
+          submittedType: typeof source.secretRef,
+          ...(typeof source.secretRef === "string"
+            ? { submittedLength: source.secretRef.length }
+            : {}),
         });
         rejections.push(`${at}: webhook 'secretRef' ${SIGNING_SECRET_NAME_RULE}`);
         return null;
