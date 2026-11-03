@@ -3488,6 +3488,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [signupId, status, pollToken, userCode, pollUrl, interval, expiresAt, message]
                 properties:
                   signupId: { type: string }
                   status: { type: string, enum: [pending] }
@@ -3557,24 +3558,34 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  status: { type: string, enum: [pending, complete] }
-                  interval: { type: integer }
-                  expiresAt: { type: string, format: date-time }
-                  user:
-                    type: object
+                oneOf:
+                  - type: object
+                    title: AgentSignupPending
+                    required: [status, interval, expiresAt]
                     properties:
-                      id: { type: string }
-                      username: { type: string }
-                  agent:
-                    type: object
+                      status: { type: string, enum: [pending] }
+                      interval: { type: integer, description: Suggested seconds between polls }
+                      expiresAt: { type: string, format: date-time }
+                  - type: object
+                    title: AgentSignupComplete
+                    required: [status, user, agent, token]
                     properties:
-                      id: { type: string }
-                      name: { type: string }
-                      ownerId: { type: string }
-                      model: { type: string }
-                  token: { type: string, description: "Agent token; shown once" }
+                      status: { type: string, enum: [complete] }
+                      user:
+                        type: object
+                        required: [id, username]
+                        properties:
+                          id: { type: string }
+                          username: { type: string }
+                      agent:
+                        type: object
+                        required: [id, name, ownerId]
+                        properties:
+                          id: { type: string }
+                          name: { type: string }
+                          ownerId: { type: string }
+                          model: { type: string, description: Present when the request named one }
+                      token: { type: string, description: "Agent token; shown once" }
         "400":
           description: Body is not a JSON object (`INVALID_BODY`), or a missing or malformed pollToken
           content:
