@@ -25,6 +25,21 @@ each backup collects older incomplete prefixes, so crashed runs cannot pile up a
 evict good backups — the newest prefix is always protected in case it is a run
 still in progress.
 
+Retention also reads `healthy` from each complete run's manifest
+(`pruneRuns` in `src/storage/backup-store.ts`):
+
+- Healthy runs fill the `BACKUP_RETENTION` window. A manifest without a `healthy`
+  field, or one that cannot be decoded (for example after
+  `BACKUP_ENCRYPTION_SECRET` changed), is treated as unknown and counts toward the
+  window the same way.
+- Unhealthy runs never take a window slot. One is kept only while it is among the
+  newest `BACKUP_RETENTION` complete runs, so failures still age out. They are not
+  capped tighter, because a run that is unhealthy only because one repo failed
+  still holds the newest pack for every other repo in its slice. Worst-case
+  storage is therefore about twice the window.
+- The newest healthy run is always kept, however many unhealthy runs follow it.
+- If any manifest cannot be read from R2, that backup prunes nothing.
+
 ### Repo coverage and the cursor
 
 An instance with more repos than `MAX_REPOS_PER_RUN` (default 25) snapshots the
@@ -69,7 +84,7 @@ Consequences to plan for *before* you need them:
 | --- | --- | --- |
 | `BACKUPS` (R2 bucket) | Backup destination. If absent, runs skip cleanly. | — |
 | `BACKUP_ENCRYPTION_SECRET` | Enables envelope encryption when set. | off |
-| `BACKUP_RETENTION` | Whole runs to keep; older runs are pruned. | 14 |
+| `BACKUP_RETENTION` | Whole healthy (or unknown-health) runs to keep; older runs are pruned. Unhealthy runs do not use slots and age out after this many complete runs; the newest healthy run is always kept. | 14 |
 | `MAX_REPOS_PER_RUN` | Repos snapshotted per run. | 25 |
 | `MAX_BACKUP_BYTES` | Per-repo object budget; larger repos are skipped, not failed. | 128 MiB |
 

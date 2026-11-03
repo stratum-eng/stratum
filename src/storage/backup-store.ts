@@ -182,18 +182,72 @@ export async function listRuns(
   }
 }
 
+/** What a complete run's `_manifest.json` says about whether it is restorable.
+ * "unknown" covers a manifest that predates the `healthy` field or that cannot be
+ * decoded (for instance after `BACKUP_ENCRYPTION_SECRET` changed). */
+export type RunHealth = "healthy" | "unhealthy" | "unknown";
+
+async function readRunHealth(
+  bucket: R2Bucket,
+  runTs: string,
+  env: Pick<Env, "BACKUP_ENCRYPTION_SECRET">,
+  logger: Logger,
+): Promise<Result<RunHealth, AppError>> {
+  const key = `${runTs}/${RUN_MANIFEST_KEY}`;
+  const res = await fromPromise(bucket.get(key));
+  if (!res.success) {
+    logger.error(
+      "Failed to read backup run manifest",
+      res.error instanceof Error ? res.error : undefined,
+      { key },
+    );
+    return err(new AppError("Failed to read backup run manifest", "STORAGE_ERROR", 500));
+  }
+  if (!res.data) return ok("unknown");
+  try {
+    const stored = new Uint8Array(await res.data.arrayBuffer());
+    const parsed: unknown = JSON.parse(
+      new TextDecoder().decode(await decodeBlob(stored, env.BACKUP_ENCRYPTION_SECRET)),
+    );
+    if (typeof parsed === "object" && parsed !== null && "healthy" in parsed) {
+      if (parsed.healthy === true) return ok("healthy");
+      if (parsed.healthy === false) return ok("unhealthy");
+    }
+    return ok("unknown");
+  } catch (error) {
+    logger.warn("Backup run manifest is unreadable; treating its health as unknown", {
+      runTs,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return ok("unknown");
+  }
+}
+
 /**
- * Retention. Keeps the newest `keep` COMPLETE runs, plus always the single newest
- * prefix (the in-flight run — its `_manifest.json` is written last so it is not yet
- * "complete"). Everything else is deleted WHOLE (never splitting a run): old
- * complete runs beyond the window AND crashed/incomplete runs that are not the
- * newest. Counting retention by completeness stops a string of crashed runs from
- * occupying the keep-window and silently evicting good backups.
+ * Retention. Decides which runs to keep by reading each complete run's manifest:
+ *
+ * - The newest `keep` complete runs that are healthy, or whose health is unknown
+ *   (an older or unreadable manifest is not assumed broken, so it still counts
+ *   toward the window as it did before health was recorded).
+ * - Unhealthy runs never take one of those slots. One is kept only while it is
+ *   among the newest `keep` complete runs overall, so a failure streak ages out
+ *   as before but cannot push a good backup out of the window. They are not
+ *   capped tighter than that on purpose: a run that is unhealthy because one repo
+ *   failed still holds the only recent pack for every other repo in its slice.
+ * - Always the newest run known to be healthy, wherever it falls.
+ * - Always the single newest prefix: it may be the run currently writing (its
+ *   `_manifest.json` is written last, so it is not yet "complete").
+ *
+ * Everything else is deleted WHOLE (never splitting a run), including crashed
+ * (incomplete) runs that are not the newest prefix. If any manifest cannot be
+ * read from R2, nothing is pruned: a transient read error must not be mistaken
+ * for "no healthy run here".
  */
 export async function pruneRuns(
   bucket: R2Bucket,
   keep: number,
   logger: Logger,
+  env: Pick<Env, "BACKUP_ENCRYPTION_SECRET"> = {},
 ): Promise<Result<{ prunedRuns: number }, AppError>> {
   const runsResult = await listRuns(bucket, logger);
   if (!runsResult.success) return err(runsResult.error);
@@ -205,13 +259,26 @@ export async function pruneRuns(
 
   const runs = runsResult.data; // newest-first
   const keepSet = new Set<string>();
-  let keptComplete = 0;
+  let keptWindow = 0;
+  let completeSeen = 0;
+  let newestHealthy: string | undefined;
   for (const run of runs) {
-    if (run.complete && keptComplete < keep) {
+    if (!run.complete) continue;
+    const health = await readRunHealth(bucket, run.runTs, env, logger);
+    if (!health.success) return err(health.error);
+    const withinAge = completeSeen < keep;
+    completeSeen++;
+    if (health.data === "unhealthy") {
+      if (withinAge) keepSet.add(run.runTs);
+      continue;
+    }
+    if (health.data === "healthy" && newestHealthy === undefined) newestHealthy = run.runTs;
+    if (keptWindow < keep) {
       keepSet.add(run.runTs);
-      keptComplete++;
+      keptWindow++;
     }
   }
+  if (newestHealthy !== undefined) keepSet.add(newestHealthy);
   // Protect the newest prefix unconditionally: it may be the run currently writing
   // (no manifest yet), which must not be pruned out from under itself.
   if (runs[0]) keepSet.add(runs[0].runTs);

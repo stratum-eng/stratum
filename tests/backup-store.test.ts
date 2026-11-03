@@ -120,6 +120,100 @@ describe("run listing + retention", () => {
     expect([...r2.store.keys()].some((k) => k.startsWith("2026-07-01"))).toBe(true);
   });
 
+  describe("health-aware retention (#401)", () => {
+    async function seedManifest(
+      r2: ReturnType<typeof makeFakeR2>,
+      ts: string,
+      manifest: Record<string, unknown>,
+      env: { BACKUP_ENCRYPTION_SECRET?: string } = {},
+    ) {
+      await putBlob(r2, `${ts}/d1/changes.ndjson`, bytes("{}"), env, logger);
+      await putBlob(r2, `${ts}/_manifest.json`, bytes(JSON.stringify(manifest)), env, logger);
+    }
+    const day = (n: number) => `2026-07-${String(n).padStart(2, "0")}T00:00:00Z`;
+    const survives = (r2: ReturnType<typeof makeFakeR2>, ts: string) =>
+      [...r2.store.keys()].some((k) => k.startsWith(`${ts}/`));
+
+    it("keeps the healthy run when N+1 unhealthy runs follow it", async () => {
+      const r2 = makeFakeR2();
+      const keep = 3;
+      await seedManifest(r2, day(1), { healthy: true });
+      for (let d = 2; d <= keep + 2; d++) await seedManifest(r2, day(d), { healthy: false });
+
+      const pruned = await pruneRuns(r2, keep, logger);
+      expect(pruned.success).toBe(true);
+
+      expect(survives(r2, day(1))).toBe(true); // the last good backup
+      // Unhealthy runs still age out: only those among the newest `keep` survive.
+      expect([2, 3, 4, 5].filter((d) => survives(r2, day(d)))).toEqual([3, 4, 5]);
+    });
+
+    it("does not let unhealthy runs take BACKUP_RETENTION slots", async () => {
+      const r2 = makeFakeR2();
+      await seedManifest(r2, day(1), { healthy: true });
+      await seedManifest(r2, day(2), { healthy: true });
+      await seedManifest(r2, day(3), { healthy: true });
+      await seedManifest(r2, day(4), { healthy: false });
+      await seedManifest(r2, day(5), { healthy: true });
+      await seedManifest(r2, day(6), { healthy: false });
+
+      const pruned = await pruneRuns(r2, 3, logger);
+
+      // Three healthy runs fill the window (5, 3, 2); the unhealthy 6 and 4 are
+      // within the newest three complete runs, so they are kept beside them.
+      expect(pruned.success && pruned.data.prunedRuns).toBe(1);
+      expect([1, 2, 3, 4, 5, 6].filter((d) => survives(r2, day(d)))).toEqual([2, 3, 4, 5, 6]);
+    });
+
+    it("counts manifests without a health field toward the window, but still keeps the newest known-healthy run", async () => {
+      const r2 = makeFakeR2();
+      await seedManifest(r2, day(1), { healthy: true });
+      await seedManifest(r2, day(2), {}); // predates the `healthy` field
+      await seedManifest(r2, day(3), {});
+
+      await pruneRuns(r2, 2, logger);
+
+      expect([1, 2, 3].filter((d) => survives(r2, day(d)))).toEqual([1, 2, 3]);
+    });
+
+    it("prunes unknown-health runs beyond the window like before", async () => {
+      const r2 = makeFakeR2();
+      for (let d = 1; d <= 4; d++) await seedManifest(r2, day(d), {});
+
+      const pruned = await pruneRuns(r2, 2, logger);
+
+      expect(pruned.success && pruned.data.prunedRuns).toBe(2);
+      expect([1, 2, 3, 4].filter((d) => survives(r2, day(d)))).toEqual([3, 4]);
+    });
+
+    it("reads encrypted manifests with the configured secret", async () => {
+      const r2 = makeFakeR2();
+      const env = { BACKUP_ENCRYPTION_SECRET: "k" };
+      await seedManifest(r2, day(1), { healthy: true }, env);
+      for (let d = 2; d <= 4; d++) await seedManifest(r2, day(d), { healthy: false }, env);
+
+      await pruneRuns(r2, 1, logger, env);
+
+      expect([1, 2, 3, 4].filter((d) => survives(r2, day(d)))).toEqual([1, 4]);
+    });
+
+    it("prunes nothing when a run manifest cannot be read", async () => {
+      const r2 = makeFakeR2();
+      await seedManifest(r2, day(1), { healthy: true });
+      for (let d = 2; d <= 4; d++) await seedManifest(r2, day(d), { healthy: false });
+      const realGet = r2.get.bind(r2);
+      r2.get = (async (key: string) => {
+        if (key.startsWith(day(3))) throw new Error("R2 unavailable");
+        return realGet(key);
+      }) as typeof r2.get;
+
+      const pruned = await pruneRuns(r2, 1, logger);
+
+      expect(pruned.success).toBe(false);
+      expect([1, 2, 3, 4].every((d) => survives(r2, day(d)))).toBe(true);
+    });
+  });
+
   it("paginates listing across R2 pages", async () => {
     const r2 = makeFakeR2(2); // tiny page size forces pagination
     for (const d of ["01", "02", "03", "04", "05"])
