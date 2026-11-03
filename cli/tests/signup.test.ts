@@ -260,6 +260,18 @@ describe("stratum signup: polling ends without approval", () => {
     // 15 minutes plus a minute's grace at 5s a poll, then stop.
     expect(spy.mock.calls.length).toBeLessThan(200);
   });
+
+  it("still gives up when the server's 202 has no expiresAt", async () => {
+    const { expiresAt: _omitted, ...noExpiry } = accepted;
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse(noExpiry, 202));
+    spy.mockRejectedValue(new TypeError("fetch failed"));
+    const h = harness();
+    const result = await runSignup(request, h.deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/expired/);
+    // A one-hour fallback deadline at 5s a poll, then stop.
+    expect(spy.mock.calls.length).toBeLessThan(800);
+  });
 });
 
 describe("stratum signup: transient poll failures", () => {

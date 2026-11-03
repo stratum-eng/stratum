@@ -49,6 +49,12 @@ const REQUEST_TIMEOUT_MS = 30_000;
  * dead anyway.
  */
 const EXPIRY_GRACE_MS = 60_000;
+/**
+ * Used when the server's 202 has no parseable `expiresAt`, so the deadline above
+ * still bounds polling. Comfortably longer than the server's 30-minute request
+ * lifetime, so it never cuts a live request short.
+ */
+const FALLBACK_DEADLINE_MS = 60 * 60_000;
 
 type JsonObject = Record<string, unknown>;
 
@@ -178,7 +184,10 @@ export async function runSignup(req: SignupRequest, deps: SignupDeps): Promise<S
     return fail(`${host} accepted the signup but returned no poll token or user code`);
   }
   const expiresAtRaw = str(started.body, "expiresAt");
-  const expiresAt = expiresAtRaw ? Date.parse(expiresAtRaw) : Number.NaN;
+  const reportedExpiry = expiresAtRaw ? Date.parse(expiresAtRaw) : Number.NaN;
+  const deadline = Number.isNaN(reportedExpiry)
+    ? deps.now() + FALLBACK_DEADLINE_MS
+    : reportedExpiry + EXPIRY_GRACE_MS;
   let intervalSeconds = clampInterval(started.body.interval, 5);
 
   deps.notify("");
@@ -186,15 +195,15 @@ export async function runSignup(req: SignupRequest, deps: SignupDeps): Promise<S
   deps.notify("");
   deps.notify(`Check ${req.email} for an email from Stratum and follow the approval link.`);
   deps.notify(
-    Number.isNaN(expiresAt)
+    Number.isNaN(reportedExpiry)
       ? "Waiting for approval..."
-      : `Waiting for approval (the request expires at ${new Date(expiresAt).toISOString()})...`,
+      : `Waiting for approval (the request expires at ${new Date(reportedExpiry).toISOString()})...`,
   );
 
   for (;;) {
     await deps.sleep(intervalSeconds * 1000);
 
-    if (!Number.isNaN(expiresAt) && deps.now() > expiresAt + EXPIRY_GRACE_MS) {
+    if (deps.now() > deadline) {
       return fail("the signup request expired before it was approved. Run stratum signup again.");
     }
 
