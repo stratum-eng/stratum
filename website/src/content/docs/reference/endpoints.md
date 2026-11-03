@@ -234,6 +234,13 @@ does not gate a merge.
 access to the project. Valid on changes in `open`, `needs_changes`,
 `accepted`, or `approved`.
 
+**Approvals are made by a signed-in human.** `approve` requires a browser
+session (or the legacy user key). A scoped API token or an OAuth grant — what
+MCP clients and the CLI hold, and what agents are handed — gets
+`403 SESSION_REQUIRED` with an `approveUrl` (the change page) instead. Those
+credentials can still send `request_changes` and `comment`, which can only
+block a merge.
+
 ```json
 { "verdict": "approve", "comment": "…" }
 ```

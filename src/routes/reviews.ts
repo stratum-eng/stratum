@@ -1,4 +1,5 @@
 import { type Context, Hono } from "hono";
+import { cannotMintLegacyCredential } from "../middleware/auth";
 import { type EventActor, emitEvent } from "../queue/events";
 import {
   type ChangeComment,
@@ -394,6 +395,29 @@ app.post("/changes/:id/reviews", async (c) => {
     return badRequest("verdict must be 'approve', 'request_changes', or 'comment'");
   }
   const verdict: ReviewVerdict = body.verdict;
+
+  // An approval is the human half of the merge gate (`merge.requiredApprovals`),
+  // so it must be made by the human, not by software acting for them. Scoped
+  // API tokens and OAuth grants (MCP clients, `stratum login`) are exactly the
+  // credentials agents are handed: an agent holding one would otherwise approve
+  // the change it just wrote. They may still request changes or comment, which
+  // can only block. Same rule, same helper, as minting agent tokens (#376).
+  if (verdict === "approve" && cannotMintLegacyCredential(c)) {
+    logger.warn("Approval refused - delegated credential", {
+      changeId: change.id,
+      via: c.get("oauthGrantId") !== undefined ? "oauth_grant" : "api_token",
+    });
+    return c.json(
+      {
+        error:
+          "Approving a change requires a signed-in browser session: approve in the browser. " +
+          "API tokens and OAuth grants (MCP clients, the CLI) can request changes or comment, but not approve.",
+        code: "SESSION_REQUIRED",
+        approveUrl: `/changes/${change.id}`,
+      },
+      403,
+    );
+  }
   const comment =
     typeof body.comment === "string" && body.comment.trim()
       ? body.comment.trim().slice(0, MAX_COMMENT_LENGTH)

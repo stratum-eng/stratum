@@ -236,6 +236,9 @@ the user does not control:
   behind it is the instance administrator.
 - **No legacy-key minting.** Like a scoped token, it is refused by
   `rotate-token` with `SESSION_REQUIRED`.
+- **No approvals.** Like a scoped token, it cannot submit an `approve` review
+  verdict (`403 SESSION_REQUIRED`): approvals are made by a signed-in human in
+  the browser. `request_changes` and comments still work.
 
 Grants are listed and revoked by their owner under **Settings → Connected
 applications**, and by the client itself at `POST /oauth/revoke`

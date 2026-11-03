@@ -202,7 +202,7 @@ anyway.
 | `stratum_get_change` | One change with per-gate evidence and metered costs. |
 | `stratum_merge_change` | Merge a change that passed its gates and approvals. |
 | `stratum_reject_change` | Close a change without merging. |
-| `stratum_review_change` | Submit an `approve` or `request_changes` verdict. |
+| `stratum_review_change` | Submit a `request_changes` verdict. `approve` is refused over MCP: approvals are made by a signed-in human in the browser. |
 
 **Issues**
 
@@ -246,9 +246,13 @@ reviews and merges.
 
 An **OAuth grant is a user credential**, not an agent identity: a human
 consented to it in a browser, so it carries the same authority a user token
-does, including review verdicts when `mcp:write` was granted. If you want an
-MCP client that can propose but never decide, connect it with an agent token
-rather than through OAuth.
+does when `mcp:write` was granted, with one exception: it **cannot approve**.
+An approval is the human half of the merge gate, and an OAuth grant is
+software acting for the human, so `stratum_review_change` with `approve` is
+refused with `SESSION_REQUIRED`; approve on the change page in the browser.
+`request_changes` still works. If you want an MCP client that can propose but
+never decide anything, connect it with an agent token rather than through
+OAuth.
 
 ## Operational notes
 

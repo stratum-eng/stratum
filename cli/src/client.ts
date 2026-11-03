@@ -8,6 +8,7 @@ interface ApiErrorBody {
   error?: string;
   message?: string;
   reasons?: string[];
+  code?: string;
 }
 
 export interface ProjectRef {
@@ -99,11 +100,12 @@ function asCredential(auth: string | ClientCredential): ClientCredential {
   return { token: async () => auth, refresh: async () => null };
 }
 
-/** An API error that kept its status code, so callers can act on a 401. */
+/** An API error that kept its status code (and the server's error code, if any), so callers can act on it. */
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -168,16 +170,18 @@ export class StratumClient {
 
       if (!response.ok) {
         let message = `HTTP ${response.status}`;
+        let code: string | undefined;
         try {
           const err = (await response.json()) as ApiErrorBody;
           message = err.error ?? err.message ?? message;
+          code = typeof err.code === "string" ? err.code : undefined;
           if (err.reasons && err.reasons.length > 0) {
             message += `\n  - ${err.reasons.join("\n  - ")}`;
           }
         } catch {
           message = response.statusText || message;
         }
-        throw new ApiError(message, response.status);
+        throw new ApiError(message, response.status, code);
       }
 
       // The error path above is already defensive; the success path was not.
@@ -332,11 +336,26 @@ export class StratumClient {
   }
 
   async reviewChange(id: string, verdict: "approve" | "request_changes", comment?: string) {
-    return this.request<{ review: { verdict: string }; changeStatus: string }>(
-      "POST",
-      `/api/changes/${encodeURIComponent(id)}/reviews`,
-      { verdict, ...(comment ? { comment } : {}) },
-    );
+    try {
+      return await this.request<{ review: { verdict: string }; changeStatus: string }>(
+        "POST",
+        `/api/changes/${encodeURIComponent(id)}/reviews`,
+        { verdict, ...(comment ? { comment } : {}) },
+      );
+    } catch (err) {
+      // Approvals are made by a signed-in human in the browser; the CLI's
+      // OAuth grant or API key can request changes but not approve. Point the
+      // user at the page instead of surfacing a bare 403.
+      if (err instanceof ApiError && err.code === "SESSION_REQUIRED") {
+        const url = `${this.host.replace(/\/$/, "")}/changes/${encodeURIComponent(id)}`;
+        throw new ApiError(
+          `Approvals are made in the browser, not from the CLI. Open ${url} and approve there.`,
+          err.status,
+          err.code,
+        );
+      }
+      throw err;
+    }
   }
 
   // ── Issues ──────────────────────────────────────────────────────────────
