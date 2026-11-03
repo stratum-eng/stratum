@@ -319,12 +319,14 @@ npx wrangler secret put GOOGLE_CLIENT_SECRET
 #
 # Set the app's "Setup URL" to https://<host>/github/app/setup (tick "Redirect
 # on update"). An installation token is only used for projects whose owner the
-# installation is LINKED to there — otherwise any user could import another
-# org's repo and act on it with that org's installation. Only the GitHub user
-# who installed the app can link it, proven by the installation.created
-# webhook's sender, so an installation made before this webhook handling
-# existed has no recorded installer: reinstall the app (preferred), or bind
-# its owner below.
+# installation is LINKED to there, or whom an operator binding below names.
+# Without one of the two, any user could import another org's repo and act on
+# it with that org's installation. Only the GitHub user who installed the app
+# can link it (the installation.created webhook's sender), or, for an
+# installation on a personal GitHub account, that account's owner. An
+# installation on an ORGANIZATION made before this webhook handling existed
+# has no recorded installer: reinstall the app (preferred), or bind its owner
+# below. A personal-account installation can be linked as is.
 npx wrangler secret put GITHUB_APP_ID
 npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app.pkcs8.pem
 # Optional operator bindings: comma-separated githubOwner=org:<orgId> or

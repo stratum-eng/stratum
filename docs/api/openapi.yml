@@ -2320,15 +2320,22 @@ paths:
       tags: [changes]
       summary: Promote an accepted change to a GitHub pull request
       description: |
-        Users only. The change must be accepted (or already promoted) and the
-        project connected to GitHub with a configured GitHub token. Creates a
-        (draft by default) PR from branch `stratum/{changeId}` and marks the
-        change `promoted`.
+        Users only. The change must be accepted (or already promoted), and the
+        project must be authorized for its GitHub repository and be that
+        repository's canonical project. Creates a (draft by default) PR from
+        branch `stratum/{changeId}` and marks the change `promoted`.
+
+        The credential is the GitHub App's installation token when the project's
+        owner is linked to the installation covering the repository (or an
+        operator binding names that owner). Otherwise it is the instance
+        `GITHUB_TOKEN`, and only under an operator binding. No credential means
+        `403`. A project that is not the repository's canonical project gets
+        `409`.
 
         The PR base is always the project's own recorded default branch and is
-        not accepted from the request body: this endpoint acts with the
-        instance-wide GitHub token, so honouring a caller-supplied base would
-        let any caller aim that shared credential at a branch of its choosing.
+        not accepted from the request body: the endpoint acts with a credential
+        the instance holds, so honouring a caller-supplied base would let a
+        caller aim it at a branch of its choosing.
       requestBody:
         required: false
         content:
@@ -4676,7 +4683,7 @@ paths:
                             login: { type: string }
                             type: { type: string, description: "`User` or `Organization`" }
                         suspended: { type: boolean }
-                        linkedTo: { type: string, nullable: true }
+                        linkedTo: { type: [string, "null"] }
                         canLink: { type: boolean }
                         canUnlink: { type: boolean }
         "401":

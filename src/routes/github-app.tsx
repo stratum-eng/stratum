@@ -265,8 +265,17 @@ async function readTargetOrg(c: Ctx, logger: Logger): Promise<string | Response>
     if (body instanceof Response) return body;
     return typeof body.org === "string" ? body.org.trim() : "";
   }
-  const form = await c.req.parseBody();
-  return typeof form.org === "string" ? form.org.trim() : "";
+  // A malformed form body (e.g. a broken multipart boundary) makes parseBody
+  // reject; answer it as the caller's error, not a 500.
+  try {
+    const form = await c.req.parseBody();
+    return typeof form.org === "string" ? form.org.trim() : "";
+  } catch (error) {
+    logger.warn("Unparseable link form body", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return respond(c, { ok: false, notice: "error", status: 400 });
+  }
 }
 
 app.post("/api/github/installations/:id/link", async (c) => {

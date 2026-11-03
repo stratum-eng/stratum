@@ -312,6 +312,25 @@ describe("POST /api/github/installations/:id/unlink", () => {
   });
 });
 
+describe("malformed link bodies", () => {
+  it("answers a broken multipart body as a controlled error, not a 500", async () => {
+    const res = await app.fetch(
+      new Request("http://localhost/api/github/installations/777/link", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tokenOf("alice")}`,
+          "Content-Type": "multipart/form-data; boundary=missing",
+        },
+        body: "this is not multipart",
+      }),
+      env,
+    );
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/github/app/setup?notice=error");
+    expect(owner()).toEqual({ type: null, id: null });
+  });
+});
+
 describe("GET /api/github/installations", () => {
   it("lists what the caller can manage", async () => {
     const res = await call("alice", "GET", "/api/github/installations");
