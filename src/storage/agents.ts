@@ -94,7 +94,7 @@ export async function createAgent(
 }
 
 /**
- * Create an agent for one MCP connection (#409, ADR 009).
+ * Create an agent for one MCP connection (#409, ADR 010).
  *
  * Called only when an authorization code is redeemed, and that code exists
  * only because a person clicked Allow in a signed-in browser session. So no
@@ -189,7 +189,7 @@ export async function getAgentByToken(
       logger.debug("Agent not found by token");
       return err(notFoundError);
     }
-    // Defence in depth (ADR 009). A grant-only agent's `token_hash` is the hash
+    // Defence in depth (ADR 010). A grant-only agent's `token_hash` is the hash
     // of a value nobody was ever shown, so no presented token should match it.
     // If one ever did, it must still not authenticate: this agent's access
     // has to end when its grant does.

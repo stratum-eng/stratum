@@ -581,7 +581,7 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         );
       }
 
-      // A grant bound to an agent (#409, ADR 009) authenticates AS that agent,
+      // A grant bound to an agent (#409, ADR 010) authenticates AS that agent,
       // acting for the consenting user: exactly the context a `stratum_agent_`
       // token produces, and deliberately with no `userId`, so every rule
       // written for agent callers (authorship, provenance, event actors, the

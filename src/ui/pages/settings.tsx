@@ -222,7 +222,7 @@ const COPY_TOKEN_SCRIPT = `
  * user did not have to take on trust.
  */
 /**
- * Who a connection acts as (#409, ADR 009). A grant from before agent binding,
+ * Who a connection acts as (#409, ADR 010). A grant from before agent binding,
  * or one where the user chose "Me", acts as the user, and the label says what
  * that costs: no agent provenance on its work.
  */

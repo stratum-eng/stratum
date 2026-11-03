@@ -540,7 +540,7 @@ function describeScope(scope: string): string[] {
   return lines;
 }
 
-// ── Acting identity (#409, ADR 009) ────────────────────────────────────────
+// ── Acting identity (#409, ADR 010) ────────────────────────────────────────
 
 /** The consent form's `act_as` values. */
 const ACT_AS_NEW = "new";
@@ -592,7 +592,7 @@ async function readActAs(
 
 /** The "Connect as" choice. Radios and a select, so it needs no script. The
  * default is a new agent: it is both the choice that records provenance and
- * the more restricted one (ADR 009). */
+ * the more restricted one (ADR 010). */
 function ActAsFieldset(props: { clientName: string; username: string; agents: Agent[] }) {
   const defaultName = props.clientName.slice(0, MAX_GRANT_AGENT_NAME_LENGTH);
   return (

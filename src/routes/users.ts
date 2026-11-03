@@ -58,7 +58,7 @@ app.get("/me", async (c) => {
   const agentId = c.get("agentId");
   const agentOwnerId = c.get("agentOwnerId");
 
-  // An OAuth grant bound to an agent (#409, ADR 009) learns who it is here.
+  // An OAuth grant bound to an agent (#409, ADR 010) learns who it is here.
   // The client was given its identity on a consent page it never saw, so
   // unlike a bare agent token (still a 401 below) it has no other way to find
   // out. The owner's email is withheld: the agent acts for the owner and does

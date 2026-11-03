@@ -1,5 +1,5 @@
 /**
- * Issue #409 (ADR 009): binding an agent identity to an MCP OAuth grant.
+ * Issue #409 (ADR 010): binding an agent identity to an MCP OAuth grant.
  *
  * Driven through the whole Worker (`src/index.ts`) against real SQLite, in the
  * style of `mcp-oauth-flow.test.ts`: a real consent POST, a real code exchange,

@@ -44,7 +44,7 @@ import { type Result, err, ok } from "../utils/result";
  * to learn a third authority model. In particular this is why review verdicts
  * behave identically over MCP and over a user token — the human-approval gate
  * is enforced by actor type (agents are refused) AND by credential kind: an
- * OAuth grant may be bound to an agent identity (#409, ADR 009), and either way
+ * OAuth grant may be bound to an agent identity (#409, ADR 010), and either way
  * it is a delegated credential that cannot approve.
  */
 export const SCOPE_READ = "mcp:read";
@@ -455,7 +455,7 @@ export interface AuthCodeRecord {
   scope: string;
   codeChallenge: string;
   resource: string | null;
-  /** Which identity the grant will act as (#409, ADR 009). Absent = the user. */
+  /** Which identity the grant will act as (#409, ADR 010). Absent = the user. */
   actAs?: GrantActor;
 }
 
@@ -897,7 +897,7 @@ export interface ResolvedOAuthToken {
   grantId: string;
   clientId: string;
   lastUsedAt?: string;
-  /** Present when the grant is bound to an agent (#409, ADR 009): requests
+  /** Present when the grant is bound to an agent (#409, ADR 010): requests
    * then authenticate as this agent, acting for `user`. */
   agent?: { id: string; name: string };
 }

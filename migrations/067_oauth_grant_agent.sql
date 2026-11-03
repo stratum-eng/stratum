@@ -1,4 +1,4 @@
--- Bind an agent identity to an MCP OAuth grant (#409, ADR 009).
+-- Bind an agent identity to an MCP OAuth grant (#409, ADR 010).
 --
 -- Until now an OAuth grant always acted as the user who consented, so work done
 -- over MCP carried no agent identity and its provenance was empty. The consent

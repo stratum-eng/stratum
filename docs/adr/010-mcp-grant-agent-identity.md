@@ -1,4 +1,4 @@
-# ADR 009: Agent Identity on MCP OAuth Grants
+# ADR 010: Agent Identity on MCP OAuth Grants
 
 ## Status
 

@@ -661,7 +661,7 @@ export interface Agent {
   tokenHash: string;
   createdAt: string;
   /**
-   * How this agent authenticates (#409, ADR 009). Absent means `token`, the
+   * How this agent authenticates (#409, ADR 010). Absent means `token`, the
    * only kind before migration 067. An `oauth_grant` agent was created on the
    * MCP consent screen and has no token of its own: its only way in is an
    * OAuth grant bound to it.
