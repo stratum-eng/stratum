@@ -44,7 +44,8 @@ export interface BackupRunSummary {
   prunedRuns: number;
   /** True only when EVERY D1 table exported ok, KV identity is whole, and no repo
    * failed. `_manifest.json` presence merely means "not crashed"; `healthy` means
-   * "actually restorable". A reader/alert should key on this, not on completeness. */
+   * "actually restorable". A reader/alert should key on this, not on completeness,
+   * and retention does: unhealthy runs never take a `BACKUP_RETENTION` slot. */
   healthy: boolean;
 }
 
@@ -256,14 +257,9 @@ async function runBackupLocked(
     }
   }
 
-  // --- Retention (keep newest N complete-or-not runs whole) ---
-  const retention = positiveIntEnv(env.BACKUP_RETENTION, DEFAULT_RETENTION);
-  const pruned = await pruneRuns(bucket, retention, logger);
-  if (pruned.success) summary.prunedRuns = pruned.data.prunedRuns;
-
   // A run is healthy only if everything landed — completeness (manifest present)
-  // is NOT the same as success; without this a run where every export failed still
-  // reads as complete and retention evicts the last good one.
+  // is NOT the same as success. Retention reads this from the manifest, so it
+  // decides which runs it may evict.
   summary.healthy =
     summary.d1.every((t) => t.ok) && summary.kv.ok && summary.repos.failed.length === 0;
   if (!summary.healthy) {
@@ -274,6 +270,16 @@ async function runBackupLocked(
       reposFailed: summary.repos.failed.length,
     });
   }
+
+  // --- Retention ---
+  // This run is not complete yet (its manifest is written below), so pruning
+  // protects it as the newest prefix without counting it, and counts only prior
+  // runs by the health their own manifests record — the newest healthy one is
+  // always kept, so a streak of unhealthy runs can never leave only unrestorable
+  // backups behind.
+  const retention = positiveIntEnv(env.BACKUP_RETENTION, DEFAULT_RETENTION);
+  const pruned = await pruneRuns(bucket, retention, logger, env);
+  if (pruned.success) summary.prunedRuns = pruned.data.prunedRuns;
 
   // --- Run manifest LAST: its presence marks the run complete ---
   await put(RUN_MANIFEST_KEY, new TextEncoder().encode(JSON.stringify(summary)));

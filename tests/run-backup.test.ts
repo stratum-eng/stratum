@@ -162,4 +162,34 @@ describe("runBackup orchestrator", () => {
     await runBackup(env, logger, "2026-07-19T06:00:00Z", okSnapshots);
     expect(await (env.STATE as KVNamespace).get("backup:lock")).toBeNull();
   });
+
+  it("keeps the last healthy run through BACKUP_RETENTION + 1 unhealthy runs (#401)", async () => {
+    const retention = 2;
+    const env = makeEnv({ BACKUP_RETENTION: String(retention) } as Partial<Env>);
+    await setProject(env.STATE as KVNamespace, project("alpha"), logger);
+    const failing: BackupDeps = {
+      snapshotRepo: async () => {
+        throw new Error("clone exploded");
+      },
+    };
+
+    const good = await runBackup(env, logger, "2026-07-19T00:00:00Z", okSnapshots);
+    expect(good.healthy).toBe(true);
+    for (let h = 1; h <= retention + 2; h++) {
+      const bad = await runBackup(
+        env,
+        logger,
+        `2026-07-19T${String(h).padStart(2, "0")}:00:00Z`,
+        failing,
+      );
+      expect(bad.healthy).toBe(false);
+    }
+
+    const bucket = env.BACKUPS as unknown as { store: Map<string, Uint8Array> };
+    const keys = [...bucket.store.keys()];
+    expect(keys).toContain(`2026-07-19T00:00:00Z/${RUN_MANIFEST_KEY}`);
+    expect(keys).toContain("2026-07-19T00:00:00Z/repos/alpha.pack");
+    // The oldest unhealthy run was pruned: failures still age out.
+    expect(keys.some((k) => k.startsWith("2026-07-19T01:00:00Z/"))).toBe(false);
+  });
 });

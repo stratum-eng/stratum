@@ -164,12 +164,17 @@ the `BACKUPS` R2 bucket:
   project are not in any backup.
 - **Retention:** the newest `BACKUP_RETENTION` runs (default **14**) are kept,
   and older runs are pruned by the backup job itself. On-demand runs count
-  toward this number the same way scheduled runs do. A run counts once its
+  toward this number the same way scheduled runs do. A run is complete once its
   `_manifest.json` is written, which means only that the run finished, **not
   that it is restorable**. A run where a table, the KV export or a repository
-  failed still writes its manifest with `healthy: false` and still takes a
-  slot, so a stretch of failed runs can prune the last good one (#401). Before
-  relying on a run, check `healthy` in its manifest or the `backup.run` audit
+  failed still writes its manifest, with `healthy: false`. Retention reads that
+  flag: unhealthy runs never take one of the `BACKUP_RETENTION` slots (they are
+  kept only while they are among the newest `BACKUP_RETENTION` complete runs),
+  and the newest healthy run is never pruned, so a stretch of failed runs cannot
+  evict the last good backup. Up to `BACKUP_RETENTION` unhealthy runs can be
+  retained alongside the healthy ones, so storage can reach twice the window. A manifest with no `healthy` field, or one that cannot be
+  decrypted, counts toward `BACKUP_RETENTION` as before. Before relying on a
+  run, check `healthy` in its manifest or the `backup.run` audit
   entry, and alert on unhealthy runs. Neither that nor the restore plan's
   `restorable` result proves that a given repository has a pack: `healthy`
   ignores repositories skipped for exceeding `MAX_BACKUP_BYTES` (they are
@@ -217,7 +222,12 @@ The code does not check this inequality or warn when it fails.
 
 **Deletion does not reach backups.** A deleted account or project remains in
 backups until those runs age out of `BACKUP_RETENTION` (about two weeks with the
-defaults, sooner if extra on-demand runs are taken). It also does not delete
+defaults, sooner if extra on-demand runs are taken). One exception: the newest
+healthy run is never pruned, so if every run after it fails, that run, and
+anything deleted after it was taken, stays until a later healthy run completes.
+After that, it stays until it ages out of the `BACKUP_RETENTION` window, which
+can span several later healthy runs.
+It also does not delete
 PostHog events or log lines already written.
 
 ## Data residency
