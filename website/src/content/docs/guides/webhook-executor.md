@@ -111,8 +111,17 @@ Every request gets its own state, and nothing survives it:
   read-only. Its repository-local config (`remote.*.url` with embedded
   credentials, `http.extraHeader`, `credential.helper`, command-valued settings)
   is readable there and can hand the executor whatever the receiver uses to
-  fetch. Export the tree on the trusted side, for example with `git archive` of
-  the commit. If the executor needs Git, initialize a new repository inside it
+  fetch. Export the tree on the trusted side, and export it **exactly**: every
+  tracked path, file mode and blob byte at `baseSha`, nothing else. The usual
+  shortcuts are not exact. `git archive` honours the commit's own
+  `export-ignore` and `export-subst` attributes, so the repository being
+  evaluated decides which paths, including tests, are left out and which
+  contents are rewritten. `git checkout` / `git worktree` run `.gitattributes`
+  filters and line-ending conversion. Instead, write the tree at the object
+  level: walk it with `git ls-tree -rz <baseSha>` and write each blob with
+  `git cat-file blob <oid>`, or use a Git library's raw tree and blob reads,
+  then compare the result against the tree before applying the diff. If the
+  executor needs Git, initialize a new repository inside it
   that has no remotes and no credentials. A writable shared object store would
   also let one change plant objects or refs that a later evaluation reads.
 - **Unique names.** Create per-request directories with random names, not
