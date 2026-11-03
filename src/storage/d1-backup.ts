@@ -90,6 +90,12 @@ export const BACKUP_TABLES: readonly string[] = [
   // `docs/runbooks/backup-restore.md`.
   "project_secrets",
   "deployments",
+  // GitHub App installations and their Stratum owner links (migration 059).
+  // Not reconstructible: the installer — the only proof that lets anyone link
+  // an installation — came from an `installation.created` webhook GitHub will
+  // not send again, so a restore without it leaves every installation
+  // unlinkable short of reinstalling the app. No foreign keys, so order is free.
+  "github_app_installations",
 ];
 
 /**

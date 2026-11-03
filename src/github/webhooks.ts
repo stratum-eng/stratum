@@ -12,12 +12,19 @@ import {
   updateChangeStatus,
 } from "../storage/changes";
 import { getProjectByGitHubRepo } from "../storage/github-bridge";
+import {
+  type InstallationEventFacts,
+  deleteInstallation,
+  setInstallationSuspended,
+  upsertInstallation,
+} from "../storage/github-installations";
 import { createImportJob, getLatestImportDepth } from "../storage/imports";
 import { getWorkspace } from "../storage/state";
 import { getSyncStatus, setSyncInProgress } from "../storage/sync";
 import { type Env, projectDefaultBranch } from "../types";
 import { type Logger, createLogger } from "../utils/logger";
 import { DEFAULT_CLONE_DEPTH } from "../utils/validation";
+import { invalidateInstallationCache } from "./app-auth";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -406,6 +413,111 @@ async function trackWebhookFailure(
   await kv.put(counterKey, String(current + 1), { expirationTtl: 604800 });
 }
 
+interface InstallationRepo {
+  full_name?: unknown;
+}
+
+function repoFullNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((repo: InstallationRepo) => repo?.full_name)
+    .filter((name): name is string => typeof name === "string");
+}
+
+/** Narrows the parts of an installation event payload this handler trusts. */
+function installationFacts(
+  eventType: string,
+  data: Record<string, unknown>,
+): InstallationEventFacts | null {
+  const installation = data.installation as
+    | { id?: unknown; account?: { login?: unknown; id?: unknown; type?: unknown } }
+    | undefined;
+  const id = installation?.id;
+  const account = installation?.account;
+  if (typeof id !== "number" || !Number.isSafeInteger(id)) return null;
+  if (
+    typeof account?.login !== "string" ||
+    typeof account.id !== "number" ||
+    typeof account.type !== "string"
+  ) {
+    return null;
+  }
+  const sender = data.sender as { id?: unknown } | undefined;
+  // Only the event that created the installation names its installer; any
+  // later sender is just whoever changed it, and must not become the person
+  // allowed to link it.
+  const installer =
+    eventType === "installation" && data.action === "created" && typeof sender?.id === "number"
+      ? String(sender.id)
+      : undefined;
+  return {
+    installationId: id,
+    accountLogin: account.login,
+    accountId: String(account.id),
+    accountType: account.type,
+    ...(installer !== undefined ? { installerGithubId: installer } : {}),
+  };
+}
+
+/**
+ * Keeps the installation record (migration 059) and the KV caches in step with
+ * `installation` / `installation_repositories` events. These arrive through the
+ * HMAC-verified endpoint, which is what lets the recorded installer serve as
+ * proof of control when someone links the installation to a Stratum owner.
+ *
+ * Every action also invalidates KV: a stale positive or negative entry is
+ * wrong either way, and a re-lookup is one cheap API call.
+ */
+export async function handleInstallationChange(
+  env: Pick<Env, "STATE" | "DB">,
+  eventType: string,
+  data: Record<string, unknown>,
+  logger: Logger,
+): Promise<void> {
+  const facts = installationFacts(eventType, data);
+  const action = data.action;
+
+  if (facts) {
+    const write =
+      eventType === "installation" && action === "deleted"
+        ? await deleteInstallation(env.DB, facts.installationId, logger)
+        : await upsertInstallation(env.DB, facts, logger);
+    if (!write.success) throw write.error;
+
+    if (eventType === "installation" && (action === "suspend" || action === "unsuspend")) {
+      const suspended = await setInstallationSuspended(
+        env.DB,
+        facts.installationId,
+        action === "suspend",
+        logger,
+      );
+      if (!suspended.success) throw suspended.error;
+    }
+  } else {
+    logger.warn("Installation event without a usable installation/account", {
+      eventType,
+      action,
+    });
+  }
+
+  const repos = [
+    ...repoFullNames(data.repositories),
+    ...repoFullNames(data.repositories_added),
+    ...repoFullNames(data.repositories_removed),
+  ];
+  await invalidateInstallationCache(env.STATE, {
+    repoFullNames: repos,
+    ...(facts ? { installationId: facts.installationId } : {}),
+  });
+  logger.info("Processed GitHub App installation event", {
+    eventType,
+    action,
+    installationId: facts?.installationId,
+    account: facts?.accountLogin,
+    repoCount: repos.length,
+  });
+}
+
 // POST /api/webhooks/github - Main webhook endpoint
 app.post("/", async (c) => {
   const logger = createLogger({
@@ -515,6 +627,14 @@ app.post("/", async (c) => {
 
       case "ping":
         logger.info("GitHub webhook ping received");
+        break;
+
+      // Sent to every GitHub App without subscribing. The installation-id cache
+      // in app-auth has no TTL, so these are what keep it honest when the app is
+      // installed, removed, suspended, or has its repository selection changed.
+      case "installation":
+      case "installation_repositories":
+        await handleInstallationChange(c.env, eventType, data, logger);
         break;
 
       default:

@@ -415,8 +415,32 @@ app.post('/api/webhooks/github', async (c) => {
 
 ### Outbound Sync (Stratum → GitHub)
 
+**Credentials** (`src/github/app-auth.ts`): every outbound call resolves its
+token through `resolveGitHubToken(env, { owner, repo, principal })`, where
+`principal` is the Stratum owner the call acts for (the project's owner, or an
+import's target owner). It returns a GitHub App installation token only when
+`GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` are set, the app is installed on that
+repo, **and** the installation may serve that principal: its GitHub owner is in
+`GITHUB_APP_ALLOWED_OWNERS`, or the installation is linked to the principal in
+`github_app_installations` (migration 059; an agent matches through its owner).
+Otherwise it falls back to the instance-wide `GITHUB_TOKEN` PAT, which is also
+the fallback if minting fails. A link check that errors counts as "not linked".
+
+The link is the guard against a confused deputy. A project's source URL is
+caller-controlled, so without it any user could import another tenant's repo
+and push to it through that tenant's installation. Links are made at
+`/github/app/setup` (the app's Setup URL) or `POST /api/github/installations/:id/link`.
+Proof of control is the installer recorded from the HMAC-verified
+`installation.created` webhook (`sender.id`), or the account itself for
+personal installations, matched against the caller's OAuth-verified
+`users.github_id`. Installation ids are cached in KV at
+`github_installation:{owner}/{repo}` (no TTL; "not installed" for 10 min) and
+invalidated by `installation` / `installation_repositories` webhooks; tokens at
+`github_inst_token:{installationId}` until 5 min before GitHub expires them.
+Per-user OAuth tokens (`users.github_access_token`) are a separate path.
+
 **Promote Change to PR** (`POST /changes/:id/github-pr`): pushes the change's
-branch and creates the GitHub PR using the instance-wide `GITHUB_TOKEN`.
+branch and creates the GitHub PR with the resolved credential above.
 
 **Evaluation verdict reporting** (`src/github/sync.ts`): after every evaluation
 of a change whose project has a GitHub source and which has a linked PR, the

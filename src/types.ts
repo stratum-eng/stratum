@@ -199,6 +199,21 @@ export interface Env {
   GOOGLE_REDIRECT_URI?: string;
   GITHUB_WEBHOOK_SECRET?: string;
   OAUTH_REDIRECT_URI?: string;
+  /**
+   * GitHub App credentials. When both are set, outbound GitHub calls for a
+   * repo the app is installed on use an installation token; GITHUB_TOKEN is
+   * the fallback (see src/github/app-auth.ts). The key must be PKCS#8
+   * (`-----BEGIN PRIVATE KEY-----`) — WebCrypto cannot import PKCS#1.
+   */
+  GITHUB_APP_ID?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
+  /**
+   * Comma-separated GitHub owners whose app installation ANY project may use,
+   * without the installation being linked to the project's owner. That is the
+   * PAT's reach, so list only GitHub accounts the operator controls; everyone
+   * else links their installation at /github/app/setup.
+   */
+  GITHUB_APP_ALLOWED_OWNERS?: string;
   // Git provider API tokens for sync
   GITHUB_TOKEN?: string;
   GITLAB_TOKEN?: string;

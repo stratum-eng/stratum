@@ -1,3 +1,4 @@
+import type { KVNamespace } from "@cloudflare/workers-types";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Change, ProjectEntry } from "../src/types";
 import type { Logger } from "../src/utils/logger";
@@ -449,12 +450,15 @@ describe("syncChangeStatusToGitHub", () => {
 // ---------------------------------------------------------------------------
 
 describe("reportEvaluationToGitHub", () => {
+  // No GITHUB_APP_* in these envs, so the app path — the only KV reader — never runs.
+  const unusedKv = {} as KVNamespace;
+
   it("posts comment and commit status for a GitHub-linked change", async () => {
     const client = makeClient();
     const { db } = makeDb();
 
     await reportEvaluationToGitHub(
-      { DB: db, GITHUB_TOKEN: "instance-token" },
+      { DB: db, STATE: unusedKv, GITHUB_TOKEN: "instance-token" },
       baseChange,
       baseProject,
       evaluation,
@@ -476,7 +480,7 @@ describe("reportEvaluationToGitHub", () => {
     const change: Change = { ...baseChange, githubOwner: "fork-org", githubRepo: "fork-repo" };
 
     await reportEvaluationToGitHub(
-      { DB: db, GITHUB_TOKEN: "tok" },
+      { DB: db, STATE: unusedKv, GITHUB_TOKEN: "tok" },
       change,
       baseProject,
       evaluation,
@@ -494,7 +498,7 @@ describe("reportEvaluationToGitHub", () => {
     const change: Change = { ...baseChange, githubOwner: undefined, githubRepo: undefined };
 
     await reportEvaluationToGitHub(
-      { DB: db, GITHUB_TOKEN: "tok" },
+      { DB: db, STATE: unusedKv, GITHUB_TOKEN: "tok" },
       change,
       baseProject,
       evaluation,
@@ -512,7 +516,7 @@ describe("reportEvaluationToGitHub", () => {
     const change: Change = { ...baseChange, githubPrNumber: undefined };
 
     await reportEvaluationToGitHub(
-      { DB: db, GITHUB_TOKEN: "tok" },
+      { DB: db, STATE: unusedKv, GITHUB_TOKEN: "tok" },
       change,
       baseProject,
       evaluation,
@@ -533,7 +537,7 @@ describe("reportEvaluationToGitHub", () => {
     };
 
     await reportEvaluationToGitHub(
-      { DB: db, GITHUB_TOKEN: "tok" },
+      { DB: db, STATE: unusedKv, GITHUB_TOKEN: "tok" },
       baseChange,
       project,
       evaluation,
@@ -548,13 +552,19 @@ describe("reportEvaluationToGitHub", () => {
     const client = makeClient();
     const { db } = makeDb();
 
-    await reportEvaluationToGitHub({ DB: db }, baseChange, baseProject, evaluation, logger);
+    await reportEvaluationToGitHub(
+      { DB: db, STATE: unusedKv },
+      baseChange,
+      baseProject,
+      evaluation,
+      logger,
+    );
 
     expect(client.postComment).not.toHaveBeenCalled();
     expect(client.setStatus).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(
-      "GITHUB_TOKEN not configured — skipping evaluation report to GitHub",
-      { changeId: "chg_1" },
+      "No GitHub credential — skipping evaluation report to GitHub",
+      { changeId: "chg_1", error: "GitHub integration is not configured" },
     );
   });
 
@@ -566,7 +576,7 @@ describe("reportEvaluationToGitHub", () => {
 
     await expect(
       reportEvaluationToGitHub(
-        { DB: db, GITHUB_TOKEN: "tok" },
+        { DB: db, STATE: unusedKv, GITHUB_TOKEN: "tok" },
         baseChange,
         baseProject,
         evaluation,
@@ -589,7 +599,7 @@ describe("reportEvaluationToGitHub", () => {
 
     await expect(
       reportEvaluationToGitHub(
-        { DB: db, GITHUB_TOKEN: "tok" },
+        { DB: db, STATE: unusedKv, GITHUB_TOKEN: "tok" },
         baseChange,
         baseProject,
         evaluation,
@@ -611,7 +621,7 @@ describe("reportEvaluationToGitHub", () => {
 
     await expect(
       reportEvaluationToGitHub(
-        { DB: db, GITHUB_TOKEN: "tok" },
+        { DB: db, STATE: unusedKv, GITHUB_TOKEN: "tok" },
         baseChange,
         baseProject,
         evaluation,
@@ -633,7 +643,7 @@ describe("reportEvaluationToGitHub", () => {
 
     await expect(
       reportEvaluationToGitHub(
-        { DB: db, GITHUB_TOKEN: "tok" },
+        { DB: db, STATE: unusedKv, GITHUB_TOKEN: "tok" },
         baseChange,
         baseProject,
         evaluation,

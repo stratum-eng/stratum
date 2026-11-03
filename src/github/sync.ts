@@ -9,9 +9,10 @@
  *
  * Project identity lives in KV (`ProjectEntry`) — there is no `projects` D1
  * table — so callers pass the resolved project entry / owner+repo instead of
- * this module joining a phantom table. The credential is the instance-wide
- * `env.GITHUB_TOKEN`, the same decision the PR-promotion route made (the
- * per-user OAuth tokens in the `users` table are not used here).
+ * this module joining a phantom table. The credential comes from
+ * `resolveGitHubToken` — the GitHub App's installation token for the repo, else
+ * the instance-wide `env.GITHUB_TOKEN` — the same decision the PR-promotion
+ * route makes (the per-user OAuth tokens in the `users` table are not used here).
  *
  * Reporting is best-effort by contract (like `recordAudit`): a GitHub failure
  * must never fail the evaluation that produced the verdict.
@@ -19,10 +20,12 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { parseRepoUrl } from "../storage/git-providers";
+import { projectPrincipal } from "../storage/github-installations";
 import type { Change, Env, ProjectEntry } from "../types";
 import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+import { type GitHubAuthEnv, resolveGitHubToken } from "./app-auth";
 import { GitHubClient } from "./client";
 
 /** The commit-status context Stratum reports evaluation verdicts under. */
@@ -100,7 +103,7 @@ export interface PostEvaluationCommentOpts {
   change: Change;
   owner: string;
   repo: string;
-  /** Instance-wide GitHub credential (env.GITHUB_TOKEN). */
+  /** GitHub credential from `resolveGitHubToken` (installation token or PAT). */
   githubToken: string;
   evaluation: EvaluationReport;
 }
@@ -185,7 +188,7 @@ export interface SyncChangeStatusOpts {
   change: Change;
   owner: string;
   repo: string;
-  /** Instance-wide GitHub credential (env.GITHUB_TOKEN). */
+  /** GitHub credential from `resolveGitHubToken` (installation token or PAT). */
   githubToken: string;
   evaluation: Pick<EvaluationReport, "score" | "passed">;
   targetUrl?: string;
@@ -243,7 +246,7 @@ export async function syncChangeStatusToGitHub(
  * evaluation that produced the verdict.
  */
 export async function reportEvaluationToGitHub(
-  env: Pick<Env, "DB" | "GITHUB_TOKEN">,
+  env: Pick<Env, "DB"> & GitHubAuthEnv,
   change: Change,
   project: ProjectEntry,
   evaluation: EvaluationReport,
@@ -259,15 +262,21 @@ export async function reportEvaluationToGitHub(
   const owner = change.githubOwner ?? projectRepo.owner;
   const repo = change.githubRepo ?? projectRepo.repo;
 
-  const githubToken = env.GITHUB_TOKEN;
-  if (!githubToken) {
-    logger.warn("GITHUB_TOKEN not configured — skipping evaluation report to GitHub", {
-      changeId: change.id,
-    });
-    return;
-  }
-
   try {
+    const tokenResult = await resolveGitHubToken(
+      env,
+      { owner, repo, principal: projectPrincipal(project) },
+      logger,
+    );
+    if (!tokenResult.success) {
+      logger.warn("No GitHub credential — skipping evaluation report to GitHub", {
+        changeId: change.id,
+        error: tokenResult.error.message,
+      });
+      return;
+    }
+    const githubToken = tokenResult.data.token;
+
     const commentResult = await postEvaluationComment(
       env.DB,
       { change, owner, repo, githubToken, evaluation },

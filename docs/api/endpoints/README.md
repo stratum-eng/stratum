@@ -10,6 +10,8 @@
 - [Agents](agents.md)
 - [Users](users.md) — profile, account deletion, API tokens
 - [Organizations](organizations.md)
+- [GitHub App installations](github-app.md) — which Stratum owner's projects may
+  act on GitHub through an app installation
 
 The complete, authoritative surface — request and response schemas included —
 is the [OpenAPI specification](../openapi.yml).

@@ -37,7 +37,13 @@ import {
   listRepoTags,
   resolveBranchRef,
 } from "../storage/git-ops";
-import { buildAuthConfig, resolveDefaultBranch } from "../storage/git-providers";
+import {
+  buildAuthConfig,
+  parseRepoUrl,
+  resolveAuthConfig,
+  resolveDefaultBranch,
+} from "../storage/git-providers";
+import { projectPrincipal } from "../storage/github-installations";
 import { finalizeImportSnapshot } from "../storage/import-finalize";
 import {
   STALLED_THRESHOLD_MS,
@@ -806,7 +812,9 @@ app.post(
           typeof body.branch === "string" && body.branch.trim().length > 0
             ? body.branch.trim()
             : undefined;
-        const branch = requestedBranch ?? (await resolveDefaultBranch(body.url, c.env, logger));
+        const branch =
+          requestedBranch ??
+          (await resolveDefaultBranch(body.url, c.env, logger, { type: "user", id: userId }));
 
         // Validate visibility if provided
         let visibility: "private" | "public" = "private";
@@ -2469,14 +2477,12 @@ app.post("/:namespace/:slug/sync", async (c) => {
   // Set sync in progress
   await setSyncInProgress(c.env.STATE, namespace, slug, logger);
 
-  // Build auth config from environment
-  const auth = buildAuthConfig(provider, {
-    GITHUB_TOKEN: c.env.GITHUB_TOKEN,
-    GITLAB_TOKEN: c.env.GITLAB_TOKEN,
-    BITBUCKET_TOKEN: c.env.BITBUCKET_TOKEN,
-    BITBUCKET_USERNAME: c.env.BITBUCKET_USERNAME,
-    BITBUCKET_APP_PASSWORD: c.env.BITBUCKET_APP_PASSWORD,
-  });
+  // GitHub resolves per repo (App installation token, else GITHUB_TOKEN), so
+  // it needs the owner/repo; an unparseable URL keeps the static credential.
+  const parsedSource = parseRepoUrl(sourceUrl);
+  const auth = parsedSource
+    ? await resolveAuthConfig(provider, parsedSource.info, projectPrincipal(project), c.env, logger)
+    : buildAuthConfig(provider, c.env);
 
   // Check for updates first
   const checkResult = await checkForSyncUpdates(c.env.STATE, project, auth, logger);
@@ -2763,17 +2769,18 @@ export async function processSyncJob(
     let latestCommit = project.lastSyncedCommit;
 
     if (provider) {
-      const auth = buildAuthConfig(provider, {
-        GITHUB_TOKEN: env.GITHUB_TOKEN,
-        GITLAB_TOKEN: env.GITLAB_TOKEN,
-        BITBUCKET_TOKEN: env.BITBUCKET_TOKEN,
-      });
-
       try {
         const { getProvider } = await import("../storage/git-providers");
         const providerClient = getProvider(provider);
         const parsed = (await import("../storage/git-providers")).parseRepoUrl(sourceUrl);
         if (parsed) {
+          const auth = await resolveAuthConfig(
+            provider,
+            parsed.info,
+            projectPrincipal(project),
+            env,
+            logger,
+          );
           const commitResult = await providerClient.getLatestCommit(
             parsed.info.owner,
             parsed.info.repo,

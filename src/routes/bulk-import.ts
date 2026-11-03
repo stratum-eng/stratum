@@ -193,7 +193,9 @@ export async function processRepoImport(
     // Resolve the branch to import: an explicitly requested branch wins;
     // otherwise ask the provider for the repository's real default branch
     // (fail-open to "main" — see resolveDefaultBranch).
-    const branch = request.branch || (await resolveDefaultBranch(url, env, logger));
+    const branch =
+      request.branch ||
+      (await resolveDefaultBranch(url, env, logger, { type: "user", id: ownerId }));
 
     // Generate IDs
     const projectId = generateProjectId();

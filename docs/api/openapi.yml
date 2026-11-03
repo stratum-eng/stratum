@@ -109,7 +109,7 @@ tags:
   - name: bulk-import
     description: Importing many repositories at once
   - name: github
-    description: Inbound GitHub webhook receiver
+    description: Inbound GitHub webhook receiver, and linking GitHub App installations to Stratum owners
   - name: mcp
     description: The remote MCP server and its OAuth 2.1 authorization server
   - name: admin
@@ -4634,6 +4634,130 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /api/github/installations:
+    get:
+      operationId: listGitHubAppInstallations
+      tags: [github]
+      summary: List GitHub App installations the caller can manage
+      description: |
+        Installations the caller controls on GitHub (they installed the app, or
+        it is on their personal GitHub account), plus installations linked to
+        them or to an org they administer. Users only; unreachable with a
+        project- or org-bound token.
+      responses:
+        "200":
+          description: Installations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  githubLinked:
+                    type: boolean
+                    description: Whether the caller's Stratum account has a GitHub account linked
+                  installations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        installationId: { type: integer }
+                        account:
+                          type: object
+                          properties:
+                            login: { type: string }
+                            type: { type: string, description: "`User` or `Organization`" }
+                        suspended: { type: boolean }
+                        linkedTo: { type: string, nullable: true }
+                        canLink: { type: boolean }
+                        canUnlink: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/github/installations/{installationId}/link:
+    post:
+      operationId: linkGitHubAppInstallation
+      tags: [github]
+      summary: Link a GitHub App installation to a Stratum owner
+      description: |
+        Lets projects owned by the target use the installation's token for
+        outbound GitHub calls on its repositories. Only the GitHub user who
+        installed the app (or, for a personal-account installation, that
+        account) may link it, proven by the caller's GitHub-verified identity;
+        anyone else gets 404. The target is the caller's personal account, or
+        an org they administer. Accepts JSON or a form post (which redirects
+        back to `/github/app/setup`).
+      parameters:
+        - name: installationId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                org:
+                  type: string
+                  description: Org slug; omit or empty for the caller's personal account
+      responses:
+        "200":
+          description: Linked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  installationId: { type: integer }
+                  owner:
+                    type: object
+                    properties:
+                      type: { type: string, enum: [user, org] }
+                      id: { type: string }
+        "303":
+          description: Form submission; redirects to the setup page
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/github/installations/{installationId}/unlink:
+    post:
+      operationId: unlinkGitHubAppInstallation
+      tags: [github]
+      summary: Unlink a GitHub App installation
+      description: |
+        Allowed for whoever could link it, the linked user, or an admin of the
+        linked org. Its repositories fall back to the instance token.
+      parameters:
+        - name: installationId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Unlinked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  installationId: { type: integer }
+        "303":
+          description: Form submission; redirects to the setup page
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/admin/metrics:
     get:

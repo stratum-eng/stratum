@@ -90,9 +90,15 @@ default** — from branch `stratum/{changeId}` and marks the change `promoted`.
 ```
 
 The PR base is **always the project's own recorded default branch** and is not
-accepted from the request body: this endpoint acts with the instance-wide GitHub
-token, so honouring a caller-supplied base would let any caller aim that shared
-credential at a branch of its choosing.
+accepted from the request body: this endpoint acts with an instance GitHub
+credential, so honouring a caller-supplied base would let any caller aim it at
+a branch of its choosing.
+
+The credential is the GitHub App's installation token when the app is installed
+on the repository **and** that installation is linked to the project's owner
+(see [GitHub App installations](github-app.md)), or the operator has
+allowlisted the repository's GitHub owner. Otherwise it is the instance-wide
+`GITHUB_TOKEN`.
 
 If a re-evaluation begins while the branch is being pushed, the response is
 `409 EVALUATION_PENDING`: the PR exists and its link is recorded (`github` in

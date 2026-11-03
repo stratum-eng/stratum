@@ -32,6 +32,7 @@ import { deletionJobsRouter } from "./routes/deletion-jobs";
 import { deploymentsRouter, projectDeploymentsRouter } from "./routes/deployments";
 import { emailAuthRouter } from "./routes/email-auth";
 import { gitHttpRouter } from "./routes/git-http";
+import { githubAppRouter } from "./routes/github-app";
 import { healthRouter } from "./routes/health";
 import { issuesRouter } from "./routes/issues";
 import { loginRouter } from "./routes/login";
@@ -280,6 +281,7 @@ app.route("/api/bulk-import", bulkImportRouter);
 // closed unless authMiddleware resolved a SCIM connection.
 app.route("/scim/v2", scimRouter);
 app.route("/api/webhooks/github", githubWebhookRouter);
+app.route("/", githubAppRouter);
 
 // The remote MCP endpoint and the OAuth 2.1 authorization server that fronts it
 // (#349). Both own absolute paths (/mcp, /oauth/*, /.well-known/oauth-*), so

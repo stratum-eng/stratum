@@ -302,6 +302,35 @@ npx wrangler secret put GITHUB_CLIENT_SECRET
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 
+# GitHub App — outbound GitHub calls (sync, PR promotion push + create, eval
+# verdict comments/statuses). A GitHub App this time, separate from the OAuth
+# App above. Permissions: Contents RW, Pull requests RW, Commit statuses RW,
+# Metadata R; webhook events push, pull_request, pull_request_review (the
+# installation events arrive without subscribing). For a repo the app is
+# installed on, Stratum mints a 1h installation token and caches it in KV;
+# anywhere else it falls back to GITHUB_TOKEN. The private key MUST be PKCS#8
+# (`-----BEGIN PRIVATE KEY-----`): WebCrypto can't import the PKCS#1 key GitHub
+# downloads, so convert it first:
+#   openssl pkcs8 -topk8 -nocrypt -in app.private-key.pem -out app.pkcs8.pem
+#
+# Set the app's "Setup URL" to https://<host>/github/app/setup (tick "Redirect
+# on update"). An installation token is only used for projects whose owner the
+# installation is LINKED to there — otherwise any user could import another
+# org's repo and act on it with that org's installation. Only the GitHub user
+# who installed the app can link it, proven by the installation.created
+# webhook's sender, so an installation made before this webhook handling
+# existed has no recorded installer: reinstall the app, or allowlist it below.
+npx wrangler secret put GITHUB_APP_ID
+npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app.pkcs8.pem
+# Optional, comma-separated GitHub owners whose installation ANY project may
+# use without a link — the PAT's reach, so only accounts the operator controls.
+# A plain var, not a secret: add it under [vars] / --var, e.g. "stratum-eng".
+#   GITHUB_APP_ALLOWED_OWNERS = "stratum-eng"
+npx wrangler secret put GITHUB_WEBHOOK_SECRET
+# Optional fallback PAT for repos the app isn't installed on (or every repo,
+# when no app is configured).
+npx wrangler secret put GITHUB_TOKEN
+
 # Email
 npx wrangler secret put EMAIL_FROM_ADDRESS
 
