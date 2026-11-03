@@ -184,3 +184,45 @@ describe("planRestore", () => {
     }
   });
 });
+
+// #251: `tipSha` is optional on a tag-only snapshot, so "has a tipSha" is no
+// longer the whole validity check — "has a tipSha or at least one tag" is.
+describe("planRestore with tag-only manifests (#251)", () => {
+  /** Back up alpha normally and beta through `shape`, then plan the run. */
+  async function planWithBeta(shape: (s: RepoSnapshot) => RepoSnapshot) {
+    const env = makeEnv();
+    await setProject(env.STATE, project("alpha"), logger);
+    await setProject(env.STATE, project("beta"), logger);
+    await runBackup(env, logger, RUN_TS, {
+      snapshotRepo: async (_env, p) =>
+        ok({
+          status: "ok",
+          snapshot: p.id === "beta" ? shape(snapshot(p.id)) : snapshot(p.id),
+        }),
+    });
+    const result = await planRestore(env, RUN_TS, logger);
+    if (!result.success) throw new Error("plan failed");
+    return result.data;
+  }
+
+  function withoutTip(s: RepoSnapshot, tags: RepoSnapshot["manifest"]["tags"]): RepoSnapshot {
+    const { tipSha: _dropped, ...manifest } = s.manifest;
+    return { pack: s.pack, manifest: { ...manifest, tags } };
+  }
+
+  it("accepts a manifest with no tipSha when it carries tags", async () => {
+    const plan = await planWithBeta((s) => withoutTip(s, [{ name: "v1", oid: "sha-v1" }]));
+    expect(plan.restorable).toBe(true);
+    const beta = plan.repos.find((r) => r.projectId === "beta");
+    expect(beta).toMatchObject({ ok: true, hasPack: true });
+    expect(beta?.tipSha).toBeUndefined();
+  });
+
+  it("rejects a manifest with neither a tipSha nor any tag", async () => {
+    const plan = await planWithBeta((s) => withoutTip(s, []));
+    expect(plan.restorable).toBe(false);
+    const beta = plan.repos.find((r) => r.projectId === "beta");
+    expect(beta).toMatchObject({ ok: false });
+    expect(beta?.error).toContain("missing tipSha");
+  });
+});

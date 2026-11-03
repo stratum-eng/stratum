@@ -4,6 +4,7 @@ import type { Env } from "../types";
 import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+import type { RepoManifest } from "./repo-snapshot";
 import type { BackupRunSummary } from "./run-backup";
 
 export interface D1LegPlan {
@@ -24,6 +25,7 @@ export interface KvLegPlan {
 
 export interface RepoLegPlan {
   projectId: string;
+  /** Absent on a failed leg, and on a tag-only snapshot, which has no tip (#251). */
   tipSha?: string;
   hasPack: boolean;
   ok: boolean;
@@ -167,6 +169,23 @@ async function planKv(
   };
 }
 
+/**
+ * Why a repo manifest cannot be restored, or null when its shape is usable.
+ *
+ * `tipSha` is optional since #251: a tag-only snapshot has none. A manifest
+ * with no tip is restorable only if it carries at least one tag, mirroring the
+ * check `reconstructRepo` makes. A pre-#251 manifest always has a tip and is
+ * judged exactly as before.
+ */
+function repoManifestShapeError(data: Pick<RepoManifest, "tipSha" | "tags"> | null): string | null {
+  if (data === null) return "repo manifest missing tipSha";
+  if (data.tipSha !== undefined) {
+    return typeof data.tipSha === "string" ? null : "repo manifest tipSha is not a string";
+  }
+  if (Array.isArray(data.tags) && data.tags.length > 0) return null;
+  return "repo manifest missing tipSha (and carries no tags)";
+}
+
 async function planRepos(
   bucket: R2Bucket,
   runTs: string,
@@ -179,13 +198,24 @@ async function planRepos(
   const legs: RepoLegPlan[] = [];
   for (const manifestKey of manifestKeys) {
     const projectId = manifestKey.slice(prefix.length, -REPO_MANIFEST_SUFFIX.length);
-    const manifest = await decodeJson<{ tipSha?: string }>(bucket, manifestKey, env, logger);
+    const manifest = await decodeJson<Pick<RepoManifest, "tipSha" | "tags">>(
+      bucket,
+      manifestKey,
+      env,
+      logger,
+    );
     if (!manifest.success) {
       legs.push({ projectId, hasPack: false, ok: false, error: manifest.error.message });
       continue;
     }
-    if (manifest.data === null || typeof manifest.data.tipSha !== "string") {
-      legs.push({ projectId, hasPack: false, ok: false, error: "repo manifest missing tipSha" });
+    const manifestError = repoManifestShapeError(manifest.data);
+    if (manifest.data === null || manifestError !== null) {
+      legs.push({
+        projectId,
+        hasPack: false,
+        ok: false,
+        error: manifestError ?? "repo manifest missing tipSha",
+      });
       continue;
     }
     // Fetch (and thus decrypt) the pack to prove it is present and decodable.

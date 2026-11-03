@@ -16,7 +16,7 @@ Each run writes one timestamped prefix `<runTs>/` (an ISO-8601 instant) to the
 | `<runTs>/kv/projects.json` | All project identity records from KV. |
 | `<runTs>/kv/workspaces.json` | All workspace identity records from KV. |
 | `<runTs>/repos/<projectId>.pack` | Git pack of the **full reachable object set** for the repo. |
-| `<runTs>/repos/<projectId>.manifest.json` | Tip sha, object/byte counts, and the full `ProjectEntry`. |
+| `<runTs>/repos/<projectId>.manifest.json` | Tip sha (absent for a tag-only repo — see [tag-only snapshots](#repos--the-leg-ci-cannot-prove)), tag and branch refs, object/byte counts, and the full `ProjectEntry`. |
 | `<runTs>/_manifest.json` | Run summary. **Written last** — its presence marks the run complete. |
 
 A run whose `_manifest.json` is missing crashed partway; treat it as unusable and
@@ -121,7 +121,8 @@ the run manifest, returning a `plan`:
   dump); `ok` is false on a missing/undecodable dump or a **row-count mismatch**
   (silent truncation).
 - `kv` — project/workspace counts, cross-checked against the manifest.
-- `repos[]` — per repo, that the manifest parses (has a `tipSha`) and the `.pack`
+- `repos[]` — per repo, that the manifest parses (has a `tipSha`, or — for a
+  tag-only snapshot — at least one tag) and the `.pack`
   is present and decodes.
 - `restorable` — true only when the run is complete and every leg is `ok`.
 
@@ -167,6 +168,22 @@ objects directly. `restoreProjectRepo` (in `src/backup/repo-restore.ts`):
    the original tip sha.
 4. Pushes `main` to Artifacts.
 
+**Tag-only snapshots (no `tipSha`).** A repo manifest's `tipSha` is optional: a
+repository whose only refs are tags (an unborn `HEAD`) snapshots its tags and every
+tag-reachable object, and its manifest omits `tipSha`. Restoring one writes and
+pushes **only the tag refs** — no default branch is fabricated, so the restored
+repo has an unborn default branch exactly as the source did, and the UI and sync
+treat it like a repo with no commits until something is pushed to it. With
+`force` over an existing repo, that repo's default branch is left as it was rather
+than deleted. A manifest with neither a `tipSha` nor any tag is invalid: the
+restore plan flags it and `reconstructRepo` refuses it. Manifests written before
+this change always carry `tipSha` and restore unchanged.
+
+In practice the backup does not produce these today: the snapshot clone targets
+the default branch, so a remote with no default branch fails at the clone and
+shows up as an error for that repo in the run summary, not as a skip. Every path
+that creates repository content creates the default branch first.
+
 `reconstructRepo` is fully covered by CI (`tests/repo-restore.test.ts`): a
 snapshot round-trips to a repo whose tip sha, full commit chain, and tree all
 match, and a truncated pack is rejected. **The Artifacts push in step 4 cannot run
@@ -185,7 +202,7 @@ Artifacts client, and before relying on backups in production.
 
 - **Missing `_manifest.json`** — run crashed; use the previous complete run.
 - **`too large` / `empty` skips in the summary** — expected for over-cap or
-  commit-less repos; not failures. Raise `MAX_BACKUP_BYTES` if a real repo is
+  commit-less repos with no resolvable tags; not failures. Raise `MAX_BACKUP_BYTES` if a real repo is
   being skipped.
 - **Decrypt failure on restore** — `BACKUP_ENCRYPTION_SECRET` differs from the one
   used at backup time. Restore requires the original secret.
