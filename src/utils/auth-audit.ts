@@ -36,6 +36,8 @@ export type AuthFailureMethod =
   | "legacy_token"
   | "agent_token"
   | "oauth_token"
+  // A short-lived workspace git credential (#408), presented over git.
+  | "workspace_git_token"
   | "magic_link"
   | "sso"
   // The second factor (#256): a wrong passkey or recovery code after the

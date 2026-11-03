@@ -196,7 +196,7 @@ describe("the published tool surface", () => {
 
   it("renders a listing whose entries are all well-formed", () => {
     const listing = toolListing(tools);
-    expect(listing).toHaveLength(37);
+    expect(listing).toHaveLength(38);
     for (const entry of listing) {
       expect(typeof entry.name).toBe("string");
       expect(typeof entry.description).toBe("string");

@@ -12,10 +12,20 @@ import {
 } from "../storage/git-ops";
 import { deleteWorkspace, getProjectByPath, getWorkspace } from "../storage/state";
 import { getUser, getUserByToken } from "../storage/users";
+import {
+  WORKSPACE_GIT_TOKEN_PREFIX,
+  resolveWorkspaceGitCredential,
+} from "../storage/workspace-git-credentials";
 import type { ApiTokenScope, CredentialBinding, Env, ProjectEntry, WorkspaceEntry } from "../types";
 import { projectDefaultBranch } from "../types";
 import { type AuthFailure, recordAuthFailure } from "../utils/auth-audit";
-import { UNBOUND, canReadProject, canWriteProject, canWriteWorkspace } from "../utils/authz";
+import {
+  UNBOUND,
+  bindingCoversProject,
+  canReadProject,
+  canWriteProject,
+  canWriteWorkspace,
+} from "../utils/authz";
 import { RejectedCredentialError } from "../utils/errors";
 import { getWaitUntil } from "../utils/execution-ctx";
 import {
@@ -140,7 +150,11 @@ function parseBasicToken(header: string | undefined): string | null {
   const username = sep >= 0 ? decoded.slice(0, sep) : decoded;
   const password = sep >= 0 ? decoded.slice(sep + 1) : "";
   for (const candidate of [password, username]) {
-    if (candidate.startsWith("stratum_user_") || candidate.startsWith("stratum_agent_")) {
+    if (
+      candidate.startsWith("stratum_user_") ||
+      candidate.startsWith("stratum_agent_") ||
+      candidate.startsWith(`${WORKSPACE_GIT_TOKEN_PREFIX}_`)
+    ) {
       return candidate;
     }
   }
@@ -157,6 +171,21 @@ interface Identity {
   /** Which projects the credential may reach (#323). Required, so every branch
    * of `authenticate` has to say — `UNBOUND` for agents and the legacy key. */
   binding: CredentialBinding;
+  /**
+   * Set ONLY for a workspace git credential (#408): the one workspace it may
+   * reach. `authorizeProject` refuses any identity carrying it, and
+   * `authorizeWorkspace` refuses it on every workspace but this one, so the
+   * restriction cannot be dropped by a route that forgets to look.
+   */
+  workspaceOnly?: WorkspaceRestriction;
+}
+
+interface WorkspaceRestriction {
+  projectId: string;
+  workspaceName: string;
+  workspaceCreatedAt: string;
+  /** The minting credential's binding, which must also cover the project. */
+  parentBinding: CredentialBinding;
 }
 
 /** An anonymous caller has no credential, so nothing narrows it. */
@@ -211,6 +240,47 @@ async function authenticate(
 ): Promise<Identity | null> {
   const token = parseBasicToken(c.req.header("Authorization"));
   if (!token) return null;
+
+  if (token.startsWith(`${WORKSPACE_GIT_TOKEN_PREFIX}_`)) {
+    const resolved = await resolveWorkspaceGitCredential(c.env.DB, token, logger);
+    if (!resolved.success) {
+      if (resolved.error instanceof RejectedCredentialError) {
+        await auditGitAuthFailure(c.env.DB, logger, {
+          method: "workspace_git_token",
+          reason: resolved.error.reason,
+          actorType: "user",
+          actorId: resolved.error.userId,
+          subject: resolved.error.credentialId,
+        });
+      }
+      return null;
+    }
+    const credential = resolved.data;
+    c.set?.("telemetryOptOut", credential.user.telemetryOptOut === true);
+    const restriction: WorkspaceRestriction = {
+      projectId: credential.projectId,
+      workspaceName: credential.workspaceName,
+      workspaceCreatedAt: credential.workspaceCreatedAt,
+      parentBinding: credential.parentBinding,
+    };
+    const binding: CredentialBinding = { kind: "project", projectId: credential.projectId };
+    // Minted by an agent: act as that agent again, so workspace ownership and
+    // provenance read exactly as they would for the agent's own token.
+    if (credential.agentId !== undefined) {
+      return {
+        agentId: credential.agentId,
+        agentOwnerId: credential.user.id,
+        binding,
+        workspaceOnly: restriction,
+      };
+    }
+    return {
+      userId: credential.user.id,
+      tokenScope: "read_write",
+      binding,
+      workspaceOnly: restriction,
+    };
+  }
 
   if (token.startsWith("stratum_user_")) {
     // Scoped tokens first, then the legacy credential — the same order and the
@@ -420,6 +490,13 @@ async function authorizeProject(
   const identity = await authenticate(c, logger);
   const isAnonymous = identity === null;
 
+  // A workspace git credential (#408) reaches its workspace URL and nothing
+  // else — not even a public project's clone.
+  if (identity?.workspaceOnly !== undefined) {
+    logger.warn("Refusing workspace git credential on a project URL", { namespace, slug });
+    return gitNotFound();
+  }
+
   const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
   if (!projectResult.success) {
     // Only a genuine miss enters the truth table. A KV outage or corrupt entry
@@ -502,6 +579,16 @@ async function authorizeWorkspace(
   }
   const project = projectResult.data;
 
+  const restriction = identity?.workspaceOnly;
+  if (
+    restriction !== undefined &&
+    (project.id !== restriction.projectId ||
+      !bindingCoversProject(restriction.parentBinding, project))
+  ) {
+    logger.warn("Refusing workspace git credential outside its project", { namespace, slug });
+    return gitNotFound();
+  }
+
   const allowed =
     scope === "write"
       ? await canWriteProject(
@@ -532,6 +619,20 @@ async function authorizeWorkspace(
     return isAnonymous ? authChallenge() : gitNotFound();
   }
   const workspace = workspaceResult.data;
+
+  // Same name is not enough: a workspace deleted and re-created under it is a
+  // different workspace, and the credential must not follow the name.
+  if (
+    restriction !== undefined &&
+    (workspace.name !== restriction.workspaceName ||
+      workspace.createdAt !== restriction.workspaceCreatedAt)
+  ) {
+    logger.warn("Refusing workspace git credential on another workspace", {
+      projectId: project.id,
+      workspace: workspaceName,
+    });
+    return gitNotFound();
+  }
 
   // Project-level write is necessary but not sufficient: a workspace fork is
   // owned by its creator, so a project-writer who did not create it must be

@@ -284,6 +284,7 @@ not all scoped, so treat every one of them like a password:
 | Agent token (`stratum_agent_…`) | The owning user's full access, no scope | Revoke the agent |
 | MCP OAuth grant (`stratum_mcp_…`) | `mcp:read` or `mcp:write`, as the user or as the agent chosen at consent; never the admin API | Disconnect the app in settings, or `POST /oauth/revoke` |
 | SCIM token (`stratum_scim_…`) | Only `/scim/v2` for one org's SSO connection | An org admin rotates it |
+| Workspace remote credential (`stratum_git_…`) | `git fetch` / `git push` on one workspace; nothing on the API. At most an hour | Revoke the credential that minted it, which ends it at once; otherwise it expires |
 | git over HTTPS | Whatever the token it presents can reach | Revoke that token |
 
 See [Passkeys and two-factor sign-in](../user-guide/passkeys.md).

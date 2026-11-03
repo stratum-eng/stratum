@@ -135,9 +135,9 @@ environment (`wrangler.toml:84-85`), so it works out of the box.
 - Issue tracker with per-project numbering and auto-close when a linked change
   merges. Bidirectional GitHub sync (inbound webhooks, outbound PR promotion).
 - Remote **MCP server** at `/mcp` (a protected resource of the OAuth server
-  above), advertising `tools` only — 37 tools spanning whoami, usage, projects
+  above), advertising `tools` only — 38 tools spanning whoami, usage, projects
   (create/import/import status/sync/branches), files, activity, workspaces,
-  commits, changes (create/list/get/review/merge/reject/re-evaluate/comment/
+  workspace git remotes, commits, changes (create/list/get/review/merge/reject/re-evaluate/comment/
   promote to GitHub), issues, and organizations, members and teams
   (`buildTools` in `src/mcp/tools.ts`). The tools call the same route
   handlers as the REST API, so scope and agent-identity rules apply unchanged.

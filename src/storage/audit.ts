@@ -19,6 +19,10 @@ export type AuditAction =
   | "token.created"
   | "token.revoked"
   | "token.legacy_disabled"
+  // A short-lived git credential for one workspace (#408). Records the
+  // workspace, the expiry and which kind of credential minted it; never the
+  // secret.
+  | "workspace_remote.credential_minted"
   | "agent.created"
   | "agent.revoked"
   | "agent_signup.requested"

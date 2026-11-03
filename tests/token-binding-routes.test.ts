@@ -844,6 +844,9 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   "POST /api/projects/conflicts/:id/resolve",
   "POST /api/workspaces/:name/commit",
   "POST /api/workspaces/:namespace/:slug/workspaces",
+  // #408: authorizes through canWriteProject and canWriteWorkspace with the
+  // request's binding, and the credential it mints is bound to that project.
+  "POST /api/workspaces/:namespace/:slug/workspaces/:name/remote-credential",
   "PUT /api/projects/:namespace/:slug/secrets/:name",
 ];
 

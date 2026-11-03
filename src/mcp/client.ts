@@ -276,6 +276,24 @@ export class StratumClient {
     );
   }
 
+  /**
+   * Mint a short-lived git credential for one workspace (#408). The response
+   * carries the secret; nothing on this path logs a successful result.
+   */
+  async workspaceRemote(ref: ProjectRef, workspace: string, expiresInMinutes?: number) {
+    return this.request<{
+      remote: string;
+      username: string;
+      token: string;
+      expiresAt: string;
+      credentialId: string;
+    }>(
+      "POST",
+      `/api/workspaces/${encodeURIComponent(ref.namespace)}/${encodeURIComponent(ref.slug)}/workspaces/${encodeURIComponent(workspace)}/remote-credential`,
+      expiresInMinutes !== undefined ? { expiresInMinutes } : {},
+    );
+  }
+
   async commitToWorkspace(
     workspace: string,
     projectId: string,

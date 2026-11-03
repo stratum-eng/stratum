@@ -208,7 +208,9 @@ export async function createApiToken(
     // `datetime('now')`, and `' '` sorts below `'T'`, so a SQL comparison reads
     // expired rows as live. `resolveApiToken` dodges the same trap the same way.
     const live = await db
-      .prepare("SELECT expires_at FROM api_tokens WHERE user_id = ? AND revoked_at IS NULL")
+      .prepare(
+        "SELECT expires_at FROM api_tokens WHERE user_id = ? AND revoked_at IS NULL AND purpose = 'api'",
+      )
       .bind(userId)
       .all<{ expires_at: string | null }>();
     const activeCount = (live.results ?? []).filter((row) => !isExpired(row.expires_at)).length;
@@ -270,7 +272,13 @@ export async function createApiToken(
   }
 }
 
-/** Lists a user's tokens, newest first. Never returns a hash. */
+/**
+ * Lists a user's tokens, newest first. Never returns a hash.
+ *
+ * Workspace git credentials (#408, `purpose = 'workspace_git'`) are left out:
+ * they expire within the hour, die with the credential that minted them, and
+ * would otherwise read here as project-bound API tokens, which they are not.
+ */
 export async function listApiTokens(
   db: D1Database,
   logger: Logger,
@@ -281,7 +289,7 @@ export async function listApiTokens(
       .prepare(
         `SELECT id, user_id, name, token_prefix, scope, expires_at, last_used_at, created_at, revoked_at,
                 binding_kind, binding_id
-         FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`,
+         FROM api_tokens WHERE user_id = ? AND purpose = 'api' ORDER BY created_at DESC`,
       )
       .bind(userId)
       .all<ApiTokenRow>();
@@ -426,7 +434,7 @@ export async function resolveApiToken(
                 t.last_used_at AS token_last_used_at, t.revoked_at AS token_revoked_at,
                 t.binding_kind AS token_binding_kind, t.binding_id AS token_binding_id
            FROM api_tokens t JOIN users u ON u.id = t.user_id
-          WHERE t.token_hash = ?`,
+          WHERE t.token_hash = ? AND t.purpose = 'api'`,
       )
       .bind(tokenHash)
       .first<ResolvedTokenRow>();
