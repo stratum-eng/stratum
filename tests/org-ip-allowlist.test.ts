@@ -330,6 +330,38 @@ describe("org admin routes (/api/orgs/:slug/*)", () => {
     );
   });
 
+  // The one admin-route exception: a member can always leave, so an allowlist
+  // can't trap someone in an org they can no longer reach.
+  it("lets a member outside the range leave, but not remove anyone else", async () => {
+    await expectIpRefusal(
+      await call("/api/orgs/acme/members/usr_bob", {
+        as: "session",
+        ip: OUTSIDE,
+        method: "DELETE",
+      }),
+    );
+    const snapshot = raw
+      .prepare(
+        "SELECT * FROM org_members WHERE user_id = 'usr_alice' AND org_id = (SELECT id FROM orgs WHERE slug = 'acme')",
+      )
+      .get() as Record<string, unknown>;
+    try {
+      const res = await call("/api/orgs/acme/members/usr_alice", {
+        as: "session",
+        ip: OUTSIDE,
+        method: "DELETE",
+      });
+      expect(res.status).toBeLessThan(300);
+    } finally {
+      const cols = Object.keys(snapshot);
+      raw
+        .prepare(
+          `INSERT OR REPLACE INTO org_members (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
+        )
+        .run(...cols.map((k) => snapshot[k]));
+    }
+  });
+
   it("leaves the SSO sign-in flow open", async () => {
     const res = await call("/auth/sso/acme/start", { as: "anonymous", ip: OUTSIDE });
     expect(res.status).not.toBe(403);
