@@ -402,6 +402,22 @@ app.post("/changes/:id/reviews", async (c) => {
   }
   const verdict: ReviewVerdict = body.verdict;
 
+  // No approvals while a run is pending (#412). Nothing pins the revision the
+  // reviewer is looking at until the run records `evaluatedSha` — on a first
+  // run there is no pin at all — so an approval given now could be counted
+  // toward requiredApprovals for a later workspace tip the run evaluated and
+  // the reviewer never saw. Blocking verdicts and comments stay allowed: they
+  // can only stop a merge.
+  if (verdict === "approve" && change.status === "evaluating") {
+    return c.json(
+      {
+        error: "Evaluation is still pending; approve once it has finished",
+        code: "EVALUATION_PENDING",
+      },
+      409,
+    );
+  }
+
   // An approval is the human half of the merge gate (`merge.requiredApprovals`),
   // so it must be made by the human, not by software acting for them. Scoped
   // API tokens and OAuth grants (MCP clients, `stratum login`) are exactly the
@@ -471,11 +487,8 @@ app.post("/changes/:id/reviews", async (c) => {
   // A human verdict moves the change state machine — except a comment-only
   // review, which neither approves nor blocks.
   let newStatus: Change["status"] = change.status;
-  // While a run is pending the verdict is recorded but the status is the
-  // run's to set (#412): approving now would make the change mergeable before
-  // any gate had judged it. The approval still counts toward
-  // requiredApprovals once the run lands — unless the run's revision differs
-  // from what the reviewer saw, which dismisses it as on any re-evaluation.
+  // While a run is pending a request_changes verdict is recorded but the
+  // status is the run's to set (#412); approvals were refused above.
   if (verdict !== "comment" && change.status !== "evaluating") {
     newStatus = verdict === "approve" ? "approved" : "needs_changes";
     if (newStatus !== change.status) {

@@ -114,9 +114,11 @@ than running a minutes-long evaluation inside the cron's shared budget.
 - **New infrastructure.** `stratum-evaluations` (+ `-dlq`) per environment,
   suffixed on staging and per-PR on previews, provisioned by the same CI steps
   that read queue names from `wrangler.toml`.
-- **Reviews during evaluation** are recorded but do not move the status; the
-  run's verdict sets it. An approval given while the first run is pending
-  survives unless the base moved under it.
+- **Reviews during evaluation.** `approve` is refused with `409
+  EVALUATION_PENDING`: until the run pins `evaluated_sha` nothing ties an
+  approval to the revision the reviewer saw, so it could count for a tip the
+  run evaluated later. `request_changes` and comments are recorded (they can
+  only block) but do not move the status; the run's verdict sets it.
 
 ## Alternatives considered
 
