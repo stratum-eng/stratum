@@ -17,9 +17,57 @@ export interface ArtifactsCreateResult {
   token: string;
 }
 
+/** An immediate child of a Git tree, as returned by {@link ArtifactsRepo.readTree}. */
+export interface ArtifactsTreeEntry {
+  /** Name relative to the tree being read. */
+  name: string;
+  /** Canonical Git mode, such as `100644` for a file or `40000` for a tree. */
+  mode: string;
+  /** Lowercase, 40-character SHA-1 object ID. */
+  hash: string;
+  /** `gitlink` is a submodule reference; `exec` an executable file. */
+  type: "tree" | "blob" | "symlink" | "gitlink" | "exec";
+}
+
+/** Decoded commit, as returned by {@link ArtifactsRepo.log} and `readCommit`. */
+export interface ArtifactsCommitMetadata {
+  hash: string;
+  treeHash: string;
+  /** Commit message with one trailing newline removed. */
+  message: string;
+  author: { name: string; email: string };
+  committer: { name: string; email: string };
+  parents: string[];
+  /** Unix seconds. */
+  authoredAt: number;
+  /** Unix seconds. */
+  committedAt: number;
+}
+
+/**
+ * Repository capability returned by `ARTIFACTS.get()`. An RPC stub: callers must
+ * dispose it when done (see `withArtifactsRepo`), or the runtime warns that it
+ * was garbage-collected undisposed.
+ *
+ * The read methods (`log`, `readTree`, `readBlob`, `readCommit`, `readFile`)
+ * arrived with the Artifacts open beta (2026-10-01) and are hand-declared here
+ * from `@cloudflare/workers-types` 5.x, which this repo does not yet depend on.
+ */
 export interface ArtifactsRepo {
   name: string;
   remote: string;
+  /** Current repository metadata (a fresh lookup on each call). */
+  info(): Promise<{ name: string; remote: string; defaultBranch: string }>;
+  /** Commits along the first-parent chain, newest first; `[]` if `ref` does not resolve. */
+  log(opts?: { ref?: string; limit?: number; offset?: number }): Promise<ArtifactsCommitMetadata[]>;
+  /** Immediate children of a tree, or `null` if the object is missing. */
+  readTree(hash: string): Promise<ArtifactsTreeEntry[] | null>;
+  /** Raw bytes of a blob, or `null` if missing or not a blob. */
+  readBlob(hash: string): Promise<Blob | null>;
+  /** A decoded commit, or `null` if missing. */
+  readCommit(hash: string): Promise<ArtifactsCommitMetadata | null>;
+  /** A file resolved by branch/tag/commit and path, or `null` if it does not resolve to a file. */
+  readFile(args: { ref: string; path: string }): Promise<Blob | null>;
   createToken(
     scope?: "read" | "write",
     ttl?: number,
