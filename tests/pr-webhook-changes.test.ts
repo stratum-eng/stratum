@@ -370,6 +370,22 @@ describe("handlePullRequestReview", () => {
     expect(applyExternalChangesRequested).toHaveBeenCalledWith(env.DB, logger, CHANGE.id);
   });
 
+  it("changes_requested that cannot be held surfaces as a failure, not a handled delivery", async () => {
+    const env = makeEnv();
+    vi.mocked(updateChangeStatus).mockResolvedValueOnce({
+      success: false,
+      error: new AppError("Evaluation pending", "EVALUATION_PENDING", 409),
+    });
+    vi.mocked(applyExternalChangesRequested).mockResolvedValueOnce({
+      success: false,
+      error: new AppError("D1 down", "DATABASE_ERROR", 500),
+    });
+
+    await expect(
+      handlePullRequestReview(env, makeReviewPayload("changes_requested"), logger),
+    ).rejects.toThrow("D1 down");
+  });
+
   it("changes_requested applied directly does not take the held path", async () => {
     const env = makeEnv();
     await handlePullRequestReview(env, makeReviewPayload("changes_requested"), logger);

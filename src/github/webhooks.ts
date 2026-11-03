@@ -361,7 +361,10 @@ export async function handlePullRequestReview(
     // A pending run owns the status. Flag the change instead, so the run's
     // verdict lands on needs_changes rather than dropping this signal.
     const held = await applyExternalChangesRequested(env.DB, logger, existing.id);
-    if (!held.success) return;
+    // Throw rather than return: the route records a thrown delivery with
+    // trackWebhookFailure, so a lost signal is visible to monitoring instead
+    // of acknowledged as handled.
+    if (!held.success) throw held.error;
     logger.info("GitHub changes-requested review held for the pending evaluation", {
       changeId: existing.id,
       status: held.data,
