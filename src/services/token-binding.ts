@@ -1,10 +1,3 @@
-/**
- * Turning a requested token binding into a stored one, and a stored one back
- * into something a person can read (#323).
- *
- * Shared by `POST /api/users/me/tokens` and the settings form so the two doors
- * to token creation cannot drift on what they accept or who may bind to what.
- */
 import type { ApiTokenSummary } from "../storage/api-tokens";
 import { findOrgSlugById, getOrgAccessLevel, getOrgBySlug } from "../storage/orgs";
 import { getProjectByPath, listProjects } from "../storage/state";
@@ -13,6 +6,13 @@ import { canReadProject } from "../utils/authz";
 import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+/**
+ * Turning a requested token binding into a stored one, and a stored one back
+ * into something a person can read (#323).
+ *
+ * Shared by `POST /api/users/me/tokens` and the settings form so the two doors
+ * to token creation cannot drift on what they accept or who may bind to what.
+ */
 
 /** What a caller asked to bind a new token to, before it is checked. */
 export type BindingRequest =
@@ -53,6 +53,14 @@ export function parseBindingRequest(
 export interface ResolvedBinding {
   binding: BoundCredentialBinding;
   label: string;
+  /**
+   * The org whose resources this binding reaches, if any: the bound org, or
+   * the org that owns the bound project. Policy checks at minting
+   * (`orgBlockingCredentialMint`) decide on this, never on visibility: a
+   * token bound to a PUBLIC org project still carries its owner's write
+   * access there.
+   */
+  reachesOrgId?: string;
 }
 
 /**
@@ -93,6 +101,9 @@ export async function resolveBindingRequest(
       return ok({
         binding: { kind: "project", projectId: project.id },
         label: `${project.namespace}/${project.slug}`,
+        ...(project.ownerType === "org" && project.ownerId
+          ? { reachesOrgId: project.ownerId }
+          : {}),
       });
     }
     case "org": {
@@ -107,7 +118,11 @@ export async function resolveBindingRequest(
       }
       const level = await getOrgAccessLevel(env.DB, logger, found.data.id, userId);
       if (level === "none") return err(orgNotFound(request.slug));
-      return ok({ binding: { kind: "org", orgId: found.data.id }, label: `@${found.data.slug}` });
+      return ok({
+        binding: { kind: "org", orgId: found.data.id },
+        label: `@${found.data.slug}`,
+        reachesOrgId: found.data.id,
+      });
     }
   }
 }

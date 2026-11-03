@@ -31,7 +31,13 @@ signed in through this org's own SSO. Otherwise those requests return
 projects, other orgs, or account settings. See
 [Passkeys and two-factor sign-in](../../user-guide/passkeys.md). Turning it on
 returns `409 ADMIN_SECOND_FACTOR_REQUIRED` until you have a passkey yourself.
-API tokens are not affected.
+API tokens are not checked against the policy when they are used. Instead the
+policy applies when a credential is created: a session that has not met it
+cannot mint an unbound API token, a token bound to this org or its projects,
+an agent token, a rotated legacy key, or an OAuth grant (MCP/CLI consent).
+Those requests return `403 SECOND_FACTOR_REQUIRED`. Tokens bound to other
+targets are unaffected. See
+[Creating credentials](../../user-guide/passkeys.md#creating-credentials).
 
 ## Members and teams
 

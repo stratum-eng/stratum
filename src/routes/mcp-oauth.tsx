@@ -1,6 +1,10 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { setHtmlSecurityHeaders } from "../middleware/security-headers";
+import {
+  credentialMintRefusalMessage,
+  orgBlockingCredentialMint,
+} from "../services/org-second-factor";
 import { recordAudit } from "../storage/audit";
 import {
   SCOPE_WRITE,
@@ -550,6 +554,17 @@ app.get("/oauth/authorize", async (c) => {
     return renderAuthorizeError(c, "Session problem", "Please sign in again.");
   }
 
+  // A grant is account-wide, so an unmet org second-factor policy (#256)
+  // refuses it. Say so before the consent screen rather than after "Allow".
+  const blockingOrg = orgBlockingCredentialMint(c);
+  if (blockingOrg) {
+    return renderAuthorizeError(
+      c,
+      "Second factor required",
+      credentialMintRefusalMessage(blockingOrg.slug, { bindable: false }),
+    );
+  }
+
   const clientResult = await getClient(c.env.DB, logger, params.clientId);
   if (!clientResult.success) {
     return renderAuthorizeError(c, "Unknown client", "This application is no longer registered.");
@@ -697,6 +712,27 @@ app.post("/oauth/authorize", async (c) => {
         redirectUri: params.redirectUri,
         error: "access_denied",
         description: "The user declined the request",
+        state: params.state,
+      },
+    );
+  }
+
+  // Re-checked on the POST: the GET's answer is not a trust boundary, and the
+  // session's factors can change between the two.
+  const blockingOrg = orgBlockingCredentialMint(c);
+  if (blockingOrg) {
+    logger.warn("Authorization refused - org second-factor policy unmet", {
+      clientId: params.clientId,
+      org: blockingOrg.slug,
+    });
+    return renderAuthorizeError(
+      c,
+      "Second factor required",
+      credentialMintRefusalMessage(blockingOrg.slug, { bindable: false }),
+      {
+        redirectUri: params.redirectUri,
+        error: "access_denied",
+        description: "An organization's second-factor policy is not met",
         state: params.state,
       },
     );

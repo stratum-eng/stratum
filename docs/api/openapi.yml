@@ -29,7 +29,11 @@ info:
     here. An org that requires a second factor answers requests for ITS OWN
     projects and `/api/orgs/{slug}/*` endpoints with `403 SECOND_FACTOR_REQUIRED`
     when the session has not passed one; nothing else is affected.
-    API tokens, agent tokens and OAuth grants are never asked for one.
+    API tokens, agent tokens and OAuth grants are never asked for one when
+    used. The policy applies when they are minted instead: a session that has
+    not met it gets `403 SECOND_FACTOR_REQUIRED` from token creation (unless the
+    token is bound to a target outside the policy org), agent creation,
+    legacy-key rotation and OAuth consent.
 
     Authentication: most endpoints accept a Stratum API token (user or agent)
     as a `Authorization: Bearer <token>` header. Browser requests may instead be
@@ -3741,7 +3745,14 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/SessionRequired"
+          description: >-
+            Token management needs a browser session (`SESSION_REQUIRED`), or
+            the session has not met the second-factor policy of an org the
+            token could reach (`SECOND_FACTOR_REQUIRED`): an unbound token, or
+            one bound to that org or its projects.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: >
             The requested `project` or `org` does not exist, or the caller
@@ -4144,7 +4155,9 @@ paths:
           description: >-
             A scoped API token or OAuth grant cannot create agents
             (`SESSION_REQUIRED`). A read-only one is refused earlier by the
-            scope check, with `TOKEN_SCOPE_INSUFFICIENT`.
+            scope check, with `TOKEN_SCOPE_INSUFFICIENT`. A session that has
+            not met an org's second-factor policy is refused with
+            `SECOND_FACTOR_REQUIRED`, because an agent can reach that org.
           content:
             application/json:
               schema:

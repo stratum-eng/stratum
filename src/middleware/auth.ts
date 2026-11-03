@@ -652,7 +652,8 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         // grants membership without the member's consent, so its policy may
         // bind only its OWN resources — enforced at org-resource access
         // (authz + org routes), never as a gate on the whole session. Tokens
-        // never reach this branch: the policy governs interactive sign-in.
+        // never reach this branch, so the policy must also hold when this
+        // session MINTS a credential: see `orgBlockingCredentialMint`.
         const unmetOrgs = sessionResult.data.unmetSecondFactorOrgs ?? [];
         if (unmetOrgs.length > 0) c.set("secondFactorUnmetOrgs", unmetOrgs);
 

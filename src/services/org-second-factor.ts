@@ -57,3 +57,81 @@ export function orgBlockedFor(
 export function unmetOrgBySlug(c: Context<{ Bindings: Env }>, slug: string): string | undefined {
   return c.get("secondFactorUnmetOrgs")?.find((o) => o.slug === slug)?.slug;
 }
+
+/** Where a member adds the passkey an org's policy asks for. */
+export const SECOND_FACTOR_ENROLL_PATH = "/settings/security";
+
+/**
+ * The org whose second-factor policy refuses minting this credential from the
+ * current request, or undefined when nothing does.
+ *
+ * The org-resource checks above run per request, against the session's own
+ * factors. A credential minted by that session is not a session: tokens,
+ * agents and OAuth grants carry no record of how their minter signed in, so
+ * once issued they reach the org's resources with no policy check at all. The
+ * policy therefore has to hold at the moment of minting. A session that has
+ * not met some org's policy may not mint a credential that could reach that
+ * org.
+ *
+ * This is the single decision point, and it decides on what the credential
+ * can reach:
+ * - `binding` null or omitted: the credential is unbound. Unbound API tokens,
+ *   agent tokens, OAuth grants and the legacy key reach every org the user
+ *   belongs to, so any unmet org refuses them.
+ * - A resolved binding: the credential reaches only `reachesOrgId` (the bound
+ *   org, or the org that owns the bound project), or no org at all for a
+ *   personal project. It is refused exactly when that org is unmet, whatever
+ *   the project's visibility.
+ *
+ * This keeps the policy scoped to what the org grants. A member added to a
+ * policy org without their consent can still mint a token bound to their own
+ * projects, add a passkey, or leave the org. All other access is untouched.
+ *
+ * Only sessions carry an unmet set; any other caller gets undefined here.
+ * Scoped tokens and OAuth grants cannot mint at all (`cannotMintLegacyCredential`).
+ *
+ * @param c - Request context
+ * @param binding - The resolved binding, or null/omitted for an unbound credential
+ * @returns The blocking org, or undefined
+ */
+export function orgBlockingCredentialMint(
+  c: Context<{ Bindings: Env }>,
+  binding: { reachesOrgId?: string } | null = null,
+): { id: string; slug: string } | undefined {
+  const unmet = c.get("secondFactorUnmetOrgs");
+  if (!unmet || unmet.length === 0) return undefined;
+  if (binding === null) return unmet[0];
+  if (binding.reachesOrgId === undefined) return undefined;
+  return unmet.find((org) => org.id === binding.reachesOrgId);
+}
+
+/**
+ * Human-readable refusal for {@link orgBlockingCredentialMint}, naming every
+ * way out. `bindable` adds the "limit it to a project" option where the
+ * credential supports bindings (API tokens).
+ */
+export function credentialMintRefusalMessage(slug: string, opts: { bindable: boolean }): string {
+  const bind = opts.bindable ? " limit the token to a project or organization outside it, or" : "";
+  return `The organization '${slug}' requires a second factor, and a credential created from this session could reach it. Add a passkey at ${SECOND_FACTOR_ENROLL_PATH} (or, if you already have one, sign out and sign in again with it), or${bind} leave the organization.`;
+}
+
+/**
+ * JSON 403 for an API route refusing to mint under
+ * {@link orgBlockingCredentialMint}. It has the same shape as the org-resource
+ * refusal, so clients handle `SECOND_FACTOR_REQUIRED` in one place.
+ */
+export function credentialMintRefused(
+  c: Context<{ Bindings: Env }>,
+  org: { slug: string },
+  opts: { bindable: boolean },
+): Response {
+  return c.json(
+    {
+      error: credentialMintRefusalMessage(org.slug, opts),
+      code: "SECOND_FACTOR_REQUIRED",
+      org: org.slug,
+      enroll: SECOND_FACTOR_ENROLL_PATH,
+    },
+    403,
+  );
+}
