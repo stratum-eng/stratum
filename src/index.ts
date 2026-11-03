@@ -57,6 +57,7 @@ import { createUser, getUserByEmail } from "./storage/users";
 import type { Env, ImportJobMessage, MessageBatch, SyncJobMessage } from "./types";
 import { notFoundResponse, serverErrorResponse } from "./ui/pages/error";
 import { CSS } from "./ui/styles";
+import { CSS_VERSION } from "./ui/stylesheet";
 import { createLogger } from "./utils/logger";
 export { MergeQueue } from "./queue/merge-queue";
 export { MagicLinkRateLimiter } from "./queue/magic-link-limiter";
@@ -170,7 +171,14 @@ app.get("/dev-login", async (c) => {
 app.route("/_ph", posthogProxyRouter);
 
 app.get("/ui.css", (c) => {
-  return c.text(CSS, 200, { "Content-Type": "text/css; charset=UTF-8" });
+  // Pages link `?v=<content hash>`, so that URL's content can never change and
+  // is cached for a year without revalidation. Any other request (an old page,
+  // a hand-typed URL) gets a short TTL instead: it may be about to change.
+  const versioned = c.req.query("v") === CSS_VERSION;
+  return c.text(CSS, 200, {
+    "Content-Type": "text/css; charset=UTF-8",
+    "Cache-Control": versioned ? "public, max-age=31536000, immutable" : "public, max-age=300",
+  });
 });
 
 // Browsers request /favicon.ico on pages with no <link rel="icon"> (raw JSON

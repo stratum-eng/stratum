@@ -23,6 +23,7 @@ import {
 import { createUser, getUser, getUserByEmail } from "../storage/users";
 import type { Env, User } from "../types";
 import { SourceFooter } from "../ui/components/source-footer";
+import { StylesheetLinks } from "../ui/stylesheet";
 import { auditAuthFailure } from "../utils/auth-audit";
 import { SSO_SECRET_SALT, constantTimeEqual, decryptToken } from "../utils/crypto";
 import { NotFoundError } from "../utils/errors";
@@ -191,7 +192,7 @@ function renderPickerPage(
           rel="icon"
           href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230d0d0d'/%3E%3Ctext%20x='16'%20y='23'%20font-family='monospace'%20font-size='20'%20font-weight='700'%20fill='%237ca9f7'%20text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E"
         />
-        <link rel="stylesheet" href="/ui.css" />
+        <StylesheetLinks />
         <style>{`
           /* Color tokens come from the shared stylesheet (/ui.css). */
 
