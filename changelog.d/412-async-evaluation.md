@@ -1,4 +1,4 @@
-### Changed
+### Breaking
 - **Evaluation runs off the request path.** On an instance with the new evaluation
   queue (the hosted one has it), `POST /api/projects/{name}/changes` answers `202`
   with the change in a new `evaluating` status and no verdict, and
