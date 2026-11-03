@@ -47,6 +47,39 @@ oldest-backed-up repos first, tracked in the D1 `backup_state` table. Every repo
 is therefore covered within `ceil(totalRepos / MAX_REPOS_PER_RUN)` daily runs, not
 starved. Raise `MAX_REPOS_PER_RUN` to shorten that window.
 
+### Pinned projects
+
+Some repos should not wait their turn in the rotation. List them in
+`BACKUP_PINNED_PROJECTS` and they are snapshotted in **every** run:
+
+```toml
+[env.production.vars]
+BACKUP_PINNED_PROJECTS = "@stratum/stratum,@acme/infra"
+```
+
+- Entries are comma-separated `@namespace/slug` paths, the same as in a project
+  URL. The leading `@` may be omitted (`acme/infra` means `@acme/infra`).
+  Whitespace and empty entries are ignored, and duplicates collapse to one.
+- Parsing is strict. An entry that is not exactly one valid namespace and one
+  valid slug is **skipped and logged** (`ignoring malformed
+  BACKUP_PINNED_PROJECTS entry`) on every run, never fuzzy-matched. A
+  well-formed entry that matches no project (deleted, renamed, or a typo) is
+  logged as `pinned project not found` and listed under `repos.pinnedMissing`
+  in the run's `_manifest.json`. Neither makes the run unhealthy, so check the
+  logs or `pinnedMissing` after changing the setting.
+- Pinned projects are **in addition to** the rotation: they do not use up any of
+  the `MAX_REPOS_PER_RUN` slots, and they are excluded from the rotation so none
+  is snapshotted twice in a run. `repos.total` still counts every project;
+  `repos.deferred` counts only unpinned ones left for a later run.
+- The run manifest lists them as `repos.pinned: [{ projectId, path }]`. Their
+  outcome lands in `backedUp`, `skipped` or `failed` like any other repo, and a
+  failed pinned repo makes the run unhealthy. `MAX_BACKUP_BYTES` still applies,
+  so an oversized pinned repo is skipped, not backed up. Look for it under
+  `repos.skipped`.
+- Every pinned repo adds to the run's wall-clock time, which shares the cron's
+  roughly 15-minute budget with the rotation. Pin only a handful of repos. If
+  runs get close to the limit, lower `MAX_REPOS_PER_RUN` to make room.
+
 ### Encryption
 
 D1 dumps contain secrets (session material, webhook secrets, token hashes). If
@@ -85,7 +118,8 @@ Consequences to plan for *before* you need them:
 | `BACKUPS` (R2 bucket) | Backup destination. If absent, runs skip cleanly. | — |
 | `BACKUP_ENCRYPTION_SECRET` | Enables envelope encryption when set. | off |
 | `BACKUP_RETENTION` | Whole healthy (or unknown-health) runs to keep; older runs are pruned. Unhealthy runs do not use slots and age out after this many complete runs; the newest healthy run is always kept. | 14 |
-| `MAX_REPOS_PER_RUN` | Repos snapshotted per run. | 25 |
+| `MAX_REPOS_PER_RUN` | Rotating repos snapshotted per run (pinned repos are extra). | 25 |
+| `BACKUP_PINNED_PROJECTS` | Comma-separated `@namespace/slug` projects snapshotted in every run. See [pinned projects](#pinned-projects). | none |
 | `MAX_BACKUP_BYTES` | Per-repo object budget; larger repos are skipped, not failed. | 128 MiB |
 
 The daily run fires from its own `0 4 * * *` cron (production and default
@@ -212,6 +246,49 @@ in CI** — there is no local Artifacts emulator. Validate it on staging:
 
 Do this after any change to `repo-restore.ts`, `git-ops.ts` push handling, or the
 Artifacts client, and before relying on backups in production.
+
+## Restore drill (quarterly)
+
+A backup is only proven by restoring it. Run this drill **once a quarter**, and
+also after any change listed in the previous section. Run it against
+**staging only**. Never restore into production to test a backup.
+
+**Before you start:** pin the drill repo on staging (`BACKUP_PINNED_PROJECTS` in
+`[env.staging.vars]`) so every run has a pack to restore. Pick a repo with real
+history: several commits, at least one branch besides the default, and at
+least one tag.
+
+1. **Take a backup.** Staging has no backup cron, so trigger a run:
+   `POST /api/admin/backup`. In the response, confirm that `summary.healthy` is
+   `true` and that the drill repo is listed in `summary.repos.pinned`, not in
+   `failed` or `skipped`. Note the `runTs`.
+2. **Check that the run is restorable.** Call `GET /api/admin/restore/<runTs>/plan`
+   and confirm `restorable: true`.
+3. **Record the live refs.** Clone the live repo and save its refs:
+   ```bash
+   git clone <live-clone-url> live && git -C live show-ref --head > live-refs.txt
+   ```
+4. **Restore into staging.** Run `restoreProjectRepo` for the drill repo from
+   `<runTs>`. Restore it under a scratch repo name, or rename the live staging
+   repo first. Use `force` only if you mean to overwrite.
+5. **Clone the restored repo and compare.**
+   ```bash
+   git clone <restored-clone-url> restored && git -C restored show-ref --head > restored-refs.txt
+   diff live-refs.txt restored-refs.txt && git -C restored fsck --full
+   ```
+   The drill passes when `diff` prints nothing (every branch and tag points at
+   the same sha, and `HEAD` equals the manifest `tipSha`) and `git fsck` reports
+   no missing or corrupt objects. If the live repo got new commits after
+   `<runTs>`, compare against the manifest's recorded refs instead.
+6. **Clean up.** Delete the scratch repo, or put the original back.
+7. **Record it.** Add a row to the drill log below: the date, who ran it,
+   the repo, the `runTs`, and the result. On a failure, link the issue
+   you filed.
+
+### Drill log
+
+| Date | Operator | Repo | Run (`runTs`) | Result | Notes / issue |
+| --- | --- | --- | --- | --- | --- |
 
 ## Failure modes
 

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RepoSnapshot } from "../src/backup/repo-snapshot";
 import type { BackupDeps } from "../src/backup/run-backup";
 import { runBackup } from "../src/backup/run-backup";
-import { RUN_MANIFEST_KEY } from "../src/storage/backup-store";
+import { RUN_MANIFEST_KEY, getBlob } from "../src/storage/backup-store";
 import { setProject } from "../src/storage/state";
 import type { Env, ProjectEntry } from "../src/types";
 import { ok } from "../src/utils/result";
@@ -111,6 +111,82 @@ describe("runBackup orchestrator", () => {
     expect(cursors2.map((r) => r.project_id).sort()).toEqual(["alpha", "bravo"]);
     expect(cursors2.length).toBe(2);
     expect(firstId).toBeDefined();
+  });
+
+  it("includes pinned projects in every run's manifest, outside the rotation cap", async () => {
+    const env = makeEnv({
+      MAX_REPOS_PER_RUN: "1",
+      BACKUP_PINNED_PROJECTS: "@owner/pinned, owner/also-pinned, bad entry, @owner/gone",
+    } as Partial<Env>);
+    for (const id of ["pinned", "also-pinned", "alpha", "bravo", "charlie"]) {
+      await setProject(env.STATE as KVNamespace, project(id), logger);
+    }
+    const attempted: string[][] = [];
+    const recording: BackupDeps = {
+      snapshotRepo: async (_env, p) => {
+        attempted[attempted.length - 1]?.push(p.id);
+        return ok({ status: "ok", snapshot: fakeSnapshot(p.id) });
+      },
+    };
+    const bucket = env.BACKUPS as unknown as { store: Map<string, Uint8Array> };
+    const runs = ["2026-07-19T06:00:00Z", "2026-07-20T06:00:00Z", "2026-07-21T06:00:00Z"];
+
+    for (const runTs of runs) {
+      attempted.push([]);
+      const summary = await runBackup(env, logger, runTs, recording);
+
+      const raw = await getBlob(
+        env.BACKUPS as R2Bucket,
+        `${runTs}/${RUN_MANIFEST_KEY}`,
+        env,
+        logger,
+      );
+      if (!raw.success || raw.data === null) throw new Error("run manifest missing");
+      const manifest = JSON.parse(new TextDecoder().decode(raw.data)) as typeof summary;
+      expect(manifest.repos.pinned).toEqual([
+        { projectId: "pinned", path: "@owner/pinned" },
+        { projectId: "also-pinned", path: "@owner/also-pinned" },
+      ]);
+      expect(manifest.repos.pinnedMissing).toEqual(["@owner/gone"]);
+      // Two pinned + the one rotation slot: pinning never consumes the slot.
+      expect(manifest.repos.backedUp).toBe(3);
+      expect(manifest.repos.total).toBe(5);
+      expect(manifest.repos.deferred).toBe(2);
+      expect(manifest.healthy).toBe(true);
+      expect(bucket.store.has(`${runTs}/repos/pinned.pack`)).toBe(true);
+      expect(bucket.store.has(`${runTs}/repos/also-pinned.pack`)).toBe(true);
+    }
+
+    // Each run snapshots each pinned project exactly once, and the single
+    // rotation slot walks through the unpinned projects without repeating.
+    for (const ids of attempted) {
+      expect(ids.slice(0, 2)).toEqual(["pinned", "also-pinned"]);
+      expect(ids).toHaveLength(3);
+    }
+    expect(attempted.map((ids) => ids[2]).sort()).toEqual(["alpha", "bravo", "charlie"]);
+  });
+
+  it("records empty pin lists when BACKUP_PINNED_PROJECTS is unset", async () => {
+    const env = makeEnv();
+    await setProject(env.STATE as KVNamespace, project("alpha"), logger);
+    const summary = await runBackup(env, logger, "2026-07-19T06:00:00Z", okSnapshots);
+    expect(summary.repos.pinned).toEqual([]);
+    expect(summary.repos.pinnedMissing).toEqual([]);
+    expect(summary.repos.backedUp).toBe(1);
+  });
+
+  it("marks the run unhealthy when a pinned project fails", async () => {
+    const env = makeEnv({ BACKUP_PINNED_PROJECTS: "@owner/bad" } as Partial<Env>);
+    await setProject(env.STATE as KVNamespace, project("bad"), logger);
+    const failing: BackupDeps = {
+      snapshotRepo: async () => {
+        throw new Error("clone exploded");
+      },
+    };
+    const summary = await runBackup(env, logger, "2026-07-19T06:00:00Z", failing);
+    expect(summary.repos.pinned).toEqual([{ projectId: "bad", path: "@owner/bad" }]);
+    expect(summary.repos.failed).toEqual([{ projectId: "bad" }]);
+    expect(summary.healthy).toBe(false);
   });
 
   it("is fail-soft: one repo failing does not abort the run", async () => {

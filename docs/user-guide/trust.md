@@ -157,6 +157,10 @@ the `BACKUPS` R2 bucket:
   projects, taking the projects least recently attempted first. A repository
   over `MAX_BACKUP_BYTES` (default 128 MiB) is skipped. A skipped or failed
   repository still counts as attempted and moves to the back of the rotation.
+  Projects the operator lists in `BACKUP_PINNED_PROJECTS` (comma-separated
+  `@namespace/slug`) are snapshotted in **every** run in addition to that
+  rotation, and do not use up any of its `MAX_REPOS_PER_RUN` slots. The run
+  manifest lists them under `repos.pinned`.
 - **Not backed up: workspace repositories.** The repo pass iterates projects
   only (`listProjects` in `src/backup/run-backup.ts`). Workspace forks, which
   hold unmerged work, are not snapshotted. Their KV registry records are backed
@@ -203,7 +207,9 @@ margin for growth and for skipped or failed repositories, which never produce a
 pack. Two settings can change: raise `MAX_REPOS_PER_RUN`, which shortens the
 rotation and the restore-point age but is bounded by the backup invocation's
 roughly 15-minute budget, or raise `BACKUP_RETENTION`, which costs R2 storage.
-The code does not check this inequality or warn when it fails.
+The code does not check this inequality or warn when it fails. A pinned project
+is not subject to it: it has a pack in every retained run where its snapshot
+succeeded, so its restore point is at most one run old.
 - **Not in any backup:** `DEPLOY_SECRET_KEY` and the other Wrangler secrets. The
   `project_secrets` rows are backed up as ciphertext only.
 - **Restore** has a documented, tested path in the runbook.
