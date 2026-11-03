@@ -307,7 +307,7 @@ The code is what ties the approval to *your* agent. It is never in the email,
 so someone who requests an account for an address that isn't theirs cannot get
 it approved by an unsuspecting click: the person at that address has no code to
 type. If no agent of yours showed you a code, don't approve. Five wrong codes
-end the request.
+end the request, and the agent's next poll answers 410 `LOCKED`.
 
 What the agent ends up with is an **agent token** under your account, not your
 own credential: it acts with your access, it is recorded as the agent in
@@ -316,7 +316,8 @@ from **Settings** like any other agent.
 
 The endpoint carries the same limits as the web signup form: the per-address
 and per-IP email caps, the closed-beta invite code where the instance requires
-one, and 15-minute single-use approval links. A request lasts 30 minutes. An
+one, and 15-minute single-use approval links. A request lasts 30 minutes, and is
+deleted a day after it expires. An
 address that already has an account is refused (409 `EMAIL_EXISTS`) rather
 than attached to, because attaching an agent to an existing account takes that
 account's owner, not a link the agent asked for; connect an agent from

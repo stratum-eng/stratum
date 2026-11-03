@@ -70,6 +70,8 @@ export interface AgentSignup {
   status: AgentSignupStatus;
   userId?: string;
   agentId?: string;
+  /** Wrong user-code entries so far; at {@link MAX_USER_CODE_ATTEMPTS} the request is dead. */
+  codeAttempts: number;
   createdAt: number;
   expiresAt: number;
 }
@@ -83,6 +85,7 @@ interface AgentSignupRow {
   status: AgentSignupStatus;
   user_id: string | null;
   agent_id: string | null;
+  code_attempts: number;
   created_at: number;
   expires_at: number;
 }
@@ -97,6 +100,7 @@ function fromRow(row: AgentSignupRow): AgentSignup {
     status: row.status,
     ...(row.user_id !== null ? { userId: row.user_id } : {}),
     ...(row.agent_id !== null ? { agentId: row.agent_id } : {}),
+    codeAttempts: row.code_attempts,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   };
@@ -158,6 +162,7 @@ export async function createAgentSignup(
       agentName: input.agentName,
       ...(input.agentModel !== undefined ? { agentModel: input.agentModel } : {}),
       status: "pending",
+      codeAttempts: 0,
       createdAt,
       expiresAt,
     });
@@ -368,5 +373,40 @@ export async function checkAgentSignupUserCode(
     return ok(constantTimeEqual(candidate, row.user_code_hash) ? "match" : "mismatch");
   } catch (error) {
     return err(storageError("Failed to check agent signup code", error, logger));
+  }
+}
+
+/**
+ * How long a request is kept after it expires before the daily purge deletes
+ * it. Long enough to look into a failed signup the same day; short enough that
+ * an address someone typed into an unauthenticated endpoint is not retained.
+ */
+export const AGENT_SIGNUP_RETENTION_SECONDS = 24 * 60 * 60;
+
+/**
+ * Deletes requests that expired more than {@link AGENT_SIGNUP_RETENTION_SECONDS}
+ * ago, whatever their status. Each row names an email address, and an
+ * unapproved one names an address that never agreed to anything, so rows must
+ * not outlive their usefulness. Nothing reads a request after expiry.
+ *
+ * @param db - D1 database
+ * @param logger - Logger
+ * @returns How many rows were deleted
+ */
+export async function purgeExpiredAgentSignups(
+  db: D1Database,
+  logger: Logger,
+): Promise<Result<number, AppError>> {
+  try {
+    const cutoff = nowSeconds() - AGENT_SIGNUP_RETENTION_SECONDS;
+    const result = await db
+      .prepare("DELETE FROM agent_signups WHERE expires_at < ?")
+      .bind(cutoff)
+      .run();
+    const purged = result.meta?.changes ?? 0;
+    if (purged > 0) logger.info("Purged expired agent signups", { purged });
+    return ok(purged);
+  } catch (error) {
+    return err(storageError("Failed to purge expired agent signups", error, logger));
   }
 }

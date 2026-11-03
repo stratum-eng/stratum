@@ -32,6 +32,7 @@ import { betaGateEnabled, validateInviteCode } from "../beta/gate";
 import { getAgentSignupEmail } from "../email/templates";
 import {
   type AgentSignup,
+  MAX_USER_CODE_ATTEMPTS,
   approveAgentSignupRelease,
   claimAgentSignupForCollection,
   createAgentSignup,
@@ -89,6 +90,11 @@ function errorResponse(
   return c.json({ error, code }, status);
 }
 
+/** `null`, arrays and primitives all parse as JSON but carry no fields to read. */
+function isJsonObject<T extends object>(value: T | null | unknown): value is T {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function agentSignupDisabled(env: Env): boolean {
   return env.AGENT_SIGNUP_DISABLED === "1";
 }
@@ -119,8 +125,11 @@ app.post("/", async (c) => {
     return errorResponse(c, 404, "AGENT_SIGNUP_DISABLED", "Agent signup is not enabled here");
   }
 
-  const body = await readJsonWithLimit<AgentSignupBody>(c, MAX_BODY_BYTES, logger);
+  const body = await readJsonWithLimit<AgentSignupBody | null>(c, MAX_BODY_BYTES, logger);
   if (body instanceof Response) return body;
+  if (!isJsonObject(body)) {
+    return errorResponse(c, 400, "INVALID_BODY", "The request body must be a JSON object");
+  }
 
   const emailInput = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const usernameInput = typeof body.username === "string" ? body.username.trim().toLowerCase() : "";
@@ -350,8 +359,11 @@ app.post("/poll", async (c) => {
     return errorResponse(c, 404, "AGENT_SIGNUP_DISABLED", "Agent signup is not enabled here");
   }
 
-  const body = await readJsonWithLimit<{ pollToken?: unknown }>(c, MAX_BODY_BYTES, logger);
+  const body = await readJsonWithLimit<{ pollToken?: unknown } | null>(c, MAX_BODY_BYTES, logger);
   if (body instanceof Response) return body;
+  if (!isJsonObject(body)) {
+    return errorResponse(c, 400, "INVALID_BODY", "The request body must be a JSON object");
+  }
   const pollToken = typeof body.pollToken === "string" ? body.pollToken.trim() : "";
   if (!pollToken.startsWith("stratum_asp_")) {
     return errorResponse(c, 400, "INVALID_POLL_TOKEN", "pollToken is required");
@@ -372,6 +384,16 @@ app.post("/poll", async (c) => {
   if (signup.expiresAt <= nowSeconds()) {
     return c.json(
       { status: "expired", code: "EXPIRED", error: "The signup request expired; start again" },
+      410,
+    );
+  }
+  if (signup.status === "pending" && signup.codeAttempts >= MAX_USER_CODE_ATTEMPTS) {
+    return c.json(
+      {
+        status: "locked",
+        code: "LOCKED",
+        error: "Too many wrong codes were entered on the approval page; start again",
+      },
       410,
     );
   }

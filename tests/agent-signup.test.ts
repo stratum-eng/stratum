@@ -369,3 +369,74 @@ describe("user code (device-flow binding)", () => {
     expect(again.headers.get("Location")).toContain("error=link_expired");
   });
 });
+
+describe("review follow-ups", () => {
+  it.each([["null"], ["[]"], ['"x"'], ["42"]])(
+    "answers 400 INVALID_BODY for a %s body on both endpoints",
+    async (raw) => {
+      for (const path of ["/api/agent-signup", "/api/agent-signup/poll"]) {
+        const res = await app.fetch(
+          new Request(`${ORIGIN}${path}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: raw,
+          }),
+          env,
+        );
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { code: string }).code).toBe("INVALID_BODY");
+      }
+    },
+  );
+
+  it("polls report LOCKED once the code attempts are used up", async () => {
+    const { json } = await requestSignup();
+    const token = approvalTokenFromEmail();
+    for (let i = 0; i < 5; i++) await approve(token, env, "CCCC-CCCC");
+
+    const polled = await poll(json.pollToken);
+    expect(polled.status).toBe(410);
+    expect(polled.json.status).toBe("locked");
+    expect(polled.json.code).toBe("LOCKED");
+  });
+
+  it("does not claim the agent is connected when the hand-off misses", async () => {
+    const { json } = await requestSignup();
+    // The request expires in the moment between the pre-check and approval:
+    // creating the user row is what flips it.
+    raw.exec(
+      "CREATE TRIGGER expire_on_user AFTER INSERT ON users BEGIN UPDATE agent_signups SET expires_at = 1; END;",
+    );
+    const res = await approve(approvalTokenFromEmail());
+    expect(res.headers.get("Location")).toBe("/settings?agent=not_connected");
+    expect(res.headers.get("Set-Cookie")).toContain("session");
+    expect((await poll(json.pollToken)).status).toBe(410);
+  });
+
+  it("the daily purge deletes requests a day past expiry, and nothing newer", async () => {
+    const { purgeExpiredAgentSignups } = await import("../src/storage/agent-signups");
+    await requestSignup();
+    await requestSignup({ ...BODY, email: "other@example.com", username: "otherperson" });
+    const now = Math.floor(Date.now() / 1000);
+    raw
+      .prepare("UPDATE agent_signups SET expires_at = ? WHERE email = 'dev@example.com'")
+      .run(now - 25 * 60 * 60);
+    raw
+      .prepare("UPDATE agent_signups SET expires_at = ? WHERE email = 'other@example.com'")
+      .run(now - 60);
+
+    const logger = {
+      trace: vi.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      fatal: vi.fn(),
+      child: vi.fn(),
+    } as unknown as Parameters<typeof purgeExpiredAgentSignups>[1];
+    const purged = await purgeExpiredAgentSignups(env.DB, logger);
+    expect(purged).toEqual({ success: true, data: 1 });
+    const left = raw.prepare("SELECT email FROM agent_signups").all() as { email: string }[];
+    expect(left.map((r) => r.email)).toEqual(["other@example.com"]);
+  });
+});

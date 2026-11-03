@@ -3501,7 +3501,7 @@ paths:
                   expiresAt: { type: string, format: date-time }
                   message: { type: string }
         "400":
-          description: Invalid email, username, agentName or model
+          description: Body is not a JSON object (`INVALID_BODY`), or invalid email, username, agentName or model
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3576,7 +3576,7 @@ paths:
                       model: { type: string }
                   token: { type: string, description: "Agent token; shown once" }
         "400":
-          description: Missing or malformed pollToken
+          description: Body is not a JSON object (`INVALID_BODY`), or a missing or malformed pollToken
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3586,7 +3586,9 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "410":
-          description: Expired (`EXPIRED`) or already collected (`ALREADY_COLLECTED`)
+          description: >
+            Expired (`EXPIRED`), already collected (`ALREADY_COLLECTED`), or dead
+            after five wrong codes on the approval page (`LOCKED`, status `locked`)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
