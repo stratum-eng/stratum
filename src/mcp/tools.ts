@@ -121,7 +121,7 @@ export function buildTools(client: StratumClient): ToolDef[] {
   return [
     tool(
       "stratum_whoami",
-      "Identify the authenticated Stratum user. User credentials only — with an agent token this returns a 401; agents should already know who they are.",
+      'Identify who this connection acts as. `actingAs: "user"` means work is recorded as the signed-in user, with no agent provenance. `actingAs: "agent"` means the user bound this connection to an agent when they authorized it: work is recorded as that agent (returned with its id and name) acting for its owner. With a bare agent token this returns a 401; agents holding their own token already know who they are.',
       {},
       () => client.me(),
     ),
@@ -135,7 +135,7 @@ export function buildTools(client: StratumClient): ToolDef[] {
     // ── Projects ──────────────────────────────────────────────────────────
     tool(
       "stratum_list_projects",
-      "List Stratum projects in the caller's own namespace. Org-namespace projects are not included, and an agent token gets an empty list — address a known project by namespace/slug instead.",
+      "List Stratum projects in the caller's own namespace. Org-namespace projects are not included, and an agent (an agent token, or a connection bound to an agent) gets an empty list — address a known project by namespace/slug instead.",
       {},
       () => client.listProjects(),
     ),
@@ -231,7 +231,7 @@ export function buildTools(client: StratumClient): ToolDef[] {
     ),
     tool(
       "stratum_merge_change",
-      "Merge a change that has passed its evaluation gates and required human approvals. Fails with the blocking reasons otherwise; a stale base is rejected until re-evaluated. Force requires the policy to allow it. User credentials only — agent tokens cannot merge.",
+      "Merge a change that has passed its evaluation gates and required human approvals. Fails with the blocking reasons otherwise; a stale base is rejected until re-evaluated. Force requires the policy to allow it. User credentials only — agent tokens cannot merge, and neither can a connection bound to an agent; ask the user to merge, or to reconnect acting as themselves.",
       {
         change_id: { type: "string", description: "Change id" },
         force: {
@@ -255,13 +255,13 @@ export function buildTools(client: StratumClient): ToolDef[] {
     ),
     tool(
       "stratum_reject_change",
-      "Reject an open change, closing it without merging. User credentials only — agent tokens cannot reject.",
+      "Reject an open change, closing it without merging. User credentials only — agent tokens cannot reject, and neither can a connection bound to an agent.",
       { change_id: { type: "string", description: "Change id" } },
       (a) => client.rejectChange(a.change_id),
     ),
     tool(
       "stratum_review_change",
-      "Submit a review verdict on a change. Reviews are a human gate. Over MCP only `request_changes` is accepted: `approve` is refused with SESSION_REQUIRED, because an approval must come from the user, who has to approve in the browser (a signed-in session) — ask them to. Every verdict from an agent token is refused. Needs write access. An agent's feedback channel is change comments over the REST API.",
+      "Submit a review verdict on a change. Reviews are a human gate. Over MCP only `request_changes` is accepted: `approve` is refused with SESSION_REQUIRED, because an approval must come from the user, who has to approve in the browser (a signed-in session) — ask them to. Every verdict from an agent token, or from a connection bound to an agent, is refused. Needs write access. An agent's feedback channel is change comments over the REST API.",
       {
         change_id: { type: "string", description: "Change id" },
         verdict: {

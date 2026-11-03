@@ -1,4 +1,4 @@
-import type { Agent } from "../types";
+import type { Agent, AgentCredentialKind } from "../types";
 import { generateApiKey, hashToken } from "../utils/crypto";
 import { AppError, NotFoundError } from "../utils/errors";
 import { newId } from "../utils/ids";
@@ -19,6 +19,14 @@ interface AgentRow {
   prompt_hash: string | null;
   token_hash: string;
   created_at: string;
+  /** Absent on a row read through a stub that predates migration 067. */
+  credential?: string | null;
+}
+
+/** Anything but an explicit `oauth_grant` is a token agent, the kind every row
+ * was before migration 067. */
+function narrowCredential(value: string | null | undefined): AgentCredentialKind {
+  return value === "oauth_grant" ? "oauth_grant" : "token";
 }
 
 function rowToAgent(row: AgentRow): Agent {
@@ -32,6 +40,7 @@ function rowToAgent(row: AgentRow): Agent {
   if (row.model !== null) agent.model = row.model;
   if (row.description !== null) agent.description = row.description;
   if (row.prompt_hash !== null) agent.promptHash = row.prompt_hash;
+  if (row.credential !== undefined) agent.credential = narrowCredential(row.credential);
   return agent;
 }
 
@@ -84,6 +93,54 @@ export async function createAgent(
   }
 }
 
+/**
+ * Create an agent for one MCP connection (#409, ADR 010).
+ *
+ * Called only when an authorization code is redeemed, and that code exists
+ * only because a person clicked Allow in a signed-in browser session. So no
+ * credential a client holds can reach this.
+ *
+ * The agent gets **no token**. `agents.token_hash` is NOT NULL and UNIQUE, so
+ * it is filled with the hash of a random value that is generated here and
+ * discarded before this function returns. Nobody ever sees the plaintext, and
+ * `getAgentByToken` refuses `oauth_grant` rows regardless. The grant bound to
+ * the agent is its only way in, which is what makes revoking the grant end the
+ * agent's access.
+ */
+export async function createGrantAgent(
+  db: D1Database,
+  ownerId: string,
+  name: string,
+  logger: Logger,
+): Promise<Result<Agent, AppError>> {
+  try {
+    const id = newId("agt");
+    const unrevealed = await generateApiKey("stratum_agent");
+    const tokenHash = await hashToken(unrevealed);
+    const createdAt = new Date().toISOString();
+    await db
+      .prepare(
+        "INSERT INTO agents (id, name, owner_id, token_hash, created_at, credential) VALUES (?, ?, ?, ?, ?, 'oauth_grant')",
+      )
+      .bind(id, name, ownerId, tokenHash, createdAt)
+      .run();
+    logger.info("Grant-only agent created", { agentId: id, ownerId });
+    return ok({ id, name, ownerId, tokenHash, createdAt, credential: "oauth_grant" });
+  } catch (error) {
+    const appError =
+      error instanceof AppError
+        ? error
+        : new AppError(
+            error instanceof Error ? error.message : "Failed to create agent",
+            "DATABASE_ERROR",
+            500,
+            { operation: "createGrantAgent", ownerId },
+          );
+    logger.error("Failed to create grant-only agent", appError, { ownerId });
+    return err(appError);
+  }
+}
+
 export async function getAgent(
   db: D1Database,
   id: string,
@@ -131,6 +188,14 @@ export async function getAgentByToken(
       const notFoundError = new NotFoundError("Agent", "by_token");
       logger.debug("Agent not found by token");
       return err(notFoundError);
+    }
+    // Defence in depth (ADR 010). A grant-only agent's `token_hash` is the hash
+    // of a value nobody was ever shown, so no presented token should match it.
+    // If one ever did, it must still not authenticate: this agent's access
+    // has to end when its grant does.
+    if (narrowCredential(row.credential) === "oauth_grant") {
+      logger.warn("Refused an agent token for a grant-only agent", { agentId: row.id });
+      return err(new NotFoundError("Agent", "by_token"));
     }
 
     logger.debug("Agent retrieved by token", { agentId: row.id });

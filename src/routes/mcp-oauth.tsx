@@ -5,8 +5,11 @@ import {
   credentialMintRefusalMessage,
   orgBlockingCredentialMint,
 } from "../services/org-second-factor";
+import { createGrantAgent, getAgent, listAgents } from "../storage/agents";
 import { recordAudit } from "../storage/audit";
 import {
+  type GrantActor,
+  MAX_GRANT_AGENT_NAME_LENGTH,
   SCOPE_WRITE,
   SUPPORTED_SCOPES,
   claimAuthorizationCode,
@@ -26,7 +29,7 @@ import {
   verifyPkce,
 } from "../storage/oauth";
 import { getUser } from "../storage/users";
-import type { Env } from "../types";
+import type { Agent, Env } from "../types";
 import { SourceFooter } from "../ui/components/source-footer";
 /**
  * Stratum as an OAuth 2.1 authorization server, for the remote MCP endpoint
@@ -55,6 +58,7 @@ import { mcpResourceIdentifier } from "../utils/oauth-challenge";
 import { rememberPostLoginRedirect } from "../utils/post-login-redirect";
 import { readJsonWithLimit, readTextWithLimit } from "../utils/request-body";
 import { requestLogger } from "../utils/request-logger";
+import { type Result, err, ok } from "../utils/result";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -511,6 +515,12 @@ const CONSENT_CSS = `
   .consent-more summary { cursor: pointer; color: var(--text-muted, var(--text-secondary)); }
   .consent-more p { margin: 0.6rem 0 0; }
   .consent-more .consent-client { margin: 0.35rem 0 0; }
+  .consent-actas { border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 1rem; margin: 0 0 1.25rem; }
+  .consent-actas legend { font-size: 0.9rem; padding: 0 0.35rem; }
+  .consent-actas-option { margin: 0.45rem 0; }
+  .consent-actas label { display: block; font-size: 0.9rem; }
+  .consent-actas input[type="text"], .consent-actas select { margin-top: 0.3rem; width: 100%; max-width: 100%; box-sizing: border-box; padding: 0.35rem 0.5rem; }
+  .consent-actas .consent-hint { display: block; font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.2rem; }
   .consent-actions { display: flex; gap: 0.75rem; }
   .consent-actions button { flex: 1; padding: 0.6rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.92rem; border: 1px solid transparent; }
   /* Mirrors .btn-primary. The accent is a deep navy, so near-black text on it
@@ -529,6 +539,109 @@ function describeScope(scope: string): string[] {
     lines.push("Merge, reject and review changes, and manage issues");
   }
   return lines;
+}
+
+// ── Acting identity (#409, ADR 010) ────────────────────────────────────────
+
+/** The consent form's `act_as` values. */
+const ACT_AS_NEW = "new";
+const ACT_AS_AGENT = "agent";
+const ACT_AS_USER = "user";
+
+/**
+ * Read and verify the identity chosen on the consent form.
+ *
+ * Returns `undefined` for "act as me". That is also the answer when `act_as`
+ * is absent, because a consent page rendered before this field existed offered
+ * nothing else, and that is what the user agreed to.
+ *
+ * An existing agent must be owned by the signed-in user. Checked here and again
+ * at the token exchange, because the `<select>` came back through a page and a
+ * page is not a trust boundary.
+ */
+async function readActAs(
+  c: Context<{ Bindings: Env }>,
+  logger: ReturnType<typeof createLogger>,
+  form: URLSearchParams,
+  userId: string,
+): Promise<{ actAs: GrantActor | undefined } | { problem: string }> {
+  const choice = form.get("act_as");
+  if (choice === null || choice === ACT_AS_USER) return { actAs: undefined };
+  if (choice === ACT_AS_NEW) {
+    const name = (form.get("agent_name") ?? "").trim();
+    if (name === "" || name.length > MAX_GRANT_AGENT_NAME_LENGTH) {
+      return {
+        problem: `Give the new agent a name of 1-${MAX_GRANT_AGENT_NAME_LENGTH} characters.`,
+      };
+    }
+    return { actAs: { kind: "new", name } };
+  }
+  if (choice === ACT_AS_AGENT) {
+    const agentId = form.get("agent_id") ?? "";
+    if (agentId === "") return { problem: "Choose which of your agents to connect as." };
+    const agent = await getAgent(c.env.DB, agentId, logger);
+    // Not found and not yours look the same, so the form can't be used to
+    // probe for other people's agent ids.
+    if (!agent.success || agent.data.ownerId !== userId) {
+      logger.warn("Consent refused - agent not owned by the consenting user", { agentId, userId });
+      return { problem: "That agent does not exist or is not yours." };
+    }
+    return { actAs: { kind: "agent", agentId } };
+  }
+  return { problem: "Choose who this application should act as." };
+}
+
+/** The "Connect as" choice. Radios and a select, so it needs no script. The
+ * default is a new agent: it is both the choice that records provenance and
+ * the more restricted one (ADR 010). */
+function ActAsFieldset(props: { clientName: string; username: string; agents: Agent[] }) {
+  const defaultName = props.clientName.slice(0, MAX_GRANT_AGENT_NAME_LENGTH);
+  return (
+    <fieldset class="consent-actas">
+      <legend>Connect as</legend>
+      {/* Each radio has its own label and the text box / select sit outside it:
+          a label wrapping two controls does not select its radio when the
+          other control is used, and with no script nothing else would. */}
+      <div class="consent-actas-option">
+        <label>
+          <input type="radio" name="act_as" value={ACT_AS_NEW} checked /> A new agent
+        </label>
+        <input
+          type="text"
+          name="agent_name"
+          value={defaultName}
+          maxlength={MAX_GRANT_AGENT_NAME_LENGTH}
+          aria-label="New agent name"
+        />
+        <span class="consent-hint">
+          For example &ldquo;{defaultName} on my-laptop&rdquo;. Its work is recorded as this agent,
+          and it stops working when you disconnect.
+        </span>
+      </div>
+      {props.agents.length > 0 && (
+        <div class="consent-actas-option">
+          <label>
+            <input type="radio" name="act_as" value={ACT_AS_AGENT} /> An existing agent
+          </label>
+          <select name="agent_id" aria-label="Existing agent">
+            {props.agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.name}
+              </option>
+            ))}
+          </select>
+          <span class="consent-hint">Select &ldquo;An existing agent&rdquo; above to use it.</span>
+        </div>
+      )}
+      <div class="consent-actas-option">
+        <label>
+          <input type="radio" name="act_as" value={ACT_AS_USER} /> Me (
+          <strong>{props.username}</strong>)
+        </label>
+        <span class="consent-hint">Work is recorded as yours, with no agent provenance.</span>
+      </div>
+    </fieldset>
+  );
 }
 
 app.get("/oauth/authorize", async (c) => {
@@ -570,6 +683,13 @@ app.get("/oauth/authorize", async (c) => {
     return renderAuthorizeError(c, "Unknown client", "This application is no longer registered.");
   }
   const clientName = clientResult.data.clientName;
+
+  // Only the signed-in user's own agents are offered. A listing failure drops
+  // the "existing agent" option rather than the whole page: a new agent and
+  // "me" still work.
+  const agentsResult = await listAgents(c.env.DB, userId, logger);
+  const agents = agentsResult.success ? agentsResult.data : [];
+
   // The first of three lines a healthy connection leaves: this, then
   // "Authorization code issued", then "OAuth tokens issued" seconds later.
   logger.info("MCP consent screen shown", {
@@ -634,6 +754,11 @@ app.get("/oauth/authorize", async (c) => {
               {params.resource !== null && (
                 <input type="hidden" name="resource" value={params.resource} />
               )}
+              <ActAsFieldset
+                clientName={clientName}
+                username={userResult.data.username}
+                agents={agents}
+              />
               <div class="consent-actions">
                 <button type="submit" name="decision" value="deny" class="consent-deny">
                   Cancel
@@ -738,6 +863,17 @@ app.post("/oauth/authorize", async (c) => {
     );
   }
 
+  const actAsResult = await readActAs(c, logger, form, userId);
+  if ("problem" in actAsResult) {
+    return renderAuthorizeError(c, "Choose who to connect as", actAsResult.problem, {
+      redirectUri: params.redirectUri,
+      error: "invalid_request",
+      description: "The acting identity was not valid",
+      state: params.state,
+    });
+  }
+  const actAs = actAsResult.actAs;
+
   const code = await issueAuthorizationCode(c.env.DB, logger, {
     clientId: params.clientId,
     userId,
@@ -745,6 +881,7 @@ app.post("/oauth/authorize", async (c) => {
     scope: params.scope,
     codeChallenge: params.codeChallenge,
     resource: params.resource,
+    ...(actAs !== undefined ? { actAs } : {}),
   });
   if (!code.success) {
     redirect.searchParams.set("error", "server_error");
@@ -756,7 +893,12 @@ app.post("/oauth/authorize", async (c) => {
     action: "oauth.authorized",
     actorType: "user",
     actorId: userId,
-    detail: { clientId: params.clientId, scope: params.scope },
+    detail: {
+      clientId: params.clientId,
+      scope: params.scope,
+      actAs: actAs?.kind ?? ACT_AS_USER,
+      ...(actAs?.kind === "agent" ? { agentId: actAs.agentId } : {}),
+    },
   });
 
   redirect.searchParams.set("code", code.data.code);
@@ -930,11 +1072,19 @@ async function handleCodeGrant(
     return oauthError("server_error", "Could not redeem the authorization code", 500);
   }
 
+  const agentId = await resolveGrantAgent(c, logger, record);
+  if (!agentId.success) {
+    return agentId.error === "server_error"
+      ? oauthError("server_error", "Could not create the agent for this connection", 500)
+      : oauthError("invalid_grant", "The agent chosen at consent is no longer available");
+  }
+
   const tokens = await issueTokens(c.env.DB, logger, {
     clientId: client.id,
     userId: record.userId,
     scope: record.scope,
     codeId: record.codeId,
+    ...(agentId.data !== undefined ? { agentId: agentId.data } : {}),
   });
   if (!tokens.success) return oauthError("server_error", "Could not issue tokens", 500);
 
@@ -945,6 +1095,53 @@ async function handleCodeGrant(
     refresh_token: tokens.data.refreshToken,
     scope: tokens.data.scope,
   });
+}
+
+/**
+ * Turn the identity chosen at consent into the agent id the grant binds to.
+ *
+ * Runs after the code is claimed, so it happens at most once per code.
+ *
+ * - An existing agent is checked again here. It may have been deleted or
+ *   changed hands in the seconds since consent, and binding it anyway would
+ *   leave a grant that the resolver refuses on its first request.
+ * - A new agent is created here, not at consent, so a code that is never
+ *   redeemed leaves no agent behind. `createGrantAgent` gives it no token: the
+ *   grant about to be issued is its only credential.
+ */
+async function resolveGrantAgent(
+  c: Context<{ Bindings: Env }>,
+  logger: ReturnType<typeof createLogger>,
+  record: { userId: string; clientId: string; actAs?: GrantActor },
+): Promise<Result<string | undefined, "unavailable" | "server_error">> {
+  const actAs = record.actAs;
+  if (actAs === undefined) return ok(undefined);
+
+  if (actAs.kind === "agent") {
+    const agent = await getAgent(c.env.DB, actAs.agentId, logger);
+    if (!agent.success) {
+      return agent.error.code === "NOT_FOUND" ? err("unavailable") : err("server_error");
+    }
+    if (agent.data.ownerId !== record.userId) {
+      logger.warn("Token exchange refused - consented agent changed owner", {
+        agentId: actAs.agentId,
+        userId: record.userId,
+      });
+      return err("unavailable");
+    }
+    return ok(actAs.agentId);
+  }
+
+  const created = await createGrantAgent(c.env.DB, record.userId, actAs.name, logger);
+  if (!created.success) return err("server_error");
+  await recordAudit(c.env.DB, logger, {
+    action: "agent.created",
+    actorType: "user",
+    actorId: record.userId,
+    subject: created.data.id,
+    detail: { name: created.data.name, via: "oauth_consent", clientId: record.clientId },
+  });
+  return ok(created.data.id);
 }
 
 /**

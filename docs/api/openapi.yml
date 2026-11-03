@@ -3630,17 +3630,35 @@ paths:
       operationId: getMe
       tags: [users]
       summary: Get the authenticated user
+      description: |
+        Who the credential acts as. A user credential gets its account with
+        `actingAs: user`. An MCP OAuth grant bound to an agent gets
+        `actingAs: agent`, the agent, and the owner it acts for (no email). A
+        bare agent token gets 401.
       responses:
         "200":
-          description: Current user
+          description: Current identity
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  id: { type: string }
-                  email: { type: string, format: email }
-                  createdAt: { type: string, format: date-time }
+                  actingAs: { type: string, enum: [user, agent] }
+                  id: { type: string, description: "Present when actingAs is user" }
+                  email: { type: string, format: email, description: "Present when actingAs is user" }
+                  createdAt: { type: string, format: date-time, description: "Present when actingAs is user" }
+                  agent:
+                    type: object
+                    description: Present when actingAs is agent
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+                  owner:
+                    type: object
+                    description: Present when actingAs is agent
+                    properties:
+                      id: { type: string }
+                      username: { type: string }
         "401":
           $ref: "#/components/responses/Unauthorized"
     delete:

@@ -8,6 +8,7 @@ import {
   parseBindingRequest,
   resolveBindingRequest,
 } from "../services/token-binding";
+import { getAgent } from "../storage/agents";
 import {
   MAX_TOKEN_EXPIRY_DAYS,
   MIN_TOKEN_EXPIRY_DAYS,
@@ -54,6 +55,30 @@ app.get("/me", async (c) => {
   });
 
   const userId = c.get("userId");
+  const agentId = c.get("agentId");
+  const agentOwnerId = c.get("agentOwnerId");
+
+  // An OAuth grant bound to an agent (#409, ADR 010) learns who it is here.
+  // The client was given its identity on a consent page it never saw, so
+  // unlike a bare agent token (still a 401 below) it has no other way to find
+  // out. The owner's email is withheld: the agent acts for the owner and does
+  // not need their contact details.
+  if (!userId && agentId && agentOwnerId && c.get("oauthGrantId") !== undefined) {
+    const [agent, owner] = await Promise.all([
+      getAgent(c.env.DB, agentId, logger),
+      getUser(c.env.DB, agentOwnerId, logger),
+    ]);
+    if (!agent.success || !owner.success) {
+      logger.warn("Agent-bound grant identity lookup failed", { agentId });
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    return ok({
+      actingAs: "agent",
+      agent: { id: agent.data.id, name: agent.data.name },
+      owner: { id: owner.data.id, username: owner.data.username },
+    });
+  }
+
   if (!userId) {
     logger.warn("Unauthorized access to /me");
     return c.json({ error: "Unauthorized" }, 401);
@@ -68,7 +93,9 @@ app.get("/me", async (c) => {
   const user = result.data;
   logger.debug("User retrieved", { userId });
 
-  return ok({ id: user.id, email: user.email, createdAt: user.createdAt });
+  // `actingAs` is how an MCP client tells a grant acting as the user (no agent
+  // provenance) from one bound to an agent. Every user credential reports it.
+  return ok({ id: user.id, email: user.email, createdAt: user.createdAt, actingAs: "user" });
 });
 
 /**

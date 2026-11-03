@@ -221,6 +221,17 @@ const COPY_TOKEN_SCRIPT = `
  * client_id is shown beside it, because that is the only part of the row the
  * user did not have to take on trust.
  */
+/**
+ * Who a connection acts as (#409, ADR 010). A grant from before agent binding,
+ * or one where the user chose "Me", acts as the user, and the label says what
+ * that costs: no agent provenance on its work.
+ */
+const GrantActsAs: FC<{ grant: OAuthGrantSummary }> = ({ grant }) => {
+  if (grant.agent === undefined) return <>You (no agent provenance)</>;
+  if (grant.agent.name === undefined) return <>Deleted agent (no longer works)</>;
+  return <>Agent: {grant.agent.name}</>;
+};
+
 const OAuthGrantRow: FC<{ grant: OAuthGrantSummary }> = ({ grant }) => (
   <tr>
     <td>{grant.clientName}</td>
@@ -228,6 +239,9 @@ const OAuthGrantRow: FC<{ grant: OAuthGrantSummary }> = ({ grant }) => (
       <code>{grant.clientId}</code>
     </td>
     <td>{grant.scope.includes("mcp:write") ? "Read & write" : "Read-only"}</td>
+    <td>
+      <GrantActsAs grant={grant} />
+    </td>
     <td>{formatDate(grant.createdAt)}</td>
     <td>{grant.lastUsedAt === undefined ? "Never used" : formatDate(grant.lastUsedAt)}</td>
     <td>
@@ -648,8 +662,9 @@ export const SettingsPage: FC<SettingsPageProps> = ({
         <h2>Connected applications</h2>
         <p class="settings-help">
           Editors and agents you have authorized to reach Stratum over MCP at <code>/mcp</code>.
-          Each one acts as you, within the access you granted it, and disconnecting takes effect
-          immediately.
+          Each one acts as you or as the agent you chose when you connected it, within the access
+          you granted it. Disconnecting takes effect immediately, and an agent created for a
+          connection stops working with it.
         </p>
         {oauthGrantsUnavailable ? (
           <p class="settings-help">
@@ -669,6 +684,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({
                   <th>Application</th>
                   <th>Client ID</th>
                   <th>Access</th>
+                  <th>Acts as</th>
                   <th>Connected</th>
                   <th>Last used</th>
                   <th />

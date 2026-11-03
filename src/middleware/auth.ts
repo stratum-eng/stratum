@@ -39,7 +39,8 @@ declare module "hono" {
     /** How the caller authenticated — CSRF checks apply to "session" only. */
     authVia?: "token" | "session";
     /** What the authenticating API token may do (#254). Absent for session and
-     * agent callers, whose authority is not token-scoped. */
+     * agent-token callers, whose authority is not token-scoped. An agent-bound
+     * OAuth grant (#409) sets it: its scope still applies. */
     tokenScope?: ApiTokenScope;
     /** Row id of the authenticating scoped token (#254). Present for scoped
      * tokens ONLY — the legacy credential also resolves to `read_write`, so
@@ -580,8 +581,22 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         );
       }
 
-      c.set("userId", grant.data.user.id);
-      c.set("username", grant.data.user.username);
+      // A grant bound to an agent (#409, ADR 010) authenticates AS that agent,
+      // acting for the consenting user: exactly the context a `stratum_agent_`
+      // token produces, and deliberately with no `userId`, so every rule
+      // written for agent callers (authorship, provenance, event actors, the
+      // approval-count exclusion) applies to MCP traffic too. The delegated-
+      // credential markers below are still set, so the scope rule, the admin
+      // refusal and `cannotMintLegacyCredential` (agent minting, approvals)
+      // hold as well.
+      const boundAgent = grant.data.agent;
+      if (boundAgent !== undefined) {
+        c.set("agentId", boundAgent.id);
+        c.set("agentOwnerId", grant.data.user.id);
+      } else {
+        c.set("userId", grant.data.user.id);
+        c.set("username", grant.data.user.username);
+      }
       c.set("authVia", "token");
       c.set("tokenScope", grant.data.scope);
       c.set("oauthGrantId", grant.data.grantId);
@@ -606,6 +621,7 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         userId: grant.data.user.id,
         clientId: grant.data.clientId,
         scope: grant.data.scope,
+        ...(boundAgent !== undefined ? { agentId: boundAgent.id } : {}),
       });
       await next();
       return;

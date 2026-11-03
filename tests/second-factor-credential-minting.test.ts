@@ -397,6 +397,28 @@ describe("OAuth consent (MCP and CLI grants)", () => {
     expect(count("oauth_auth_codes")).toBe(before);
   });
 
+  // #409: choosing "a new agent" on the consent screen is a credential mint
+  // too, so the same unmet policy must leave no agent behind.
+  it("creates no agent when the consent asked for a new one under an unmet policy", async () => {
+    const clientId = await registerClient();
+    const agentsBefore = count("agents");
+    const post = await call("/oauth/authorize", {
+      method: "POST",
+      cookie: cookies.unmet,
+      form: {
+        client_id: clientId,
+        redirect_uri: REDIRECT,
+        code_challenge: challenge,
+        state: "xyz",
+        decision: "allow",
+        act_as: "new",
+        agent_name: "Editor on my-laptop",
+      },
+    });
+    expect(post.status).not.toBe(302);
+    expect(count("agents")).toBe(agentsBefore);
+  });
+
   it("issues a code once the policy is met", async () => {
     const clientId = await registerClient();
     const post = await call("/oauth/authorize", {
