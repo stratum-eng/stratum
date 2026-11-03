@@ -1,6 +1,11 @@
 import { Hono } from "hono";
 import { type EventActor, emitEvent } from "../queue/events";
 import { createChangeWithEvaluation, createWorkspaceFork } from "../services/change-flow";
+import {
+  IP_NOT_ALLOWED,
+  ipNotAllowedMessage,
+  takeRecordedIpDenial,
+} from "../services/org-ip-allowlist";
 import { getAgentByToken } from "../storage/agents";
 import { resolveApiToken } from "../storage/api-tokens";
 import { updateChangeStatus } from "../storage/changes";
@@ -116,6 +121,29 @@ function authChallenge(): Response {
 // authenticated caller cannot probe private-repo existence.
 function gitNotFound(): Response {
   return new Response("Not found\n", { status: 404, headers: { "Content-Type": "text/plain" } });
+}
+
+/**
+ * The answer to a caller the authz helpers refused (#399-aware).
+ *
+ * git smart-HTTP owns its own auth and skips `authMiddleware`, but not authz:
+ * every clone, fetch and push here is decided by `canReadProject` /
+ * `canWriteProject` / `canWriteWorkspace`, which consult the owning org's IP
+ * allowlist for every credential kind. When that is what refused, the caller
+ * is a member who would otherwise be let in, so they are told so plainly with
+ * a 403 rather than handed the no-leak 404 (which would send git round a
+ * credential-retry loop for a repository they can see from the office). Every
+ * other refusal keeps the existing truth table.
+ */
+async function refuseGitAccess(isAnonymous: boolean): Promise<Response> {
+  const denial = await takeRecordedIpDenial();
+  if (denial !== undefined) {
+    return new Response(`${ipNotAllowedMessage(denial)}\n`, {
+      status: 403,
+      headers: { "Content-Type": "text/plain", "X-Stratum-Error-Code": IP_NOT_ALLOWED },
+    });
+  }
+  return isAnonymous ? authChallenge() : gitNotFound();
 }
 
 function upstreamError(): Response {
@@ -528,9 +556,7 @@ async function authorizeProject(
           identity?.userId,
           identity?.agentOwnerId,
         );
-  if (!allowed) {
-    return isAnonymous ? authChallenge() : gitNotFound();
-  }
+  if (!allowed) return refuseGitAccess(isAnonymous);
   const scopeRefusal = refuseReadOnlyToken(scope, identity, logger);
   if (scopeRefusal) return scopeRefusal;
 
@@ -605,7 +631,7 @@ async function authorizeWorkspace(
           identity?.userId,
           identity?.agentOwnerId,
         );
-  if (!allowed) return isAnonymous ? authChallenge() : gitNotFound();
+  if (!allowed) return refuseGitAccess(isAnonymous);
   const scopeRefusal = refuseReadOnlyToken(scope, identity, logger);
   if (scopeRefusal) return scopeRefusal;
 
@@ -648,7 +674,7 @@ async function authorizeWorkspace(
       identity?.userId,
       identity?.agentOwnerId,
     );
-    if (!canWrite) return isAnonymous ? authChallenge() : gitNotFound();
+    if (!canWrite) return refuseGitAccess(isAnonymous);
   }
 
   // Validate the host before a (possibly write-scoped) token is minted against it.

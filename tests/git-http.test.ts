@@ -123,7 +123,7 @@ vi.mock("../src/storage/agents", () => ({
 // user_owner is the org admin.
 vi.mock("../src/storage/orgs", async (importActual) => {
   const actual = await importActual<typeof import("../src/storage/orgs")>();
-  return {
+  return (await import("./helpers/org-access-mock")).withOrgAccess({
     ...actual,
     getOrgAccessLevel: vi.fn(
       async (_db: unknown, _logger: unknown, _orgId: string, uid: string) => {
@@ -132,7 +132,7 @@ vi.mock("../src/storage/orgs", async (importActual) => {
         return "none";
       },
     ),
-  };
+  });
 });
 
 const ARTIFACTS_REMOTE = "https://acct.artifacts.cloudflare.net/git/@owner/repo.git";

@@ -102,7 +102,10 @@ export type AuditAction =
   // GitHub App installation ↔ Stratum owner links (migration 059). A link is
   // what lets an owner's projects act on that installation's repositories.
   | "github_app.installation_linked"
-  | "github_app.installation_unlinked";
+  | "github_app.installation_unlinked"
+  // Per-org IP allowlist (#399). Denials are sampled: see auditIpDenial.
+  | "org.ip_allowlist_changed"
+  | "org.ip_access_denied";
 
 export interface AuditEntry {
   id: string;

@@ -781,7 +781,7 @@ describe("passkeys as a second factor", () => {
       await enroll(admin);
       const res = await put(admin, true);
       expect(res.status).toBe(200);
-      expect(await jsonOf(res)).toEqual({ requireSecondFactor: true });
+      expect(await jsonOf(res)).toEqual({ requireSecondFactor: true, ipAllowlist: [] });
       expect(auditActions(raw)).toContain("org.second_factor_policy_changed");
       // Org-scoped, so it shows up in the org's own audit log (#255).
       expect(
@@ -790,7 +790,7 @@ describe("passkeys as a second factor", () => {
           .get(),
       ).toEqual({ org_id: "org_1" });
       const read = await req("/api/orgs/acme/security", { cookie: admin });
-      expect(await jsonOf(read)).toEqual({ requireSecondFactor: true });
+      expect(await jsonOf(read)).toEqual({ requireSecondFactor: true, ipAllowlist: [] });
     });
 
     it("binds only the requiring org's resources, never the member's other access", async () => {

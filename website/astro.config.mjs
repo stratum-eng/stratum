@@ -182,6 +182,7 @@ export default defineConfig({
             { label: "CLI", slug: "guides/cli" },
             { label: "MCP server", slug: "guides/mcp" },
             { label: "Passkeys and 2FA", slug: "guides/passkeys" },
+            { label: "Org IP allowlists", slug: "guides/org-ip-allowlist" },
             { label: "Troubleshooting", slug: "guides/troubleshooting" },
             { label: "FAQ", slug: "guides/faq" },
             { label: "Trust and data residency", slug: "guides/trust" },

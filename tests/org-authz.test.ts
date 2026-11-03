@@ -12,9 +12,9 @@ import {
 } from "../src/utils/authz";
 import type { Logger } from "../src/utils/logger";
 
-vi.mock("../src/storage/orgs", () => ({
-  getOrgAccessLevel: vi.fn(),
-}));
+vi.mock("../src/storage/orgs", async () =>
+  (await import("./helpers/org-access-mock")).withOrgAccess({ getOrgAccessLevel: vi.fn() }),
+);
 
 const mockLogger: Logger = {
   trace: vi.fn(),

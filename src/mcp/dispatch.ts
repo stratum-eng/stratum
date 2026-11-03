@@ -21,7 +21,9 @@
  * by the same checks a curl against the public API would meet.
  */
 import { Hono } from "hono";
+import { contextStorage } from "hono/context-storage";
 import { authMiddleware } from "../middleware/auth";
+import { orgIpAllowlistMiddleware } from "../middleware/org-ip-allowlist";
 import { changesRouter } from "../routes/changes";
 import { issuesRouter } from "../routes/issues";
 import { orgsRouter } from "../routes/orgs";
@@ -33,7 +35,33 @@ import type { Env } from "../types";
 
 const api = new Hono<{ Bindings: Env }>();
 
+/**
+ * The original caller's address for each in-flight sub-request (#399).
+ *
+ * A sub-request is built by the server, not received from the edge, so it has
+ * no `CF-Connecting-IP` of its own — judged naively, every tool call would
+ * come from nowhere (or, worse, from the Worker). The address is therefore
+ * handed over out of band, keyed by the very `Request` object, and published
+ * as the `clientIp` context variable before anything else runs. Nothing a
+ * client sends can reach this map: `StratumClient` replays only
+ * `Authorization` and `Content-Type`, and this middleware sets `clientIp`
+ * unconditionally, so even a header on the sub-request would never be read.
+ */
+const subRequestClientIps = new WeakMap<Request, string>();
+
+// Its own context store, so the authz helpers' `tryGetContext` sees THIS
+// sub-request (with its caller, binding and client address), not the outer
+// `/mcp` request it was dispatched from.
+api.use("*", contextStorage());
+api.use("*", async (c, next) => {
+  c.set("clientIp", subRequestClientIps.get(c.req.raw) ?? "");
+  await next();
+});
 api.use("*", authMiddleware);
+// Turns an IP-allowlist refusal into `IP_NOT_ALLOWED` with a message the tool
+// result can show, instead of a bare "not found" for a project the caller can
+// see from an allowed network.
+api.use("*", orgIpAllowlistMiddleware);
 
 // Mount order mirrors src/index.ts exactly. It matters: `issuesRouter` and
 // `projectsRouter` share the `/api/projects` prefix, and swapping them lets a
@@ -73,11 +101,17 @@ api.onError((error, c) => {
  * publishes). Passing `undefined` is supported because `app.fetch(request,
  * env)` in tests supplies no execution context — the same accommodation
  * `getWaitUntil` makes elsewhere.
+ *
+ * `clientIp` is the address of the client that called `/mcp` (its
+ * `CF-Connecting-IP`), so org IP allowlists judge the tool call by where its
+ * caller really is. "" (unknown) fails closed for a restricted org.
  */
 export async function dispatchApiRequest(
   request: Request,
   env: Env,
-  ctx?: ExecutionContext,
+  ctx: ExecutionContext | undefined,
+  clientIp: string,
 ): Promise<Response> {
+  subRequestClientIps.set(request, clientIp);
   return api.fetch(request, env, ctx);
 }

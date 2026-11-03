@@ -9,6 +9,7 @@ import { analyticsMiddleware } from "./middleware/analytics";
 import { authMiddleware } from "./middleware/auth";
 import { configGuardMiddleware } from "./middleware/config-guard";
 import { csrfMiddleware } from "./middleware/csrf";
+import { orgIpAllowlistMiddleware } from "./middleware/org-ip-allowlist";
 import { orgSecondFactorMiddleware } from "./middleware/org-second-factor";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
 import { securityHeadersMiddleware, setHtmlSecurityHeaders } from "./middleware/security-headers";
@@ -113,6 +114,9 @@ app.use("*", csrfMiddleware);
 // own resources (#256). Context storage (registered first, below) is how the
 // authz helpers read the request without a parameter at every call site.
 app.use("*", orgSecondFactorMiddleware);
+// After auth, same shape: an org's IP allowlist (#399) binds only that org's
+// resources — `/api/orgs/:slug/*` here, org projects through authz.
+app.use("*", orgIpAllowlistMiddleware);
 app.use("*", rateLimitMiddleware());
 
 app.get("/health", (c) => c.json({ status: "ok", service: "stratum" }));

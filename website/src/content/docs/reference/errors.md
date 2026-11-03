@@ -79,6 +79,16 @@ codes are in the [OpenAPI specification](/reference/openapi/).
   `Referer` that is missing, malformed, or names a different host. Enforced for
   session-cookie callers and for the few unauthenticated endpoints that must not
   be forgeable (magic-link verify); bearer-token callers are unaffected
+- `IP_NOT_ALLOWED` — `403`; the request came from outside an organization's IP
+  allowlist and asked for that org's resources (its projects or
+  `/api/orgs/{slug}/` endpoints). The body carries `org` and the `ip` Stratum
+  saw (`null` when the request had no client address). Only a member sees this;
+  anyone else gets the route's usual `404`. Over git it is a plain-text `403`
+  with an `X-Stratum-Error-Code: IP_NOT_ALLOWED` header. See
+  [Organization IP allowlists](/guides/org-ip-allowlist/)
+- `IP_ALLOWLIST_SELF_LOCKOUT` — `409`; `PUT /api/orgs/{slug}/security` would save
+  an IP allowlist that excludes the caller's own address. Resend with
+  `"allowSelfLockout": true` to save it anyway
 - `SYNC_DIVERGED` — the upstream and the Stratum copy have genuinely diverged in
   content. The fetch window is deepened incrementally first, so this is a real
   conflict rather than a too-shallow clone

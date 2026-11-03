@@ -1,5 +1,6 @@
+import { orgIpAllowsCurrentRequest } from "../services/org-ip-allowlist";
 import { orgBlockedBySecondFactor } from "../services/org-second-factor";
-import { type OrgAccessLevel, getOrgAccessLevel } from "../storage/orgs";
+import { type OrgAccessLevel, getOrgAccess } from "../storage/orgs";
 import type {
   BoundCredentialBinding,
   CredentialBinding,
@@ -132,20 +133,36 @@ function ownsDirectly(project: ProjectEntry, userId?: string, agentOwnerId?: str
 }
 
 /**
- * The caller's access to an org's projects, after the org's own "require a
- * second factor" policy (#256): a session that has not passed the factor the
- * org requires gets none of the access the org granted. Only this org's
- * resources are affected — see `orgBlockedBySecondFactor`.
+ * The caller's access to an org's projects, after the org's own policies:
+ * - "require a second factor" (#256): a session that has not passed the
+ *   factor the org requires gets none of the access the org granted;
+ * - the IP allowlist (#399): a request from outside the org's networks gets
+ *   none of it either, whatever the credential — session, API token, agent
+ *   token or OAuth grant all resolve to an actor and land here.
+ *
+ * Only this org's resources are affected. The allowlist rides on the same row
+ * as the membership lookup (`getOrgAccess`), so it costs no extra round-trip,
+ * and is consulted only for a caller the org would otherwise let in: a
+ * non-member's "none" is never turned into an IP refusal, so a refusal
+ * reveals nothing about a private project that membership did not already.
+ *
+ * Exported for routes that act on an org without a project in hand (creating
+ * a project in an org).
  */
-async function orgAccessLevel(
+export async function effectiveOrgAccessLevel(
   db: D1Database,
   orgId: string,
   actor: string,
   record = true,
 ): Promise<OrgAccessLevel> {
   if (orgBlockedBySecondFactor(orgId, record)) return "none";
-  return getOrgAccessLevel(db, logger, orgId, actor);
+  const access = await getOrgAccess(db, logger, orgId, actor);
+  if (access.level === "none") return "none";
+  if (!orgIpAllowsCurrentRequest(orgId, access.ipAllowlist, record)) return "none";
+  return access.level;
 }
+
+const orgAccessLevel = effectiveOrgAccessLevel;
 
 function levelAllowsWrite(level: OrgAccessLevel): boolean {
   return level === "write" || level === "admin";
