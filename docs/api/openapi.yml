@@ -4685,8 +4685,10 @@ paths:
         installed the app (or, for a personal-account installation, that
         account) may link it, proven by the caller's GitHub-verified identity;
         anyone else gets 404. The target is the caller's personal account, or
-        an org they administer. Accepts JSON or a form post (which redirects
-        back to `/github/app/setup`).
+        an org they administer. An installation already linked elsewhere is a
+        403 (`LINKED_ELSEWHERE`) unless the caller is that owner or an admin
+        of its org. Accepts JSON or a form post (which redirects back to
+        `/github/app/setup`).
       parameters:
         - name: installationId
           in: path
@@ -4733,8 +4735,8 @@ paths:
       tags: [github]
       summary: Unlink a GitHub App installation
       description: |
-        Allowed for whoever could link it, the linked user, or an admin of the
-        linked org. Its repositories fall back to the instance token.
+        Allowed for the linked user, or an admin of the linked org. Its
+        repositories fall back to the instance token.
       parameters:
         - name: installationId
           in: path

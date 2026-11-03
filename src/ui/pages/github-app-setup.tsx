@@ -29,6 +29,8 @@ export const SETUP_NOTICES = {
   not_authorized:
     "Only the GitHub user who installed the app (or, for a personal account, its owner) can link it.",
   bad_target: "Pick your personal account or an organization you administer.",
+  linked_elsewhere:
+    "This installation is already linked to an account you don't manage. Its owner (or an admin of that organization) must unlink it first.",
   bound_token: "This token is limited to one project or organization and cannot do that.",
   error: "Something went wrong. Nothing was changed — try again.",
 } as const;

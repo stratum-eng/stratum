@@ -274,10 +274,35 @@ describe("POST /api/github/installations/:id/unlink", () => {
     expect(audit.org_id).toBe("org_acme");
   });
 
-  it("lets the installer unlink it", async () => {
+  it("does not let the installer unlink an org's link without being its admin", async () => {
+    // alice installed the app but is only a member of acme: the GitHub-side
+    // proof is not authority over the Stratum org the link now belongs to.
     const res = await unlink("alice");
-    expect(res.status).toBe(200);
-    expect(owner()).toEqual({ type: null, id: null });
+    expect(res.status).toBe(404);
+    expect(owner()).toEqual({ type: "org", id: "org_acme" });
+  });
+
+  it("does not let the installer move an org's link to themselves", async () => {
+    const res = await link("alice");
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { code: string }).code).toBe("LINKED_ELSEWHERE");
+    expect(owner()).toEqual({ type: "org", id: "org_acme" });
+
+    const listed = await call("alice", "GET", "/api/github/installations");
+    const body = (await listed.json()) as { installations: Array<{ canLink: boolean }> };
+    expect(body.installations[0]?.canLink).toBe(false);
+  });
+
+  it("lets the installer relink once the org's admin has unlinked it", async () => {
+    expect((await unlink("bob")).status).toBe(200);
+    expect((await link("alice")).status).toBe(200);
+    expect(owner()).toEqual({ type: "user", id: "usr_alice" });
+  });
+
+  it("lets an installer who also administers the linked org move it", async () => {
+    raw.prepare("UPDATE org_members SET role = 'admin' WHERE user_id = 'usr_alice'").run();
+    expect((await link("alice")).status).toBe(200);
+    expect(owner()).toEqual({ type: "user", id: "usr_alice" });
   });
 
   it("hides it from anyone else", async () => {

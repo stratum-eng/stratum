@@ -70,19 +70,37 @@ async function adminOrgs(
     .map(({ org }) => ({ id: org.id, slug: org.slug }));
 }
 
-/** May `user` remove the installation's current link? */
-async function canUnlink(
+/**
+ * Does `user` hold the installation's CURRENT Stratum owner — is it them, or
+ * an org they administer? Required to unlink, and to move an existing link
+ * elsewhere. GitHub-side control alone is not enough for either: the installer
+ * proof is recorded once and never re-checked, so it can outlive the
+ * installer's place in the GitHub org, and must not let them pull a link an
+ * org's admins set away from that org.
+ */
+async function holdsCurrentOwner(
   db: D1Database,
   installation: GitHubInstallation,
   user: User,
   logger: Logger,
 ): Promise<boolean> {
-  if (githubIdentityControls(installation, user.githubId)) return true;
   const owner = installation.owner;
   if (!owner) return false;
   if (owner.type === "user") return owner.id === user.id;
   const role = await getOrgMemberRole(db, logger, owner.id, user.id);
   return role.success && role.data === "admin";
+}
+
+/** What `user` may do with an installation, for the listings. */
+async function permissionsFor(
+  db: D1Database,
+  installation: GitHubInstallation,
+  user: User,
+  logger: Logger,
+): Promise<{ canLink: boolean; canUnlink: boolean }> {
+  const holds = await holdsCurrentOwner(db, installation, user, logger);
+  const controls = githubIdentityControls(installation, user.githubId);
+  return { canLink: controls && (!installation.owner || holds), canUnlink: holds };
 }
 
 async function ownerLabel(
@@ -144,8 +162,7 @@ app.get(SETUP_PATH, async (c) => {
       accountType: inst.accountType,
       suspended: inst.suspendedAt !== undefined,
       ...(inst.owner ? { linkedTo: await ownerLabel(c.env.DB, inst.owner, user, logger) } : {}),
-      canLink: githubIdentityControls(inst, user.githubId),
-      canUnlink: await canUnlink(c.env.DB, inst, user, logger),
+      ...(await permissionsFor(c.env.DB, inst, user, logger)),
     })),
   );
 
@@ -199,8 +216,7 @@ app.get("/api/github/installations", async (c) => {
       account: { login: inst.accountLogin, type: inst.accountType },
       suspended: inst.suspendedAt !== undefined,
       linkedTo: inst.owner ? await ownerLabel(c.env.DB, inst.owner, user, logger) : null,
-      canLink: githubIdentityControls(inst, user.githubId),
-      canUnlink: await canUnlink(c.env.DB, inst, user, logger),
+      ...(await permissionsFor(c.env.DB, inst, user, logger)),
     })),
   );
   return c.json({ installations, githubLinked: user.githubId !== undefined });
@@ -236,10 +252,16 @@ app.post("/api/github/installations/:id/link", async (c) => {
   // The proof of control. Not distinguishable from "not found" for a caller
   // with no claim on it, so installation ids can't be probed for accounts.
   if (!githubIdentityControls(installation, user.githubId)) {
-    const visible = await canUnlink(c.env.DB, installation, user, logger);
+    const visible = await holdsCurrentOwner(c.env.DB, installation, user, logger);
     return visible
       ? respond(c, { ok: false, notice: "not_authorized", status: 403 })
       : respond(c, { ok: false, notice: "not_found", status: 404 });
+  }
+
+  // Already linked: moving it takes authority over the current owner too, so
+  // a link is only ever changed with that owner's consent (see holdsCurrentOwner).
+  if (installation.owner && !(await holdsCurrentOwner(c.env.DB, installation, user, logger))) {
+    return respond(c, { ok: false, notice: "linked_elsewhere", status: 403 });
   }
 
   let target: StratumOwnerRef = { type: "user", id: user.id };
@@ -292,7 +314,7 @@ app.post("/api/github/installations/:id/unlink", async (c) => {
   const record = await getInstallation(c.env.DB, installationId, logger);
   if (!record.success) return respond(c, { ok: false, notice: "error", status: 500 });
   const installation = record.data;
-  if (!installation || !(await canUnlink(c.env.DB, installation, user, logger))) {
+  if (!installation || !(await holdsCurrentOwner(c.env.DB, installation, user, logger))) {
     return respond(c, { ok: false, notice: "not_found", status: 404 });
   }
 

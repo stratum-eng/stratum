@@ -51,14 +51,23 @@ administer.
 
 Omit `org` (or send `""`) to link it to your personal account. An org must be
 one you administer, or the request is a 400. An installation you can't prove
-control of is a 404, the same as one that doesn't exist. Relinking moves the
-installation to the new owner; each installation serves one Stratum owner.
+control of is a 404, the same as one that doesn't exist. Each installation
+serves one Stratum owner. Moving an existing link is a 403 (`LINKED_ELSEWHERE`)
+unless you are also the current owner or an admin of the current owner's org,
+so having installed the app never lets you take a link away from the account
+its admins chose.
+
+The installer is recorded once, when GitHub reports the installation, and is
+not re-checked against later org membership. If the person who installed the
+app leaves the GitHub organization, an organization owner should link the
+installation to the org (or suspend or uninstall the app on GitHub) so a stale
+installer cannot link it elsewhere.
 
 ## Unlink an installation
 `POST /api/github/installations/{installationId}/unlink`
 
-Allowed for whoever could link it, the linked user, or an admin of the linked
-org. The installation's repositories go back to the instance token.
+Allowed for the linked user, or an admin of the linked org. The installation's
+repositories go back to the instance token.
 
 ## Operator allowlist
 
