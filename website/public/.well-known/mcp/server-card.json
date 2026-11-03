@@ -1,7 +1,7 @@
 {
   "name": "stratum",
   "title": "Stratum",
-  "description": "Gives any MCP-capable agent or editor the full evaluation-gated change flow: read files, fork workspaces, commit, open changes with each gate's verdict returned, review, merge, and track issues.",
+  "description": "Gives any MCP-capable agent or editor the full evaluation-gated change flow: read files, fork workspaces, commit, open changes with each gate's verdict returned, re-evaluate, comment, review, merge or promote to GitHub, track issues, create and import projects, and manage organizations.",
   "version": "0.2.0",
   "documentation": "https://docs.usestratum.dev/guides/mcp/",
   "repository": "https://github.com/stratum-eng/stratum",
@@ -42,6 +42,24 @@
     "stratum_list_issues",
     "stratum_create_issue",
     "stratum_update_issue",
-    "stratum_get_activity"
+    "stratum_get_activity",
+    "stratum_list_branches",
+    "stratum_create_project",
+    "stratum_import_project",
+    "stratum_get_import_status",
+    "stratum_get_sync_status",
+    "stratum_sync_project",
+    "stratum_evaluate_change",
+    "stratum_promote_change",
+    "stratum_comment_change",
+    "stratum_list_change_comments",
+    "stratum_create_org",
+    "stratum_list_orgs",
+    "stratum_get_org",
+    "stratum_add_org_member",
+    "stratum_remove_org_member",
+    "stratum_create_team",
+    "stratum_list_teams",
+    "stratum_add_team_member"
   ]
 }

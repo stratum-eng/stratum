@@ -118,8 +118,8 @@ instance advertises itself with nothing to configure.
 
 | Scope | Grants |
 |---|---|
-| `mcp:read` | Read projects, files, changes, evaluations and issues. Exactly a read-only API token. |
-| `mcp:write` | The above, plus workspaces, commits, changes, merges, reviews and issue management. Exactly a read-write API token. |
+| `mcp:read` | Read projects, files, branches, changes and their comments, evaluations, import and sync status, issues, and the organizations and teams you belong to. Exactly a read-only API token. |
+| `mcp:write` | The above, plus creating and importing projects, syncing them, workspaces, commits, changes, re-evaluation, comments, merges, reviews, GitHub promotion, issue management, and organization, member and team management. Exactly a read-write API token. |
 
 A client that asks for no scope gets `mcp:read`. Most clients ask for more: the
 `401` challenge names `mcp:read mcp:write` as what full use of the endpoint
@@ -137,7 +137,10 @@ read-only grant out of the endpoint rather than restrict it. Each tool call is
 re-dispatched internally as a real API request carrying the same credential, and
 *that* request meets the identical check against the method the operation
 actually uses. So `stratum_get_file` works on an `mcp:read` grant and
-`stratum_commit` does not.
+`stratum_commit` does not. The same holds for every tool: each list/get tool
+dispatches a GET and works on a read-only grant, and each tool that creates,
+changes or removes anything dispatches a POST or DELETE and is refused on one,
+before the route runs.
 
 An OAuth grant is a *delegated* credential: it lives inside software you do not
 control. Two things it therefore cannot do, regardless of scope:
@@ -197,8 +200,12 @@ vetted by anyone. A name you do not recognise should be disconnected.
 
 ## The tools
 
-Nineteen tools cover the full contribution loop. Project arguments take a
-`namespace/slug` reference (`@acme/api` and `acme/api` both work).
+Thirty-seven tools cover the full contribution loop, from creating or importing
+a project to promoting a change to GitHub, plus organization management. Project
+arguments take a `namespace/slug` reference (`@acme/api` and `acme/api` both
+work); organization arguments take the org's slug (`acme` or `@acme`). Every
+tool's description states the access it needs, and the API behind it enforces
+exactly what it enforces over REST.
 
 **Identity and reading**
 
@@ -211,6 +218,24 @@ Nineteen tools cover the full contribution loop. Project arguments take a
 | `stratum_list_files` | File paths at the HEAD of the default branch. |
 | `stratum_get_file` | One file's content at HEAD. |
 | `stratum_get_activity` | Recent activity feed. |
+| `stratum_list_branches` | A project's branches. |
+
+**Creating and importing projects**
+
+| Tool | What it does |
+|---|---|
+| `stratum_create_project` | Create an empty project in your own namespace, or with `org` in that organization's (needs write access to the org). Optional `visibility` and `seed`. |
+| `stratum_import_project` | Import a GitHub, GitLab or Bitbucket repository by `url`. Without `org` it lands in your own namespace; with `org`, in that organization's — which needs **write** access there (an org admin, or a member of a team with write permission). A read-only member or a non-member is refused with `403`. `name` defaults to the source repository's name. Returns at once with `status: "queued"`. |
+| `stratum_get_import_status` | Follow an import: status, file counts, errors and logs. Until it completes, the project is visible only to people who can write to it. |
+| `stratum_get_sync_status` | An imported project's sync state against its source. |
+| `stratum_sync_project` | Pull new commits from the source repository, in your own namespace or an organization where you have write access. |
+
+Creating and importing are user actions: an agent token is refused, and so is a
+token bound to a single project. An org-bound token may create only inside its
+org and cannot import. A private project counts toward the private-project
+limit whichever namespace it lands in. See
+[Importing](importing.md#importing-into-an-organization) for the REST
+equivalent.
 
 **Forking and committing**
 
@@ -242,6 +267,10 @@ anyway.
 | `stratum_merge_change` | Merge a change that passed its gates and approvals. |
 | `stratum_reject_change` | Close a change without merging. |
 | `stratum_review_change` | Submit a `request_changes` verdict. `approve` is refused over MCP: approvals are made by a signed-in human in the browser. |
+| `stratum_evaluate_change` | Re-run a change's gates against its workspace's current state — after pushing more commits. Needs write access to the project. |
+| `stratum_comment_change` | Comment on a change: change-wide, anchored to a diff line (`file` + `line`), or as a reply (`parent_comment_id`). Needs read access to the project. |
+| `stratum_list_change_comments` | A change's comments in order, with anchors, replies and resolved state. |
+| `stratum_promote_change` | Push an **accepted** change's branch to the project's linked GitHub repository and open a PR (a draft by default) against the default branch. Needs write access to the project. |
 
 **Issues**
 
@@ -250,6 +279,24 @@ anyway.
 | `stratum_create_issue` | Open an issue; linking a change id auto-closes it on merge. |
 | `stratum_list_issues` | List issues, optionally by status. |
 | `stratum_update_issue` | Update status, title, or body by issue number. |
+
+**Organizations**
+
+| Tool | What it does |
+|---|---|
+| `stratum_create_org` | Create an organization; you become its admin. The slug cannot match an existing username or org. |
+| `stratum_list_orgs` | The organizations you belong to. |
+| `stratum_get_org` | One organization's record. Members only. |
+| `stratum_add_org_member` | Add a user (by Stratum user id) or change their role (`member` or `admin`). Org admins only. |
+| `stratum_remove_org_member` | Remove a member. Org admins only; any member may remove themselves. |
+| `stratum_create_team` | Create a team with `read`, `write` or `admin` permission across the org's projects. Org admins only. |
+| `stratum_list_teams` | An organization's teams. Members only. |
+| `stratum_add_team_member` | Add a user to a team. Org admins only. |
+
+A non-member asking about an organization gets the same "not found" as for one
+that does not exist. Organization tools are user actions — agent tokens can read
+an org their owner belongs to but cannot change one — and no token bound to a
+single project or org can reach them at all.
 
 **The billing surface is read-only, and stays that way.** `stratum_get_usage` is
 the only tool that touches it: there is no tool to raise a limit, buy capacity,
@@ -267,19 +314,23 @@ them alike. With an **agent token**, or an OAuth connection
 
 - **Works:** the project reading tools (`get_project`, `list_files`,
   `get_file`, `get_activity`), `stratum_create_workspace`, `stratum_commit`,
-  `stratum_create_change`, `stratum_create_issue`, `stratum_list_issues`, and
-  `stratum_get_usage` (which reports the **owner's** allowance) — an agent can
-  do everything up to and including proposing a gated change and opening
-  issues about its work. Address projects by `namespace/slug`
+  `stratum_create_change`, `stratum_comment_change`,
+  `stratum_list_change_comments`, `stratum_create_issue`, `stratum_list_issues`,
+  and `stratum_get_usage` (which reports the **owner's** allowance) — an agent
+  can do everything up to and including proposing a gated change, discussing it,
+  and opening issues about its work. Address projects by `namespace/slug`
   directly: `stratum_list_projects` returns an **empty list** on an agent
   token or a bound connection rather than the owner's projects. A bare agent
   token gets a 401 from `stratum_whoami`; a bound connection gets its identity.
 - **Always refused:** `stratum_merge_change`, `stratum_reject_change`,
-  `stratum_review_change`, and `stratum_update_issue`. Merging, deciding, and
-  issue triage are user actions, and review verdicts are refused from agent
-  tokens **entirely** — `request_changes` as much as `approve`. An agent's
-  feedback channel is [change comments](code-review.md), which the REST API
-  accepts from agents but this server does not yet expose as a tool.
+  `stratum_review_change`, `stratum_update_issue`, `stratum_evaluate_change`,
+  `stratum_promote_change`, `stratum_create_project`, `stratum_import_project`,
+  `stratum_sync_project`, and the organization tools that change anything.
+  Merging, deciding, issue triage, re-running gates, publishing to GitHub,
+  creating projects and administering orgs are user actions, and review
+  verdicts are refused from agent tokens **entirely** — `request_changes` as
+  much as `approve`. An agent's feedback channel is
+  [change comments](code-review.md), through `stratum_comment_change`.
 
 So an agent-token deployment is a *proposer*: it forks, commits, opens the
 change, and a human (over the UI, [CLI](cli.md), or their own MCP session)

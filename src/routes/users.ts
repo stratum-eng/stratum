@@ -95,7 +95,16 @@ app.get("/me", async (c) => {
 
   // `actingAs` is how an MCP client tells a grant acting as the user (no agent
   // provenance) from one bound to an agent. Every user credential reports it.
-  return ok({ id: user.id, email: user.email, createdAt: user.createdAt, actingAs: "user" });
+  // `username` names the caller's personal `@username` namespace, which a
+  // client needs to address its own projects (the MCP import tool resolves its
+  // default target from it).
+  return ok({
+    id: user.id,
+    email: user.email,
+    username: user.username,
+    createdAt: user.createdAt,
+    actingAs: "user",
+  });
 });
 
 /**

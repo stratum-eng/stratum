@@ -533,10 +533,12 @@ const CONSENT_CSS = `
 /** Plain-language rendering of a scope. Never show a raw scope token to a
  * person and expect an informed decision. */
 function describeScope(scope: string): string[] {
-  const lines = ["Read your projects, files, changes, evaluations and issues"];
+  const lines = ["Read your projects, files, changes, evaluations, issues and organizations"];
   if (scope.split(/\s+/).includes(SCOPE_WRITE)) {
+    lines.push("Create and import projects, and keep imported projects in sync");
     lines.push("Create workspaces, commit files, and open changes for evaluation");
-    lines.push("Merge, reject and review changes, and manage issues");
+    lines.push("Merge, reject, review, comment on and promote changes, and manage issues");
+    lines.push("Create organizations and manage their members and teams, where you are an admin");
   }
   return lines;
 }
