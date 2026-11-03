@@ -204,8 +204,19 @@ async function readRunHealth(
     return err(new AppError("Failed to read backup run manifest", "STORAGE_ERROR", 500));
   }
   if (!res.data) return ok("unknown");
+  // A failed body read is a storage failure, not an unreadable manifest: treating
+  // it as "unknown" could hide the last healthy run from pruning and delete it.
+  const body = await fromPromise(res.data.arrayBuffer());
+  if (!body.success) {
+    logger.error(
+      "Failed to read backup run manifest body",
+      body.error instanceof Error ? body.error : undefined,
+      { key },
+    );
+    return err(new AppError("Failed to read backup run manifest", "STORAGE_ERROR", 500));
+  }
   try {
-    const stored = new Uint8Array(await res.data.arrayBuffer());
+    const stored = new Uint8Array(body.data);
     const parsed: unknown = JSON.parse(
       new TextDecoder().decode(await decodeBlob(stored, env.BACKUP_ENCRYPTION_SECRET)),
     );

@@ -226,7 +226,10 @@ The code does not check this inequality or warn when it fails.
 
 **Deletion does not reach backups.** A deleted account or project remains in
 backups until those runs age out of `BACKUP_RETENTION` (about two weeks with the
-defaults, sooner if extra on-demand runs are taken). It also does not delete
+defaults, sooner if extra on-demand runs are taken). One exception: the newest
+healthy run is never pruned, so if every run after it fails, that run, and
+anything deleted after it was taken, stays until a healthy run replaces it.
+It also does not delete
 PostHog events or log lines already written.
 
 ## Data residency

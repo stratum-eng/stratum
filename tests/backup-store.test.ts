@@ -212,6 +212,31 @@ describe("run listing + retention", () => {
       expect(pruned.success).toBe(false);
       expect([1, 2, 3, 4].every((d) => survives(r2, day(d)))).toBe(true);
     });
+
+    // A body read that fails is a storage error, not an unreadable manifest:
+    // read as "unknown", a newer run could fill the window and evict the last
+    // healthy one.
+    it("prunes nothing when a manifest body read fails after get succeeds", async () => {
+      const r2 = makeFakeR2();
+      await seedManifest(r2, day(1), { healthy: true });
+      await seedManifest(r2, day(2), {});
+      for (let d = 3; d <= 4; d++) await seedManifest(r2, day(d), { healthy: false });
+      const realGet = r2.get.bind(r2);
+      r2.get = (async (key: string) => {
+        const obj = await realGet(key);
+        if (obj && key.startsWith(day(1))) {
+          return Object.assign(Object.create(Object.getPrototypeOf(obj)), obj, {
+            arrayBuffer: () => Promise.reject(new Error("stream reset")),
+          });
+        }
+        return obj;
+      }) as typeof r2.get;
+
+      const pruned = await pruneRuns(r2, 1, logger);
+
+      expect(pruned.success).toBe(false);
+      expect([1, 2, 3, 4].every((d) => survives(r2, day(d)))).toBe(true);
+    });
   });
 
   it("paginates listing across R2 pages", async () => {
