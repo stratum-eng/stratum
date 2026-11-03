@@ -217,6 +217,8 @@ export interface Env {
   // When BETA_GATE is enabled AND REFERRAL_SERVICE_URL is set, new-account creation
   // requires a valid referral/invite code validated against the cloud referral service.
   BETA_GATE?: string;
+  /** "1" turns off agent-initiated signup (`/api/agent-signup`); on by default. */
+  AGENT_SIGNUP_DISABLED?: string;
   REFERRAL_SERVICE_URL?: string;
   REFERRAL_SERVICE_SECRET?: string;
   /** Plan/entitlements service (Stratum Cloud only; OSS self-hosters leave these

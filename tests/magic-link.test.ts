@@ -19,6 +19,11 @@ vi.mock("../src/storage/magic-links", () => ({
     magicStore.delete(token);
     return { success: true, data: payload };
   }),
+  // Read without consuming; agent-signup approval peeks before spending a link.
+  peekMagicLink: vi.fn(async (_db: unknown, token: string) => ({
+    success: true,
+    data: magicStore.get(token) ?? null,
+  })),
 }));
 
 // Mock the users storage module

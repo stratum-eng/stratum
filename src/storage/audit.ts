@@ -21,6 +21,8 @@ export type AuditAction =
   | "token.legacy_disabled"
   | "agent.created"
   | "agent.revoked"
+  | "agent_signup.requested"
+  | "agent_signup.approved"
   | "webhook.created"
   | "webhook.toggled"
   | "webhook.deleted"

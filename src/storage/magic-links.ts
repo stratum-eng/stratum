@@ -6,11 +6,18 @@ import { type Result, err, ok } from "../utils/result";
 /** The data carried by a magic link, opaque to this module. */
 export interface MagicLinkPayload {
   email: string;
-  intent: "signup" | "login";
+  /**
+   * `agent-signup` is a signup an agent requested on the human's behalf
+   * (POST /api/agent-signup); approving it also releases an agent token to the
+   * agent that asked, via `agentSignupId`.
+   */
+  intent: "signup" | "login" | "agent-signup";
   rememberMe?: boolean;
   username?: string;
   inviteCode?: string;
   createdAt?: number;
+  /** The `agent_signups` row this link approves; set only for `agent-signup`. */
+  agentSignupId?: string;
 }
 
 /**
@@ -104,5 +111,37 @@ export async function inspectMagicLink(
       error: error instanceof Error ? error.message : String(error),
     });
     return null;
+  }
+}
+
+/**
+ * Reads a magic link's payload WITHOUT consuming it, for checks that must pass
+ * before the single use is spent (an agent-signup approval checks the user
+ * code first, so a typo does not burn the link). Never a substitute for
+ * consumeMagicLink: a peek grants nothing.
+ *
+ * @param db - D1 database
+ * @param token - The magic-link token
+ * @param logger - Request logger
+ * @returns The payload of a live, unconsumed link, or null
+ */
+export async function peekMagicLink(
+  db: D1Database,
+  token: string,
+  logger: Logger,
+): Promise<Result<MagicLinkPayload | null, AppError>> {
+  try {
+    const tokenHash = await hashToken(token);
+    const now = Math.floor(Date.now() / 1000);
+    const row = await db
+      .prepare(
+        "SELECT payload FROM magic_links WHERE token_hash = ? AND consumed = 0 AND expires_at > ?",
+      )
+      .bind(tokenHash, now)
+      .first<{ payload: string }>();
+    return ok(row ? (JSON.parse(row.payload) as MagicLinkPayload) : null);
+  } catch (error) {
+    logger.error("Failed to read magic link", error instanceof Error ? error : undefined);
+    return err(new AppError("Failed to read magic link", "DATABASE_ERROR", 500));
   }
 }

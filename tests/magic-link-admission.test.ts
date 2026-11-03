@@ -11,6 +11,7 @@ import { makeMagicLinkLimiters } from "./helpers/magic-link-limiter";
 vi.mock("../src/storage/magic-links", () => ({
   createMagicLink: vi.fn(async () => ({ success: true, data: undefined })),
   consumeMagicLink: vi.fn(async () => ({ success: true, data: null })),
+  peekMagicLink: vi.fn(async () => ({ success: true, data: null })),
 }));
 
 vi.mock("../src/storage/users", () => ({

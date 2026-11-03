@@ -282,9 +282,54 @@ requests. A small set of endpoints requires no authentication at all:
 - `GET /health`, `GET /api/health`, `GET /api/health/simple` — liveness and
   dependency health checks
 - `GET /api/users/check-username` — username availability
+- `POST /api/agent-signup` and `POST /api/agent-signup/poll` — agent-initiated
+  signup (see [below](#agent-initiated-signup))
 - `POST /api/webhooks/github` — the inbound GitHub webhook receiver, which is
   authenticated by HMAC signature (`X-Hub-Signature-256`) against the
   configured webhook secret rather than by a bearer token
+
+## Agent-initiated signup
+
+An agent can get its human onto Stratum without a browser of its own:
+
+```bash
+# 1. The agent asks for the account. Nothing is created yet.
+curl -X POST https://app.usestratum.dev/api/agent-signup \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","username":"you","agentName":"Claude Code","inviteCode":"ABCD1234"}'
+# → 202 {"pollToken":"stratum_asp_…","userCode":"WXYZ-4KHT","interval":5,"expiresAt":"…"}
+
+# 2. The agent shows you the userCode. You get an email naming the agent; the
+#    link asks for that code, then creates your account exactly as a normal
+#    signup would, and signs you in.
+
+# 3. The agent polls until approved, then receives its own agent token.
+curl -X POST https://app.usestratum.dev/api/agent-signup/poll \
+  -H 'Content-Type: application/json' -d '{"pollToken":"stratum_asp_…"}'
+# → {"status":"pending"} … then once:
+# → {"status":"complete","agent":{…},"token":"stratum_agent_…"}
+```
+
+The code is what ties the approval to *your* agent. It is never in the email,
+so someone who requests an account for an address that isn't theirs cannot get
+it approved by an unsuspecting click: the person at that address has no code to
+type. If no agent of yours showed you a code, don't approve. Five wrong codes
+end the request, and the agent's next poll answers 410 `LOCKED`.
+
+What the agent ends up with is an **agent token** under your account, not your
+own credential: it acts with your access, it is recorded as the agent in
+provenance, and it can never submit a review, so approvals stay yours. Revoke it
+from **Settings** like any other agent.
+
+The endpoint carries the same limits as the web signup form: the per-address
+and per-IP email caps, the closed-beta invite code where the instance requires
+one, and 15-minute single-use approval links. A request lasts 30 minutes, and is
+deleted a day after it expires. An
+address that already has an account is refused (409 `EMAIL_EXISTS`) rather
+than attached to, because attaching an agent to an existing account takes that
+account's owner, not a link the agent asked for; connect an agent from
+Settings or over OAuth instead. Operators can turn the endpoint off with
+`AGENT_SIGNUP_DISABLED=1`.
 
 ## Admin API key
 

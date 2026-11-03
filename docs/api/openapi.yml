@@ -3457,6 +3457,174 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/agent-signup:
+    post:
+      operationId: requestAgentSignup
+      tags: [agents]
+      security: []
+      summary: Request a Stratum account on a human's behalf (unauthenticated)
+      description: |
+        An agent asks for an account for the person at `email`. Stratum emails
+        that address an approval link naming the agent, and returns a `userCode`
+        the agent must show its human: the approval page requires it, and it is
+        never in the email, so only the person working with the requesting agent
+        can approve (five wrong entries end the request). Nothing is created
+        until then. The response also carries a `pollToken` (shown once, stored
+        only as a hash) for `POST /api/agent-signup/poll`, which returns an agent
+        token owned by the new account once approved.
+
+        Subject to the same caps as a web signup: the per-email and per-IP
+        magic-link send limits (the attempt is counted before any existence
+        check), and the closed-beta invite code where the instance requires one.
+        An address that already has an account is refused rather than attached
+        to: an existing user connects an agent from Settings or over OAuth.
+        Disabled by the operator with `AGENT_SIGNUP_DISABLED=1` (404).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, username, agentName]
+              properties:
+                email: { type: string, format: email }
+                username:
+                  type: string
+                  description: The account's username, under the same rules as web signup.
+                agentName:
+                  type: string
+                  pattern: "^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$"
+                  description: Shown to the human in the approval email and used as the agent's name.
+                model:
+                  type: string
+                  pattern: "^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$"
+                  description: Optional model identifier recorded on the agent.
+                inviteCode:
+                  type: string
+                  description: Required while the instance's closed-beta gate is on.
+      responses:
+        "202":
+          description: Approval email sent; poll with the returned secret
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [signupId, status, pollToken, userCode, pollUrl, interval, expiresAt, message]
+                properties:
+                  signupId: { type: string }
+                  status: { type: string, enum: [pending] }
+                  pollToken: { type: string, description: "Secret; shown once" }
+                  userCode:
+                    type: string
+                    example: WXYZ-4KHT
+                    description: Show this to the human; they type it to approve. Never emailed.
+                  pollUrl: { type: string, example: /api/agent-signup/poll }
+                  interval: { type: integer, description: Suggested seconds between polls }
+                  expiresAt: { type: string, format: date-time }
+                  message: { type: string }
+        "400":
+          description: Body is not a JSON object (`INVALID_BODY`), or invalid email, username, agentName or model
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Invite code missing or invalid (closed beta)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Agent signup is disabled on this instance
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The address already has an account, or the username is taken
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Signup email send limit reached
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: The instance cannot send email
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/agent-signup/poll:
+    post:
+      operationId: pollAgentSignup
+      tags: [agents]
+      security: []
+      summary: Poll an agent signup; collect the agent token once approved
+      description: |
+        Returns `pending` until the human approves. The first poll after
+        approval returns `complete` with the agent token (shown once); every
+        later poll gets 410 `ALREADY_COLLECTED`. Concurrent polls cannot both
+        collect. A request expires 30 minutes after it was made, approved or not.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pollToken]
+              properties:
+                pollToken: { type: string }
+      responses:
+        "200":
+          description: Still pending, or complete with the agent token
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    title: AgentSignupPending
+                    required: [status, interval, expiresAt]
+                    properties:
+                      status: { type: string, enum: [pending] }
+                      interval: { type: integer, description: Suggested seconds between polls }
+                      expiresAt: { type: string, format: date-time }
+                  - type: object
+                    title: AgentSignupComplete
+                    required: [status, user, agent, token]
+                    properties:
+                      status: { type: string, enum: [complete] }
+                      user:
+                        type: object
+                        required: [id, username]
+                        properties:
+                          id: { type: string }
+                          username: { type: string }
+                      agent:
+                        type: object
+                        required: [id, name, ownerId]
+                        properties:
+                          id: { type: string }
+                          name: { type: string }
+                          ownerId: { type: string }
+                          model: { type: string, description: Present when the request named one }
+                      token: { type: string, description: "Agent token; shown once" }
+        "400":
+          description: Body is not a JSON object (`INVALID_BODY`), or a missing or malformed pollToken
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No request matches, or agent signup is disabled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: >
+            Expired (`EXPIRED`), already collected (`ALREADY_COLLECTED`), or dead
+            after five wrong codes on the approval page (`LOCKED`, status `locked`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/users/me:
     get:
       operationId: getMe

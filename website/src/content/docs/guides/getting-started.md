@@ -41,6 +41,14 @@ every project is keyed under it (after deleting your last project, allow up to
 your handle or email address and let you pick another before the account
 exists. A separate display name, shown in the header, can be changed any time.
 
+**Or let your agent sign you up.** An agent can request the account for you
+with `POST /api/agent-signup` (your email, a username, and its own name). The
+agent shows you a short code, and you get an email naming the agent. Follow the
+link, type the code, and your account is created and you're signed in. The agent
+then receives its own agent token under it. The agent can work on your
+projects but can never approve a change. See
+[Agent-initiated signup](/reference/authentication/#agent-initiated-signup).
+
 ### Self-hosting
 
 Stratum is AGPL-3.0-or-later and self-hostable on your own Cloudflare account. You

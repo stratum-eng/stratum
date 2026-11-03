@@ -113,6 +113,10 @@ export const BACKUP_EXCLUDED_TABLES: readonly string[] = [
   // restored one could not be redeemed even if it weren't. Same reasoning as
   // `magic_links` above.
   "oauth_auth_codes",
+  // Agent-initiated signups (migration 058): a pending request lives 30 minutes
+  // and holds no credential, only the hash of the agent's poll secret. The
+  // account it creates is a normal `users` row, backed up as such.
+  "agent_signups",
 ];
 
 const PAGE_SIZE = 500;
