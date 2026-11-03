@@ -462,7 +462,7 @@ describe("restore round-trip with tags", () => {
     const walk = await walkRepoObjects(fs, SRC, 10_000_000, logger);
     if (!walk.success || !("objects" in walk.data)) throw new Error("walk failed");
     const snap = buildSnapshot(project, walk.data, "2026-08-18T00:00:00Z");
-    const tipSha = snap.manifest.tipSha;
+    const tipSha = snap.manifest.tipSha as string;
     // A real, present object id: only the NAME is hostile here.
     snap.manifest.tags = [{ name: tagName, oid: tipSha }];
 
@@ -493,7 +493,7 @@ describe("restore round-trip with tags", () => {
     const walk = await walkRepoObjects(fs, SRC, 10_000_000, logger);
     if (!walk.success || !("objects" in walk.data)) throw new Error("walk failed");
     const snap = buildSnapshot(project, walk.data, "2026-08-18T00:00:00Z");
-    snap.manifest.tags = [{ name: tagName, oid: snap.manifest.tipSha }];
+    snap.manifest.tags = [{ name: tagName, oid: snap.manifest.tipSha as string }];
 
     const rebuilt = await reconstructRepo(snap.pack, snap.manifest, logger);
 
@@ -513,7 +513,7 @@ describe("restore round-trip with tags", () => {
     const walk = await walkRepoObjects(fs, SRC, 10_000_000, logger);
     if (!walk.success || !("objects" in walk.data)) throw new Error("walk failed");
     const snap = buildSnapshot(project, walk.data, "2026-08-18T00:00:00Z");
-    snap.manifest.tags = [{ name: "release/v1.0.0", oid: snap.manifest.tipSha }];
+    snap.manifest.tags = [{ name: "release/v1.0.0", oid: snap.manifest.tipSha as string }];
 
     const rebuilt = await reconstructRepo(snap.pack, snap.manifest, logger);
 
@@ -684,5 +684,138 @@ describe("restoreProjectRepo tag push", () => {
       undefined,
       expect.objectContaining({ mainPushed: true, tagCount: 2 }),
     );
+  });
+});
+
+// #251: a repository whose only refs are tags (unborn HEAD). The snapshot
+// carries no tip, and restore must reproduce the tags without fabricating a
+// default branch for them.
+describe("tag-only repository (#251)", () => {
+  /** buildTaggedRepo with refs/heads/main removed: HEAD is an unborn symref, so
+   * c1 is reachable only via `lw` and c2 only via the annotated `keep`. */
+  async function buildTagOnlyRepo() {
+    const repo = await buildTaggedRepo();
+    // biome-ignore lint/suspicious/noExplicitAny: isomorphic-git fs shape
+    await (repo.fs as any).promises.unlink(`${SRC}/.git/refs/heads/main`);
+    return repo;
+  }
+
+  async function tagOnlySnapshot() {
+    const repo = await buildTagOnlyRepo();
+    const walk = await walkRepoObjects(repo.fs, SRC, 10_000_000, logger);
+    if (!walk.success || !("objects" in walk.data)) throw new Error("walk failed");
+    return { ...repo, snap: buildSnapshot(project, walk.data, "2026-08-18T00:00:00Z") };
+  }
+
+  it("snapshots both tags and every tag-reachable object, with no tip", async () => {
+    const { c1, c2, keepOid, snap } = await tagOnlySnapshot();
+    expect(snap.manifest.tipSha).toBeUndefined();
+    expect(snap.manifest.tags).toEqual([
+      { name: "keep", oid: keepOid },
+      { name: "lw", oid: c1 },
+    ]);
+    const rebuilt = await reconstructRepo(snap.pack, snap.manifest, logger);
+    if (!rebuilt.success) throw new Error("reconstruct failed");
+    const { fs: rfs, dir } = rebuilt.data;
+    // The annotated tag object and both commits came through the pack.
+    expect((await git.readTag({ fs: rfs, dir, oid: keepOid })).tag.object).toBe(c2);
+    expect((await git.listFiles({ fs: rfs, dir, ref: c2 })).sort()).toEqual(["a.txt", "side.txt"]);
+    expect(await git.listFiles({ fs: rfs, dir, ref: c1 })).toEqual(["a.txt"]);
+  });
+
+  it("reconstructs the tags and writes no default branch", async () => {
+    const { c1, keepOid, snap } = await tagOnlySnapshot();
+    const rebuilt = await reconstructRepo(snap.pack, snap.manifest, logger);
+    expect(rebuilt.success).toBe(true);
+    if (!rebuilt.success) return;
+    const { fs: rfs, dir } = rebuilt.data;
+
+    expect(await git.resolveRef({ fs: rfs, dir, ref: "refs/tags/keep" })).toBe(keepOid);
+    expect(await git.resolveRef({ fs: rfs, dir, ref: "refs/tags/lw" })).toBe(c1);
+    expect(await git.listBranches({ fs: rfs, dir })).toEqual([]);
+    // HEAD is unborn, as in the source — not pointed at a tag's target.
+    await expect(git.resolveRef({ fs: rfs, dir, ref: "HEAD" })).rejects.toThrow();
+  });
+
+  it("restores a manifest read back from storage (JSON round-trip) the same way", async () => {
+    const { c1, snap } = await tagOnlySnapshot();
+    const stored = JSON.parse(JSON.stringify(snap.manifest)) as RepoManifest;
+    const rebuilt = await reconstructRepo(snap.pack, stored, logger);
+    expect(rebuilt.success).toBe(true);
+    if (!rebuilt.success) return;
+    expect(
+      await git.resolveRef({ fs: rebuilt.data.fs, dir: rebuilt.data.dir, ref: "refs/tags/lw" }),
+    ).toBe(c1);
+  });
+
+  it("does not write a default-branch entry recorded in a tag-only manifest", async () => {
+    const { c1, snap } = await tagOnlySnapshot();
+    // Inconsistent on purpose: no tip, yet the advertisement listed `main`.
+    snap.manifest.branches = [
+      { name: "main", oid: c1 },
+      { name: "feature", oid: c1 },
+    ];
+    const rebuilt = await reconstructRepo(snap.pack, snap.manifest, logger);
+    expect(rebuilt.success).toBe(true);
+    if (!rebuilt.success) return;
+    expect(rebuilt.data.branches).toEqual(["feature"]);
+    expect(await git.listBranches({ fs: rebuilt.data.fs, dir: rebuilt.data.dir })).toEqual([
+      "feature",
+    ]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Restore: skipping default-branch entry in a manifest with no tip",
+      expect.objectContaining({ name: "main" }),
+    );
+  });
+
+  it("rejects a manifest with neither a tip nor any tag", async () => {
+    const { snap } = await tagOnlySnapshot();
+    snap.manifest.tags = [];
+    const rebuilt = await reconstructRepo(snap.pack, snap.manifest, logger);
+    expect(rebuilt.success).toBe(false);
+    if (rebuilt.success) return;
+    expect(rebuilt.error.message).toContain("neither a tip sha nor any tags");
+  });
+
+  it("restoreProjectRepo pushes only the tag refs and reports no tip", async () => {
+    mockPush.mockResolvedValue({ ok: true });
+    const env = {
+      ARTIFACTS: {
+        get: vi.fn(async () => null),
+        create: vi.fn(async () => ({ name: "repo", remote: project.remote, token: "tok" })),
+        delete: vi.fn(async () => true),
+      } as unknown as Env["ARTIFACTS"],
+    } as Env;
+    const { snap } = await tagOnlySnapshot();
+
+    const result = await restoreProjectRepo(env, snap, {}, logger);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.tipSha).toBeUndefined();
+    expect(mockPush.mock.calls.map((c) => (c[0] as { ref: string }).ref)).toEqual([
+      "refs/tags/keep",
+      "refs/tags/lw",
+    ]);
+  });
+});
+
+describe("pre-#251 manifest (always carries tipSha)", () => {
+  it("restores main and tags exactly as a freshly built manifest does", async () => {
+    const { fs, c1, keepOid } = await buildTaggedRepo();
+    const walk = await walkRepoObjects(fs, SRC, 10_000_000, logger);
+    if (!walk.success || !("objects" in walk.data)) throw new Error("walk failed");
+    const snap = buildSnapshot(project, walk.data, "2026-08-18T00:00:00Z");
+    // The stored shape every existing backup has: tipSha present as a string.
+    const legacy = JSON.parse(JSON.stringify(snap.manifest)) as RepoManifest;
+    expect(legacy.tipSha).toBe(c1);
+
+    const rebuilt = await reconstructRepo(snap.pack, legacy, logger);
+    expect(rebuilt.success).toBe(true);
+    if (!rebuilt.success) return;
+    const { fs: rfs, dir } = rebuilt.data;
+    expect(await git.resolveRef({ fs: rfs, dir, ref: "main" })).toBe(c1);
+    expect(await git.resolveRef({ fs: rfs, dir, ref: "HEAD" })).toBe(c1);
+    expect(await git.resolveRef({ fs: rfs, dir, ref: "refs/tags/keep" })).toBe(keepOid);
+    expect(await git.resolveRef({ fs: rfs, dir, ref: "refs/tags/lw" })).toBe(c1);
   });
 });

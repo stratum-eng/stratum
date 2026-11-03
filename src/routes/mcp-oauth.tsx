@@ -1,24 +1,3 @@
-/**
- * Stratum as an OAuth 2.1 authorization server, for the remote MCP endpoint
- * (#349).
- *
- * The flow this implements is the one an MCP client runs unattended:
- *
- *   1. It hits `/mcp` with no credential and gets a 401 whose
- *      `WWW-Authenticate` names `/.well-known/oauth-protected-resource`.
- *   2. That document points at this authorization server's metadata.
- *   3. The client registers itself (`POST /oauth/register`) — it has never
- *      spoken to this instance before and nobody configured it in advance.
- *   4. It opens `/oauth/authorize` in the user's browser, where a human sees a
- *      consent screen and clicks Allow.
- *   5. It exchanges the resulting code at `/oauth/token` with a PKCE verifier.
- *
- * Steps 1-3 and 5 are unauthenticated, which is what makes "paste a URL into
- * your editor" work at all. Everything that actually confers access hangs off
- * step 4 — a human, in their own browser, in an authenticated session.
- * `client_name` on that screen is self-asserted by an anonymous registrant, so
- * the screen says so.
- */
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { setHtmlSecurityHeaders } from "../middleware/security-headers";
@@ -45,6 +24,28 @@ import {
 import { getUser } from "../storage/users";
 import type { Env } from "../types";
 import { SourceFooter } from "../ui/components/source-footer";
+/**
+ * Stratum as an OAuth 2.1 authorization server, for the remote MCP endpoint
+ * (#349).
+ *
+ * The flow this implements is the one an MCP client runs unattended:
+ *
+ *   1. It hits `/mcp` with no credential and gets a 401 whose
+ *      `WWW-Authenticate` names `/.well-known/oauth-protected-resource`.
+ *   2. That document points at this authorization server's metadata.
+ *   3. The client registers itself (`POST /oauth/register`) — it has never
+ *      spoken to this instance before and nobody configured it in advance.
+ *   4. It opens `/oauth/authorize` in the user's browser, where a human sees a
+ *      consent screen and clicks Allow.
+ *   5. It exchanges the resulting code at `/oauth/token` with a PKCE verifier.
+ *
+ * Steps 1-3 and 5 are unauthenticated, which is what makes "paste a URL into
+ * your editor" work at all. Everything that actually confers access hangs off
+ * step 4 — a human, in their own browser, in an authenticated session.
+ * `client_name` on that screen is self-asserted by an anonymous registrant, so
+ * the screen says so.
+ */
+import { StylesheetLinks } from "../ui/stylesheet";
 import type { createLogger } from "../utils/logger";
 import { mcpResourceIdentifier } from "../utils/oauth-challenge";
 import { rememberPostLoginRedirect } from "../utils/post-login-redirect";
@@ -433,7 +434,7 @@ async function renderAuthorizeError(
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>{title} — Stratum</title>
-        <link rel="stylesheet" href="/ui.css" />
+        <StylesheetLinks />
         <style>{CONSENT_CSS}</style>
       </head>
       <body>
@@ -583,7 +584,7 @@ app.get("/oauth/authorize", async (c) => {
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Authorize — Stratum</title>
-        <link rel="stylesheet" href="/ui.css" />
+        <StylesheetLinks />
         <style>{CONSENT_CSS}</style>
       </head>
       <body>

@@ -14,6 +14,8 @@ import {
 } from "../storage/webhooks";
 import type { Env, ProjectEntry } from "../types";
 import { SOURCE_FOOTER_HTML } from "../ui/components/source-footer";
+import { type WebhookFormField, webhookFormError } from "../ui/pages/webhooks";
+import { STYLESHEET_LINKS_HTML } from "../ui/stylesheet";
 import {
   type BindingContext,
   canWriteProject,
@@ -26,6 +28,7 @@ import type { Logger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 import { badRequest, created, forbidden, internalError, notFound, ok } from "../utils/response";
 import { validateWebhookUrl } from "../utils/validation";
+import { renderWebhooksPage } from "./form-pages";
 
 // Webhook config body is small (a URL string + an events list).
 const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
@@ -184,7 +187,7 @@ function revealSecretPage(
   const heading = escapeHtml(opts.heading);
   return noStore(
     c.html(
-      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${heading} — Stratum</title><link rel="stylesheet" href="/ui.css"></head><body><main class="main" style="max-width:640px"><div class="card settings-token-reveal"><h3 style="margin-top:0">${heading}</h3><p class="settings-help"><strong>Copy the signing secret now — it will not be shown again.</strong></p><p class="settings-help">Payload URL: <code>${escapeHtml(opts.url)}</code></p><div class="token-reveal-row"><code class="settings-token" id="webhook-secret">${escapeHtml(opts.secret)}</code><button type="button" class="btn btn-small" id="copy-secret">Copy</button></div><p class="settings-help" style="margin-top:0.75rem">Verify each delivery's <code>X-Stratum-Signature</code> (HMAC-SHA256) with this secret.</p><p style="margin-top:1rem"><a href="${escapeHtml(opts.backUrl)}">&larr; Back to webhooks</a></p></div></main>${SOURCE_FOOTER_HTML}<script nonce="${escapeHtml(nonce)}">${COPY_SECRET_SCRIPT}</script></body></html>`,
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${heading} — Stratum</title>${STYLESHEET_LINKS_HTML}</head><body><main class="main" style="max-width:640px"><div class="card settings-token-reveal"><h3 style="margin-top:0">${heading}</h3><p class="settings-help"><strong>Copy the signing secret now — it will not be shown again.</strong></p><p class="settings-help">Payload URL: <code>${escapeHtml(opts.url)}</code></p><div class="token-reveal-row"><code class="settings-token" id="webhook-secret">${escapeHtml(opts.secret)}</code><button type="button" class="btn btn-small" id="copy-secret">Copy</button></div><p class="settings-help" style="margin-top:0.75rem">Verify each delivery's <code>X-Stratum-Signature</code> (HMAC-SHA256) with this secret.</p><p style="margin-top:1rem"><a href="${escapeHtml(opts.backUrl)}">&larr; Back to webhooks</a></p></div></main>${SOURCE_FOOTER_HTML}<script nonce="${escapeHtml(nonce)}">${COPY_SECRET_SCRIPT}</script></body></html>`,
       opts.status,
     ),
   );
@@ -219,13 +222,41 @@ app.post("/:namespace/:slug/webhooks", async (c) => {
     body = { url: form.url, events: form.events };
   }
 
+  // The management page's form gets the page back with the reason under the
+  // field and its own values refilled, not a raw JSON 400. Rendered here from
+  // this request's body rather than redirected with the values in the query:
+  // a URL that prefilled the form would let anyone hand an admin a webhook to
+  // their own endpoint, one click from saved (see routes/form-pages.tsx).
+  const isForm = !contentType.includes("application/json");
+  const backToForm = async (field: WebhookFormField) => {
+    const page = await renderWebhooksPage(
+      c,
+      logger,
+      project,
+      SUBSCRIBABLE_EVENTS,
+      {
+        error: webhookFormError(field),
+        values: {
+          url: typeof body.url === "string" ? body.url : undefined,
+          events: (Array.isArray(body.events) ? body.events : [body.events]).filter(
+            (event): event is string => typeof event === "string",
+          ),
+        },
+      },
+      400,
+    );
+    return "error" in page ? internalError("Failed to load webhooks") : page;
+  };
+
   const urlResult = validateWebhookUrl(body.url, logger);
   if (!urlResult.success) {
+    if (isForm) return backToForm("url");
     return badRequest(urlResult.error[0]?.message ?? "Invalid webhook URL");
   }
 
   const events = sanitizeEvents(body.events);
   if (events === null) {
+    if (isForm) return backToForm("events");
     return badRequest(
       `events must be "*" or a comma-separated subset of: ${SUBSCRIBABLE_EVENTS.join(", ")}`,
     );
@@ -248,6 +279,7 @@ app.post("/:namespace/:slug/webhooks", async (c) => {
     actorType: "user",
     actorId: userId,
     subject: webhookResult.data.id,
+    project,
     detail: { project: project.name, url: webhookResult.data.url },
   });
 
@@ -349,6 +381,7 @@ app.post("/:namespace/:slug/webhooks/:id/toggle", async (c) => {
     actorType: "user",
     actorId: c.get("userId"),
     subject: id,
+    project,
     detail: { project: project.name, active: !webhookResult.data.active },
   });
 
@@ -395,6 +428,7 @@ app.post("/:namespace/:slug/webhooks/:id/regenerate-secret", async (c) => {
     actorType: "user",
     actorId: c.get("userId"),
     subject: id,
+    project,
     detail: { project: project.name },
   });
 
@@ -442,6 +476,7 @@ app.delete("/:namespace/:slug/webhooks/:id", async (c) => {
     actorType: "user",
     actorId: c.get("userId"),
     subject: id,
+    project,
     detail: { project: project.name },
   });
 
@@ -479,6 +514,7 @@ app.post("/:namespace/:slug/webhooks/:id/delete", async (c) => {
     actorType: "user",
     actorId: c.get("userId"),
     subject: id,
+    project,
     detail: { project: project.name },
   });
 

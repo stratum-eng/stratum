@@ -22,6 +22,7 @@ import type {
 import { buildEvaluationReport, reportEvaluationToGitHub } from "../github/sync";
 import { type EventActor, emitEvent } from "../queue/events";
 import { getAgent } from "../storage/agents";
+import { getCommitLogPreferNative } from "../storage/artifacts-reads";
 import { createChange, updateChangeStatus } from "../storage/changes";
 import {
   type BillingSubject,
@@ -33,7 +34,6 @@ import { recordEvalRuns } from "../storage/eval-runs";
 import {
   artifactsRepoNameFromRemote,
   freshRepoToken,
-  getCommitLog,
   getDiffBetweenRepos,
 } from "../storage/git-ops";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
@@ -73,7 +73,8 @@ export async function resolveProjectHead(
   }
   const readToken = await freshRepoToken(env.ARTIFACTS, project.remote, "read", logger);
   if (!readToken.success) return null;
-  const logResult = await getCommitLog(
+  const logResult = await getCommitLogPreferNative(
+    env.ARTIFACTS,
     project.remote,
     readToken.data,
     logger,

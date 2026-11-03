@@ -6,7 +6,6 @@ import {
 } from "../services/domain-verification";
 import { discoverOidcConfiguration } from "../services/oidc-discovery";
 import { recordAudit } from "../storage/audit";
-import { type Org, getOrgBySlug, isOrgAdmin, isOrgMember } from "../storage/orgs";
 import {
   type SsoConnection,
   deleteSsoConnection,
@@ -21,9 +20,9 @@ import {
 import type { Env } from "../types";
 import { SSO_SECRET_SALT, encryptToken } from "../utils/crypto";
 import { ConflictError, ValidationError } from "../utils/errors";
-import { type Logger, createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
-import { appError, badRequest, forbidden, notFound, ok } from "../utils/response";
+import { appError, badRequest, ok } from "../utils/response";
+import { type OrgAdminContext, requireOrgAdmin } from "./org-admin-access";
 
 /**
  * Org SSO admin API (#253 Task 4), mounted under /api/orgs/:slug/sso behind
@@ -39,52 +38,18 @@ const app = new Hono<{ Bindings: Env }>();
 // Config bodies are a handful of short strings plus a small domain list.
 const MAX_SSO_BODY_BYTES = 64 * 1024;
 
-interface OrgAdminContext {
-  org: Org;
-  userId: string;
-  logger: Logger;
-}
-
 type SsoHandlerContext = Context<{ Bindings: Env }>;
 
 /**
- * Shared gate: 501 without SSO_ENCRYPTION_SECRET, then org-admin authz.
- * Non-members get the same 404 as a missing org (no existence leak);
- * members without admin get 403.
+ * Shared gate: 501 without SSO_ENCRYPTION_SECRET, then the org-admin authz
+ * every org admin surface shares (see `requireOrgAdmin` in
+ * ./org-admin-access).
  */
-async function requireOrgAdmin(c: SsoHandlerContext): Promise<OrgAdminContext | Response> {
+async function requireSsoOrgAdmin(c: SsoHandlerContext): Promise<OrgAdminContext | Response> {
   if (!c.env.SSO_ENCRYPTION_SECRET) {
     return c.json({ error: "SSO is not configured on this server" }, 501);
   }
-
-  const userId = c.get("userId");
-  if (!userId) return c.json({ error: "Unauthorized" }, 401);
-
-  const slug = c.req.param("slug") ?? "";
-  const logger = createLogger({ path: c.req.path, userId, slug });
-
-  const orgResult = await getOrgBySlug(c.env.DB, logger, slug);
-  if (!orgResult.success) {
-    logger.warn("Org not found for SSO admin request", { slug });
-    return notFound("Org", slug);
-  }
-  const org = orgResult.data;
-
-  const adminResult = await isOrgAdmin(c.env.DB, logger, org.id, userId);
-  const isAdmin = (adminResult.success && adminResult.data) || org.ownerId === userId;
-  if (!isAdmin) {
-    const memberResult = await isOrgMember(c.env.DB, logger, org.id, userId);
-    if (memberResult.success && memberResult.data) {
-      logger.warn("Non-admin member denied SSO admin access", { orgId: org.id, userId });
-      return forbidden("Forbidden");
-    }
-    // Fail closed: non-members and membership-lookup errors both get the
-    // missing-org 404.
-    logger.debug("SSO admin access denied (non-member or lookup failure)", { orgId: org.id });
-    return notFound("Org", slug);
-  }
-
-  return { org, userId, logger };
+  return requireOrgAdmin(c);
 }
 
 /** Admin-facing view: everything except the secret ciphertext and SCIM hash. */
@@ -126,7 +91,7 @@ function domainVerificationInfo(connection: SsoConnection) {
 }
 
 app.put("/:slug/sso", async (c) => {
-  const ctx = await requireOrgAdmin(c);
+  const ctx = await requireSsoOrgAdmin(c);
   if (ctx instanceof Response) return ctx;
   const { org, userId, logger } = ctx;
 
@@ -190,6 +155,7 @@ app.put("/:slug/sso", async (c) => {
     actorType: "user",
     actorId: userId,
     subject: org.id,
+    orgId: org.id,
     detail: { connectionId: connection.id, issuer, emailDomains },
   });
 
@@ -203,7 +169,7 @@ app.put("/:slug/sso", async (c) => {
 });
 
 app.get("/:slug/sso", async (c) => {
-  const ctx = await requireOrgAdmin(c);
+  const ctx = await requireSsoOrgAdmin(c);
   if (ctx instanceof Response) return ctx;
   const { org, logger } = ctx;
 
@@ -218,7 +184,7 @@ app.get("/:slug/sso", async (c) => {
 });
 
 app.delete("/:slug/sso", async (c) => {
-  const ctx = await requireOrgAdmin(c);
+  const ctx = await requireSsoOrgAdmin(c);
   if (ctx instanceof Response) return ctx;
   const { org, userId, logger } = ctx;
 
@@ -238,6 +204,7 @@ app.delete("/:slug/sso", async (c) => {
     actorType: "user",
     actorId: userId,
     subject: org.id,
+    orgId: org.id,
     detail: { connectionId: connection.id, reenabledUserIds },
   });
 
@@ -245,7 +212,7 @@ app.delete("/:slug/sso", async (c) => {
 });
 
 app.post("/:slug/sso/verify-domains", async (c) => {
-  const ctx = await requireOrgAdmin(c);
+  const ctx = await requireSsoOrgAdmin(c);
   if (ctx instanceof Response) return ctx;
   const { org, userId, logger } = ctx;
 
@@ -320,6 +287,7 @@ app.post("/:slug/sso/verify-domains", async (c) => {
     actorType: "user",
     actorId: userId,
     subject: org.id,
+    orgId: org.id,
     detail: { connectionId: connection.id, domains: connection.emailDomains },
   });
 
@@ -331,7 +299,7 @@ app.post("/:slug/sso/verify-domains", async (c) => {
 });
 
 app.post("/:slug/sso/enable", async (c) => {
-  const ctx = await requireOrgAdmin(c);
+  const ctx = await requireSsoOrgAdmin(c);
   if (ctx instanceof Response) return ctx;
   const { org, userId, logger } = ctx;
 
@@ -370,6 +338,7 @@ app.post("/:slug/sso/enable", async (c) => {
     actorType: "user",
     actorId: userId,
     subject: org.id,
+    orgId: org.id,
     detail: { connectionId: connection.id, enabled: true },
   });
 
@@ -377,7 +346,7 @@ app.post("/:slug/sso/enable", async (c) => {
 });
 
 app.post("/:slug/sso/disable", async (c) => {
-  const ctx = await requireOrgAdmin(c);
+  const ctx = await requireSsoOrgAdmin(c);
   if (ctx instanceof Response) return ctx;
   const { org, userId, logger } = ctx;
 
@@ -393,6 +362,7 @@ app.post("/:slug/sso/disable", async (c) => {
     actorType: "user",
     actorId: userId,
     subject: org.id,
+    orgId: org.id,
     detail: { connectionId: connection.id, enabled: false },
   });
 
@@ -400,7 +370,7 @@ app.post("/:slug/sso/disable", async (c) => {
 });
 
 app.post("/:slug/sso/scim-token", async (c) => {
-  const ctx = await requireOrgAdmin(c);
+  const ctx = await requireSsoOrgAdmin(c);
   if (ctx instanceof Response) return ctx;
   const { org, userId, logger } = ctx;
 
@@ -416,6 +386,7 @@ app.post("/:slug/sso/scim-token", async (c) => {
     actorType: "user",
     actorId: userId,
     subject: org.id,
+    orgId: org.id,
     detail: { connectionId: connection.id },
   });
 

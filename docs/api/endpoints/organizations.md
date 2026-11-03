@@ -25,3 +25,64 @@ Members and teams are managed under `/api/orgs/{slug}/members` and
 `/api/orgs/{slug}/teams` — add and remove a member, create, list and delete a
 team, and add and remove a team's members. See the
 [OpenAPI specification](../openapi.yml) for the exact routes and schemas.
+
+Every add, removal, and role change of a member, and every team created,
+deleted, joined, or left, is recorded in the org's audit log below.
+
+## Audit log (org admins/owner)
+
+- `GET /api/orgs/:slug/audit` — one page of the org's audit trail, newest first
+- `GET /api/orgs/:slug/audit/export` — the same entries as an NDJSON download
+
+Plain members get `403`; non-members get the same `404` as a missing org.
+A token bound to a project or organization is refused with `403
+TOKEN_BINDING_EXCLUDES_ROUTE`, even one bound to this org: reading the audit
+log is org administration, so use a session or an unbound token.
+
+**What lands in an org's trail.** Events about the org itself (creation,
+member added/removed, role changed, teams and team membership, SSO connection
+and SCIM token administration, SCIM provisioning), failed SSO sign-ins against
+the org's connection, and events on projects the org owns (forced merges,
+dismissed approvals, manual conflict resolutions, webhooks, branches, deploy
+secrets, deployment approvals and retries, deletion requests). Account-level
+events — a user's own tokens, sessions, agents — belong to no org and appear
+only in the instance-wide `GET /api/admin/audit`. Entries recorded before org
+scoping shipped carry no org and are likewise instance-only.
+
+**Filters.** `action`, `actor` (actor id), `since` (inclusive) and `until`
+(exclusive, both ISO-8601). Malformed values are a `400`, never silently
+ignored.
+
+**Pagination.** `limit` (1–500, default 100). The response is
+`{ "entries": [...], "nextCursor": "..." }`; pass `nextCursor` back as
+`cursor` for the next, older page. It is absent on the last page. Cursors are
+keyset-based, so pages stay stable while new events are appended.
+
+```bash
+curl -H "Authorization: Bearer $STRATUM_TOKEN" \
+  "https://your-instance.workers.dev/api/orgs/acme/audit?action=org.member.role_changed&limit=50"
+```
+
+**Export.** `GET /api/orgs/:slug/audit/export` (or `?format=ndjson` on the read
+route) streams one JSON entry per line for the window `[since, until)`.
+`until` defaults to now and `since` to 30 days earlier; a window longer than
+90 days is refused with `400`, so export long periods in consecutive windows.
+If storage fails partway through, the download is aborted rather than cut
+short, so a file that completes is a complete window.
+
+```bash
+curl -H "Authorization: Bearer $STRATUM_TOKEN" -o acme-audit.ndjson \
+  "https://your-instance.workers.dev/api/orgs/acme/audit/export?since=2026-10-01T00:00:00Z&until=2026-11-01T00:00:00Z"
+```
+
+**Failed sign-ins.** An `auth.failed` entry is written only when the attempt
+identifies something real — for an org, an SSO callback that reached its
+connection with a valid sign-in state (bad or expired ID token, nonce
+mismatch, email outside the verified domains, a disabled account). Repeats
+for the same account or connection are collapsed to at most one entry per
+minute.
+
+**Immutability.** The audit log is append-only: there is no API to edit or
+delete an entry, and the database rejects updates and deletes. The single
+exception is account erasure, which replaces the erased person's actor id
+with `deleted-user` and changes nothing else.

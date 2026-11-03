@@ -25,7 +25,12 @@
  */
 import type { ApiTokenScope, User } from "../types";
 import { constantTimeEqual, hashToken } from "../utils/crypto";
-import { AppError, NotFoundError } from "../utils/errors";
+import {
+  AppError,
+  type CredentialRejection,
+  NotFoundError,
+  RejectedCredentialError,
+} from "../utils/errors";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
@@ -866,6 +871,11 @@ interface ResolvedOAuthRow {
   revoked_at: string | null;
 }
 
+/** A refusal that names the account, for the auth-failure audit (#255). */
+function rejected(reason: CredentialRejection, row: ResolvedOAuthRow): RejectedCredentialError {
+  return new RejectedCredentialError(reason, row.user_id, row.grant_id);
+}
+
 /**
  * Resolve an OAuth access token to its user, for `authMiddleware`.
  *
@@ -903,12 +913,12 @@ export async function resolveOAuthAccessToken(
   }
 
   if (!row) return err(new NotFoundError("Token", "by-token"));
-  if (row.revoked_at !== null) return err(new NotFoundError("Token", "revoked"));
-  if (row.deleting_at !== null) return err(new NotFoundError("Token", "owner-deleting"));
+  if (row.revoked_at !== null) return err(rejected("revoked", row));
+  if (row.deleting_at !== null) return err(rejected("owner-deleting", row));
   // A SCIM-disabled owner is as inert as a deleting one (#253); the column is
   // NULL on enabled accounts, and `!= null` also tolerates a stub row without it.
-  if (row.disabled_at != null) return err(new NotFoundError("Token", "owner-disabled"));
-  if (isExpired(row.access_expires_at)) return err(new NotFoundError("Token", "expired"));
+  if (row.disabled_at != null) return err(rejected("owner-disabled", row));
+  if (isExpired(row.access_expires_at)) return err(rejected("expired", row));
 
   const user: User = {
     id: row.user_id,

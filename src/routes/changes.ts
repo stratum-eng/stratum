@@ -16,6 +16,7 @@ import {
   resolveProjectHead,
   runEvaluation,
 } from "../services/change-flow";
+import { getCommitLogPreferNative } from "../storage/artifacts-reads";
 import { recordAudit } from "../storage/audit";
 import {
   dismissApprovalsAndUpdateStatus,
@@ -41,7 +42,6 @@ import {
   batchMergeStagedTrees,
   cloneRepo,
   freshRepoToken,
-  getCommitLog,
   getDiffBetweenRepos,
   mergeWorkspaceIntoProject,
   parseStagedTree,
@@ -231,7 +231,14 @@ async function resolveWorkspaceTip(
 ): Promise<string | null> {
   const readToken = await freshRepoToken(env.ARTIFACTS, workspaceRemote, "read", logger);
   if (!readToken.success) return null;
-  const logResult = await getCommitLog(workspaceRemote, readToken.data, logger, 1, branch);
+  const logResult = await getCommitLogPreferNative(
+    env.ARTIFACTS,
+    workspaceRemote,
+    readToken.data,
+    logger,
+    1,
+    branch,
+  );
   return logResult.success ? (logResult.data[0]?.sha ?? null) : null;
 }
 
@@ -671,6 +678,7 @@ app.post("/changes/:id/merge", async (c) => {
         actorType: "user",
         actorId: userId,
         subject: id,
+        project,
         detail: { project: change.project },
       });
       if (!auditResult.success) {
@@ -869,6 +877,7 @@ app.post("/changes/:id/merge", async (c) => {
       actorType: "user",
       actorId: userId,
       subject: id,
+      project,
       detail: { project: change.project },
     });
     if (!auditResult.success) {
@@ -1245,6 +1254,7 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
           actorType: "user",
           actorId: userId,
           subject: changeId,
+          project,
           detail: { project: projectName, batch: true },
         });
         if (!auditResult.success) {
@@ -1547,6 +1557,7 @@ app.post("/changes/:id/evaluate", async (c) => {
         actorType: "user",
         actorId: userId,
         subject: id,
+        project,
         detail: {
           project: change.project,
           dismissed: dismissedReviewerIds.length,

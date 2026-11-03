@@ -372,8 +372,8 @@ describe("reconstructRepo branch refs", () => {
     // a directory. An unguarded writeRef throws ENOTDIR and the outer catch
     // withholds the tip and every tag over one unusable ref.
     snap.manifest.branches = [
-      { name: "main/x", oid: snap.manifest.tipSha },
-      { name: "fine", oid: snap.manifest.tipSha },
+      { name: "main/x", oid: snap.manifest.tipSha as string },
+      { name: "fine", oid: snap.manifest.tipSha as string },
     ];
 
     const rebuilt = await reconstructRepo(snap.pack, snap.manifest, logger);
@@ -390,7 +390,7 @@ describe("reconstructRepo branch refs", () => {
     const walk = await walkRepoObjects(fs, SRC, 10_000_000, logger);
     if (!walk.success || !("objects" in walk.data)) throw new Error("walk failed");
     const snap = buildSnapshot(project, walk.data, "2026-08-18T00:00:00Z");
-    snap.manifest.branches = [{ name: "HEAD", oid: snap.manifest.tipSha }];
+    snap.manifest.branches = [{ name: "HEAD", oid: snap.manifest.tipSha as string }];
 
     const rebuilt = await reconstructRepo(snap.pack, snap.manifest, logger);
     expect(rebuilt.success).toBe(true);

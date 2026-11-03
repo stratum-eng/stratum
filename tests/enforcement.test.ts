@@ -1309,12 +1309,19 @@ describe("the private project gauge holds what it admits (#384)", () => {
       },
       passThroughOnException: () => {},
     } as unknown as ExecutionContext;
-    return (path: string, body: unknown) =>
+    return (path: string, body: unknown, as: "json" | "form" = "json") =>
       application.fetch(
         new Request(`https://t.test${path}`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          ...(as === "json"
+            ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+            : {
+                body: new URLSearchParams(
+                  Object.entries(body as Record<string, unknown>).map(
+                    ([key, value]): [string, string] => [key, String(value)],
+                  ),
+                ),
+              }),
         }),
         makeEnv({ IMPORT_QUEUE: { send: vi.fn() }, ...env } as unknown as Partial<Env>),
         ctx,
@@ -1682,6 +1689,35 @@ describe("the private project gauge holds what it admits (#384)", () => {
     expect(imported.status).toBe(403);
     expect(await imported.text()).toContain("cannot import projects");
     expect(meters.calls).toEqual([]);
+    expect(await holdsFor(userId)).toEqual([]);
+  });
+
+  it("leaves no hold behind when a browser form post is refused", async () => {
+    // #396's form refusals, before and after the gauge: the private-limit
+    // refusal takes no hold and still sends the browser back to the form, and
+    // a refusal after admission (name taken) goes through the `finally`.
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    await seedPrivate("@alice", "one", userId);
+    const post = app(userId, "alice", { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: failingArtifacts });
+
+    // Admitted (1 + 1 fits 2), then refused as taken: the form, and a 409.
+    const taken = await post("/projects", { name: "one", visibility: "private" }, "form");
+    expect(taken.status).toBe(409);
+    expect(await holdsFor(userId)).toEqual([]);
+
+    await seedPrivate("@alice", "two", userId);
+    const created = await post("/projects", { name: "three", visibility: "private" }, "form");
+    expect(created.status).toBe(303);
+    expect(created.headers.get("location")).toContain("/new?error=");
+
+    const imported = await post(
+      "/projects/@alice/four/import",
+      { url: "https://github.com/octo/widget", branch: "main" },
+      "form",
+    );
+    expect(imported.status).toBe(403);
+    expect(imported.headers.get("content-type")).toContain("text/html");
     expect(await holdsFor(userId)).toEqual([]);
   });
 

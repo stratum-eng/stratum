@@ -1,7 +1,6 @@
 import { NAV_CSS } from "./nav-css";
 
 export const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
 
 /* ============================================================================
    Design tokens
@@ -1131,4 +1130,34 @@ input[type="checkbox"] { width: 1.15rem; height: 1.15rem; accent-color: var(--ac
 .usage-unlimited { color: var(--success-text); }
 .usage-blocked { color: var(--error-text); }
 .usage-meter .progress-bar { margin-bottom: 0.5rem; }
+
+/* Inline form errors (src/ui/components/field-error.tsx), in place of the
+   browser's validation bubbles. Last in the sheet so the invalid border wins
+   over each form's own input and focus rules at equal specificity. */
+.field-error {
+  display: flex; align-items: baseline; gap: 0.4rem;
+  margin: 0.35rem 0 0; color: var(--error-text-soft); font-size: 0.8rem; line-height: 1.45;
+}
+.field-error::before {
+  /* The empty alt text keeps the glyph out of what a screen reader announces;
+     a browser without the syntax drops the second line and keeps the first. */
+  content: "!"; content: "!" / ""; flex-shrink: 0; display: inline-grid; place-items: center;
+  width: 1.1em; height: 1.1em; border-radius: 50%;
+  background: var(--danger-surface); color: var(--error-text); font-weight: 700; font-size: 0.75rem;
+}
+.field-error[hidden] { display: none; }
+.settings-form .field-error { margin-top: -0.4rem; }
+.webhook-form .field-error { margin-top: -0.4rem; }
+.webhook-events .field-error { margin: 0 0 0.5rem; }
+.secret-field { display: flex; flex-direction: column; }
+/* The :not() lifts these to (0,2,2), over the forms' own (0,2,1) input rules
+   such as .new-project-form input[type="text"]. */
+form input[aria-invalid="true"]:not([type="checkbox"]),
+form select[aria-invalid="true"]:not([multiple]),
+form textarea[aria-invalid="true"]:not([readonly]) {
+  border-color: var(--error-text);
+}
+form input[aria-invalid="true"]:focus-visible, form textarea[aria-invalid="true"]:focus-visible {
+  outline: none; border-color: var(--error-text); box-shadow: 0 0 0 3px var(--error-border);
+}
 `;

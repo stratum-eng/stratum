@@ -14,6 +14,12 @@ import {
 } from "../middleware/rate-limit";
 import { emitEvent } from "../queue/events";
 import { syncOrImportProject } from "../services/project-sync";
+import {
+  MAX_NATIVE_LOG_DEPTH,
+  getCommitLogPreferNative,
+  kvTreeListingCache,
+  listFilesInRepoPreferNative,
+} from "../storage/artifacts-reads";
 import { recordAudit } from "../storage/audit";
 import { captureDeletionTarget, isTargetDeleting } from "../storage/deletion";
 import { createDeletionJob } from "../storage/deletion-jobs";
@@ -23,11 +29,9 @@ import {
   createBranchRef,
   deleteBranchRef,
   freshRepoToken,
-  getCommitLog,
   importFromGitHub,
   initAndPush,
   isValidBranchName,
-  listFilesInRepo,
   listRepoBranches,
   listRepoTags,
   resolveBranchRef,
@@ -78,7 +82,14 @@ import type {
 } from "../types";
 import { getArtifactsRepoName, getUserNamespace, projectDefaultBranch } from "../types";
 import { getFileContent, isValidFilePath } from "../ui/file-content";
-import { NEW_PROJECT_ERROR_PRIVATE_LIMIT } from "../ui/pages/new-project";
+import {
+  NEW_PROJECT_ERROR_INVALID_NAME,
+  NEW_PROJECT_ERROR_INVALID_URL,
+  NEW_PROJECT_ERROR_NAME_TAKEN,
+  NEW_PROJECT_ERROR_PRIVATE_LIMIT,
+  type NewProjectFormValues,
+  newProjectError,
+} from "../ui/pages/new-project";
 import {
   type BindingContext,
   bindingAllowsCreateIn,
@@ -116,6 +127,7 @@ import {
   slugify,
   validateCloneDepth,
 } from "../utils/validation";
+import { renderNewProjectPage } from "./form-pages";
 
 const DEFAULT_FILES: Record<string, string> = {
   "README.md": "# My Project\n\nCreated with Stratum.\n",
@@ -176,7 +188,28 @@ app.post("/", async (c) => {
     body = { name: form.name, visibility: form.visibility, seed: form.seed, org: form.org };
   }
 
-  if (!isValidSlug(body.name)) return badRequest("name must be a 1-64 char alphanumeric slug");
+  // A browser submitting the new-project form gets the form back with the
+  // reason under the field it is about and its own values refilled, not a raw
+  // JSON 400. Rendered from this request rather than redirected with the
+  // values in the query, which would let a crafted link prefill the form (see
+  // routes/form-pages.tsx).
+  const isForm = !contentType.includes("application/json");
+  const formName = typeof body.name === "string" ? body.name : undefined;
+  const backToForm = (code: string, status: 400 | 409) =>
+    renderNewProjectPage(
+      c,
+      logger,
+      {
+        error: newProjectError(code),
+        values: { mode: "blank", ...(formName !== undefined ? { name: formName } : {}) },
+      },
+      status,
+    );
+
+  if (!isValidSlug(body.name)) {
+    if (isForm) return backToForm(NEW_PROJECT_ERROR_INVALID_NAME, 400);
+    return badRequest("name must be a 1-64 char alphanumeric slug");
+  }
 
   // Optional org ownership: the project lives under the org's namespace and
   // access follows org/team membership instead of personal ownership.
@@ -240,7 +273,7 @@ app.post("/", async (c) => {
       // A browser submitting the new-project form must land back on the
       // form, not on a raw JSON 403. The redirect carries a fixed code,
       // never the reason text, so the query string cannot inject copy.
-      if (!contentType.includes("application/json")) {
+      if (isForm) {
         return c.redirect(`/new?error=${NEW_PROJECT_ERROR_PRIVATE_LIMIT}`, 303);
       }
       return forbidden(gauge.reason);
@@ -269,6 +302,7 @@ app.post("/", async (c) => {
 
       // Validate slug length after slugification
       if (!isValidSlug(slug)) {
+        if (isForm) return backToForm(NEW_PROJECT_ERROR_INVALID_NAME, 400);
         return badRequest("Slug too long (max 100 characters)");
       }
       const projectId = generateProjectId();
@@ -276,6 +310,7 @@ app.post("/", async (c) => {
       // Check if project already exists
       const existingResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
       if (existingResult.success) {
+        if (isForm) return backToForm(NEW_PROJECT_ERROR_NAME_TAKEN, 409);
         return badRequest(`Project '${slug}' already exists in your namespace`);
       }
 
@@ -586,7 +621,31 @@ app.post(
           return badRequest("Invalid namespace format");
         }
 
-        if (!isValidSlug(slug)) return badRequest("Slug too long (max 100 characters)");
+        // The new-project form posts here in import mode; like POST /, a refusal
+        // the user can fix goes back to the form rather than to a JSON body.
+        const isForm = !(c.req.header("content-type") ?? "").includes("application/json");
+        // `importRateLimitMiddleware` has already taken this project's import
+        // lock. A refusal starts no import, so it gives the lock back; otherwise
+        // the user's corrected resubmission would be refused as "already
+        // importing" until the lock's TTL ran out.
+        //
+        // The form is re-rendered from this request, with its own values, not
+        // redirected with them in the query: a link that prefilled an import URL
+        // could lure someone into importing a repository of the sender's choosing.
+        const refuseToForm = async (
+          code: string,
+          values: NewProjectFormValues,
+          status: 400 | 403 = 400,
+        ) => {
+          await releaseImportLock(c.env.STATE, namespace, slug, logger);
+          return renderNewProjectPage(c, logger, { error: newProjectError(code), values }, status);
+        };
+        if (!isValidSlug(slug)) {
+          if (isForm) {
+            return refuseToForm(NEW_PROJECT_ERROR_INVALID_NAME, { mode: "import", name: slug });
+          }
+          return badRequest("Slug too long (max 100 characters)");
+        }
 
         const userNamespace = getUserNamespace(username);
 
@@ -715,8 +774,16 @@ app.post(
           };
         }
 
-        if (!isValidRepoUrl(body.url) && !isValidGitHubUrl(body.url))
+        // What the user typed, echoed back into the form on a refusal.
+        const formValues = {
+          mode: "import" as const,
+          name: slug,
+          ...(typeof body.url === "string" ? { url: body.url } : {}),
+        };
+        if (!isValidRepoUrl(body.url) && !isValidGitHubUrl(body.url)) {
+          if (isForm) return refuseToForm(NEW_PROJECT_ERROR_INVALID_URL, formValues);
           return badRequest("url must be a valid repository URL from GitHub, GitLab, or Bitbucket");
+        }
 
         // Validate clone depth (integer 1..MAX_CLONE_DEPTH, or 0 / "full" for
         // full history; absent -> DEFAULT_CLONE_DEPTH).
@@ -759,7 +826,12 @@ app.post(
             holdTtlMs: SINGLE_CREATION_HOLD_TTL_MS,
             waitUntil: getWaitUntil(c),
           });
-          if (!gauge.admitted) return forbidden(gauge.reason);
+          // A refusal took no hold, so there is nothing for the `finally` to
+          // release; the form path gives back the import lock as well.
+          if (!gauge.admitted) {
+            if (isForm) return refuseToForm(NEW_PROJECT_ERROR_PRIVATE_LIMIT, formValues, 403);
+            return forbidden(gauge.reason);
+          }
           gaugeSubjectId = gauge.gaugeSubjectId;
           releaseGaugeHold = gauge.release;
         }
@@ -1156,7 +1228,14 @@ app.get("/:namespace/:slug/files", async (c) => {
   const ref = await resolveRequestedRef(c, project, readToken.data, logger);
   if ("response" in ref) return ref.response;
 
-  const filesResult = await listFilesInRepo(project.remote, readToken.data, logger, ref.branch);
+  const filesResult = await listFilesInRepoPreferNative(
+    c.env.ARTIFACTS,
+    project.remote,
+    readToken.data,
+    logger,
+    ref.branch,
+    project.id ? { treeCache: kvTreeListingCache(c.env.STATE, project.id, logger) } : {},
+  );
   if (!filesResult.success) {
     logger.error("Failed to list files in repo", filesResult.error);
     return internalError(filesResult.error.message);
@@ -1218,6 +1297,7 @@ app.get("/:namespace/:slug/content", async (c) => {
     filePath,
     logger,
     ref.branch,
+    c.env.ARTIFACTS,
   );
   if (!contentResult.success) {
     return internalError(contentResult.error.message);
@@ -1276,14 +1356,27 @@ app.get("/:namespace/:slug/log", async (c) => {
   if (!(await canReadProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return notFound("Project", `${project.namespace}/${project.slug}`);
 
-  const depth = Number(c.req.query("depth") ?? 20);
+  // A positive integer, at most the 50 commits the log has ever returned; any
+  // other value (non-numeric, zero, negative) means the default.
+  const requestedDepth = Number(c.req.query("depth") ?? 20);
+  const depth =
+    Number.isInteger(requestedDepth) && requestedDepth > 0
+      ? Math.min(requestedDepth, MAX_NATIVE_LOG_DEPTH)
+      : 20;
   const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
   if (!readToken.success) return internalError(readToken.error.message);
 
   const ref = await resolveRequestedRef(c, project, readToken.data, logger);
   if ("response" in ref) return ref.response;
 
-  const logResult = await getCommitLog(project.remote, readToken.data, logger, depth, ref.branch);
+  const logResult = await getCommitLogPreferNative(
+    c.env.ARTIFACTS,
+    project.remote,
+    readToken.data,
+    logger,
+    depth,
+    ref.branch,
+  );
   if (!logResult.success) {
     logger.error("Failed to get commit log", logResult.error);
     return internalError(logResult.error.message);
@@ -1738,6 +1831,7 @@ app.post("/:namespace/:slug/branches", async (c) => {
     action: "branch.created",
     ...auditActor(c),
     subject: `${project.namespace}/${project.slug}`,
+    project,
     detail: { branch: createResult.data.name, oid: createResult.data.oid },
   });
 
@@ -1789,6 +1883,7 @@ app.delete("/:namespace/:slug/branches/*", async (c) => {
     action: "branch.deleted",
     ...auditActor(c),
     subject: `${project.namespace}/${project.slug}`,
+    project,
     detail: { branch: name },
   });
 
@@ -2885,6 +2980,7 @@ async function handleProjectDelete(c: Context<{ Bindings: Env }>) {
     actorType: "user",
     actorId: userId,
     subject: job.id,
+    project,
     detail: { kind: "project", namespace: project.namespace, slug: project.slug },
   });
 

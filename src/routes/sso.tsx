@@ -23,6 +23,8 @@ import {
 import { createUser, getUser, getUserByEmail } from "../storage/users";
 import type { Env, User } from "../types";
 import { SourceFooter } from "../ui/components/source-footer";
+import { StylesheetLinks } from "../ui/stylesheet";
+import { auditAuthFailure } from "../utils/auth-audit";
 import { SSO_SECRET_SALT, constantTimeEqual, decryptToken } from "../utils/crypto";
 import { NotFoundError } from "../utils/errors";
 import { type Logger, createLogger } from "../utils/logger";
@@ -190,7 +192,7 @@ function renderPickerPage(
           rel="icon"
           href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230d0d0d'/%3E%3Ctext%20x='16'%20y='23'%20font-family='monospace'%20font-size='20'%20font-weight='700'%20fill='%237ca9f7'%20text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E"
         />
-        <link rel="stylesheet" href="/ui.css" />
+        <StylesheetLinks />
         <style>{`
           /* Color tokens come from the shared stylesheet (/ui.css). */
 
@@ -638,7 +640,7 @@ async function exchangeCodeForIdToken(
 }
 
 type ResolutionFailure =
-  | { kind: "redirect"; code: keyof typeof ERROR_MESSAGES }
+  | { kind: "redirect"; code: keyof typeof ERROR_MESSAGES; userId?: string }
   | { kind: "server_error" };
 
 type ResolutionResult = { userId: string } | ResolutionFailure;
@@ -676,7 +678,7 @@ async function resolveSsoUser(
     }
     if (isDisabled(userResult.data)) {
       logger.warn("Blocked SSO sign-in — account disabled", { userId: userResult.data.id });
-      return { kind: "redirect", code: "account_disabled" };
+      return { kind: "redirect", code: "account_disabled", userId: userResult.data.id };
     }
     // For this connection, a sub-match signs in only: membership and the
     // scim_members row were established at adopt/JIT time and are SCIM's to
@@ -713,7 +715,7 @@ async function resolveSsoUser(
   if (byEmail.success) {
     if (isDisabled(byEmail.data)) {
       logger.warn("Blocked SSO sign-in — account disabled", { userId: byEmail.data.id });
-      return { kind: "redirect", code: "account_disabled" };
+      return { kind: "redirect", code: "account_disabled", userId: byEmail.data.id };
     }
     userId = byEmail.data.id;
     logger.info("Adopting existing account into SSO", { userId, orgId: connection.orgId });
@@ -854,6 +856,21 @@ app.get("/callback", async (c) => {
     return c.json({ error: "Failed to sign in" }, 500);
   }
 
+  // From here on the attempt carried a valid single-use state for a real org
+  // connection, so a refusal is an org-scoped failed sign-in worth auditing
+  // (#255). Earlier rejections (bad/replayed state) identify no org and stay
+  // in the structured log. Server errors are not authentication failures.
+  const auditSsoFailure = (reason: string, userId?: string): Promise<void> =>
+    auditAuthFailure(c, c.env.DB, logger, {
+      method: "sso",
+      reason,
+      actorType: userId !== undefined ? "user" : "system",
+      ...(userId !== undefined ? { actorId: userId } : {}),
+      subject: userId ?? connection.id,
+      orgId: connection.orgId,
+      detail: { connectionId: connection.id },
+    });
+
   const redirectUri = `${new URL(c.req.url).origin}/auth/sso/callback`;
   const idToken = await exchangeCodeForIdToken(
     connection,
@@ -863,7 +880,10 @@ app.get("/callback", async (c) => {
     redirectUri,
     logger,
   );
-  if (idToken === null) return ssoErrorRedirect(c, "sso_failed");
+  if (idToken === null) {
+    await auditSsoFailure("token_exchange_failed");
+    return ssoErrorRedirect(c, "sso_failed");
+  }
 
   // JWKS is fetched per login in practice (Workers isolates are ephemeral;
   // jose's in-isolate cache is best-effort) — accepted latency cost.
@@ -882,6 +902,7 @@ app.get("/callback", async (c) => {
       connectionId: connection.id,
       reason: err instanceof Error ? err.message.slice(0, 200) : "unknown",
     });
+    await auditSsoFailure("id_token_invalid");
     return ssoErrorRedirect(c, "sso_failed");
   }
 
@@ -892,20 +913,28 @@ app.get("/callback", async (c) => {
     logger.warn("id_token azp missing or mismatched on multi-audience token", {
       connectionId: connection.id,
     });
+    await auditSsoFailure("azp_mismatch");
     return ssoErrorRedirect(c, "sso_failed");
   }
 
   if (typeof payload.nonce !== "string" || payload.nonce !== loginState.nonce) {
     logger.warn("id_token nonce mismatch", { connectionId: connection.id });
+    await auditSsoFailure("nonce_mismatch");
     return ssoErrorRedirect(c, "invalid_state");
   }
 
   const extraction = extractClaims(payload, connection, logger);
-  if ("refusal" in extraction) return ssoErrorRedirect(c, extraction.refusal);
+  if ("refusal" in extraction) {
+    await auditSsoFailure(extraction.refusal);
+    return ssoErrorRedirect(c, extraction.refusal);
+  }
 
   const resolution = await resolveSsoUser(c.env.DB, logger, connection, extraction.claims);
   if ("kind" in resolution) {
-    if (resolution.kind === "redirect") return ssoErrorRedirect(c, resolution.code);
+    if (resolution.kind === "redirect") {
+      await auditSsoFailure(resolution.code, resolution.userId);
+      return ssoErrorRedirect(c, resolution.code);
+    }
     return c.json({ error: "Failed to sign in" }, 500);
   }
   const { userId } = resolution;
@@ -920,6 +949,7 @@ app.get("/callback", async (c) => {
     action: "session.created",
     actorType: "user",
     actorId: userId,
+    orgId: connection.orgId,
     detail: { method: "oidc", orgId: connection.orgId },
   });
 

@@ -52,11 +52,52 @@ function isExemptGitRead(path: string, service: string | undefined): boolean {
   return false;
 }
 
+/** Window of every native rate-limit binding (`period` in wrangler.toml). */
+const NATIVE_WINDOW_SECONDS = 60;
+
+/**
+ * The native binding configured for `limit` requests per minute, if any. Each
+ * binding's `simple.limit` in wrangler.toml must equal the number it is keyed
+ * on here — the binding enforces its own configured number, not this one.
+ */
+function nativeLimiterFor(env: Env, limit: number): RateLimit | undefined {
+  switch (limit) {
+    case 60:
+      return env.RATE_LIMIT_ANON;
+    case 1000:
+      return env.RATE_LIMIT_AUTH;
+    case 600:
+      return env.RATE_LIMIT_ANALYTICS;
+    case 20:
+      return env.RATE_LIMIT_STRICT;
+    default:
+      return undefined;
+  }
+}
+
+/** A log-safe label for a rate-limit identifier: never a full IP address. */
+function describeIdentifier(
+  identifier: string,
+  userId: string | undefined,
+  agentId: string | undefined,
+): string {
+  if (identifier === userId) return `user:${userId}`;
+  if (identifier === agentId) return `agent:${agentId}`;
+  return identifier.slice(0, 8);
+}
+
+/**
+ * Responses that are the same for everyone and cost the Worker nothing to
+ * build. Rate limiting them protects nothing, and counting them spent a user's
+ * allowance on their own page's stylesheet.
+ */
+const STATIC_PATHS = new Set(["/ui.css", "/favicon.ico"]);
+
 export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<{
   Bindings: Env;
 }> {
   return async (c, next) => {
-    if (c.req.path === "/health") {
+    if (c.req.path === "/health" || STATIC_PATHS.has(c.req.path)) {
       await next();
       return;
     }
@@ -168,6 +209,43 @@ export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<
       : (opts?.requestsPerMinute ?? (await subjectLimit()));
 
     const identifier = userId ?? agentId ?? c.req.header("CF-Connecting-IP") ?? "anonymous";
+
+    // The native binding when one is configured for exactly this limit: its
+    // count lives in memory at this Cloudflare location, so the check costs no
+    // round trip. The KV counter below paid a read and an awaited write on every
+    // request — ~250ms of wall time even for a stylesheet. Any other limit (a
+    // plan's own rate, or a self-host without the bindings) keeps the KV path.
+    const binding = nativeLimiterFor(c.env, limit);
+    if (binding) {
+      // Analytics and API traffic have separate bindings, hence separate counts.
+      let allowed = true;
+      try {
+        ({ success: allowed } = await binding.limit({ key: identifier }));
+      } catch (err) {
+        logger.warn("Rate limit check failed - allowing request", {
+          error: err instanceof Error ? err.message : String(err),
+          path: c.req.path,
+        });
+      }
+      if (!allowed) {
+        logger.warn("Rate limit exceeded", {
+          identifier: describeIdentifier(identifier, userId, agentId),
+          path: c.req.path,
+          limit,
+        });
+        // The binding reports no window position, so this is the most a
+        // well-behaved client could have to wait.
+        return c.json({ error: "Too many requests" }, 429, {
+          "Retry-After": String(NATIVE_WINDOW_SECONDS),
+          "X-RateLimit-Limit": String(limit),
+          "X-RateLimit-Remaining": "0",
+        });
+      }
+      c.header("X-RateLimit-Limit", String(limit));
+      await next();
+      return;
+    }
+
     const minuteBucket = Math.floor(Date.now() / 60000);
     // A distinct key prefix, so analytics and API traffic cannot exhaust each
     // other's allowance.
@@ -185,12 +263,7 @@ export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<
 
       if (count >= limit) {
         logger.warn("Rate limit exceeded", {
-          identifier:
-            identifier === userId
-              ? `user:${userId}`
-              : identifier === agentId
-                ? `agent:${agentId}`
-                : identifier.slice(0, 8),
+          identifier: describeIdentifier(identifier, userId, agentId),
           path: c.req.path,
           limit,
           count,
@@ -210,11 +283,7 @@ export function rateLimitMiddleware(opts?: RateLimitOptions): MiddlewareHandler<
       c.header("X-RateLimit-Reset", String(nextMinuteSeconds));
 
       logger.debug("Rate limit check passed", {
-        identifier: userId
-          ? `user:${userId}`
-          : agentId
-            ? `agent:${agentId}`
-            : identifier.slice(0, 8),
+        identifier: describeIdentifier(identifier, userId, agentId),
         path: c.req.path,
         limit,
         remaining,
