@@ -69,7 +69,7 @@ returns an empty list for you.
 | `stratum_create_project`, `stratum_import_project` | Create a project, or import one from GitHub/GitLab/Bitbucket — into your namespace or, with `org`, an organization you can write to. User credentials only. |
 | `stratum_get_import_status`, `stratum_get_sync_status` | Follow an import, or read an imported project's sync state. Needs read access to the project (write access while an import is unfinished); agent tokens may use them. |
 | `stratum_sync_project` | Pull new commits from an imported project's source. User credentials only. |
-| `stratum_create_org` | Create an organization; you become its admin. Any user credential may (agent tokens are refused). |
+| `stratum_create_org` | Create an organization; you become its admin. Any user credential with a write grant may create one; it needs no existing org role. Agent tokens are refused. |
 | `stratum_list_orgs`, `stratum_get_org`, `stratum_add_org_member`, `stratum_remove_org_member`, `stratum_create_team`, `stratum_list_teams`, `stratum_add_team_member` | Organization administration. Changes need an org admin's user credential, except that any member may remove themselves with `stratum_remove_org_member` (the org's owner cannot leave). |
 
 ## The loop that works
