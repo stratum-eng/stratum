@@ -719,14 +719,15 @@ app.post("/verify", async (c) => {
       if (!account.ok) return emailAuthRedirect(c, "error", account.code, account.path);
       const userId = account.userId;
 
-      // Create session and redirect to welcome/onboarding
+      // The dashboard is the onboarding page: with no projects it shows how to
+      // create or import one.
       return await createSessionAndRedirect(
         c,
         userId,
         emailHash,
         rememberMe,
         logger,
-        "/welcome",
+        "/",
         "signup",
       );
     }
@@ -1029,7 +1030,7 @@ async function completeAgentSignup(
     emailHash,
     rememberMe,
     logger,
-    handedOff ? "/welcome?agent=connected" : "/settings?agent=not_connected",
+    handedOff ? "/settings?notice=agent-connected" : "/settings?notice=agent-not-connected",
     "signup",
   );
 }

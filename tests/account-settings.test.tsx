@@ -334,6 +334,19 @@ describe("POST /settings/account (display name)", () => {
     ).text();
     expect(html).toContain("Display name saved.");
   });
+
+  // Agent-initiated signup lands here (#405); these used to point at a
+  // `/welcome` page that never existed.
+  it("shows the agent-signup outcome notices", async () => {
+    const connected = await (
+      await makeApp().fetch(get("/settings?notice=agent-connected"), makeEnv())
+    ).text();
+    expect(connected).toContain("your agent is connected");
+    const missed = await (
+      await makeApp().fetch(get("/settings?notice=agent-not-connected"), makeEnv())
+    ).text();
+    expect(missed).toContain("request expired before it could be connected");
+  });
 });
 
 describe("POST /settings/username", () => {

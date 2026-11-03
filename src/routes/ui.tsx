@@ -566,6 +566,16 @@ const SETTINGS_NOTICES: Record<string, SettingsNotice> = {
     kind: "success",
     message: "That application has been disconnected. Its access stopped immediately.",
   },
+  "agent-connected": {
+    kind: "success",
+    message:
+      "You're signed up, and your agent is connected. It can carry on from where it asked for the account.",
+  },
+  "agent-not-connected": {
+    kind: "error",
+    message:
+      "You're signed up, but the agent's request expired before it could be connected. Ask the agent to start its signup again.",
+  },
   "legacy-disabled": {
     kind: "success",
     message:
