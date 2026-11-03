@@ -1,7 +1,6 @@
 import { NAV_CSS } from "./nav-css";
 
 export const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
 
 /* ============================================================================
    Design tokens

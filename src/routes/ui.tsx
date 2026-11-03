@@ -20,6 +20,7 @@ import {
   listApiTokens,
   revokeApiToken,
 } from "../storage/api-tokens";
+import { kvTreeListingCache, loadRepoViewPreferNative } from "../storage/artifacts-reads";
 import { recordAudit } from "../storage/audit";
 import { listComments, listReviews } from "../storage/change-reviews";
 import { getChange, listChanges } from "../storage/changes";
@@ -33,7 +34,6 @@ import {
   getDiffBetweenRepos,
   listRepoBranches,
   listRepoTags,
-  loadRepoView,
   resolveBranchRef,
 } from "../storage/git-ops";
 import { getImportProgress } from "../storage/imports";
@@ -41,6 +41,7 @@ import { listIssueComments } from "../storage/issue-comments";
 import { getLabelsForIssues, listIssueLabels } from "../storage/issue-labels";
 import { getIssueByNumber, listIssues } from "../storage/issues";
 import { type OAuthGrantSummary, listGrantsForUser, revokeGrantForUser } from "../storage/oauth";
+import { listOrgsForUser } from "../storage/orgs";
 import { ownerHasClaims, usernameNamespaceTaken } from "../storage/project-namespace";
 import { listSecretNames } from "../storage/project-secrets";
 import { getProvenance } from "../storage/provenance";
@@ -112,6 +113,7 @@ import type { AppError } from "../utils/errors";
 import { getWaitUntil } from "../utils/execution-ctx";
 import type { Logger } from "../utils/logger";
 import { createLogger } from "../utils/logger";
+import { type Result, ok } from "../utils/result";
 import { isValidNamespace, isValidSlug } from "../utils/validation";
 import { canManageSecrets, secretErrorMessage } from "./deployments";
 import { DEFAULT_COMMENTS_PAGE, DEFAULT_ISSUES_PAGE } from "./issues";
@@ -210,6 +212,50 @@ async function resolveIssueAuthors(
   return Object.fromEntries(entries);
 }
 
+/**
+ * The projects the dashboard could show this caller, before the membership
+ * filter decides which it does.
+ *
+ * A signed-in user's projects live under their own namespace (creation puts a
+ * personal project at `@<username>`, and a rename moves them) or under an org
+ * they are a member of (`@<org slug>`; org access requires membership). So
+ * listing those namespaces finds every project the membership filter could
+ * keep, without reading every project in the instance — which grows with the
+ * instance, not with the caller. The filter still runs over the result, so a
+ * narrower list can only hide a project, never expose one.
+ *
+ * Signed out, nothing can match, so nothing is read. Anything else (an agent,
+ * or an org lookup that failed) falls back to the full listing.
+ */
+async function listDashboardCandidates(
+  env: Env,
+  user: { id: string; username: string } | null,
+  userId: string | undefined,
+  agentOwnerId: string | undefined,
+  logger: Logger,
+): Promise<Result<ProjectEntry[], AppError>> {
+  if (!userId && !agentOwnerId) return ok([]);
+  if (!userId || !user || user.id !== userId) return listProjects(env.STATE, logger);
+
+  const orgs = await listOrgsForUser(env.DB, logger, userId);
+  if (!orgs.success) {
+    logger.warn("Falling back to the full project list for the dashboard", {
+      error: orgs.error.message,
+    });
+    return listProjects(env.STATE, logger);
+  }
+  const namespaces = [getUserNamespace(user.username), ...orgs.data.map((org) => `@${org.slug}`)];
+  const listed = await Promise.all(
+    [...new Set(namespaces)].map((ns) => listProjectsByNamespace(env.STATE, ns, logger)),
+  );
+  const projects: ProjectEntry[] = [];
+  for (const result of listed) {
+    if (!result.success) return result;
+    projects.push(...result.data);
+  }
+  return ok(projects);
+}
+
 // GET / — Dashboard (list projects)
 app.get("/", async (c) => {
   const userId = c.get("userId");
@@ -219,10 +265,14 @@ app.get("/", async (c) => {
     userId,
   });
 
-  const [userResult, allProjectsResult] = await Promise.all([
-    getCurrentUser(c, logger),
-    listProjects(c.env.STATE, logger),
-  ]);
+  const userResult = await getCurrentUser(c, logger);
+  const allProjectsResult = await listDashboardCandidates(
+    c.env,
+    userResult,
+    userId,
+    agentOwnerId,
+    logger,
+  );
 
   if (!allProjectsResult.success) {
     logger.error("Failed to list projects", allProjectsResult.error);
@@ -1290,6 +1340,7 @@ app.get("/p/:name", async (c) => {
     if (tokenResult.success) {
       const data = await loadRepoPageData(
         c.env.STATE,
+        c.env.ARTIFACTS,
         project,
         tokenResult.data,
         projectDefaultBranch(project),
@@ -1896,6 +1947,7 @@ type RepoPageData = {
  */
 async function loadRepoPageData(
   kv: Env["STATE"],
+  artifacts: Env["ARTIFACTS"],
   project: ProjectEntry,
   readToken: string,
   branch: string,
@@ -1911,7 +1963,9 @@ async function loadRepoPageData(
     const current = cached?.headSha === liveHead;
     if (cached && (current || waitUntil)) {
       if (!current && waitUntil) {
-        waitUntil(refreshRepoView(kv, cacheProject, project.remote, readToken, branch, logger));
+        waitUntil(
+          refreshRepoView(kv, artifacts, cacheProject, project.remote, readToken, branch, logger),
+        );
       }
       return {
         files: cached.files,
@@ -1923,7 +1977,19 @@ async function loadRepoPageData(
     }
   }
 
-  const viewResult = await loadRepoView(project.remote, readToken, logger, branch);
+  const viewResult = await loadRepoViewPreferNative(
+    artifacts,
+    project.remote,
+    readToken,
+    logger,
+    branch,
+    project.id
+      ? {
+          treeCache: kvTreeListingCache(kv, project.id, logger),
+          ...(waitUntil ? { waitUntil } : {}),
+        }
+      : {},
+  );
   if (!viewResult.success) {
     // Repo may be empty or unreachable — render with empty data
     logger.warn("Error loading repo data", { error: viewResult.error.message });
@@ -1956,6 +2022,7 @@ async function loadRepoPageData(
  */
 async function refreshRepoView(
   kv: Env["STATE"],
+  artifacts: Env["ARTIFACTS"],
   cacheProject: RepoViewCacheProject,
   remote: string,
   readToken: string,
@@ -1964,7 +2031,17 @@ async function refreshRepoView(
 ): Promise<void> {
   try {
     if (!(await claimRepoViewRefresh(kv, cacheProject, branch, logger))) return;
-    const viewResult = await loadRepoView(remote, readToken, logger, branch);
+    // Already off the response path, so the listing writes are simply awaited.
+    const viewResult = await loadRepoViewPreferNative(
+      artifacts,
+      remote,
+      readToken,
+      logger,
+      branch,
+      {
+        treeCache: kvTreeListingCache(kv, cacheProject.id, logger),
+      },
+    );
     if (!viewResult.success) {
       logger.warn("Background repo view refresh failed", {
         branch,
@@ -2661,6 +2738,7 @@ app.get("/:namespace/:slug/blob/*", async (c) => {
     filePath,
     logger,
     branch,
+    c.env.ARTIFACTS,
   );
   if (!contentResult.success) {
     return c.html(errorPage(500, "Error loading file.", userResult), 500);
@@ -2842,6 +2920,7 @@ app.get("/:namespace/:slug", async (c) => {
     const liveHead = switcherBranches?.find((b) => b.name === branch)?.oid ?? refResolution.oid;
     const data = await loadRepoPageData(
       c.env.STATE,
+      c.env.ARTIFACTS,
       project,
       cloneToken,
       branch,

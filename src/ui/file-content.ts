@@ -1,4 +1,6 @@
+import { readFileFromRepoPreferNative } from "../storage/artifacts-reads";
 import { readFileFromRepo } from "../storage/git-ops";
+import type { ArtifactsNamespace } from "../types";
 import type { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import type { Result } from "../utils/result";
@@ -29,8 +31,12 @@ export async function getFileContent(
   path: string,
   logger: Logger,
   branch = "main",
+  /** When given, the file is read through the Artifacts read API instead of a clone. */
+  artifacts?: ArtifactsNamespace,
 ): Promise<Result<FileContentResult, AppError>> {
-  const readResult = await readFileFromRepo(remote, token, path, logger, branch);
+  const readResult = artifacts
+    ? await readFileFromRepoPreferNative(artifacts, remote, token, path, logger, branch)
+    : await readFileFromRepo(remote, token, path, logger, branch);
 
   if (!readResult.success) {
     if (readResult.error.code === "FS_ERROR") {

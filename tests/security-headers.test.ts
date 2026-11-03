@@ -13,6 +13,19 @@ vi.mock("../src/storage/users", () => ({
   getUserByToken: vi.fn(async () => ({ success: false, error: { message: "not found" } })),
   getUser: vi.fn(async () => ({ success: false, error: { message: "not found" } })),
 }));
+// Set by the error-boundary test: makes the project lookup throw, so a repo
+// page request reaches app.onError deterministically.
+const failProjectLookup = { on: false };
+vi.mock("../src/storage/state", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/storage/state")>();
+  return {
+    ...actual,
+    getProjectByPath: vi.fn(async (...args: Parameters<typeof actual.getProjectByPath>) => {
+      if (failProjectLookup.on) throw new Error("storage exploded");
+      return actual.getProjectByPath(...args);
+    }),
+  };
+});
 vi.mock("../src/storage/agents", () => ({
   getAgentByToken: vi.fn(async () => ({ success: false, error: { message: "not found" } })),
 }));
@@ -123,9 +136,15 @@ describe("SEC-7: security headers", () => {
   });
 
   it("applies the same CSP to 500 error responses (error boundary parity)", async () => {
-    // GET / renders the dashboard, which throws under the bare test env and hits
-    // the error boundary — the 500 must carry the identical hardened policy.
-    const res = await app.fetch(new Request("http://localhost/"), makeEnv());
+    // An unhandled throw in a page handler reaches the error boundary — the 500
+    // must carry the identical hardened policy.
+    failProjectLookup.on = true;
+    let res: Response;
+    try {
+      res = await app.fetch(new Request("http://localhost/@owner/repo"), makeEnv());
+    } finally {
+      failProjectLookup.on = false;
+    }
     expect(res.status).toBe(500);
     const csp = res.headers.get("Content-Security-Policy");
     expect(csp).toContain("form-action 'self'");

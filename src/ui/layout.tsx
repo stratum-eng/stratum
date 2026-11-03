@@ -2,6 +2,7 @@ import type { FC } from "hono/jsx";
 import { type UsageBannerNotice, usedPercent } from "../billing/usage-banner";
 import { meterTitle } from "../billing/usage-report";
 import { SourceFooter } from "./components/source-footer";
+import { StylesheetLinks } from "./stylesheet";
 
 /**
  * A closed union rather than a free string: the header renders exactly these
@@ -89,7 +90,7 @@ export const Layout: FC<LayoutProps> = ({
           rel="icon"
           href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230d0d0d'/%3E%3Ctext%20x='16'%20y='23'%20font-family='monospace'%20font-size='20'%20font-weight='700'%20fill='%237ca9f7'%20text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E"
         />
-        <link rel="stylesheet" href="/ui.css" />
+        <StylesheetLinks />
       </head>
       <body>
         {/*
