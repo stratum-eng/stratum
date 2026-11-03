@@ -346,6 +346,18 @@ describe("GET /github/app/setup", () => {
     expect(html).toContain('action="/api/github/installations/777/link"');
   });
 
+  it("ignores a notice that is not one of its own keys", async () => {
+    const cards = (html: string) => html.split('class="card"').length;
+    const baseline = cards(await (await call("alice", "GET", "/github/app/setup")).text());
+    for (const notice of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
+      const res = await call("alice", "GET", `/github/app/setup?notice=${notice}`);
+      expect(res.status).toBe(200);
+      expect(cards(await res.text())).toBe(baseline);
+    }
+    const real = await call("alice", "GET", "/github/app/setup?notice=linked");
+    expect(cards(await real.text())).toBe(baseline + 1);
+  });
+
   it("waits, self-refreshing, for an installation the webhook hasn't recorded yet", async () => {
     const res = await call("alice", "GET", "/github/app/setup?installation_id=999");
     const html = await res.text();

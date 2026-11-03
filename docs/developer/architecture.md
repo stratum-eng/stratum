@@ -450,7 +450,7 @@ Proof of control is the installer recorded from the HMAC-verified
 `installation.created` webhook (`sender.id`), or the account itself for
 personal installations, matched against the caller's OAuth-verified
 `users.github_id`. Installation ids are cached in KV at
-`github_installation:{owner}/{repo}` (no TTL; "not installed" for 10 min) and
+`github_installation:{owner}/{repo}` (24 h TTL; "not installed" for 10 min) and
 invalidated by `installation` / `installation_repositories` webhooks; tokens at
 `github_inst_token:{installationId}` until 5 min before GitHub expires them.
 Per-user OAuth tokens (`users.github_access_token`) are a separate path.

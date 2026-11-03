@@ -305,7 +305,10 @@ npx wrangler secret put GOOGLE_CLIENT_SECRET
 # GitHub App — outbound GitHub calls (sync, PR promotion push + create, eval
 # verdict comments/statuses). A GitHub App this time, separate from the OAuth
 # App above. Permissions: Contents RW, Pull requests RW, Commit statuses RW,
-# Metadata R; webhook events push, pull_request, pull_request_review (the
+# Metadata R. Without Workflows RW, GitHub rejects a promotion push whose
+# history touches .github/workflows/. Grant it only if agents' promoted
+# changes may edit CI: it lets a pushed branch change what your workflows run.
+# Webhook events: push, pull_request, pull_request_review (the
 # installation events arrive without subscribing). For a repo the app is
 # installed on, Stratum mints a 1h installation token and caches it in KV.
 # Elsewhere it uses GITHUB_TOKEN, but only for owners bound in

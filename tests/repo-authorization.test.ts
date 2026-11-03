@@ -255,6 +255,29 @@ describe("resolveInboundProject", () => {
     expect(routed.success && routed.data?.id).toBe("prj_a");
   });
 
+  it("does not let an event the holder isn't authorized for move the link away from it", async () => {
+    // Alice's project holds the repo through her installation link.
+    await putProject({ id: "prj_a", namespace: "@alice", slug: "api" });
+    linkInstallation(777, { type: "user", id: "usr_alice" });
+    await resolveInboundProject(env, "acme", "api", 777, logger);
+
+    // A plain repo webhook (no installation) arrives; only the binding counts
+    // there, and it names mallory, whose copy of the repo is newer.
+    env.GITHUB_ALLOWED_OWNERS = "acme=user:usr_mallory";
+    await putProject({
+      id: "prj_m",
+      namespace: "@mallory",
+      slug: "api",
+      ownerId: "usr_mallory",
+      createdAt: "2027-01-01T00:00:00Z",
+    });
+
+    const routed = await resolveInboundProject(env, "acme", "api", undefined, logger);
+
+    expect(routed).toEqual({ success: true, data: null });
+    expect(linkedProjectId()).toBe("prj_a");
+  });
+
   it("moves the link when its holder is deleted", async () => {
     await putProject({ id: "prj_a", namespace: "@alice", slug: "api" });
     linkInstallation(777, { type: "user", id: "usr_alice" });

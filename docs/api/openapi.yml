@@ -4743,8 +4743,10 @@ paths:
       tags: [github]
       summary: Unlink a GitHub App installation
       description: |
-        Allowed for the linked user, or an admin of the linked org. Its
-        repositories fall back to the instance token.
+        Allowed for the linked user, or an admin of the linked org (whose
+        session meets that org's second-factor policy). Afterwards no project
+        uses the app on its repositories, unless an operator binding in
+        `GITHUB_ALLOWED_OWNERS` covers them.
       parameters:
         - name: installationId
           in: path

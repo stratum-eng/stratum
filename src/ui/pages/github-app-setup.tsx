@@ -24,7 +24,8 @@ export interface LinkTarget {
 export const SETUP_NOTICES = {
   linked:
     "Installation linked. Projects owned by that account now use the app on its repositories.",
-  unlinked: "Installation unlinked. Its repositories fall back to the instance token.",
+  unlinked:
+    "Installation unlinked. Projects no longer use the app on its repositories, unless an operator binding covers them.",
   not_found: "That installation is not one you can manage here.",
   not_authorized:
     "Only the GitHub user who installed the app (or, for a personal account, its owner) can link it.",

@@ -373,6 +373,18 @@ export async function resolveInboundProject(
     ) {
       return ok(holder.data);
     }
+    // Not authorized for THIS event (e.g. a plain repo webhook, where only a
+    // binding counts), but still valid at account scope, or its lookup
+    // failed: keep it, as ensureCanonicalProject does, and drop the event.
+    // A holder is displaced only once it is gone or no longer authorized.
+    if (await holderStillValid(env, link.data, owner, repo, logger)) {
+      logger.debug("GitHub event not routed: canonical project not authorized for it", {
+        owner,
+        repo,
+        installationId,
+      });
+      return ok(null);
+    }
   }
 
   const all = await listProjects(env.STATE, logger);

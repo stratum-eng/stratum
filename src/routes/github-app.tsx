@@ -221,7 +221,7 @@ app.get(SETUP_PATH, async (c) => {
 
   const noticeParam = c.req.query("notice");
   const notice =
-    noticeParam !== undefined && noticeParam in SETUP_NOTICES
+    noticeParam !== undefined && Object.hasOwn(SETUP_NOTICES, noticeParam)
       ? (noticeParam as SetupNotice)
       : undefined;
 
