@@ -558,7 +558,24 @@ credential — in [Authentication](/reference/authentication/).
 ### Get Current User
 `GET /api/users/me`
 
-Returns the authenticated user's profile.
+Returns the authenticated user's profile, with `"actingAs": "user"`:
+
+```json
+{ "id": "usr_…", "email": "alice@example.com", "createdAt": "…", "actingAs": "user" }
+```
+
+An MCP OAuth grant [bound to an agent](/reference/authentication/#oauth-grants) gets
+the agent and the owner it acts for instead. The owner's email is not included:
+
+```json
+{
+  "actingAs": "agent",
+  "agent": { "id": "agt_…", "name": "Claude Code on my-laptop" },
+  "owner": { "id": "usr_…", "username": "alice" }
+}
+```
+
+A bare agent token (`stratum_agent_…`) gets `401`.
 
 ### Get Current Usage
 

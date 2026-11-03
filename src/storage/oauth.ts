@@ -43,8 +43,9 @@ import { type Result, err, ok } from "../utils/result";
  * API token and `mcp:read` is exactly a `read` one, so nothing downstream has
  * to learn a third authority model. In particular this is why review verdicts
  * behave identically over MCP and over a user token — the human-approval gate
- * is enforced by actor type (agents are refused), and an OAuth grant is a user
- * acting through a client, not an agent identity.
+ * is enforced by actor type (agents are refused) AND by credential kind: an
+ * OAuth grant may be bound to an agent identity (#409, ADR 009), and either way
+ * it is a delegated credential that cannot approve.
  */
 export const SCOPE_READ = "mcp:read";
 export const SCOPE_WRITE = "mcp:write";
@@ -454,7 +455,20 @@ export interface AuthCodeRecord {
   scope: string;
   codeChallenge: string;
   resource: string | null;
+  /** Which identity the grant will act as (#409, ADR 009). Absent = the user. */
+  actAs?: GrantActor;
 }
+
+/**
+ * The identity chosen on the consent screen, carried on the code to redemption.
+ *
+ * `new` is a name, not an agent: the agent is created only when the code is
+ * redeemed, so a code that is never redeemed leaves nothing behind.
+ */
+export type GrantActor = { kind: "agent"; agentId: string } | { kind: "new"; name: string };
+
+/** Longest name accepted for an agent created on the consent screen. */
+export const MAX_GRANT_AGENT_NAME_LENGTH = 120;
 
 interface AuthCodeRow {
   code_hash: string;
@@ -468,6 +482,22 @@ interface AuthCodeRow {
   expires_at: string;
   consumed_at: string | null;
   created_at: string;
+  /** Migration 067. Absent on a stub row. */
+  agent_id?: string | null;
+  new_agent_name?: string | null;
+}
+
+/** Read the consent-time identity back off a code row. An agent id wins over a
+ * name if a bad row carries both: binding an agent the user already chose is
+ * the narrower outcome than creating a new one. */
+function codeRowActor(row: AuthCodeRow): GrantActor | undefined {
+  if (typeof row.agent_id === "string" && row.agent_id !== "") {
+    return { kind: "agent", agentId: row.agent_id };
+  }
+  if (typeof row.new_agent_name === "string" && row.new_agent_name !== "") {
+    return { kind: "new", name: row.new_agent_name };
+  }
+  return undefined;
 }
 
 /** Mints a single-use authorization code. The plaintext is returned once and
@@ -487,8 +517,9 @@ export async function issueAuthorizationCode(
       .prepare(
         `INSERT INTO oauth_auth_codes
            (code_hash, client_id, user_id, redirect_uri, scope, code_challenge,
-            code_challenge_method, resource, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'S256', ?, ?, ?)`,
+            code_challenge_method, resource, expires_at, created_at,
+            agent_id, new_agent_name)
+         VALUES (?, ?, ?, ?, ?, ?, 'S256', ?, ?, ?, ?, ?)`,
       )
       .bind(
         codeHash,
@@ -500,6 +531,8 @@ export async function issueAuthorizationCode(
         record.resource,
         expiresAt,
         new Date(now).toISOString(),
+        record.actAs?.kind === "agent" ? record.actAs.agentId : null,
+        record.actAs?.kind === "new" ? record.actAs.name : null,
       )
       .run();
     logger.info("Authorization code issued", {
@@ -507,6 +540,7 @@ export async function issueAuthorizationCode(
       clientId: record.clientId,
       userId: record.userId,
       scope: record.scope,
+      actAs: record.actAs?.kind ?? "user",
     });
     return ok({ code, expiresAt, codeId });
   } catch (error) {
@@ -568,6 +602,7 @@ export async function readAuthorizationCode(
   // nobody could have redeemed anyway.
   if (isExpired(row.expires_at)) return err("expired");
 
+  const actAs = codeRowActor(row);
   return ok({
     clientId: row.client_id,
     userId: row.user_id,
@@ -578,6 +613,7 @@ export async function readAuthorizationCode(
     resource: row.resource,
     alreadyConsumed: row.consumed_at !== null,
     codeId: codeIdOf(codeHash),
+    ...(actAs !== undefined ? { actAs } : {}),
   });
 }
 
@@ -677,7 +713,15 @@ interface OAuthTokenRow {
 export async function issueTokens(
   db: D1Database,
   logger: Logger,
-  opts: { clientId: string; userId: string; scope: string; codeId?: string },
+  opts: {
+    clientId: string;
+    userId: string;
+    scope: string;
+    codeId?: string;
+    /** Bind the grant to this agent (#409). The caller has already checked
+     * that `userId` owns it; the resolver checks again on every request. */
+    agentId?: string;
+  },
 ): Promise<Result<IssuedTokens, AppError>> {
   try {
     const accessToken = randomSecret("stratum_mcp");
@@ -687,8 +731,8 @@ export async function issueTokens(
       .prepare(
         `INSERT INTO oauth_tokens
            (id, access_token_hash, refresh_token_hash, client_id, user_id, scope,
-            access_expires_at, refresh_expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            access_expires_at, refresh_expires_at, created_at, agent_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         newId("mcpt"),
@@ -700,6 +744,7 @@ export async function issueTokens(
         new Date(now + ACCESS_TOKEN_TTL_MS).toISOString(),
         new Date(now + REFRESH_TOKEN_TTL_MS).toISOString(),
         new Date(now).toISOString(),
+        opts.agentId ?? null,
       )
       .run();
     logger.info("OAuth tokens issued", {
@@ -707,6 +752,7 @@ export async function issueTokens(
       clientId: opts.clientId,
       userId: opts.userId,
       scope: opts.scope,
+      ...(opts.agentId !== undefined ? { agentId: opts.agentId } : {}),
     });
     return ok({
       accessToken,
@@ -845,11 +891,15 @@ export async function rotateRefreshToken(
 }
 
 export interface ResolvedOAuthToken {
+  /** The user who consented. For an agent-bound grant, the agent's owner. */
   user: User;
   scope: ApiTokenScope;
   grantId: string;
   clientId: string;
   lastUsedAt?: string;
+  /** Present when the grant is bound to an agent (#409, ADR 009): requests
+   * then authenticate as this agent, acting for `user`. */
+  agent?: { id: string; name: string };
 }
 
 interface ResolvedOAuthRow {
@@ -869,6 +919,12 @@ interface ResolvedOAuthRow {
   access_expires_at: string;
   last_used_at: string | null;
   revoked_at: string | null;
+  /** The grant's bound agent id, and the joined agent row's columns (NULL when
+   * the agent no longer exists). Absent on a stub row. */
+  grant_agent_id?: string | null;
+  agent_row_id?: string | null;
+  agent_owner_id?: string | null;
+  agent_name?: string | null;
 }
 
 /** A refusal that names the account, for the auth-failure audit (#255). */
@@ -899,8 +955,11 @@ export async function resolveOAuthAccessToken(
                 u.token_hash AS user_token_hash, u.created_at AS user_created_at, u.deleting_at, u.disabled_at,
                 u.telemetry_opt_out,
                 t.id AS grant_id, t.client_id, t.scope AS token_scope,
-                t.access_expires_at, t.last_used_at, t.revoked_at
+                t.access_expires_at, t.last_used_at, t.revoked_at,
+                t.agent_id AS grant_agent_id, a.id AS agent_row_id,
+                a.owner_id AS agent_owner_id, a.name AS agent_name
            FROM oauth_tokens t JOIN users u ON u.id = t.user_id
+           LEFT JOIN agents a ON a.id = t.agent_id
           WHERE t.access_token_hash = ?`,
       )
       .bind(tokenHash)
@@ -919,6 +978,27 @@ export async function resolveOAuthAccessToken(
   // NULL on enabled accounts, and `!= null` also tolerates a stub row without it.
   if (row.disabled_at != null) return err(rejected("owner-disabled", row));
   if (isExpired(row.access_expires_at)) return err(rejected("expired", row));
+
+  // A bound grant authenticates as its agent, so the agent has to still exist
+  // and still belong to the user who consented. Fail CLOSED otherwise: falling
+  // back to "act as the user" would give a grant MORE authority than the user
+  // granted it, with no agent on the record.
+  let agent: ResolvedOAuthToken["agent"];
+  const boundAgentId = row.grant_agent_id ?? null;
+  if (boundAgentId !== null) {
+    if (
+      row.agent_row_id == null ||
+      row.agent_owner_id !== row.user_id ||
+      typeof row.agent_name !== "string"
+    ) {
+      logger.warn("OAuth grant refused - bound agent missing or not owned by the grant's user", {
+        grantId: row.grant_id,
+        agentId: boundAgentId,
+      });
+      return err(rejected("agent-unavailable", row));
+    }
+    agent = { id: boundAgentId, name: row.agent_name };
+  }
 
   const user: User = {
     id: row.user_id,
@@ -940,6 +1020,7 @@ export async function resolveOAuthAccessToken(
     clientId: row.client_id,
   };
   if (row.last_used_at !== null) resolved.lastUsedAt = row.last_used_at;
+  if (agent !== undefined) resolved.agent = agent;
   return ok(resolved);
 }
 
@@ -1036,6 +1117,10 @@ export interface OAuthGrantSummary {
   createdAt: string;
   lastUsedAt?: string;
   accessExpiresAt: string;
+  /** Who the grant acts as (#409). Absent = the user, with no agent
+   * provenance. `agentName` is absent when the bound agent was deleted, in
+   * which case the grant no longer authenticates at all. */
+  agent?: { id: string; name?: string };
 }
 
 /** The connected-clients listing a user sees in settings, newest first.
@@ -1050,8 +1135,10 @@ export async function listGrantsForUser(
     const rows = await db
       .prepare(
         `SELECT t.id, t.client_id, t.scope, t.created_at, t.last_used_at,
-                t.access_expires_at, t.refresh_expires_at, c.client_name
+                t.access_expires_at, t.refresh_expires_at, c.client_name,
+                t.agent_id, a.name AS agent_name
            FROM oauth_tokens t JOIN oauth_clients c ON c.id = t.client_id
+           LEFT JOIN agents a ON a.id = t.agent_id AND a.owner_id = t.user_id
           WHERE t.user_id = ? AND t.revoked_at IS NULL
           ORDER BY t.created_at DESC`,
       )
@@ -1065,6 +1152,8 @@ export async function listGrantsForUser(
         access_expires_at: string;
         refresh_expires_at: string | null;
         client_name: string;
+        agent_id?: string | null;
+        agent_name?: string | null;
       }>();
     const live = (rows.results ?? []).filter(
       // A grant whose refresh token is still good remains live even once its
@@ -1082,6 +1171,12 @@ export async function listGrantsForUser(
           accessExpiresAt: row.access_expires_at,
         };
         if (row.last_used_at !== null) summary.lastUsedAt = row.last_used_at;
+        if (typeof row.agent_id === "string") {
+          summary.agent =
+            typeof row.agent_name === "string"
+              ? { id: row.agent_id, name: row.agent_name }
+              : { id: row.agent_id };
+        }
         return summary;
       }),
     );

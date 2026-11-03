@@ -25,7 +25,14 @@ export class NotFoundError extends AppError {
 }
 
 /** Why a credential that DOES exist was refused. */
-export type CredentialRejection = "revoked" | "expired" | "owner-deleting" | "owner-disabled";
+export type CredentialRejection =
+  | "revoked"
+  | "expired"
+  | "owner-deleting"
+  | "owner-disabled"
+  /** An OAuth grant bound to an agent (#409) whose agent is gone, or is no
+   * longer owned by the grant's user. */
+  | "agent-unavailable";
 
 /**
  * A credential lookup that found a real row and refused it. Still a

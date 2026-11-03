@@ -240,6 +240,24 @@ the user does not control:
   verdict (`403 SESSION_REQUIRED`): approvals are made by a signed-in human in
   the browser. `request_changes` and comments still work.
 
+### Grants bound to an agent
+
+On the consent screen the user chooses who the grant acts as: themselves, one
+of their existing agents, or a new agent created for this connection (the
+default). A grant bound to an agent **authenticates as that agent**, acting for
+the user. The request context is the one an agent token produces, so the
+change, event and provenance records name the agent, and every agent rule
+applies: no merge, reject, review verdict or issue triage, and an empty
+`GET /api/projects` listing. The grant's scope, the admin-API refusal and the
+minting and approval refusals above still apply on top.
+
+An agent created on the consent screen has **no token of its own**: the grant
+is its only credential, so revoking the grant, the grant expiring at 180
+days, or deleting the agent ends its access. If the bound agent is deleted
+or changes owner, the grant is refused rather than falling back to the user.
+`GET /api/users/me` reports which identity a grant uses (`actingAs`). Grants
+issued before this choice existed act as the user.
+
 Grants are listed and revoked by their owner under **Settings → Connected
 applications**, and by the client itself at `POST /oauth/revoke`
 ([RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009)). Revocation is
@@ -264,7 +282,7 @@ not all scoped, so treat every one of them like a password:
 | Named API token (`stratum_user_…`) | `read` or `read_write`, as chosen when it was created | Revoke it individually; it can also expire |
 | Legacy API key | Full `read_write` account access, no scope, never expires | Rotate it (invalidates the old key) or disable it permanently; it cannot be revoked on its own |
 | Agent token (`stratum_agent_…`) | The owning user's full access, no scope | Revoke the agent |
-| MCP OAuth grant (`stratum_mcp_…`) | `mcp:read` or `mcp:write`; never the admin API | Disconnect the app in settings, or `POST /oauth/revoke` |
+| MCP OAuth grant (`stratum_mcp_…`) | `mcp:read` or `mcp:write`, as the user or as the agent chosen at consent; never the admin API | Disconnect the app in settings, or `POST /oauth/revoke` |
 | SCIM token (`stratum_scim_…`) | Only `/scim/v2` for one org's SSO connection | An org admin rotates it |
 | git over HTTPS | Whatever the token it presents can reach | Revoke that token |
 

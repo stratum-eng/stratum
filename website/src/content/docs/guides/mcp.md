@@ -62,9 +62,11 @@ Any MCP client that supports remote servers:
 
 Connecting opens your browser, asks you to sign in if you are not already, and
 shows a consent screen: which application is asking, what it will be able to do,
-and the host it returns you to. The full redirect address and where to
-disconnect later are one click away under **Where this request came from**.
-Approve it once; the client stores the tokens and refreshes them on its own.
+the host it returns you to, and **who it connects as** (see
+[Connecting as an agent](#connecting-as-an-agent)). The full redirect address and
+where to disconnect later are one click away under **Where this request came
+from**. Approve it once; the client stores the tokens and refreshes them on its
+own.
 
 You never paste a Stratum credential into your editor's configuration, and you
 can withdraw access at any time from **Settings → Connected applications**
@@ -150,11 +152,47 @@ control. Two things it therefore cannot do, regardless of scope:
   individually, so a credential that could mint one would outlive its own
   revocation.
 
+### Connecting as an agent
+
+The consent screen asks who the application should act as:
+
+- **A new agent** (the default), named after the application. You can rename it,
+  for example to "Claude Code on my-laptop". Everything the application does is
+  recorded as that agent acting for you: changes it opens carry the agent in
+  their provenance, and the activity feed shows an agent rather than you.
+- **An existing agent** you own, if you have any. Pick the same agent again when
+  you reconnect and its work stays under one identity.
+- **Me.** The application acts as you, as every connection did before this
+  choice existed. Its work is recorded as yours, with **no agent provenance**.
+
+A connection bound to an agent has exactly the authority an
+[agent token](#what-an-agent-token-can--and-cannot--do) has: it can read, fork,
+commit, open changes and file issues, but it can't merge, reject, review or
+triage issues, and `stratum_list_projects` returns an empty list. Choose **Me**
+if you want the application to do those things for you. Your granted scope still
+applies: an `mcp:read` connection is read-only whichever identity it uses.
+
+An agent created on the consent screen **has no token of its own**. The
+connection is its only credential, so it stops working when the connection
+does: when you disconnect it, when it is revoked, or when it reaches the
+180-day limit below. Refreshing the connection keeps the same agent. The agent
+itself is kept after that, because the changes it made still refer to it, but
+nothing can sign in as it. Binding an existing agent doesn't touch that agent's
+own token. Disconnecting ends only the access that came through the connection.
+
+`stratum_whoami` tells the application which it is: `"actingAs": "user"` with
+your account, or `"actingAs": "agent"` with the agent's id and name and the
+owner it acts for.
+
+Connections made before this choice existed keep acting as you until you
+disconnect them or they reach the 180-day limit. Reconnecting shows the new
+consent screen.
+
 ### Disconnecting an application
 
 **Settings → Connected applications** lists every client you have authorized,
-with its self-declared name, its client id, the access you granted and when it
-was last used. Disconnecting is immediate: the access token and the ability to
+with its self-declared name, its client id, the access you granted, who it acts
+as ("You (no agent provenance)" or "Agent: <name>") and when it was last used. Disconnecting is immediate: the access token and the ability to
 refresh both stop working at once.
 
 Application names are chosen by the application at registration and are not
@@ -169,9 +207,9 @@ Nineteen tools cover the full contribution loop. Project arguments take a
 
 | Tool | What it does |
 |---|---|
-| `stratum_whoami` | Identify the authenticated **user** (calls `GET /api/users/me`, which refuses agent tokens). |
+| `stratum_whoami` | Identify who the connection acts as (calls `GET /api/users/me`). `actingAs: "user"` returns your account; `actingAs: "agent"` returns the agent the connection is bound to and the owner it acts for. A bare agent token gets a 401. |
 | `stratum_get_usage` | This account's metered usage against its plan limits for the current period — per-meter consumption, the limit on each, the rate ceilings, and when the period resets. An agent token reports its **owner's** allowance, because that is the account its evaluations are charged to. |
-| `stratum_list_projects` | List projects in the caller's **own namespace** — org-namespace projects are not included, and an agent token gets an empty list. |
+| `stratum_list_projects` | List projects in the caller's **own namespace** — org-namespace projects are not included, and an agent (an agent token or a connection bound to an agent) gets an empty list. |
 | `stratum_get_project` | Project metadata — id, namespace, visibility, git remote. |
 | `stratum_list_files` | File paths at the HEAD of the default branch. |
 | `stratum_get_file` | One file's content at HEAD. |
@@ -227,7 +265,8 @@ in a browser.
 ## What an agent token can — and cannot — do
 
 The server accepts either token kind, but the API behind it does not treat
-them alike. With an **agent token**:
+them alike. With an **agent token**, or an OAuth connection
+[bound to an agent](#connecting-as-an-agent):
 
 - **Works:** the project reading tools (`get_project`, `list_files`,
   `get_file`, `get_activity`), `stratum_create_workspace`, `stratum_commit`,
@@ -248,15 +287,16 @@ So an agent-token deployment is a *proposer*: it forks, commits, opens the
 change, and a human (over the UI, [CLI](/guides/cli/), or their own MCP session)
 reviews and merges.
 
-An **OAuth grant is a user credential**, not an agent identity: a human
-consented to it in a browser, so it carries the same authority a user token
-does when `mcp:write` was granted, with one exception: it **cannot approve**.
+An **OAuth grant that acts as you** ("Me" on the consent screen) is a user
+credential: a human consented to it in a browser, so it carries the same
+authority a user token does when `mcp:write` was granted, with one exception:
+it **cannot approve**.
 An approval is the human half of the merge gate, and an OAuth grant is
 software acting for the human, so `stratum_review_change` with `approve` is
 refused with `SESSION_REQUIRED`; approve on the change page in the browser.
 `request_changes` still works. If you want an MCP client that can propose but
-never decide anything, connect it with an agent token rather than through
-OAuth.
+never decide anything, connect it as an agent on the consent screen, or use an
+agent token.
 
 ## Operational notes
 

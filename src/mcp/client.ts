@@ -257,8 +257,17 @@ export class StratumClient {
 
   // ── Account ─────────────────────────────────────────────────────────────
 
+  /** Who the credential acts as. A user credential gets its account; an OAuth
+   * grant bound to an agent (#409) gets the agent and the owner it acts for. */
   async me() {
-    return this.request<{ id: string; email: string }>("GET", "/api/users/me");
+    return this.request<
+      | { actingAs: "user"; id: string; email: string; createdAt: string }
+      | {
+          actingAs: "agent";
+          agent: { id: string; name: string };
+          owner: { id: string; username: string };
+        }
+    >("GET", "/api/users/me");
   }
 
   /**
