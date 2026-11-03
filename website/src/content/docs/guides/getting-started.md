@@ -139,12 +139,12 @@ evaluators:
       - "node_modules/"
       - ".env"
 
-  # Call your existing CI system. The secret is used literally — there is
-  # no environment-variable interpolation in this file — and timeoutMs is
-  # capped at 120000 (2 minutes).
+  # Call your existing CI system. secretRef names a project secret (stored
+  # in project settings, never in this file) that signs the request, and
+  # timeoutMs is capped at 120000 (2 minutes).
   - type: webhook
     url: "https://ci.example.com/evaluate"
-    secret: "a-long-random-string-you-generated"
+    secretRef: WEBHOOK_EVALUATOR_SECRET
     timeoutMs: 120000
 
   # Run the test suite in a Cloudflare Sandbox. LEFT COMMENTED ON PURPOSE:
@@ -211,9 +211,11 @@ requiring a human approval and refusing force-merge.
   against runaway agent edits.
 - **`webhook`** — POSTs the change to an external URL (your existing CI) and
   waits up to `timeoutMs` (default 10s, capped at 120s) for a verdict.
-  `secret` signs the delivery so your CI can verify it came from Stratum; the
-  value is used exactly as written, so generate a real secret rather than a
-  `${...}` placeholder — nothing interpolates it.
+  `secretRef` names a project secret whose value signs the delivery so your CI
+  can verify it; a missing or empty one fails the evaluation closed. The older
+  literal `secret` field still works but is deprecated: it is readable by
+  anyone with repository read access. See
+  [the signing secret](/guides/ci-integration/#the-signing-secret).
 - **`sandbox`** — **needs the Sandboxes beta, which is off by default
   everywhere, including the hosted instance.** `[[sandboxes]]` is commented out
   in `wrangler.toml`, so unless you self-host, have Sandboxes access, and

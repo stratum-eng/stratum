@@ -57,15 +57,14 @@ running GitHub Actions on the promoted PRs. See
 [CI Integration](ci-integration.md).
 
 Two things on that list have since arrived in a narrow form. Stratum now has an
-**encrypted per-project secret store**, read by the deploy runner and, since
-BYOK, by the `llm` evaluator for a project's own provider key. It is not a
-general-purpose store: nothing else reads it, and the webhook evaluator's
-`secret` is still taken literally from the policy file rather than by name from
-the store — so it sits in `.stratum/policy.yaml`, in git, and in every clone.
-Treat it as published to anyone who can read the repository, and prefer a
-receiver that verifies something other than a shared secret until that field
-resolves from storage the way `deploys:` already does. And it can **deploy the merged tree** to
-Cloudflare or Vercel from a `deploys:` block, with an optional approval gate
+**encrypted per-project secret store**, read by the deploy runner, by the `llm`
+evaluator for a project's own provider key (BYOK), and by the webhook
+evaluator's `secretRef` for its signing key. It is not a general-purpose store:
+nothing else reads it. The webhook evaluator's older literal `secret` field
+still works but is deprecated — a value written there sits in
+`.stratum/policy.yaml`, in git, and in every clone, so treat it as published to
+anyone who can read the repository and move it to `secretRef`. And it can
+**deploy the merged tree** to Cloudflare or Vercel from a `deploys:` block, with an optional approval gate
 and a retry. That is not deployment environments: there is no
 staging/production separation, no per-environment variables, no build step, no
 preview deploy, and no rollback. See [Deployments](deployments.md).

@@ -12,6 +12,7 @@ import {
   MIN_TOTAL_BUDGET_MS,
 } from "./limits";
 import type { LlmProviderCatalog } from "./llm-providers";
+import { SIGNING_SECRET_NAME_RULE, isSigningSecretName } from "./signing-secret";
 import type {
   EvalPolicy,
   EvaluatorConfig,
@@ -685,7 +686,34 @@ function sanitizeEvaluator(
       logger,
     );
     const webhook: EvaluatorConfig = { type: "webhook", url: source.url };
-    if (typeof source.secret === "string") webhook.secret = source.secret;
+    // A `secretRef` the author wrote but that cannot name a project secret is
+    // a signing requirement nothing can meet; fail the file closed rather than
+    // let the entry fall back to an unsigned (or literal-signed) request.
+    if (source.secretRef !== undefined) {
+      if (typeof source.secretRef !== "string" || !isSigningSecretName(source.secretRef)) {
+        // Never the value: an author may paste the raw key here by mistake.
+        logger.warn("Dropping webhook evaluator entry with an invalid secretRef", {
+          submittedType: typeof source.secretRef,
+          ...(typeof source.secretRef === "string"
+            ? { submittedLength: source.secretRef.length }
+            : {}),
+        });
+        rejections.push(`${at}: webhook 'secretRef' ${SIGNING_SECRET_NAME_RULE}`);
+        return null;
+      }
+      webhook.secretRef = source.secretRef;
+    }
+    if (typeof source.secret === "string") {
+      webhook.secret = source.secret;
+      // Logged rather than carried on the policy: the loader has no warning
+      // channel that reaches the author, so the evaluator also logs each use.
+      logger.warn(
+        webhook.secretRef !== undefined
+          ? "Webhook evaluator sets both 'secret' and 'secretRef'; the literal is ignored and should be removed"
+          : "Webhook evaluator uses a literal 'secret', which is deprecated and readable by anyone with repository read access; use 'secretRef'",
+        { url: source.url },
+      );
+    }
     if (timeoutMs !== undefined) webhook.timeoutMs = timeoutMs;
     return webhook;
   }

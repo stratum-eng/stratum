@@ -154,29 +154,52 @@ Configure it in `.stratum/policy.yaml`:
 evaluators:
   - type: webhook
     url: https://ci.example.com/stratum-eval
-    secret: <shared-secret>   # optional; enables HMAC signing — see the warning
-    timeoutMs: 10000          # optional; default 10000 (10s)
+    secretRef: WEBHOOK_EVALUATOR_SECRET   # optional; names a project secret that signs the request
+    timeoutMs: 10000                      # optional; default 10000 (10s)
 
 merge:
   requiredEvaluators: ["secret_scan", "webhook"]
 ```
 
 You can declare more than one `webhook` entry. Each is contacted independently,
-with its own `url`, `secret` and `timeoutMs`, and each records its own eval run.
+with its own `url`, `secretRef` and `timeoutMs`, and each records its own eval run.
 Because every one of them records the type `webhook`, a `requiredEvaluators`
 entry for `webhook` means *every* receiver must pass — one receiver's rejection
 blocks the merge even if the others approved. Re-evaluating replaces the whole
 set, so a later passing round clears an earlier failure.
 
-> **`secret` is a literal in a committed file.** `EvaluatorConfig` types it as
-> `secret?: string` (`src/evaluation/types.ts`) and the policy loader performs
-> no environment or secret-store lookup, so the only way to enable HMAC signing
-> today is to write the value into `.stratum/policy.yaml` — where every reader
-> of the repository can see it. There is no `.dev.vars` or Wrangler-secret
-> indirection for this field; adding one is an implementation change, not
-> configuration. Until then, treat a signed webhook as authenticating *the
-> repository*, not a confidential channel, and rotate the value if the repo's
-> readership changes.
+### The signing secret
+
+Store the key as a **project secret** and name it with `secretRef`. Add it in
+*Project → Settings → Deploy secrets*, or with
+`PUT /api/projects/{namespace}/{slug}/secrets/WEBHOOK_EVALUATOR_SECRET` — the
+same encrypted store, permissions, and `secret.written` / `secret.deleted`
+audit trail deploys use ([Storing a secret](/guides/deployments/#storing-a-secret)).
+The name must start with **`WEBHOOK_`** (uppercase letters, digits and
+underscores, at most 64 characters, not ending in `_API_KEY`); anything else
+fails the policy file closed. The prefix is a fence: a policy can only sign with
+a secret stored *for signing*, never with a deploy credential
+(`CLOUDFLARE_API_TOKEN`, `VERCEL_TOKEN`) or a BYOK provider key (`*_API_KEY`).
+Otherwise anyone who can merge a policy edit could point `url` at their own
+server and collect HMACs keyed with those credentials. The value is looked up each time the evaluator runs, so rotating
+it takes effect on the next evaluation with no policy change.
+
+- **A reference that does not resolve fails closed.** If the named secret is
+  not stored, is empty, cannot be decrypted (`DEPLOY_SECRET_KEY` rotated), or
+  the instance has no `DEPLOY_SECRET_KEY`, the evaluator records score 0 /
+  failed with the reason (`Webhook: signing secret unavailable (…)`) and **does
+  not contact your receiver**. It never sends the request unsigned and never
+  signs with an empty key.
+- **`secretRef` wins over `secret`.** If an entry sets both, the literal
+  `secret` is ignored — not used even as a fallback when the reference fails —
+  and a warning is logged. Delete the literal once `secretRef` is in place.
+- **The literal `secret` is deprecated.** It still works for now and logs a
+  warning each time it is used. A literal in `.stratum/policy.yaml` is
+  **readable by anyone with read access to the repository**, and by the code
+  under evaluation, which carries a copy of the policy: anyone who can read it
+  can forge a signature your receiver will accept. If you used one, move the
+  value to a project secret **and rotate it** — the old value is in your git
+  history.
 
 ### Request (Stratum → your endpoint)
 
@@ -185,7 +208,7 @@ set, so a later passing round clears an earlier failure.
   — the policy object is the parsed evaluation policy, so your endpoint can
   read its own config from `policy.evaluators`. It is passed through
   `sanitizePolicy` first (`src/evaluation/sanitize-policy.ts`), which strips
-  `secret` from every webhook evaluator entry, so no receiver sees any
+  `secret` and `secretRef` from every webhook evaluator entry, so no receiver sees any
   evaluator's signing secret — including its own. Provision your receiver's
   copy of the secret out of band; do not expect to read it from the payload.
 - `baseSha` is the commit the diff was computed against, resolved from the
@@ -198,15 +221,16 @@ set, so a later passing round clears an earlier failure.
   its absence as "I cannot reproduce this" and reject the request rather than
   falling back to your branch tip.
 - `baseSha` is inside the signed body, so it cannot be swapped in transit —
-  **but only when `secret` is configured**, because that is what produces the
-  `X-Stratum-Signature` header at all. Without a secret nothing about the
+  **but only when a signing secret is configured**, because that is what produces the
+  `X-Stratum-Signature` header at all. Without one nothing about the
   payload is authenticated, and an unsigned receiver must be reached over
   `https://` so the transport protects what the HMAC otherwise would.
 - The field is additive: a receiver written against the earlier
   `{diff, policy}` contract keeps working, and simply keeps the failure mode
   described above.
-- If `secret` is set, the header `X-Stratum-Signature: sha256=<hex>` carries
-  an HMAC-SHA256 of the exact request body, keyed with the secret. Verify it
+- If `secretRef` (or the deprecated `secret`) is set, the header
+  `X-Stratum-Signature: sha256=<hex>` carries an HMAC-SHA256 of the exact
+  request body, keyed with the secret. Verify it
   before trusting the payload.
 - The URL must target a **public host over http/https** — localhost, private
   IP ranges, `.internal`/`.local` names, and bare single-label hostnames are
@@ -339,11 +363,11 @@ To set expectations, Stratum has none of the following today:
 - Dependency/build caching
 - Scheduled jobs (cron workflows)
 - A general secrets store *for evaluators*. Stratum does have an encrypted
-  per-project secret store, but only two things read it: the deploy runner, and
+  per-project secret store, but only three things read it: the deploy runner,
   the `llm` evaluator when a policy names a provider to bring its own key to
-  ([Getting started](/guides/getting-started/#bringing-your-own-model-key)). Nothing
-  interpolates it into a policy file — the webhook evaluator's `secret` still
-  lives literally in `.stratum/policy.yaml`.
+  ([Getting started](/guides/getting-started/#bringing-your-own-model-key)), and the
+  webhook evaluator's `secretRef`. Nothing interpolates it into a policy file
+  or into a receiver's environment.
 - Deployment *environments* — no staging/production separation, no
   per-environment variables, no environment protection rules. What exists is a
   flat list of named deploys, each optionally gated by a single approval

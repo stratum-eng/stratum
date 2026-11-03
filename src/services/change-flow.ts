@@ -199,10 +199,11 @@ export function evaluatorDeadlineMs(cfg: EvaluatorConfig): number {
  * UnavailableEvaluator (score 0, fail) rather than silently vanishing.
  *
  * Takes the whole `ProjectEntry` rather than a display name because the payer
- * has to be nameable from it. Nothing built here receives the project: the
+ * has to be nameable from it. No evaluator built here receives the entry: the
  * billing subject reaches evaluators on the `EvaluationContext` that
- * `runEvaluation` forwards, and inside this function the entry is used for the
- * log line below and nothing else.
+ * `runEvaluation` forwards. Inside this function the entry is used for the log
+ * line below, the BYOK credential lookup, and the project id the webhook
+ * evaluator resolves its `secretRef` against.
  *
  * `workspaceRepo` is read access to the workspace being evaluated (remote +
  * read token + the pinned evaluated commit); the sandbox evaluator needs it to
@@ -256,7 +257,12 @@ export async function buildEvaluators(
       case "diff":
         return [{ type: "diff", evaluator: new DiffEvaluator() }];
       case "webhook":
-        return [{ type: "webhook", evaluator: new WebhookEvaluator(cfg) }];
+        return [
+          {
+            type: "webhook",
+            evaluator: new WebhookEvaluator(cfg, { env, projectId: project.id }),
+          },
+        ];
       case "llm": {
         // Every failure to resolve a project-supplied credential lands here,
         // and NONE of them falls back to `env.AI`. Falling back would move
