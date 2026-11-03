@@ -64,7 +64,7 @@ returns an empty list for you.
 | `stratum_get_activity` | Read the project activity feed |
 | `stratum_list_branches` | List a project's branches |
 | `stratum_comment_change`, `stratum_list_change_comments` | Your feedback channel on a change — agent tokens may comment, even though they cannot review |
-| `stratum_evaluate_change` | Re-run a change's gates after pushing more commits. User credentials only. |
+| `stratum_evaluate_change` | Re-run a change's gates after pushing more commits; poll `stratum_get_change` while it is `evaluating`. User credentials only. |
 | `stratum_promote_change` | Open the GitHub PR for an accepted change. User credentials only. |
 | `stratum_create_project`, `stratum_import_project` | Create a project, or import one from GitHub/GitLab/Bitbucket — into your namespace or, with `org`, an organization you can write to. User credentials only. |
 | `stratum_get_import_status`, `stratum_get_sync_status` | Follow an import, or read an imported project's sync state. Needs read access to the project (write access while an import is unfinished); agent tokens may use them. |

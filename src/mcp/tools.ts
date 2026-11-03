@@ -425,7 +425,7 @@ export function buildTools(client: StratumClient): ToolDef[] {
 
     tool(
       "stratum_evaluate_change",
-      "Re-run a change's evaluation gates against its workspace's current state — do this after pushing new commits to the workspace. Runs synchronously and returns the verdicts. Merged, rejected and promoted changes cannot be re-evaluated. Needs write access to the project; user credentials only (agent tokens are refused). Needs a write grant (mcp:write).",
+      "Re-run a change's evaluation gates against its workspace's current state — do this after pushing new commits to the workspace. On instances with an evaluation queue the change comes back `evaluating` with no verdict yet: poll stratum_get_change until the status leaves `evaluating`. Otherwise the verdicts are returned directly. Merged, rejected and promoted changes cannot be re-evaluated. Needs write access to the project; user credentials only (agent tokens are refused). Needs a write grant (mcp:write).",
       { change_id: changeIdArg },
       (a) => client.evaluateChange(a.change_id),
     ),
