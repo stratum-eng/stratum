@@ -1,6 +1,12 @@
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
-import { checkPrivateProjectGauge } from "../billing/private-project-gauge";
+import {
+  type GaugeRelease,
+  SINGLE_CREATION_HOLD_TTL_MS,
+  checkPrivateProjectGauge,
+  gaugePath,
+  releaseWhenSettled,
+} from "../billing/private-project-gauge";
 import {
   importRateLimitMiddleware,
   rateLimitMiddleware,
@@ -249,15 +255,23 @@ app.post("/", async (c) => {
     visibility = body.visibility;
   }
 
+  const slug = slugify(String(body.name));
+
   // The private-project gauge (PRD §8). Every path that creates a private
   // project goes through the same check; see billing/private-project-gauge.ts.
+  // An admission holds a slot until the `finally` at the bottom ends it, on
+  // every exit: by then the project entry is either written (and counted) or
+  // never will be.
   let gaugeSubjectId: string | undefined;
+  let releaseGaugeHold: GaugeRelease | undefined;
   if (visibility === "private") {
     const gauge = await checkPrivateProjectGauge(c.env, logger, {
       actorUserId: userId,
       username,
       owner,
       targetNamespace: namespace,
+      paths: [gaugePath(namespace, slug)],
+      holdTtlMs: SINGLE_CREATION_HOLD_TTL_MS,
       waitUntil: getWaitUntil(c),
     });
     if (!gauge.admitted) {
@@ -270,159 +284,180 @@ app.post("/", async (c) => {
       return forbidden(gauge.reason);
     }
     gaugeSubjectId = gauge.gaugeSubjectId;
+    releaseGaugeHold = gauge.release;
   }
 
-  const seed = body.seed === "true" || body.seed === true || c.req.query("seed") === "true";
-  const files =
-    body.files !== undefined
-      ? isStringRecord(body.files)
-        ? body.files
-        : null
-      : seed
-        ? DEFAULT_FILES
-        : { ".gitkeep": "" };
+  // The creation runs as one promise so it can be handed to `waitUntil` as
+  // well as returned: a client that disconnects must not cancel it before the
+  // `finally` releases the hold. See `releaseWhenSettled`.
+  const creation = (async () => {
+    try {
+      const seed = body.seed === "true" || body.seed === true || c.req.query("seed") === "true";
+      const files =
+        body.files !== undefined
+          ? isStringRecord(body.files)
+            ? body.files
+            : null
+          : seed
+            ? DEFAULT_FILES
+            : { ".gitkeep": "" };
 
-  if (files === null)
-    return badRequest("files must be an object of string paths to string contents");
+      if (files === null)
+        return badRequest("files must be an object of string paths to string contents");
 
-  const slug = slugify(String(body.name));
-
-  // Validate slug length after slugification
-  if (!isValidSlug(slug)) {
-    if (isForm) return backToForm(NEW_PROJECT_ERROR_INVALID_NAME, 400);
-    return badRequest("Slug too long (max 100 characters)");
-  }
-  const projectId = generateProjectId();
-
-  // Check if project already exists
-  const existingResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
-  if (existingResult.success) {
-    if (isForm) return backToForm(NEW_PROJECT_ERROR_NAME_TAKEN, 409);
-    return badRequest(`Project '${slug}' already exists in your namespace`);
-  }
-
-  // Create Artifacts repo with namespaced name
-  const artifactsRepoName = getArtifactsRepoName(namespace, slug);
-  let repo: Awaited<ReturnType<typeof c.env.ARTIFACTS.create>>;
-  try {
-    repo = await c.env.ARTIFACTS.create(artifactsRepoName);
-  } catch (artifactsError) {
-    const msg = artifactsError instanceof Error ? artifactsError.message : String(artifactsError);
-    if (msg.includes("already exists")) {
-      // Orphaned Artifacts repo from a previous failed attempt (KV write failed after Artifacts
-      // create succeeded). Delete it and recreate — ARTIFACTS.get() returns a JsRpcStub where
-      // property accesses are lazy JsRpcProperty objects that can't be used as plain strings.
-      try {
-        await c.env.ARTIFACTS.delete(artifactsRepoName);
-        repo = await c.env.ARTIFACTS.create(artifactsRepoName);
-      } catch (recoveryError) {
-        logger.error(
-          "Failed to delete and recreate Artifacts repo",
-          recoveryError instanceof Error ? recoveryError : undefined,
-          { artifactsRepoName, error: recoveryError },
-        );
-        return internalError(
-          `Failed to recover repository: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
-        );
+      // Validate slug length after slugification
+      if (!isValidSlug(slug)) {
+        if (isForm) return backToForm(NEW_PROJECT_ERROR_INVALID_NAME, 400);
+        return badRequest("Slug too long (max 100 characters)");
       }
-    } else {
-      logger.error(
-        "Failed to create Artifacts repo",
-        artifactsError instanceof Error ? artifactsError : undefined,
-        { artifactsRepoName, msg },
+      const projectId = generateProjectId();
+
+      // Check if project already exists
+      const existingResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+      if (existingResult.success) {
+        if (isForm) return backToForm(NEW_PROJECT_ERROR_NAME_TAKEN, 409);
+        return badRequest(`Project '${slug}' already exists in your namespace`);
+      }
+
+      // Create Artifacts repo with namespaced name
+      const artifactsRepoName = getArtifactsRepoName(namespace, slug);
+      let repo: Awaited<ReturnType<typeof c.env.ARTIFACTS.create>>;
+      try {
+        repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+      } catch (artifactsError) {
+        const msg =
+          artifactsError instanceof Error ? artifactsError.message : String(artifactsError);
+        if (msg.includes("already exists")) {
+          // Orphaned Artifacts repo from a previous failed attempt (KV write failed after Artifacts
+          // create succeeded). Delete it and recreate — ARTIFACTS.get() returns a JsRpcStub where
+          // property accesses are lazy JsRpcProperty objects that can't be used as plain strings.
+          try {
+            await c.env.ARTIFACTS.delete(artifactsRepoName);
+            repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+          } catch (recoveryError) {
+            logger.error(
+              "Failed to delete and recreate Artifacts repo",
+              recoveryError instanceof Error ? recoveryError : undefined,
+              { artifactsRepoName, error: recoveryError },
+            );
+            return internalError(
+              `Failed to recover repository: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`,
+            );
+          }
+        } else {
+          logger.error(
+            "Failed to create Artifacts repo",
+            artifactsError instanceof Error ? artifactsError : undefined,
+            { artifactsRepoName, msg },
+          );
+          return internalError(`Failed to create repository: ${msg}`);
+        }
+      }
+
+      const initResult = await initAndPush(
+        repo.remote,
+        repo.token,
+        files,
+        "Initial commit",
+        logger,
       );
-      return internalError(`Failed to create repository: ${msg}`);
+      if (!initResult.success) {
+        logger.error("Failed to initialize and push repository", initResult.error);
+        return internalError(initResult.error.message);
+      }
+
+      const project: ProjectEntry = {
+        id: projectId,
+        name: String(body.name),
+        slug,
+        namespace,
+        ownerId: owner.id,
+        ownerType: owner.type,
+        remote: repo.remote,
+        createdAt: new Date().toISOString(),
+        visibility,
+        ...(gaugeSubjectId !== undefined ? { gaugeSubjectId } : {}),
+      };
+
+      // The claim goes into D1 before the KV entry so a username change cannot
+      // slip between the two; see storage/project-namespace.ts.
+      if (owner.type === "user") {
+        const claimed = await claimNamespace(
+          c.env.DB,
+          { ownerId: owner.id, namespace, slug },
+          logger,
+        );
+        if (!claimed.success) return appError(claimed.error);
+      }
+
+      // Charged to the actor but stored under an org: index it under the actor so
+      // the gauge can find it without walking their memberships. Written BEFORE the
+      // project entry and fatal on failure, so a project charged to someone can
+      // never exist without its index entry — a missing entry would be a silent,
+      // repeatable under-count. The reverse order is harmless: an entry whose
+      // project never lands is pruned as NOT_FOUND on the next count.
+      if (owner.type === "org" && gaugeSubjectId !== undefined && gaugeSubjectId !== owner.id) {
+        const indexed = await recordGaugeCharge(c.env.STATE, logger, {
+          subjectId: gaugeSubjectId,
+          namespace,
+          slug,
+          projectId,
+        });
+        if (!indexed.success) return internalError("Failed to record the private project charge");
+      }
+
+      const setResult = await setProject(c.env.STATE, project, logger);
+      if (!setResult.success) {
+        logger.error("Failed to set project", setResult.error);
+        if (owner.type === "user") await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
+        return internalError(setResult.error.message);
+      }
+
+      // The username on this request was read at auth time, before the repository
+      // was created; see confirmOwnerNamespace for the rename it may have crossed.
+      if (owner.type === "user") {
+        const confirmed = await confirmOwnerNamespace(c.env, owner.id, project, logger);
+        if (!confirmed.success) return appError(confirmed.error);
+      }
+
+      logger.info("Project created", {
+        projectId,
+        namespace,
+        slug,
+        visibility,
+      });
+
+      await emitEvent(
+        c.env.DB,
+        c.env.EVENTS_QUEUE,
+        { type: "project.created", project: project.name },
+        { type: "user", id: userId },
+        logger,
+        project.id,
+      );
+
+      // A browser form lands on the new project; API callers keep the JSON body.
+      // (The import endpoint below does the same.)
+      if (!contentType.includes("application/json")) {
+        return c.redirect(`/${namespace}/${slug}`, 303);
+      }
+
+      return created({
+        id: projectId,
+        name: project.name,
+        namespace,
+        slug,
+        path: `/${namespace}/${slug}`,
+        remote: repo.remote,
+        commit: initResult.data,
+        visibility,
+      });
+    } finally {
+      await releaseGaugeHold?.();
     }
-  }
-
-  const initResult = await initAndPush(repo.remote, repo.token, files, "Initial commit", logger);
-  if (!initResult.success) {
-    logger.error("Failed to initialize and push repository", initResult.error);
-    return internalError(initResult.error.message);
-  }
-
-  const project: ProjectEntry = {
-    id: projectId,
-    name: String(body.name),
-    slug,
-    namespace,
-    ownerId: owner.id,
-    ownerType: owner.type,
-    remote: repo.remote,
-    createdAt: new Date().toISOString(),
-    visibility,
-    ...(gaugeSubjectId !== undefined ? { gaugeSubjectId } : {}),
-  };
-
-  // The claim goes into D1 before the KV entry so a username change cannot
-  // slip between the two; see storage/project-namespace.ts.
-  if (owner.type === "user") {
-    const claimed = await claimNamespace(c.env.DB, { ownerId: owner.id, namespace, slug }, logger);
-    if (!claimed.success) return appError(claimed.error);
-  }
-
-  // Charged to the actor but stored under an org: index it under the actor so
-  // the gauge can find it without walking their memberships. Written BEFORE the
-  // project entry and fatal on failure, so a project charged to someone can
-  // never exist without its index entry — a missing entry would be a silent,
-  // repeatable under-count. The reverse order is harmless: an entry whose
-  // project never lands is pruned as NOT_FOUND on the next count.
-  if (owner.type === "org" && gaugeSubjectId !== undefined && gaugeSubjectId !== owner.id) {
-    const indexed = await recordGaugeCharge(c.env.STATE, logger, {
-      subjectId: gaugeSubjectId,
-      namespace,
-      slug,
-      projectId,
-    });
-    if (!indexed.success) return internalError("Failed to record the private project charge");
-  }
-
-  const setResult = await setProject(c.env.STATE, project, logger);
-  if (!setResult.success) {
-    logger.error("Failed to set project", setResult.error);
-    if (owner.type === "user") await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
-    return internalError(setResult.error.message);
-  }
-
-  // The username on this request was read at auth time, before the repository
-  // was created; see confirmOwnerNamespace for the rename it may have crossed.
-  if (owner.type === "user") {
-    const confirmed = await confirmOwnerNamespace(c.env, owner.id, project, logger);
-    if (!confirmed.success) return appError(confirmed.error);
-  }
-
-  logger.info("Project created", {
-    projectId,
-    namespace,
-    slug,
-    visibility,
-  });
-
-  await emitEvent(
-    c.env.DB,
-    c.env.EVENTS_QUEUE,
-    { type: "project.created", project: project.name },
-    { type: "user", id: userId },
-    logger,
-    project.id,
-  );
-
-  // A browser form lands on the new project; API callers keep the JSON body.
-  // (The import endpoint below does the same.)
-  if (!contentType.includes("application/json")) {
-    return c.redirect(`/${namespace}/${slug}`, 303);
-  }
-
-  return created({
-    id: projectId,
-    name: project.name,
-    namespace,
-    slug,
-    path: `/${namespace}/${slug}`,
-    remote: repo.remote,
-    commit: initResult.data,
-    visibility,
-  });
+  })();
+  releaseWhenSettled(creation, () => releaseGaugeHold?.(), getWaitUntil(c));
+  return creation;
 });
 
 /**
@@ -572,403 +607,424 @@ app.post(
       method: c.req.method,
     });
 
-    try {
-      const userId = c.get("userId");
-      const username = c.get("username");
-      if (!userId || !username) return unauthorized("Authentication required");
+    // Set once the gauge admits a private import; the `finally` below ends its
+    // hold on every exit, because by then the project entry is either written
+    // (and counted) or never will be. The whole import runs as one promise
+    // that is also handed to `waitUntil`, so a client that disconnects cannot
+    // cancel it before that `finally` runs; see `releaseWhenSettled`.
+    let releaseGaugeHold: GaugeRelease | undefined;
+    const importing = (async () => {
+      try {
+        const userId = c.get("userId");
+        const username = c.get("username");
+        if (!userId || !username) return unauthorized("Authentication required");
 
-      const { namespace, slug } = c.req.param();
+        const { namespace, slug } = c.req.param();
 
-      // Validate namespace format
-      if (!isValidNamespace(namespace)) {
-        return badRequest("Invalid namespace format");
-      }
-
-      // The new-project form posts here in import mode; like POST /, a refusal
-      // the user can fix goes back to the form rather than to a JSON body.
-      const isForm = !(c.req.header("content-type") ?? "").includes("application/json");
-      // `importRateLimitMiddleware` has already taken this project's import
-      // lock. A refusal starts no import, so it gives the lock back; otherwise
-      // the user's corrected resubmission would be refused as "already
-      // importing" until the lock's TTL ran out.
-      //
-      // The form is re-rendered from this request, with its own values, not
-      // redirected with them in the query: a link that prefilled an import URL
-      // could lure someone into importing a repository of the sender's choosing.
-      const refuseToForm = async (
-        code: string,
-        values: NewProjectFormValues,
-        status: 400 | 403 = 400,
-      ) => {
-        await releaseImportLock(c.env.STATE, namespace, slug, logger);
-        return renderNewProjectPage(c, logger, { error: newProjectError(code), values }, status);
-      };
-      if (!isValidSlug(slug)) {
-        if (isForm) {
-          return refuseToForm(NEW_PROJECT_ERROR_INVALID_NAME, { mode: "import", name: slug });
+        // Validate namespace format
+        if (!isValidNamespace(namespace)) {
+          return badRequest("Invalid namespace format");
         }
-        return badRequest("Slug too long (max 100 characters)");
-      }
 
-      const userNamespace = getUserNamespace(username);
+        // The new-project form posts here in import mode; like POST /, a refusal
+        // the user can fix goes back to the form rather than to a JSON body.
+        const isForm = !(c.req.header("content-type") ?? "").includes("application/json");
+        // `importRateLimitMiddleware` has already taken this project's import
+        // lock. A refusal starts no import, so it gives the lock back; otherwise
+        // the user's corrected resubmission would be refused as "already
+        // importing" until the lock's TTL ran out.
+        //
+        // The form is re-rendered from this request, with its own values, not
+        // redirected with them in the query: a link that prefilled an import URL
+        // could lure someone into importing a repository of the sender's choosing.
+        const refuseToForm = async (
+          code: string,
+          values: NewProjectFormValues,
+          status: 400 | 403 = 400,
+        ) => {
+          await releaseImportLock(c.env.STATE, namespace, slug, logger);
+          return renderNewProjectPage(c, logger, { error: newProjectError(code), values }, status);
+        };
+        if (!isValidSlug(slug)) {
+          if (isForm) {
+            return refuseToForm(NEW_PROJECT_ERROR_INVALID_NAME, { mode: "import", name: slug });
+          }
+          return badRequest("Slug too long (max 100 characters)");
+        }
 
-      // Validate user namespace format
-      if (!isValidNamespace(userNamespace)) {
-        return badRequest("Invalid namespace format");
-      }
+        const userNamespace = getUserNamespace(username);
 
-      // For now, users can only import into their own namespace
-      if (namespace !== userNamespace) {
-        return forbidden("You can only import projects into your own namespace");
-      }
+        // Validate user namespace format
+        if (!isValidNamespace(userNamespace)) {
+          return badRequest("Invalid namespace format");
+        }
 
-      // Check if project already exists
-      const existingProjectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
-      if (existingProjectResult.success) {
-        logger.info("Project already exists", { namespace, slug });
+        // For now, users can only import into their own namespace
+        if (namespace !== userNamespace) {
+          return forbidden("You can only import projects into your own namespace");
+        }
 
-        // If the project exists but the import never completed, re-trigger it so the
-        // user doesn't need to hunt for the "Retry Import" button after a rate-limit failure.
-        const existingImport = await getImportProgress(c.env.DB, namespace, slug, logger);
-        if (existingImport.success && existingImport.data) {
-          const importStatus = existingImport.data.status;
-          const isIncomplete = !["completed", "queued", "cloning", "processing"].includes(
-            importStatus,
+        // Check if project already exists
+        const existingProjectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+        if (existingProjectResult.success) {
+          logger.info("Project already exists", { namespace, slug });
+
+          // If the project exists but the import never completed, re-trigger it so the
+          // user doesn't need to hunt for the "Retry Import" button after a rate-limit failure.
+          const existingImport = await getImportProgress(c.env.DB, namespace, slug, logger);
+          if (existingImport.success && existingImport.data) {
+            const importStatus = existingImport.data.status;
+            const isIncomplete = !["completed", "queued", "cloning", "processing"].includes(
+              importStatus,
+            );
+
+            if (isIncomplete) {
+              logger.info("Project exists with incomplete import — re-triggering", {
+                namespace,
+                slug,
+                importStatus,
+              });
+              await updateImportStatus(
+                c.env.DB,
+                namespace,
+                slug,
+                "queued",
+                logger,
+                "Import re-triggered via form",
+              );
+
+              if (c.env.IMPORT_QUEUE) {
+                try {
+                  const { queueImportJob } = await import("../queue/import-queue");
+                  await queueImportJob(c.env.IMPORT_QUEUE, {
+                    importId: existingImport.data.id,
+                    projectId: existingImport.data.projectId,
+                    namespace,
+                    slug,
+                    githubUrl: existingImport.data.sourceUrl,
+                    branch: existingImport.data.branch ?? "main",
+                    // The depth the job was created with, not a fresh literal —
+                    // a re-trigger must not quietly shallow a full-history import.
+                    depth: existingImport.data.depth ?? DEFAULT_CLONE_DEPTH,
+                    initiatedBy: userId,
+                  });
+                } catch (queueError) {
+                  logger.error(
+                    "Failed to re-queue import on form re-submit",
+                    queueError instanceof Error ? queueError : undefined,
+                    { namespace, slug },
+                  );
+                  // Non-fatal — user can use the Retry button on the project page
+                }
+              } else {
+                // No queue — fall back to direct processing
+                const projectForRetry = existingProjectResult.data;
+                c.executionCtx.waitUntil(
+                  processImportJob(
+                    c.env,
+                    projectForRetry,
+                    existingImport.data.id,
+                    existingImport.data.sourceUrl,
+                    existingImport.data.branch ?? "main",
+                    logger,
+                    // Explicit, not left to processImportJob's DEFAULT_CLONE_DEPTH
+                    // default: omitting it silently re-triggers a full-history
+                    // import at depth 10, which is the bug this PR exists to fix.
+                    existingImport.data.depth ?? DEFAULT_CLONE_DEPTH,
+                  ).catch((error) => {
+                    logger.error(
+                      "Unhandled error in background import re-trigger",
+                      error instanceof Error ? error : undefined,
+                      { namespace, slug },
+                    );
+                  }),
+                );
+              }
+            }
+          }
+
+          const contentType = c.req.header("content-type") || "";
+          if (!contentType.includes("application/json")) {
+            return c.redirect(`/@${namespace.replace("@", "")}/${slug}?import=active`);
+          }
+          return ok({
+            namespace,
+            slug,
+            remote: existingProjectResult.data.remote,
+            source: existingProjectResult.data.githubUrl,
+          });
+        }
+
+        // Handle both JSON and form data
+        let body: { url?: unknown; branch?: unknown; depth?: unknown; visibility?: unknown };
+        const contentType = c.req.header("content-type") || "";
+
+        if (contentType.includes("application/json")) {
+          const parsed = await readJsonWithLimit<typeof body>(
+            c,
+            MAX_PROJECT_IMPORT_BODY_BYTES,
+            logger,
           );
+          if (parsed instanceof Response) return parsed;
+          body = parsed;
+        } else {
+          // Form data — pass depth through raw so validateCloneDepth can accept
+          // both numeric strings and the "full" keyword.
+          const formData = await c.req.parseBody();
+          body = {
+            url: formData.url,
+            branch: formData.branch,
+            depth: formData.depth,
+            visibility: formData.visibility,
+          };
+        }
 
-          if (isIncomplete) {
-            logger.info("Project exists with incomplete import — re-triggering", {
+        // What the user typed, echoed back into the form on a refusal.
+        const formValues = {
+          mode: "import" as const,
+          name: slug,
+          ...(typeof body.url === "string" ? { url: body.url } : {}),
+        };
+        if (!isValidRepoUrl(body.url) && !isValidGitHubUrl(body.url)) {
+          if (isForm) return refuseToForm(NEW_PROJECT_ERROR_INVALID_URL, formValues);
+          return badRequest("url must be a valid repository URL from GitHub, GitLab, or Bitbucket");
+        }
+
+        // Validate clone depth (integer 1..MAX_CLONE_DEPTH, or 0 / "full" for
+        // full history; absent -> DEFAULT_CLONE_DEPTH).
+        const depthResult = validateCloneDepth(body.depth);
+        if (!depthResult.valid) {
+          return badRequest(depthResult.error);
+        }
+        const depth = depthResult.depth;
+
+        // Resolve the branch to import. An explicitly requested branch is
+        // authoritative; otherwise ask the provider for the repository's real
+        // default branch (falling back to "main" with a warning if the provider
+        // lookup fails — see resolveDefaultBranch for the fail-open rationale).
+        const requestedBranch =
+          typeof body.branch === "string" && body.branch.trim().length > 0
+            ? body.branch.trim()
+            : undefined;
+        const branch = requestedBranch ?? (await resolveDefaultBranch(body.url, c.env, logger));
+
+        // Validate visibility if provided
+        let visibility: "private" | "public" = "private";
+        if (body.visibility !== undefined) {
+          if (body.visibility !== "private" && body.visibility !== "public") {
+            return badRequest("visibility must be 'private' or 'public'");
+          }
+          visibility = body.visibility;
+        }
+
+        // The same private-project gauge as POST / — an import is another way to
+        // create one. Checked before the import job row or the repository exists,
+        // so a refusal leaves nothing behind.
+        let gaugeSubjectId: string | undefined;
+        if (visibility === "private") {
+          const gauge = await checkPrivateProjectGauge(c.env, logger, {
+            actorUserId: userId,
+            username,
+            owner: { id: userId, type: "user" },
+            targetNamespace: namespace,
+            paths: [gaugePath(namespace, slug)],
+            holdTtlMs: SINGLE_CREATION_HOLD_TTL_MS,
+            waitUntil: getWaitUntil(c),
+          });
+          // A refusal took no hold, so there is nothing for the `finally` to
+          // release; the form path gives back the import lock as well.
+          if (!gauge.admitted) {
+            if (isForm) return refuseToForm(NEW_PROJECT_ERROR_PRIVATE_LIMIT, formValues, 403);
+            return forbidden(gauge.reason);
+          }
+          gaugeSubjectId = gauge.gaugeSubjectId;
+          releaseGaugeHold = gauge.release;
+        }
+
+        // Generate project ID
+        const projectId = generateProjectId();
+        const importId = generateProjectId();
+
+        // Create import job FIRST (before creating project)
+        const createImportResult = await createImportJob(
+          c.env.DB,
+          {
+            id: importId,
+            projectId,
+            namespace,
+            slug,
+            sourceUrl: body.url,
+            branch,
+            depth,
+          },
+          logger,
+        );
+
+        if (!createImportResult.success) {
+          logger.error("Failed to create import job", createImportResult.error);
+          return internalError(createImportResult.error.message);
+        }
+
+        // Create the project entry immediately (marked as being imported)
+        // For now, we'll create a placeholder Artifacts repo
+        const artifactsRepoName = getArtifactsRepoName(namespace, slug);
+        let repo: ArtifactsCreateResult;
+
+        try {
+          repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+        } catch (artifactsError) {
+          // If repo already exists, try to get it and create a token
+          const errorMessage = artifactsError instanceof Error ? artifactsError.message : "";
+          if (errorMessage.includes("already exists")) {
+            // Orphaned repo — delete and recreate to avoid JsRpcProperty on get() Stub fields.
+            await c.env.ARTIFACTS.delete(artifactsRepoName);
+            repo = await c.env.ARTIFACTS.create(artifactsRepoName);
+          } else {
+            throw artifactsError;
+          }
+        }
+
+        // Detect provider and parse URL
+        const { detectProvider, parseRepoUrl } = await import("../storage/git-providers");
+        const provider = detectProvider(body.url);
+        const parsedUrl = parseRepoUrl(body.url);
+
+        // Parse GitHub repo for legacy field compatibility
+        const parsedGitHub = parseGitHubRepo(body.url);
+
+        const project: ProjectEntry = {
+          id: projectId,
+          name: slug,
+          slug,
+          namespace,
+          ownerId: userId,
+          ownerType: "user",
+          remote: repo.remote,
+          createdAt: new Date().toISOString(),
+          // Legacy fields for backward compatibility
+          githubUrl: body.url,
+          githubOwner: parsedGitHub?.owner,
+          githubRepo: parsedGitHub?.repo,
+          githubDefaultBranch: branch,
+          githubConnectedAt: new Date().toISOString(),
+          githubConnectionStatus: "connected",
+          // New generic provider fields
+          sourceUrl: body.url,
+          sourceProvider: provider || undefined,
+          sourceOwner: parsedUrl?.info.owner,
+          sourceRepo: parsedUrl?.info.repo,
+          sourceDefaultBranch: branch,
+          visibility,
+          importCompleted: false,
+          ...(gaugeSubjectId !== undefined ? { gaugeSubjectId } : {}),
+        };
+
+        // Claim before the KV write, as project creation does.
+        const claimed = await claimNamespace(
+          c.env.DB,
+          { ownerId: userId, namespace, slug },
+          logger,
+        );
+        if (!claimed.success) return appError(claimed.error);
+
+        const setResult = await setProject(c.env.STATE, project, logger);
+        if (!setResult.success) {
+          logger.error("Failed to set project after import", setResult.error);
+          await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
+          return internalError(setResult.error.message);
+        }
+
+        // Same guard as project creation. The import job row created above is
+        // never queued in this case; it ages out with cleanupOldImports.
+        const confirmed = await confirmOwnerNamespace(c.env, userId, project, logger);
+        if (!confirmed.success) return appError(confirmed.error);
+
+        // Queue the actual import job for background processing using the queue if available
+        if (c.env.IMPORT_QUEUE) {
+          try {
+            const { queueImportJob } = await import("../queue/import-queue");
+            await queueImportJob(c.env.IMPORT_QUEUE, {
+              importId,
+              projectId,
               namespace,
               slug,
-              importStatus,
+              githubUrl: body.url,
+              branch,
+              depth,
+              initiatedBy: userId,
             });
+          } catch (queueError) {
+            // Log queue error but don't fall back - queue exists but send() failed
+            logger.error(
+              "Failed to queue import job",
+              queueError instanceof Error ? queueError : undefined,
+              {
+                namespace,
+                slug,
+                importId,
+              },
+            );
+            // Update import status to failed before rethrowing
             await updateImportStatus(
               c.env.DB,
               namespace,
               slug,
-              "queued",
+              "failed",
               logger,
-              "Import re-triggered via form",
+              `Failed to enqueue import job: ${queueError instanceof Error ? queueError.message : String(queueError)}`,
             );
-
-            if (c.env.IMPORT_QUEUE) {
-              try {
-                const { queueImportJob } = await import("../queue/import-queue");
-                await queueImportJob(c.env.IMPORT_QUEUE, {
-                  importId: existingImport.data.id,
-                  projectId: existingImport.data.projectId,
-                  namespace,
-                  slug,
-                  githubUrl: existingImport.data.sourceUrl,
-                  branch: existingImport.data.branch ?? "main",
-                  // The depth the job was created with, not a fresh literal —
-                  // a re-trigger must not quietly shallow a full-history import.
-                  depth: existingImport.data.depth ?? DEFAULT_CLONE_DEPTH,
-                  initiatedBy: userId,
-                });
-              } catch (queueError) {
-                logger.error(
-                  "Failed to re-queue import on form re-submit",
-                  queueError instanceof Error ? queueError : undefined,
-                  { namespace, slug },
-                );
-                // Non-fatal — user can use the Retry button on the project page
-              }
-            } else {
-              // No queue — fall back to direct processing
-              const projectForRetry = existingProjectResult.data;
-              c.executionCtx.waitUntil(
-                processImportJob(
-                  c.env,
-                  projectForRetry,
-                  existingImport.data.id,
-                  existingImport.data.sourceUrl,
-                  existingImport.data.branch ?? "main",
-                  logger,
-                  // Explicit, not left to processImportJob's DEFAULT_CLONE_DEPTH
-                  // default: omitting it silently re-triggers a full-history
-                  // import at depth 10, which is the bug this PR exists to fix.
-                  existingImport.data.depth ?? DEFAULT_CLONE_DEPTH,
-                ).catch((error) => {
-                  logger.error(
-                    "Unhandled error in background import re-trigger",
-                    error instanceof Error ? error : undefined,
-                    { namespace, slug },
-                  );
-                }),
-              );
-            }
+            // Don't fall back to direct processing here - the queue exists but send failed,
+            // which could lead to duplicate work. Let the client retry instead.
+            throw queueError;
           }
+        } else {
+          // Queue not configured - fall back to direct processing
+          logger.warn("IMPORT_QUEUE not configured, falling back to direct processing", {
+            namespace,
+            slug,
+          });
+          c.executionCtx.waitUntil(
+            processImportJob(c.env, project, importId, body.url, branch, logger, depth).catch(
+              (error) => {
+                logger.error(
+                  "Unhandled error in background import job",
+                  error instanceof Error ? error : undefined,
+                  {
+                    namespace,
+                    slug,
+                    importId,
+                  },
+                );
+              },
+            ),
+          );
         }
 
-        const contentType = c.req.header("content-type") || "";
+        // Redirect to project page immediately (user will see import progress)
         if (!contentType.includes("application/json")) {
           return c.redirect(`/@${namespace.replace("@", "")}/${slug}?import=active`);
         }
-        return ok({
+
+        logger.info("Import queued", { namespace, slug, importId, url: body.url, visibility });
+        return created({
           namespace,
           slug,
-          remote: existingProjectResult.data.remote,
-          source: existingProjectResult.data.githubUrl,
+          importId,
+          path: `/${namespace}/${slug}`,
+          status: "queued",
+          source: body.url,
+          visibility,
         });
+      } catch (err) {
+        logger.error("[import] Error:", err instanceof Error ? err : undefined);
+        const message = err instanceof Error ? err.message : String(err);
+        return internalError(message);
+      } finally {
+        await releaseGaugeHold?.();
       }
-
-      // Handle both JSON and form data
-      let body: { url?: unknown; branch?: unknown; depth?: unknown; visibility?: unknown };
-      const contentType = c.req.header("content-type") || "";
-
-      if (contentType.includes("application/json")) {
-        const parsed = await readJsonWithLimit<typeof body>(
-          c,
-          MAX_PROJECT_IMPORT_BODY_BYTES,
-          logger,
-        );
-        if (parsed instanceof Response) return parsed;
-        body = parsed;
-      } else {
-        // Form data — pass depth through raw so validateCloneDepth can accept
-        // both numeric strings and the "full" keyword.
-        const formData = await c.req.parseBody();
-        body = {
-          url: formData.url,
-          branch: formData.branch,
-          depth: formData.depth,
-          visibility: formData.visibility,
-        };
-      }
-
-      // What the user typed, echoed back into the form on a refusal.
-      const formValues = {
-        mode: "import" as const,
-        name: slug,
-        ...(typeof body.url === "string" ? { url: body.url } : {}),
-      };
-      if (!isValidRepoUrl(body.url) && !isValidGitHubUrl(body.url)) {
-        if (isForm) return refuseToForm(NEW_PROJECT_ERROR_INVALID_URL, formValues);
-        return badRequest("url must be a valid repository URL from GitHub, GitLab, or Bitbucket");
-      }
-
-      // Validate clone depth (integer 1..MAX_CLONE_DEPTH, or 0 / "full" for
-      // full history; absent -> DEFAULT_CLONE_DEPTH).
-      const depthResult = validateCloneDepth(body.depth);
-      if (!depthResult.valid) {
-        return badRequest(depthResult.error);
-      }
-      const depth = depthResult.depth;
-
-      // Resolve the branch to import. An explicitly requested branch is
-      // authoritative; otherwise ask the provider for the repository's real
-      // default branch (falling back to "main" with a warning if the provider
-      // lookup fails — see resolveDefaultBranch for the fail-open rationale).
-      const requestedBranch =
-        typeof body.branch === "string" && body.branch.trim().length > 0
-          ? body.branch.trim()
-          : undefined;
-      const branch = requestedBranch ?? (await resolveDefaultBranch(body.url, c.env, logger));
-
-      // Validate visibility if provided
-      let visibility: "private" | "public" = "private";
-      if (body.visibility !== undefined) {
-        if (body.visibility !== "private" && body.visibility !== "public") {
-          return badRequest("visibility must be 'private' or 'public'");
-        }
-        visibility = body.visibility;
-      }
-
-      // The same private-project gauge as POST / — an import is another way to
-      // create one. Checked before the import job row or the repository exists,
-      // so a refusal leaves nothing behind.
-      let gaugeSubjectId: string | undefined;
-      if (visibility === "private") {
-        const gauge = await checkPrivateProjectGauge(c.env, logger, {
-          actorUserId: userId,
-          username,
-          owner: { id: userId, type: "user" },
-          targetNamespace: namespace,
-          waitUntil: getWaitUntil(c),
-        });
-        if (!gauge.admitted) {
-          if (isForm) return refuseToForm(NEW_PROJECT_ERROR_PRIVATE_LIMIT, formValues, 403);
-          return forbidden(gauge.reason);
-        }
-        gaugeSubjectId = gauge.gaugeSubjectId;
-      }
-
-      // Generate project ID
-      const projectId = generateProjectId();
-      const importId = generateProjectId();
-
-      // Create import job FIRST (before creating project)
-      const createImportResult = await createImportJob(
-        c.env.DB,
-        {
-          id: importId,
-          projectId,
-          namespace,
-          slug,
-          sourceUrl: body.url,
-          branch,
-          depth,
-        },
-        logger,
-      );
-
-      if (!createImportResult.success) {
-        logger.error("Failed to create import job", createImportResult.error);
-        return internalError(createImportResult.error.message);
-      }
-
-      // Create the project entry immediately (marked as being imported)
-      // For now, we'll create a placeholder Artifacts repo
-      const artifactsRepoName = getArtifactsRepoName(namespace, slug);
-      let repo: ArtifactsCreateResult;
-
-      try {
-        repo = await c.env.ARTIFACTS.create(artifactsRepoName);
-      } catch (artifactsError) {
-        // If repo already exists, try to get it and create a token
-        const errorMessage = artifactsError instanceof Error ? artifactsError.message : "";
-        if (errorMessage.includes("already exists")) {
-          // Orphaned repo — delete and recreate to avoid JsRpcProperty on get() Stub fields.
-          await c.env.ARTIFACTS.delete(artifactsRepoName);
-          repo = await c.env.ARTIFACTS.create(artifactsRepoName);
-        } else {
-          throw artifactsError;
-        }
-      }
-
-      // Detect provider and parse URL
-      const { detectProvider, parseRepoUrl } = await import("../storage/git-providers");
-      const provider = detectProvider(body.url);
-      const parsedUrl = parseRepoUrl(body.url);
-
-      // Parse GitHub repo for legacy field compatibility
-      const parsedGitHub = parseGitHubRepo(body.url);
-
-      const project: ProjectEntry = {
-        id: projectId,
-        name: slug,
-        slug,
-        namespace,
-        ownerId: userId,
-        ownerType: "user",
-        remote: repo.remote,
-        createdAt: new Date().toISOString(),
-        // Legacy fields for backward compatibility
-        githubUrl: body.url,
-        githubOwner: parsedGitHub?.owner,
-        githubRepo: parsedGitHub?.repo,
-        githubDefaultBranch: branch,
-        githubConnectedAt: new Date().toISOString(),
-        githubConnectionStatus: "connected",
-        // New generic provider fields
-        sourceUrl: body.url,
-        sourceProvider: provider || undefined,
-        sourceOwner: parsedUrl?.info.owner,
-        sourceRepo: parsedUrl?.info.repo,
-        sourceDefaultBranch: branch,
-        visibility,
-        importCompleted: false,
-        ...(gaugeSubjectId !== undefined ? { gaugeSubjectId } : {}),
-      };
-
-      // Claim before the KV write, as project creation does.
-      const claimed = await claimNamespace(c.env.DB, { ownerId: userId, namespace, slug }, logger);
-      if (!claimed.success) return appError(claimed.error);
-
-      const setResult = await setProject(c.env.STATE, project, logger);
-      if (!setResult.success) {
-        logger.error("Failed to set project after import", setResult.error);
-        await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
-        return internalError(setResult.error.message);
-      }
-
-      // Same guard as project creation. The import job row created above is
-      // never queued in this case; it ages out with cleanupOldImports.
-      const confirmed = await confirmOwnerNamespace(c.env, userId, project, logger);
-      if (!confirmed.success) return appError(confirmed.error);
-
-      // Queue the actual import job for background processing using the queue if available
-      if (c.env.IMPORT_QUEUE) {
-        try {
-          const { queueImportJob } = await import("../queue/import-queue");
-          await queueImportJob(c.env.IMPORT_QUEUE, {
-            importId,
-            projectId,
-            namespace,
-            slug,
-            githubUrl: body.url,
-            branch,
-            depth,
-            initiatedBy: userId,
-          });
-        } catch (queueError) {
-          // Log queue error but don't fall back - queue exists but send() failed
-          logger.error(
-            "Failed to queue import job",
-            queueError instanceof Error ? queueError : undefined,
-            {
-              namespace,
-              slug,
-              importId,
-            },
-          );
-          // Update import status to failed before rethrowing
-          await updateImportStatus(
-            c.env.DB,
-            namespace,
-            slug,
-            "failed",
-            logger,
-            `Failed to enqueue import job: ${queueError instanceof Error ? queueError.message : String(queueError)}`,
-          );
-          // Don't fall back to direct processing here - the queue exists but send failed,
-          // which could lead to duplicate work. Let the client retry instead.
-          throw queueError;
-        }
-      } else {
-        // Queue not configured - fall back to direct processing
-        logger.warn("IMPORT_QUEUE not configured, falling back to direct processing", {
-          namespace,
-          slug,
-        });
-        c.executionCtx.waitUntil(
-          processImportJob(c.env, project, importId, body.url, branch, logger, depth).catch(
-            (error) => {
-              logger.error(
-                "Unhandled error in background import job",
-                error instanceof Error ? error : undefined,
-                {
-                  namespace,
-                  slug,
-                  importId,
-                },
-              );
-            },
-          ),
-        );
-      }
-
-      // Redirect to project page immediately (user will see import progress)
-      if (!contentType.includes("application/json")) {
-        return c.redirect(`/@${namespace.replace("@", "")}/${slug}?import=active`);
-      }
-
-      logger.info("Import queued", { namespace, slug, importId, url: body.url, visibility });
-      return created({
-        namespace,
-        slug,
-        importId,
-        path: `/${namespace}/${slug}`,
-        status: "queued",
-        source: body.url,
-        visibility,
-      });
-    } catch (err) {
-      logger.error("[import] Error:", err instanceof Error ? err : undefined);
-      const message = err instanceof Error ? err.message : String(err);
-      return internalError(message);
-    }
+    })();
+    releaseWhenSettled(importing, () => releaseGaugeHold?.(), getWaitUntil(c));
+    return importing;
   },
 );
 

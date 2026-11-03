@@ -106,6 +106,8 @@ export interface GaugeChargeCount {
   count: number;
   /** More than `max` entries remain after verification: `count` is a floor. */
   overflow: boolean;
+  /** `namespace/slug` of each entry in `count`, so a gauge hold for one is not counted twice. */
+  paths: string[];
 }
 
 /**
@@ -147,12 +149,13 @@ export async function countGaugeCharges(
         const sep = rest.lastIndexOf(":");
         const namespace = rest.slice(0, sep);
         const slug = rest.slice(sep + 1);
-        if (namespace === opts.excludeNamespace) return false;
+        if (namespace === opts.excludeNamespace) return null;
+        const path = `${namespace}/${slug}`;
         const project = await getProjectByPath(kv, namespace, slug, logger);
         // No project yet behind a young entry: the creation is in flight, or
         // KV has not settled here. It counts as it stands and is not pruned.
         if (!project.success && project.error.code === "NOT_FOUND" && (await isYoung(key))) {
-          return true;
+          return path;
         }
         const stillCharged =
           project.success &&
@@ -164,12 +167,13 @@ export async function countGaugeCharges(
         // transient fault.
         const knownStale = project.success || project.error.code === "NOT_FOUND";
         if (!stillCharged && knownStale) await kv.delete(key);
-        return stillCharged;
+        return stillCharged ? path : null;
       }),
     );
-    const count = valid.filter(Boolean).length;
+    const paths = valid.filter((path): path is string => path !== null);
+    const count = paths.length;
     const more = keys.length > opts.max || !listed.list_complete;
-    return ok({ count, overflow: more && count === opts.max });
+    return ok({ count, overflow: more && count === opts.max, paths });
   } catch (error) {
     const appError = new AppError(
       error instanceof Error ? error.message : "Failed to count gauge charges",

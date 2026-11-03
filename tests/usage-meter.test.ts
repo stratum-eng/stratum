@@ -6,9 +6,9 @@
  * other property here could be had from a D1 UPSERT. Its ungated twin is what
  * keeps that claim honest.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { UsageMeter } from "../src/queue/usage-meter";
-import { usageMeterName } from "../src/queue/usage-meter";
+import { GAUGE_HOLD_TTL_MS, usageMeterName } from "../src/queue/usage-meter";
 import type { Env } from "../src/types";
 import { makeUsageMeters } from "./helpers/usage-meter";
 
@@ -24,7 +24,10 @@ const MINUTE_MS = 60 * 1000;
  * signature change there fails this suite instead of being absorbed by a
  * hand-written interface that has quietly gone out of date.
  */
-type MeterStub = Pick<UsageMeter, "reserve" | "settle" | "read" | "setFloor" | "purge">;
+type MeterStub = Pick<
+  UsageMeter,
+  "reserve" | "settle" | "read" | "setFloor" | "purge" | "reserveGauge" | "releaseGauge"
+>;
 
 function stubFor(namespace: NonNullable<Env["USAGE_METER"]>, name: string): MeterStub {
   return namespace.get(namespace.idFromName(name));
@@ -700,6 +703,261 @@ describe("UsageMeter concurrency", () => {
     ]);
 
     expect(outcomes.filter((o) => o.admitted)).toHaveLength(20);
+  });
+});
+
+describe("UsageMeter gauge holds (#384)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** One admission for one path, counting nothing, against `limit`. */
+  function hold(stub: MeterStub, token: string, path: string, limit: number, current = 0) {
+    return stub.reserveGauge("private_projects", token, [path], current, [], limit);
+  }
+
+  it("admits while counted + held + adding fits, then refuses", async () => {
+    const { stub } = meter();
+
+    const first = await hold(stub, "t1", "@a/one", 2);
+    const second = await hold(stub, "t2", "@a/two", 2);
+    // Nothing has landed, so the count is still zero — the case a count alone
+    // admits, and the whole reason the hold exists.
+    const third = await hold(stub, "t3", "@a/three", 2);
+
+    expect([first, second, third].map((o) => o.admitted)).toEqual([true, true, false]);
+    expect([first, second, third].map((o) => o.pending)).toEqual([0, 1, 2]);
+    expect(third.held).toBe(false);
+  });
+
+  it("refuses a batch that does not fit whole, and holds none of it", async () => {
+    const { stub } = meter();
+
+    const batch = await stub.reserveGauge(
+      "private_projects",
+      "t1",
+      ["@a/one", "@a/two", "@a/three"],
+      1,
+      ["@a/old"],
+      3,
+    );
+    const single = await hold(stub, "t2", "@a/four", 3, 1);
+
+    expect(batch).toEqual({ admitted: false, held: false, pending: 0 });
+    expect(single.admitted).toBe(true);
+  });
+
+  it("does not count a hold whose path the caller's count already includes", async () => {
+    // The landed-but-not-yet-released window: the project is written, so the
+    // count has it, and its hold is still standing. Counting both would
+    // refuse a creation that fits.
+    const { stub } = meter();
+
+    await hold(stub, "t1", "@a/one", 2);
+    const next = await stub.reserveGauge("private_projects", "t2", ["@a/two"], 1, ["@a/one"], 2);
+
+    expect(next).toEqual({ admitted: true, held: true, pending: 0 });
+  });
+
+  it("frees a slot on release", async () => {
+    const { stub } = meter();
+
+    await hold(stub, "t1", "@a/one", 1);
+    expect((await hold(stub, "t2", "@a/two", 1)).admitted).toBe(false);
+
+    await stub.releaseGauge("private_projects", "t1");
+
+    expect((await hold(stub, "t3", "@a/two", 1)).admitted).toBe(true);
+  });
+
+  it("releases one path of a batch without touching the rest", async () => {
+    const { stub } = meter();
+
+    await stub.reserveGauge("private_projects", "t1", ["@a/one", "@a/two"], 0, [], 3);
+    await stub.releaseGauge("private_projects", "t1", ["@a/one"]);
+
+    const next = await hold(stub, "t2", "@a/three", 3);
+    expect(next.pending).toBe(1);
+  });
+
+  it("ignores a release naming another admission's token", async () => {
+    const { stub } = meter();
+
+    await hold(stub, "t1", "@a/one", 1);
+    await stub.releaseGauge("private_projects", "someone-else");
+
+    expect((await hold(stub, "t2", "@a/two", 1)).admitted).toBe(false);
+  });
+
+  it("treats a second release of the same admission as a no-op", async () => {
+    // A route releases from its own `finally` AND from a `waitUntil`
+    // backstop, so the second call must not touch anyone else's hold.
+    const { stub } = meter();
+
+    await hold(stub, "t1", "@a/one", 2);
+    await hold(stub, "t2", "@a/two", 2);
+    await stub.releaseGauge("private_projects", "t1");
+    await stub.releaseGauge("private_projects", "t1");
+    await stub.releaseGauge("private_projects", "t1", ["@a/one"]);
+
+    const next = await hold(stub, "t3", "@a/three", 2);
+    expect(next).toEqual({ admitted: true, held: true, pending: 1 });
+  });
+
+  it("expires a hold on the caller's shorter TTL", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const { stub, storages } = meter();
+    const ttlMs = 3 * MINUTE_MS;
+
+    await stub.reserveGauge("private_projects", "t1", ["@a/one"], 0, [], 1, { ttlMs });
+    expect(await storages.get("user:usr_1")?.getAlarm()).toBe(NOW + ttlMs);
+
+    vi.setSystemTime(NOW + ttlMs + 1);
+    expect((await hold(stub, "t2", "@a/two", 1)).admitted).toBe(true);
+  });
+
+  it("never holds longer than the default, and ignores an unusable TTL", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const { stub, storages } = meter();
+
+    await stub.reserveGauge("private_projects", "t1", ["@a/one"], 0, [], 5, {
+      ttlMs: 10 * GAUGE_HOLD_TTL_MS,
+    });
+    await stub.reserveGauge("private_projects", "t2", ["@a/two"], 0, [], 5, {
+      ttlMs: Number.NaN,
+    });
+    await stub.reserveGauge("private_projects", "t3", ["@a/three"], 0, [], 5, { ttlMs: -1 });
+
+    const record = await storages
+      .get("user:usr_1")
+      ?.get<{ holds: Array<{ expiresAt: number }> }>("gauge");
+    expect(record?.holds.map((h) => h.expiresAt)).toEqual([
+      NOW + GAUGE_HOLD_TTL_MS,
+      NOW + GAUGE_HOLD_TTL_MS,
+      NOW + GAUGE_HOLD_TTL_MS,
+    ]);
+  });
+
+  it("stops counting a hold nobody released once its TTL has passed", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const { stub } = meter();
+
+    await hold(stub, "t1", "@a/one", 1);
+    vi.setSystemTime(NOW + GAUGE_HOLD_TTL_MS - 1);
+    expect((await hold(stub, "t2", "@a/two", 1)).admitted).toBe(false);
+
+    vi.setSystemTime(NOW + GAUGE_HOLD_TTL_MS + 1);
+    expect((await hold(stub, "t3", "@a/two", 1)).admitted).toBe(true);
+  });
+
+  it("holds a refusal when the caller says the refusal does not bind", async () => {
+    // Observe-only: the creation goes ahead regardless, so the next decision
+    // has to see it or it measures against a total that is already wrong.
+    const { stub } = meter();
+
+    await hold(stub, "t1", "@a/one", 1);
+    const refused = await stub.reserveGauge("private_projects", "t2", ["@a/two"], 0, [], 1, {
+      countRefused: true,
+    });
+    const after = await hold(stub, "t3", "@a/three", 1);
+
+    expect(refused).toEqual({ admitted: false, held: true, pending: 1 });
+    expect(after.pending).toBe(2);
+  });
+
+  it("holds nothing under an unlimited or malformed limit, and blocks on zero", async () => {
+    const { stub, storages } = meter();
+
+    const unlimited = await hold(stub, "t1", "@a/one", -1);
+    const malformed = await hold(stub, "t2", "@a/two", Number.NaN);
+    const blocked = await hold(stub, "t3", "@a/three", 0);
+
+    expect(unlimited).toEqual({ admitted: true, held: false, pending: 0 });
+    expect(malformed).toEqual({ admitted: true, held: false, pending: 0 });
+    expect(blocked.admitted).toBe(false);
+    expect(await storages.get("user:usr_1")?.get("gauge")).toBeUndefined();
+  });
+
+  it("admits malformed input and holds nothing", async () => {
+    const { stub } = meter();
+
+    const outcome = await stub.reserveGauge(
+      "private_projects",
+      "t1",
+      ["@a/one"],
+      Number.NaN,
+      [],
+      1,
+    );
+
+    expect(outcome).toEqual({ admitted: true, held: false, pending: 0 });
+  });
+
+  it("keeps gauge holds out of the monthly and hourly meters", async () => {
+    const { stub } = meter();
+
+    await hold(stub, "t1", "@a/one", 5);
+
+    expect((await stub.read(PERIOD)).counts).toEqual({});
+  });
+
+  it("sweeps expired holds on the alarm and leaves nothing behind", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const { stub, instances, storages } = meter();
+
+    await hold(stub, "t1", "@a/one", 5);
+    const instance = instances.get("user:usr_1");
+    const storage = storages.get("user:usr_1");
+    if (!instance || !storage) throw new Error("instance not created");
+    expect(await storage.getAlarm()).toBe(NOW + GAUGE_HOLD_TTL_MS);
+
+    vi.setSystemTime(NOW + GAUGE_HOLD_TTL_MS + 1);
+    await instance.alarm();
+
+    expect(await storage.get("gauge")).toBeUndefined();
+    expect(await storage.getAlarm()).toBeNull();
+  });
+
+  it("keeps a live hold, and its alarm, when the sweep runs early", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const { stub, instances, storages } = meter();
+
+    await hold(stub, "t1", "@a/one", 1);
+    const instance = instances.get("user:usr_1");
+    const storage = storages.get("user:usr_1");
+    if (!instance || !storage) throw new Error("instance not created");
+
+    await instance.alarm();
+
+    expect(await storage.get("gauge")).toBeDefined();
+    expect(await storage.getAlarm()).toBe(NOW + GAUGE_HOLD_TTL_MS);
+    expect((await hold(stub, "t2", "@a/two", 1)).admitted).toBe(false);
+  });
+
+  it("admits exactly the free slots when creations race", async () => {
+    const { stub } = meter();
+
+    const outcomes = await Promise.all(
+      Array.from({ length: 20 }, (_, i) => hold(stub, `t${i}`, `@a/p${i}`, 5, 1)),
+    );
+
+    expect(outcomes.filter((o) => o.admitted)).toHaveLength(4);
+  });
+
+  it("over-admits racing creations without the input gate", async () => {
+    // The assertion above is only worth something if the harness can fail it.
+    const { stub } = meter({ gated: false });
+
+    const outcomes = await Promise.all(
+      Array.from({ length: 20 }, (_, i) => hold(stub, `t${i}`, `@a/p${i}`, 5, 1)),
+    );
+
+    expect(outcomes.filter((o) => o.admitted).length).toBeGreaterThan(4);
   });
 });
 

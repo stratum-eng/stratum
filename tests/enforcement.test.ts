@@ -23,12 +23,18 @@ import {
   settleMeter,
 } from "../src/billing/enforcement";
 import { type Entitlements, UNLIMITED, UnlimitedEntitlements } from "../src/billing/entitlements";
-import { MAX_GAUGE_CHARGES } from "../src/billing/private-project-gauge";
+import {
+  MAX_GAUGE_CHARGES,
+  SINGLE_CREATION_HOLD_TTL_MS,
+  checkPrivateProjectGauge,
+  releaseWhenSettled,
+} from "../src/billing/private-project-gauge";
 import { runDeployMessage } from "../src/deploy/runner";
 import { LLMEvaluator } from "../src/evaluation/llm-evaluator";
 import type { LlmProvider } from "../src/evaluation/llm-provider";
 import type { EvalPolicy, EvaluationContext } from "../src/evaluation/types";
 import { rateLimitMiddleware } from "../src/middleware/rate-limit";
+import { GAUGE_HOLD_TTL_MS, UsageMeter } from "../src/queue/usage-meter";
 import { bulkImportRouter } from "../src/routes/bulk-import";
 import { projectsRouter } from "../src/routes/projects";
 import { recordCosts } from "../src/storage/costs";
@@ -36,7 +42,7 @@ import { insertDeployment } from "../src/storage/deployments";
 import { GAUGE_CHARGE_GRACE_MS, recordGaugeCharge } from "../src/storage/gauge-index";
 import { getProjectByPath, setProject } from "../src/storage/state";
 import { getOwnerMeterTotals, upsertUsage } from "../src/storage/usage";
-import type { Env, ProjectEntry } from "../src/types";
+import type { CredentialBinding, Env, ProjectEntry } from "../src/types";
 import type { Logger } from "../src/utils/logger";
 import { ok } from "../src/utils/result";
 import { makeFakeKV } from "./helpers/fake-kv";
@@ -1240,6 +1246,501 @@ describe("the private project gauge", () => {
     expect(under.admitted).toBe(true);
     expect(over.admitted).toBe(false);
     expect(over.reason).toContain("plan allows 2");
+  });
+});
+
+describe("the private project gauge holds what it admits (#384)", () => {
+  // A count alone is check-then-act: two creations that count before either
+  // one's entry is written both see room, and a bulk import is checked once
+  // and then created in the background. These are the races the hold closes,
+  // the double count it must not introduce, and the fail-open it must keep.
+
+  /** A user who exists in D1 under `username`, so a creation can land. */
+  function createNamedUser(username: string): string {
+    const userId = createUser(nextUserId());
+    raw.prepare("UPDATE users SET username = ? WHERE id = ?").run(username, userId);
+    return userId;
+  }
+
+  /** ARTIFACTS whose `create` waits for `open()` and then fails. */
+  function blockedArtifacts() {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const create = vi.fn(async () => {
+      await gate;
+      throw new Error("artifacts unavailable in this test");
+    });
+    return { artifacts: { create } as unknown as Env["ARTIFACTS"], create, open };
+  }
+
+  /** ARTIFACTS that succeed, so a creation lands. */
+  const landingArtifacts = {
+    create: async (name: string) => ({
+      name,
+      remote: `https://artifacts.test/${name}.git`,
+      token: "tok",
+    }),
+  } as unknown as Env["ARTIFACTS"];
+
+  /** ARTIFACTS that fail straight away, so a creation fails after admission. */
+  const failingArtifacts = {
+    create: async () => {
+      throw new Error("artifacts unavailable in this test");
+    },
+  } as unknown as Env["ARTIFACTS"];
+
+  function app(userId: string, username: string, env: Partial<Env>, binding?: CredentialBinding) {
+    const application = new Hono<{ Bindings: Env }>();
+    application.use("*", async (c, next) => {
+      c.set("userId", userId);
+      c.set("username", username);
+      if (binding) c.set("credentialBinding", binding);
+      await next();
+    });
+    application.route("/projects", projectsRouter);
+    application.route("/bulk-import", bulkImportRouter);
+    // An execution context, so bulk import's background batch is handed to
+    // `waitUntil` and a test can wait for it to finish.
+    const ctx = {
+      waitUntil: (promise: Promise<unknown>) => {
+        scheduled.push(promise);
+      },
+      passThroughOnException: () => {},
+    } as unknown as ExecutionContext;
+    return (path: string, body: unknown, as: "json" | "form" = "json") =>
+      application.fetch(
+        new Request(`https://t.test${path}`, {
+          method: "POST",
+          ...(as === "json"
+            ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+            : {
+                body: new URLSearchParams(
+                  Object.entries(body as Record<string, unknown>).map(
+                    ([key, value]): [string, string] => [key, String(value)],
+                  ),
+                ),
+              }),
+        }),
+        makeEnv({ IMPORT_QUEUE: { send: vi.fn() }, ...env } as unknown as Partial<Env>),
+        ctx,
+      );
+  }
+
+  async function seedPrivate(namespace: string, slug: string, ownerId: string): Promise<void> {
+    const stored = await setProject(
+      kv,
+      {
+        id: `prj_${slug}`,
+        name: slug,
+        slug,
+        namespace,
+        ownerId,
+        ownerType: "user",
+        remote: "https://acct.artifacts.cloudflare.net/git/acct/x.git",
+        createdAt: "2026-09-01T00:00:00.000Z",
+        visibility: "private",
+      },
+      logger,
+    );
+    if (!stored.success) throw stored.error;
+  }
+
+  /** The holds standing on `userId`'s meter. */
+  async function holdsFor(userId: string): Promise<Array<{ path: string; expiresAt: number }>> {
+    const record = await meters.storages
+      .get(`user:${userId}`)
+      ?.get<{ holds: Array<{ path: string; expiresAt: number }> }>("gauge");
+    return record?.holds ?? [];
+  }
+
+  /** A namespace whose stubs throw on every gauge RPC: an unreachable meter. */
+  function unreachableMeter(): NonNullable<Env["USAGE_METER"]> {
+    const stub = {
+      reserveGauge: async () => {
+        throw new Error("meter unreachable");
+      },
+      releaseGauge: async () => {
+        throw new Error("meter unreachable");
+      },
+    };
+    return {
+      idFromName: (name: string) => name,
+      get: () => stub,
+    } as unknown as NonNullable<Env["USAGE_METER"]>;
+  }
+
+  it("admits exactly one of two concurrent creations at one under the limit", async () => {
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    await seedPrivate("@alice", "one", userId);
+    const { artifacts, create, open } = blockedArtifacts();
+    const post = app(userId, "alice", { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: artifacts });
+
+    const a = post("/projects", { name: "two", visibility: "private" });
+    const b = post("/projects", { name: "three", visibility: "private" });
+    // The admitted one is parked inside ARTIFACTS.create, so whichever settles
+    // first is the one the gauge turned away.
+    const first = await Promise.race([a, b]);
+    expect(first.status).toBe(403);
+    expect(create).toHaveBeenCalledTimes(1);
+
+    open();
+    const statuses = (await Promise.all([a, b])).map((r) => r.status).sort();
+    expect(statuses).toEqual([403, 500]);
+  });
+
+  it("refuses a second bulk import sent before the first one's projects land", async () => {
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 3 } }));
+    const { artifacts, open } = blockedArtifacts();
+    const post = app(userId, "alice", { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: artifacts });
+
+    const first = await post("/bulk-import", {
+      repos: [
+        { url: "https://github.com/octo/a", slug: "a", branch: "main" },
+        { url: "https://github.com/octo/b", slug: "b", branch: "main" },
+      ],
+    });
+    // Nothing from the first batch is written yet, so a count alone sees zero
+    // and admits this one too — 4 against a limit of 3.
+    const second = await post("/bulk-import", {
+      repos: [
+        { url: "https://github.com/octo/c", slug: "c", branch: "main" },
+        { url: "https://github.com/octo/d", slug: "d", branch: "main" },
+      ],
+    });
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(403);
+    expect(await second.text()).toContain("Creating 2 more private projects");
+    // A bulk batch lands in the background, so it keeps the long TTL.
+    expect((await holdsFor(userId)).map((h) => h.expiresAt)).toEqual([
+      NOW + GAUGE_HOLD_TTL_MS,
+      NOW + GAUGE_HOLD_TTL_MS,
+    ]);
+
+    // Each repo of the first batch fails, and gives its own slot back.
+    open();
+    await Promise.all(scheduled);
+    expect(await holdsFor(userId)).toEqual([]);
+  });
+
+  it("releases on landing, so a landed project is not counted twice", async () => {
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    const post = app(userId, "alice", { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: landingArtifacts });
+
+    const one = await post("/projects", { name: "one", visibility: "private" });
+    expect(one.status).toBe(201);
+    expect(await holdsFor(userId)).toEqual([]);
+
+    const two = await post("/projects", { name: "two", visibility: "private" });
+    const three = await post("/projects", { name: "three", visibility: "private" });
+    expect(two.status).toBe(201);
+    expect(three.status).toBe(403);
+  });
+
+  it("does not count a landed project twice when its release never arrived", async () => {
+    // The project is written and its hold is still standing: the count has it,
+    // and the hold names its path, so it must be counted once.
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    const release = vi
+      .spyOn(UsageMeter.prototype, "releaseGauge")
+      .mockRejectedValue(new Error("meter unreachable"));
+    const post = app(userId, "alice", { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: landingArtifacts });
+
+    const one = await post("/projects", { name: "one", visibility: "private" });
+    expect(one.status).toBe(201);
+    expect(await holdsFor(userId)).toHaveLength(1);
+
+    const two = await post("/projects", { name: "two", visibility: "private" });
+    expect(two.status).toBe(201);
+    release.mockRestore();
+  });
+
+  it("releases the hold of a creation that failed after it was admitted", async () => {
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 1 } }));
+    const post = app(userId, "alice", { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: failingArtifacts });
+
+    const failed = await post("/projects", { name: "one", visibility: "private" });
+    expect(failed.status).toBe(500);
+    expect(await holdsFor(userId)).toEqual([]);
+
+    // Not refused: the failed creation left no slot behind.
+    const retry = await post("/projects", { name: "one", visibility: "private" });
+    expect(retry.status).toBe(500);
+  });
+
+  it("releases a single import's hold on every exit", async () => {
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 1 } }));
+    const post = app(userId, "alice", { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: failingArtifacts });
+
+    const failed = await post("/projects/@alice/two/import", {
+      url: "https://github.com/octo/widget",
+      branch: "main",
+    });
+
+    expect(failed.status).toBe(500);
+    expect(await holdsFor(userId)).toEqual([]);
+  });
+
+  it("stops counting a hold nobody released once it is stale", async () => {
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 1 } }));
+    const env = makeEnv({ ENTITLEMENTS_ENFORCE: "1" } as Partial<Env>);
+    const check = () =>
+      checkPrivateProjectGauge(env, logger, {
+        actorUserId: userId,
+        username: "alice",
+        owner: { id: userId, type: "user" },
+        targetNamespace: "@alice",
+        paths: ["@alice/abandoned"],
+      });
+
+    // Admitted and never released — an isolate evicted mid-creation.
+    expect((await check()).admitted).toBe(true);
+    expect((await check()).admitted).toBe(false);
+
+    vi.setSystemTime(NOW + GAUGE_HOLD_TTL_MS + 1);
+    expect((await check()).admitted).toBe(true);
+  });
+
+  it("fails open to the count alone when the meter is unreachable", async () => {
+    // Exactly the behaviour before holds existed: the race is back, but no
+    // creation the count admits is blocked by a metering outage.
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    await seedPrivate("@alice", "one", userId);
+    const { artifacts, create, open } = blockedArtifacts();
+    const post = app(userId, "alice", {
+      ENTITLEMENTS_ENFORCE: "1",
+      ARTIFACTS: artifacts,
+      USAGE_METER: unreachableMeter(),
+    });
+
+    const a = post("/projects", { name: "two", visibility: "private" });
+    const b = post("/projects", { name: "three", visibility: "private" });
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    open();
+    expect((await Promise.all([a, b])).map((r) => r.status)).toEqual([500, 500]);
+
+    // The count still answers on its own: at the limit is still refused.
+    await seedPrivate("@alice", "two", userId);
+    const atLimit = await post("/projects", { name: "four", visibility: "private" });
+    expect(atLimit.status).toBe(403);
+  });
+
+  it("keeps admitting under observe-only, and still holds what it admits", async () => {
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 1 } }));
+    await seedPrivate("@alice", "one", userId);
+    const { artifacts, create, open } = blockedArtifacts();
+    const post = app(userId, "alice", { ARTIFACTS: artifacts });
+
+    const a = post("/projects", { name: "two", visibility: "private" });
+    const b = post("/projects", { name: "three", visibility: "private" });
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    // Both creations are past the gauge and both are held, so the next
+    // decision measures against the total that will actually exist.
+    expect(await holdsFor(userId)).toHaveLength(2);
+
+    open();
+    expect((await Promise.all([a, b])).map((r) => r.status)).toEqual([500, 500]);
+    expect(await holdsFor(userId)).toEqual([]);
+  });
+
+  it("holds a single creation on the shorter TTL", async () => {
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 3 } }));
+    const { artifacts, create, open } = blockedArtifacts();
+    const post = app(userId, "alice", { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: artifacts });
+
+    const created = post("/projects", { name: "one", visibility: "private" });
+    const imported = post("/projects/@alice/two/import", {
+      url: "https://github.com/octo/widget",
+      branch: "main",
+    });
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+
+    expect(SINGLE_CREATION_HOLD_TTL_MS).toBeLessThan(GAUGE_HOLD_TTL_MS);
+    // `vi.waitFor` steps the faked clock while polling, so allow its slack.
+    const ttls = (await holdsFor(userId)).map((h) => h.expiresAt - NOW);
+    expect(ttls).toHaveLength(2);
+    for (const ttl of ttls) {
+      expect(ttl).toBeGreaterThanOrEqual(SINGLE_CREATION_HOLD_TTL_MS);
+      expect(ttl).toBeLessThan(SINGLE_CREATION_HOLD_TTL_MS + 60_000);
+    }
+    open();
+    await Promise.all([created, imported]);
+  });
+
+  it("releases through waitUntil a creation whose client walked away", async () => {
+    // The response is never awaited — the client disconnected. What the
+    // runtime keeps alive is what was handed to `waitUntil`, so that alone
+    // has to carry the creation to its release.
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 1 } }));
+    const { artifacts, create, open } = blockedArtifacts();
+    const post = app(userId, "alice", { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: artifacts });
+
+    void post("/projects", { name: "one", visibility: "private" });
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(await holdsFor(userId)).toHaveLength(1);
+    expect(scheduled).toHaveLength(1);
+
+    open();
+    await Promise.all(scheduled);
+    expect(await holdsFor(userId)).toEqual([]);
+  });
+
+  it("runs the waitUntil release even when the handler's own never does", async () => {
+    // The cancelled-handler case, isolated: the in-request `finally` never
+    // runs, and the backstop registered with `waitUntil` still releases.
+    let settle!: () => void;
+    const work = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const release = vi.fn(async () => {});
+    const registered: Array<Promise<unknown>> = [];
+
+    releaseWhenSettled(work, release, (promise) => {
+      registered.push(promise);
+    });
+    expect(release).not.toHaveBeenCalled();
+
+    settle();
+    await Promise.all(registered);
+    expect(release).toHaveBeenCalledTimes(1);
+
+    // A creation that throws is released too.
+    const failed = vi.fn(async () => {});
+    const later: Array<Promise<unknown>> = [];
+    releaseWhenSettled(Promise.reject(new Error("boom")), failed, (promise) => {
+      later.push(promise);
+    });
+    await Promise.all(later);
+    expect(failed).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends each release once, however many times it is called", async () => {
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 5 } }));
+    const env = makeEnv({ ENTITLEMENTS_ENFORCE: "1" } as Partial<Env>);
+    const rpc = vi.spyOn(UsageMeter.prototype, "releaseGauge");
+    const check = (paths: string[]) =>
+      checkPrivateProjectGauge(env, logger, {
+        actorUserId: userId,
+        username: "alice",
+        owner: { id: userId, type: "user" },
+        targetNamespace: "@alice",
+        paths,
+      });
+
+    const single = await check(["@alice/one"]);
+    if (!single.admitted) throw new Error("expected admission");
+    await single.release();
+    await single.release();
+    expect(rpc).toHaveBeenCalledTimes(1);
+
+    const batch = await check(["@alice/a", "@alice/b"]);
+    if (!batch.admitted) throw new Error("expected admission");
+    await batch.release(["@alice/a"]);
+    await batch.release(["@alice/a"]);
+    await batch.release(["@alice/a", "@alice/b"]);
+    await batch.release();
+    await batch.release();
+    // a; then only b; then the whole admission once.
+    expect(rpc.mock.calls.slice(1).map((call) => call[2])).toEqual([
+      ["@alice/a"],
+      ["@alice/b"],
+      undefined,
+    ]);
+    expect(await holdsFor(userId)).toEqual([]);
+    rpc.mockRestore();
+  });
+
+  it("refuses a bound token before the gauge, so a refusal never holds a slot", async () => {
+    // #323's binding refusal and the gauge hold, in that order: a token that
+    // may not create here must not tie up a slot it can never use — in a
+    // pooled org that would be someone else's slot.
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    const bound: CredentialBinding = { kind: "project", projectId: "prj_elsewhere" };
+    const post = app(
+      userId,
+      "alice",
+      { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: landingArtifacts },
+      bound,
+    );
+
+    const created = await post("/projects", { name: "one", visibility: "private" });
+    const imported = await post("/projects/@alice/two/import", {
+      url: "https://github.com/octo/widget",
+      branch: "main",
+    });
+
+    expect(created.status).toBe(403);
+    expect(await created.text()).toContain("cannot create projects here");
+    expect(imported.status).toBe(403);
+    expect(await imported.text()).toContain("cannot import projects");
+    expect(meters.calls).toEqual([]);
+    expect(await holdsFor(userId)).toEqual([]);
+  });
+
+  it("leaves no hold behind when a browser form post is refused", async () => {
+    // #396's form refusals, before and after the gauge: the private-limit
+    // refusal takes no hold and still sends the browser back to the form, and
+    // a refusal after admission (name taken) goes through the `finally`.
+    const userId = createNamedUser("alice");
+    cachePlan("user", userId, plan({ counts: { private_projects: 2 } }));
+    await seedPrivate("@alice", "one", userId);
+    const post = app(userId, "alice", { ENTITLEMENTS_ENFORCE: "1", ARTIFACTS: failingArtifacts });
+
+    // Admitted (1 + 1 fits 2), then refused as taken: the form, and a 409.
+    const taken = await post("/projects", { name: "one", visibility: "private" }, "form");
+    expect(taken.status).toBe(409);
+    expect(await holdsFor(userId)).toEqual([]);
+
+    await seedPrivate("@alice", "two", userId);
+    const created = await post("/projects", { name: "three", visibility: "private" }, "form");
+    expect(created.status).toBe(303);
+    expect(created.headers.get("location")).toContain("/new?error=");
+
+    const imported = await post(
+      "/projects/@alice/four/import",
+      { url: "https://github.com/octo/widget", branch: "main" },
+      "form",
+    );
+    expect(imported.status).toBe(403);
+    expect(imported.headers.get("content-type")).toContain("text/html");
+    expect(await holdsFor(userId)).toEqual([]);
+  });
+
+  it("makes no meter call at all for a self-hoster", async () => {
+    const userId = createNamedUser("alice");
+    const post = (path: string, body: unknown) =>
+      app(
+        userId,
+        "alice",
+        selfHostedEnv({ ARTIFACTS: failingArtifacts } as unknown as Partial<Env>),
+      )(path, body);
+
+    await post("/projects", { name: "solo", visibility: "private" });
+    await post("/projects/@alice/imported/import", {
+      url: "https://github.com/octo/widget",
+      branch: "main",
+    });
+    await post("/bulk-import", {
+      repos: [{ url: "https://github.com/octo/a", slug: "a", branch: "main" }],
+    });
+    await Promise.all(scheduled);
+
+    expect(meters.calls).toEqual([]);
   });
 });
 

@@ -5,7 +5,11 @@
 
 import { Hono } from "hono";
 import { entitlementsEnabled } from "../billing/entitlements";
-import { checkPrivateProjectGauge } from "../billing/private-project-gauge";
+import {
+  type GaugeRelease,
+  checkPrivateProjectGauge,
+  gaugePath,
+} from "../billing/private-project-gauge";
 import {
   detectProvider,
   isValidRepoUrl,
@@ -85,31 +89,36 @@ function importTarget(
 }
 
 /**
- * How many private projects this batch would actually create: entries that
- * will fail the own-namespace or slug checks create nothing, and neither does
- * one whose project already exists (it is reported as a success untouched).
- * A re-run after a partial import is therefore not charged for what the first
- * run already made.
+ * The private projects this batch would actually create, as gauge paths:
+ * entries that will fail the own-namespace or slug checks create nothing, and
+ * neither does one whose project already exists (it is reported as a success
+ * untouched). A re-run after a partial import is therefore not charged for
+ * what the first run already made.
  */
-async function countNewPrivateProjects(
+async function newPrivateProjectPaths(
   env: Env,
   logger: Logger,
   repos: RepoImportRequest[],
   username: string,
-): Promise<number> {
+): Promise<string[]> {
   const own = getUserNamespace(username);
-  let count = 0;
+  const paths: string[] = [];
   for (const [index, request] of repos.entries()) {
     const { namespace, slug, visibility } = importTarget(request, username, index);
     if (visibility !== "private" || namespace !== own || !isValidSlug(slug)) continue;
     const existing = await getProjectByPath(env.STATE, namespace, slug, logger);
-    if (!existing.success) count++;
+    if (!existing.success) paths.push(gaugePath(namespace, slug));
   }
-  return count;
+  return paths;
 }
 
 /**
  * Process a single repo import (async background job). Exported for tests.
+ *
+ * `releaseGaugeHold` ends this repo's private-project gauge hold, and runs on
+ * every exit: by then its project entry is either written — and so counted by
+ * the next gauge check — or never will be. The batch was admitted whole, so
+ * each repo gives back only its own slot, as it lands or fails.
  */
 export async function processRepoImport(
   env: Env,
@@ -120,6 +129,7 @@ export async function processRepoImport(
   index: number,
   total: number,
   gaugeSubjectId?: string,
+  releaseGaugeHold?: GaugeRelease,
 ): Promise<{ success: boolean; error?: string; repo: string }> {
   const logger = createLogger({
     requestId: jobId,
@@ -312,6 +322,8 @@ export async function processRepoImport(
     const errorMessage = error instanceof Error ? error.message : String(error);
     job && job.failedRepos++;
     return { success: false, error: errorMessage, repo: url };
+  } finally {
+    await releaseGaugeHold?.([gaugePath(namespace, slug)]);
   }
 }
 
@@ -394,20 +406,27 @@ app.post("/", async (c) => {
   // run concurrently, so checking each one would let a batch admitted one at a
   // time land well past the limit. A batch that does not fit is refused before
   // any of it is created. Gated first so a self-hoster pays no existence reads.
+  //
+  // The whole batch is HELD from here, not merely counted: its projects are
+  // written in the background after this responds, and a second batch sent
+  // straight after would otherwise count against the same starting total
+  // (#384). Each repo releases its own slot as it lands or fails.
   let gaugeSubjectId: string | undefined;
+  let releaseGaugeHold: GaugeRelease | undefined;
   if (entitlementsEnabled(c.env)) {
-    const adding = await countNewPrivateProjects(c.env, logger, body.repos, username);
-    if (adding > 0) {
+    const paths = await newPrivateProjectPaths(c.env, logger, body.repos, username);
+    if (paths.length > 0) {
       const gauge = await checkPrivateProjectGauge(c.env, logger, {
         actorUserId: userId,
         username,
         owner: { id: userId, type: "user" },
         targetNamespace: userNamespace,
+        paths,
         waitUntil: getWaitUntil(c),
-        adding,
       });
       if (!gauge.admitted) return forbidden(gauge.reason);
       gaugeSubjectId = gauge.gaugeSubjectId;
+      releaseGaugeHold = gauge.release;
     }
   }
 
@@ -447,6 +466,7 @@ app.post("/", async (c) => {
       index,
       repos.length,
       gaugeSubjectId,
+      releaseGaugeHold,
     ).then((result) => {
       if (!result.success && result.error) {
         const currentJob = bulkImportJobs.get(jobId);
@@ -461,8 +481,10 @@ app.post("/", async (c) => {
     }),
   );
 
-  // Wait for all imports to complete
-  Promise.all(importPromises)
+  // Wait for all imports to complete. Handed to `waitUntil` where there is one,
+  // so the runtime does not cancel the batch — and with it each repo's gauge
+  // release — once the response below has gone.
+  const batch = Promise.all(importPromises)
     .then(() => {
       const finalJob = bulkImportJobs.get(jobId);
       if (finalJob) {
@@ -495,6 +517,7 @@ app.post("/", async (c) => {
         bulkImportJobs.set(jobId, finalJob);
       }
     });
+  getWaitUntil(c)?.(batch);
 
   // Return immediately with job ID
   return created({
