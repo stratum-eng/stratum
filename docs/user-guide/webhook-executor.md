@@ -20,11 +20,16 @@ Treat every part of an evaluation request as attacker-controlled:
 
 - **The diff** is arbitrary file content at arbitrary paths. Applying it is a
   file-write primitive; running the result is code execution.
-- **The request itself.** When the policy sets a `secret`, Stratum signs the
-  body with HMAC-SHA256 — but the `secret` is a literal in
-  `.stratum/policy.yaml`, so anyone who can read the repository can compute a
-  valid signature. A good signature tells you the sender knew the repository's
-  contents, not that Stratum sent it. Without a `secret`, nothing is signed.
+- **The request itself.** When the policy entry sets `secretRef`, Stratum signs
+  the body with HMAC-SHA256 using the named project secret, which lives in
+  Stratum's encrypted secret store and not in the repository. A good signature
+  then tells you Stratum sent the body. The deprecated literal `secret` field
+  does not: it is written in `.stratum/policy.yaml`, so **anyone with read
+  access to the repository** — including the code under evaluation, which
+  carries a copy of the policy — can compute a valid signature, and a good one
+  only tells you the sender knew the repository's contents. Without either
+  field, nothing is signed. See
+  [the signing secret](ci-integration.md#the-signing-secret).
 - **`baseSha`** is meant to be the commit the diff was computed against, but it
   is just a string in the body. Resolve it only in a repository you trust, never
   by fetching from anywhere the payload suggests. Accept it only if it is a full
@@ -183,13 +188,12 @@ What that means for the receiver:
   executor. On a cloud VM, a process that can reach the metadata service can
   usually obtain the instance's role credentials.
 - **The webhook secret must never be reachable from evaluated code** — not in
-  the executor's environment, not in its filesystem, not through `/proc`. Be
-  clear about what this does and does not buy today: because the `secret` is a
-  literal in `.stratum/policy.yaml`, the evaluated checkout already contains it.
-  Process isolation protects *everything else* the receiver holds (mirror
-  credentials, any tokens it uses to report or fetch) and keeps your design
-  correct for when the secret moves out of the policy file. Do not let the
-  secret's current exposure become a reason to relax the boundary.
+  the executor's environment, not in its filesystem, not through `/proc`. Use
+  `secretRef` so the key is stored as a project secret and never appears in the
+  repository: then process isolation is what keeps it secret. If the policy
+  still uses the deprecated literal `secret`, the evaluated checkout already
+  contains it and isolation cannot protect it — move it to `secretRef` and
+  rotate it, since the old value remains in git history.
 
 ## Git-specific hazards
 
@@ -345,8 +349,9 @@ Before pointing a policy's `webhook` evaluator at your executor:
 - [ ] No receiver-held credentials are present in the executor: no mirror,
       registry, cloud, or reporting credentials, and no copy of the webhook
       secret from the receiver's environment. Cloud metadata endpoints are
-      unreachable from it. The one known exception is the webhook `secret`
-      literal that the repository's own `.stratum/policy.yaml` already contains.
+      unreachable from it.
+- [ ] The policy signs with `secretRef`, not a literal `secret`; any value that
+      was ever a literal in `.stratum/policy.yaml` has been rotated.
 - [ ] Git in the executor runs with no system or global config; nothing on the
       trusted side runs Git against a tree evaluated code has touched;
       `safe.directory` is not wildcarded; submodules are not fetched.

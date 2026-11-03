@@ -402,6 +402,8 @@ Rules:
 - Writing an existing name replaces it.
 - Every write and delete is recorded in the audit trail (`secret.written`,
   `secret.deleted`).
+- The same store holds a webhook evaluator's signing key, named from the policy
+  with `secretRef` ([CI Integration](ci-integration.md#the-signing-secret)).
 
 **Only a project admin who is not an agent may manage secrets.** An agent token
 is refused on every secret route, even when the agent's owner is the project

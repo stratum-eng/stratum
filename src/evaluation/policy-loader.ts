@@ -1,6 +1,7 @@
 import YAML from "yaml";
 import { sanitizeDeploys } from "../deploy/config";
 import { readFileFromRepo } from "../storage/git-ops";
+import { SECRET_NAME_PATTERN } from "../storage/project-secrets";
 import { type Logger, defaultLogger } from "../utils/logger";
 import {
   MAX_COMMAND_LENGTH,
@@ -685,7 +686,32 @@ function sanitizeEvaluator(
       logger,
     );
     const webhook: EvaluatorConfig = { type: "webhook", url: source.url };
-    if (typeof source.secret === "string") webhook.secret = source.secret;
+    // A `secretRef` the author wrote but that cannot name a project secret is
+    // a signing requirement nothing can meet; fail the file closed rather than
+    // let the entry fall back to an unsigned (or literal-signed) request.
+    if (source.secretRef !== undefined) {
+      if (typeof source.secretRef !== "string" || !SECRET_NAME_PATTERN.test(source.secretRef)) {
+        logger.warn("Dropping webhook evaluator entry with an invalid secretRef", {
+          submitted: forLog(source.secretRef),
+        });
+        rejections.push(
+          `${at}: webhook 'secretRef' must be a project secret name matching ^[A-Z][A-Z0-9_]{0,63}$`,
+        );
+        return null;
+      }
+      webhook.secretRef = source.secretRef;
+    }
+    if (typeof source.secret === "string") {
+      webhook.secret = source.secret;
+      // Logged rather than carried on the policy: the loader has no warning
+      // channel that reaches the author, so the evaluator also logs each use.
+      logger.warn(
+        webhook.secretRef !== undefined
+          ? "Webhook evaluator sets both 'secret' and 'secretRef'; the literal is ignored and should be removed"
+          : "Webhook evaluator uses a literal 'secret', which is deprecated and readable by anyone with repository read access; use 'secretRef'",
+        { url: source.url },
+      );
+    }
     if (timeoutMs !== undefined) webhook.timeoutMs = timeoutMs;
     return webhook;
   }

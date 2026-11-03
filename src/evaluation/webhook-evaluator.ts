@@ -5,6 +5,7 @@ import type { Result } from "../utils/result";
 import { err, ok } from "../utils/result";
 import { validateWebhookUrl } from "../utils/validation";
 import { sanitizePolicy } from "./sanitize-policy";
+import { type ProjectSecretSource, resolveSigningKey } from "./signing-secret";
 import type {
   EvalPolicy,
   EvalResult,
@@ -43,7 +44,15 @@ export class WebhookEvaluator implements Evaluator {
    * unrepresentable, and drops the evaluator's assumption that it is handed a
    * policy still containing its own entry.
    */
-  constructor(private readonly config: WebhookEvaluatorConfig) {}
+  /**
+   * @param secrets - The project's secret store, which a `secretRef` resolves
+   *   against. Omitted means none is reachable, so a `secretRef` entry fails
+   *   closed rather than sending an unsigned request.
+   */
+  constructor(
+    private readonly config: WebhookEvaluatorConfig,
+    private readonly secrets?: ProjectSecretSource,
+  ) {}
 
   async evaluate(
     diff: string,
@@ -86,8 +95,25 @@ export class WebhookEvaluator implements Evaluator {
     });
     const headers: Record<string, string> = { "Content-Type": "application/json" };
 
-    if (config.secret) {
-      const hex = await computeHmacSha256(config.secret, body);
+    // Resolved per evaluation, not at construction, so rotating the project
+    // secret takes effect on the next run. An unresolvable reference fails
+    // closed before the receiver is contacted: an unsigned request to a
+    // receiver that expects a signature is a request it should reject anyway,
+    // and one signed with an empty key is one anyone could have forged.
+    const signing = await resolveSigningKey(config, this.secrets, logger, "webhook evaluator");
+    if (signing.status === "unavailable") {
+      logger.warn("Webhook evaluator signing secret unavailable, failing closed", {
+        url: config.url,
+        reason: signing.reason,
+      });
+      return ok({
+        score: 0,
+        passed: false,
+        reason: `Webhook: signing secret unavailable (${signing.reason}).`,
+      });
+    }
+    if (signing.status === "resolved") {
+      const hex = await computeHmacSha256(signing.key, body);
       headers["X-Stratum-Signature"] = `sha256=${hex}`;
     }
 

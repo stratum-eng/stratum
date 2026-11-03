@@ -223,7 +223,13 @@ export interface SandboxEvaluatorConfig {
 export interface WebhookEvaluatorConfig {
   type: "webhook";
   url: string;
+  /**
+   * Deprecated literal HMAC key. Readable by anyone with repository read
+   * access, so prefer `secretRef`; ignored when `secretRef` is set (#395).
+   */
   secret?: string;
+  /** Name of the project secret holding the HMAC key, resolved at evaluation time. */
+  secretRef?: string;
   timeoutMs?: number;
 }
 
