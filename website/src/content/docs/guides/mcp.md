@@ -68,6 +68,15 @@ where to disconnect later are one click away under **Where this request came
 from**. Approve it once; the client stores the tokens and refreshes them on its
 own.
 
+**No account yet?** The sign-in page offers **Create an account**. Sign up with
+your email, open the link we send you **in the same browser**, and you land back
+on the consent screen for the editor that started it. If the instance requires
+an invite code and the client added `invite=<code>` to its authorization URL,
+the code is filled in for you. Opening the link in a different browser or on
+another device still creates your account and signs you in, but cannot finish
+connecting the editor: connect it again from the editor, and sign in when the
+browser opens. The same applies to a sign-in link sent from that page.
+
 You never paste a Stratum credential into your editor's configuration, and you
 can withdraw access at any time from **Settings → Connected applications**
 without touching the client.

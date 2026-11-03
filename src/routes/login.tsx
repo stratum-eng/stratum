@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { SourceFooter } from "../ui/components/source-footer";
 import { StylesheetLinks } from "../ui/stylesheet";
+import { inviteFromAuthorizeTarget, pendingOAuthAuthorize } from "../utils/post-login-redirect";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -43,6 +44,13 @@ app.get("/", (c) => {
     errorCode !== undefined ? (ERROR_MESSAGES[errorCode] ?? "Authentication failed.") : undefined;
   const success = successCode !== undefined ? SUCCESS_MESSAGES[successCode] : undefined;
   const isEmailNotFound = errorCode === "email_not_found";
+  // Reached from an MCP client's authorization request (#410): a first-time
+  // visitor needs a way to create an account that still ends on the consent
+  // screen. The remembered request rides along in its cookie; only an invite
+  // the client supplied needs carrying in the link.
+  const pendingAuthorize = pendingOAuthAuthorize(c);
+  const invite = pendingAuthorize ? inviteFromAuthorizeTarget(pendingAuthorize) : "";
+  const signupHref = invite ? `/auth/signup?${new URLSearchParams({ invite })}` : "/auth/signup";
 
   return c.html(
     <html lang="en">
@@ -386,16 +394,25 @@ app.get("/", (c) => {
                 <div class="auth-header">
                   <h1 class="auth-title">Sign in to Stratum</h1>
                   <p class="auth-subtitle">
-                    Enter your email to receive a secure magic link for instant sign in.
+                    {pendingAuthorize
+                      ? "Sign in to connect your editor. You'll come back here to approve its access."
+                      : "Enter your email to receive a secure magic link for instant sign in."}
                   </p>
                 </div>
+
+                {pendingAuthorize && (
+                  <div class="alert alert-success" data-testid="oauth-signup-prompt">
+                    New to Stratum? <a href={signupHref}>Create an account</a> and you'll return
+                    here to finish connecting your editor.
+                  </div>
+                )}
 
                 {error && (
                   <div class="alert alert-error">
                     {error}
                     {isEmailNotFound && (
                       <div class="error-action">
-                        <a href="/auth/signup">Create an account instead →</a>
+                        <a href={signupHref}>Create an account instead →</a>
                       </div>
                     )}
                   </div>
@@ -481,7 +498,7 @@ app.get("/", (c) => {
 
                 <div class="auth-footer">
                   <p class="auth-footer-text">
-                    Don't have an account? <a href="/auth/signup">Sign up</a>
+                    Don't have an account? <a href={signupHref}>Sign up</a>
                   </p>
                 </div>
               </>

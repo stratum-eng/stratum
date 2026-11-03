@@ -27,7 +27,13 @@ import { hashToken } from "../utils/crypto";
 import { getWaitUntil } from "../utils/execution-ctx";
 import { escapeHtml } from "../utils/html";
 import { type Logger, createLogger } from "../utils/logger";
-import { consumePostLoginRedirect } from "../utils/post-login-redirect";
+import {
+  RECONNECT_EDITOR_PATH,
+  bindReturnToBrowser,
+  consumePostLoginRedirect,
+  pendingOAuthAuthorize,
+  resolveBoundReturn,
+} from "../utils/post-login-redirect";
 import { validateUsername } from "../utils/username-validation";
 import { validateEmail } from "../utils/validation";
 
@@ -223,6 +229,21 @@ export function hashEmail(email: string): string {
   return Math.abs(hash).toString(16).slice(0, 8);
 }
 
+/**
+ * When this sign-in started from an MCP client's authorization request, bind
+ * that request to the link being minted (#410). The cookie that remembers it
+ * lasts ten minutes and lives in one browser; the link lasts fifteen and may be
+ * opened anywhere, so the destination travels in the link's server-side payload
+ * instead, tied to this browser by a nonce cookie.
+ */
+async function bindPendingAuthorize(
+  c: Context<{ Bindings: Env }>,
+): Promise<Pick<MagicLinkPayload, "returnTo" | "returnBinding">> {
+  const returnTo = pendingOAuthAuthorize(c);
+  if (returnTo === null) return {};
+  return { returnTo, returnBinding: await bindReturnToBrowser(c) };
+}
+
 // GET /auth/email — the old Sign Up / Sign In chooser page is retired: it was
 // an extra decision screen in front of two pages that already cross-link.
 // Query params (error/success codes from the legacy /send flow) carry over.
@@ -320,13 +341,22 @@ app.post("/send-signup", async (c) => {
   }
 
   try {
+    const bound = await bindPendingAuthorize(c);
     // Generate secure magic link token
     const token = generateSecureToken();
     // Store token in D1 (atomic single-use at verify time) with signup intent.
     const stored = await createMagicLink(
       c.env.DB,
       token,
-      { email, username, intent: "signup", createdAt: Date.now(), rememberMe, inviteCode },
+      {
+        email,
+        username,
+        intent: "signup",
+        createdAt: Date.now(),
+        rememberMe,
+        inviteCode,
+        ...bound,
+      },
       15 * 60,
       logger,
     );
@@ -409,6 +439,10 @@ app.post("/send-login", async (c) => {
   }
 
   try {
+    // Bound before the account branches below, so the Set-Cookie it emits is
+    // identical whether or not the address has an account (enumeration).
+    const bound = await bindPendingAuthorize(c);
+
     // A disabled or deleting account gets the same enumeration-safe
     // `login_link_sent` response as an unknown one, but no mail: a link would
     // only lead to a hard `account_disabled` rejection at verify time, and
@@ -428,7 +462,7 @@ app.post("/send-login", async (c) => {
       const stored = await createMagicLink(
         c.env.DB,
         token,
-        { email, intent: "login", createdAt: Date.now(), rememberMe },
+        { email, intent: "login", createdAt: Date.now(), rememberMe, ...bound },
         15 * 60,
         logger,
       );
@@ -638,6 +672,25 @@ ${SOURCE_FOOTER_HTML_INLINE}
   );
 });
 
+// GET /auth/email/reconnect — where a magic link lands when the consent screen
+// it was bound to cannot follow it into this browser (#410). The account work
+// is done by now; the editor's authorization request is not, and the only safe
+// way to finish it is from the device the editor is running on.
+app.get("/reconnect", (c) => {
+  const signedUp = c.req.query("signed") === "up";
+  const heading = signedUp ? "You're signed up" : "You're signed in";
+  return c.html(
+    `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${heading} — reconnect your editor</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;text-align:center">
+<h1 style="font-size:1.25rem">${heading}. Reconnect your editor.</h1>
+<p style="color:#555">You were connecting an editor or agent to Stratum, but this link was opened in a different browser from the one that started, so we can't finish that connection here.</p>
+<p style="color:#555">Go back to your editor and connect the Stratum MCP server again. It will open the approval screen on that device, where you can sign in with the same email.</p>
+<p><a href="/">Continue to Stratum</a></p>
+${SOURCE_FOOTER_HTML_INLINE}
+</body></html>`,
+  );
+});
+
 // POST /auth/email/verify - consume the magic link and handle signup/login
 app.post("/verify", async (c) => {
   const logger = createLogger({
@@ -708,7 +761,10 @@ app.post("/verify", async (c) => {
           return emailAuthRedirect(c, "error", "account_disabled", "/auth/login");
         }
         const userId = existingUserByEmail.data.id;
-        return await createSessionAndRedirect(c, userId, emailHash, rememberMe, logger);
+        return await createSessionAndRedirect(c, userId, emailHash, rememberMe, logger, "/", {
+          bound: tokenData,
+          reconnectAs: "in",
+        });
       }
 
       const account = await createAccountFromSignupLink(
@@ -721,15 +777,11 @@ app.post("/verify", async (c) => {
 
       // The dashboard is the onboarding page: with no projects it shows how to
       // create or import one.
-      return await createSessionAndRedirect(
-        c,
-        userId,
-        emailHash,
-        rememberMe,
-        logger,
-        "/",
-        "signup",
-      );
+      return await createSessionAndRedirect(c, userId, emailHash, rememberMe, logger, "/", {
+        kind: "signup",
+        bound: tokenData,
+        reconnectAs: "up",
+      });
     }
 
     if (intent === "agent-signup") {
@@ -764,7 +816,10 @@ app.post("/verify", async (c) => {
       logger.info("User signed in via login", { userId, emailHash });
 
       // Create session and redirect to dashboard
-      return await createSessionAndRedirect(c, userId, emailHash, rememberMe, logger, "/");
+      return await createSessionAndRedirect(c, userId, emailHash, rememberMe, logger, "/", {
+        bound: tokenData,
+        reconnectAs: "in",
+      });
     }
 
     // Unknown intent
@@ -1036,7 +1091,7 @@ async function completeAgentSignup(
     rememberMe,
     logger,
     `/settings?notice=${outcome}`,
-    "signup",
+    { kind: "signup" },
   );
 }
 
@@ -1048,15 +1103,36 @@ async function createSessionAndRedirect(
   rememberMe: boolean,
   logger: ReturnType<typeof createLogger>,
   defaultRedirect = "/",
-  // What this link did to the account, for the acquisition funnel. Not
-  // inferable here: the signup branch reaches this function twice, once having
-  // created the account and once having found it already present.
-  kind: AuthKind = "signin",
+  options: {
+    // What this link did to the account, for the acquisition funnel. Not
+    // inferable here: the signup branch reaches this function twice, once
+    // having created the account and once having found it already present.
+    kind?: AuthKind;
+    // The link's payload, when it may carry a bound OAuth return-to (#410).
+    bound?: Pick<MagicLinkPayload, "returnTo" | "returnBinding">;
+    // Wording for the "reconnect your editor" page, should the return-to not
+    // be honoured in this browser.
+    reconnectAs?: "up" | "in";
+  } = {},
 ): Promise<Response> {
+  const { kind = "signin", bound, reconnectAs = "in" } = options;
   const sessionLogger = logger.child({ userId });
+  const boundReturn = bound ? await resolveBoundReturn(c, bound) : null;
   // Same-origin validation and the one-shot clear both live in the shared
   // helper, so all three sign-in paths agree on where "back where I was" is.
-  const redirectTo = consumePostLoginRedirect(c, defaultRedirect);
+  // A return-to bound to this very browser wins; one that cannot follow the
+  // link here still defers to whatever this browser itself remembered, and
+  // only then to the reconnect page.
+  const remembered = consumePostLoginRedirect(
+    c,
+    boundReturn === null
+      ? defaultRedirect
+      : `${RECONNECT_EDITOR_PATH}?${new URLSearchParams({ signed: reconnectAs })}`,
+  );
+  const redirectTo = boundReturn?.target ?? remembered;
+  if (boundReturn !== null && boundReturn.target === null) {
+    sessionLogger.info("Bound OAuth return-to not honoured in this browser");
+  }
   // Mints the session — or, when the account has a passkey, parks the sign-in
   // behind the second factor (#256) and sends the browser to /auth/2fa.
   const signedIn = await completeBrowserSignIn(c, sessionLogger, {

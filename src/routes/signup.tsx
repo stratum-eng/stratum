@@ -3,6 +3,7 @@ import { betaGateEnabled } from "../beta/gate";
 import type { Env } from "../types";
 import { SourceFooter } from "../ui/components/source-footer";
 import { StylesheetLinks } from "../ui/stylesheet";
+import { inviteFromAuthorizeTarget, pendingOAuthAuthorize } from "../utils/post-login-redirect";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -336,7 +337,13 @@ app.get("/", (c) => {
   const successCode = c.req.query("success");
   const prefillEmail = c.req.query("email") ?? "";
   const betaGate = betaGateEnabled(c.env);
-  const prefillInvite = c.req.query("ref") ?? c.req.query("invite") ?? "";
+  // Signing up to connect an editor (#410): the consent screen is where this
+  // ends, and an invite the MCP client put on its authorization URL pre-fills.
+  const pendingAuthorize = pendingOAuthAuthorize(c);
+  const prefillInvite =
+    c.req.query("ref") ??
+    c.req.query("invite") ??
+    (pendingAuthorize ? inviteFromAuthorizeTarget(pendingAuthorize) : "");
   const error =
     errorCode !== undefined
       ? (ERROR_MESSAGES[errorCode] ?? "Signup failed. Please try again.")
@@ -384,6 +391,13 @@ app.get("/", (c) => {
                 </div>
                 <h2 class="success-title">Almost there!</h2>
                 <p class="success-message">{success}</p>
+                {pendingAuthorize && (
+                  <p class="success-message">
+                    Open the link in this browser to go straight back to approving your editor. If
+                    you open it somewhere else, your account is still created; just connect your
+                    editor again afterwards.
+                  </p>
+                )}
                 <a href="/" class="back-link">
                   Back to home
                 </a>
@@ -393,8 +407,9 @@ app.get("/", (c) => {
                 <div class="signup-header">
                   <h1 class="signup-title">Create your account</h1>
                   <p class="signup-subtitle">
-                    The agent-first code forge: agents open changes, evaluations gate them, and you
-                    approve what merges.
+                    {pendingAuthorize
+                      ? "Create an account to connect your editor. After you confirm your email, you'll come back to approve its access."
+                      : "The agent-first code forge: agents open changes, evaluations gate them, and you approve what merges."}
                   </p>
                 </div>
 

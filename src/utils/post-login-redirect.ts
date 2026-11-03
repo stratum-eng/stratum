@@ -89,3 +89,109 @@ export function consumePostLoginRedirect(
   const url = new URL(raw, origin);
   return url.pathname + url.search + url.hash;
 }
+
+/** The one destination a magic link may carry across devices (#410). */
+const OAUTH_AUTHORIZE_PATH = "/oauth/authorize";
+
+/**
+ * Is this a safe, same-origin target whose normalized path is exactly the MCP
+ * authorization endpoint? An allowlist on top of {@link isSafeRedirectTarget}:
+ * a destination stored inside a magic link outlives the browser that chose it,
+ * so it is held to the narrowest set we have a reason to carry — the consent
+ * screen — and nothing else.
+ *
+ * @returns The normalized `path?query` to redirect to, or null when refused
+ */
+export function oauthAuthorizeTarget(raw: string, requestUrl: string): string | null {
+  if (!isSafeRedirectTarget(raw, requestUrl)) return null;
+  const origin = new URL(requestUrl).origin;
+  const url = new URL(raw, origin);
+  if (url.pathname !== OAUTH_AUTHORIZE_PATH) return null;
+  return url.pathname + url.search;
+}
+
+/**
+ * The remembered destination when it is an OAuth authorization request, read
+ * WITHOUT clearing it: the login and signup pages use this to say "you are
+ * connecting an editor", and the sign-in that follows still consumes it.
+ */
+export function pendingOAuthAuthorize(c: Context<{ Bindings: Env }>): string | null {
+  const raw = getCookie(c, POST_LOGIN_REDIRECT_COOKIE);
+  if (raw === undefined) return null;
+  return oauthAuthorizeTarget(raw, c.req.url);
+}
+
+/**
+ * The `invite` parameter an MCP client put on its authorization URL, for
+ * instances running the invite gate. Display-only (it pre-fills a form field);
+ * the code is validated when the form is submitted, as any typed code is.
+ */
+export function inviteFromAuthorizeTarget(target: string): string {
+  const invite = new URL(target, "https://placeholder.invalid").searchParams.get("invite") ?? "";
+  return /^[A-Za-z0-9-]{1,64}$/.test(invite) ? invite : "";
+}
+
+/**
+ * Cookie tying a magic link's bound return-to to the browser that requested
+ * it. Holds a random nonce; the link's server-side payload holds only its hash.
+ */
+export const MAGIC_LINK_BINDING_COOKIE = "magic_link_binding";
+
+/** Matches the magic link's own 15-minute lifetime. */
+const BINDING_MAX_AGE_SECONDS = 15 * 60;
+
+/** Where verify sends a browser whose bound consent screen cannot follow it. */
+export const RECONNECT_EDITOR_PATH = "/auth/email/reconnect";
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Bind a return-to to this browser: set a fresh nonce cookie and return the
+ * hash to store in the magic link's payload.
+ */
+export async function bindReturnToBrowser(c: Context<{ Bindings: Env }>): Promise<string> {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const nonce = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  setCookie(c, MAGIC_LINK_BINDING_COOKIE, nonce, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "Lax",
+    maxAge: BINDING_MAX_AGE_SECONDS,
+    path: "/auth/email",
+  });
+  return sha256Hex(nonce);
+}
+
+/**
+ * Decide whether a verified magic link's bound return-to may be followed here.
+ *
+ * The return-to is honoured only when the browser verifying the link is the
+ * one that asked for it. A link opened anywhere else — another device, or a
+ * mailbox someone else forwarded it to — could otherwise drop a stranger onto
+ * a consent screen for a client they never started connecting, which is a
+ * phishing primitive; and the client's loopback redirect would not reach the
+ * editor from there anyway. The caller then falls back to the cookie-remembered
+ * destination (which can only exist in the originating browser) and then to
+ * the "reconnect your editor" page. Always clears the binding cookie.
+ *
+ * @returns null when the link carried no return-to; otherwise the normalized
+ *   target to follow, or `target: null` when it must not be followed here
+ */
+export async function resolveBoundReturn(
+  c: Context<{ Bindings: Env }>,
+  bound: { returnTo?: string; returnBinding?: string },
+): Promise<{ target: string | null } | null> {
+  if (bound.returnTo === undefined) return null;
+  const nonce = getCookie(c, MAGIC_LINK_BINDING_COOKIE);
+  deleteCookie(c, MAGIC_LINK_BINDING_COOKIE, { path: "/auth/email" });
+  const target = oauthAuthorizeTarget(bound.returnTo, c.req.url);
+  if (target === null || nonce === undefined || bound.returnBinding === undefined) {
+    return { target: null };
+  }
+  const sameBrowser = (await sha256Hex(nonce)) === bound.returnBinding;
+  return { target: sameBrowser ? target : null };
+}

@@ -18,6 +18,14 @@ export interface MagicLinkPayload {
   createdAt?: number;
   /** The `agent_signups` row this link approves; set only for `agent-signup`. */
   agentSignupId?: string;
+  /**
+   * The OAuth authorization request to return to after verifying (#410). Bound
+   * here, server-side, rather than carried in the link's URL, so the email
+   * cannot be edited to send someone anywhere else; re-validated at verify.
+   */
+  returnTo?: string;
+  /** SHA-256 of the nonce cookie set on the browser that requested the link. */
+  returnBinding?: string;
 }
 
 /**
