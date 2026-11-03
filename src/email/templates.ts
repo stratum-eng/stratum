@@ -446,3 +446,86 @@ export function wrapEmail(content: { title: string; body: string }): string {
 </body>
 </html>`;
 }
+
+export interface AgentSignupEmailData {
+  /** The approval link (a magic link with the `agent-signup` intent). */
+  approveLink: string;
+  email: string;
+  username: string;
+  /** The name the agent gave itself. Validated to a plain charset upstream; escaped here regardless. */
+  agentName: string;
+  /** ISO country code the request came from, when known. */
+  requestedFrom?: string;
+}
+
+/**
+ * Sent when an agent asks for an account on someone's behalf. The person at
+ * the address approves by following the link, which creates the account and
+ * hands the agent a token; ignoring the email leaves nothing behind.
+ *
+ * The copy says plainly that an agent asked, names it, and states what
+ * approving does and does not grant, because the recipient may not have
+ * started this themselves.
+ */
+export function getAgentSignupEmail(data: AgentSignupEmailData): {
+  subject: string;
+  text: string;
+  html: string;
+} {
+  const { approveLink, email, username, agentName, requestedFrom } = data;
+  const { safeUrl } = validateUrl(approveLink);
+  // The agent's name stays out of the subject: it is requester-chosen text, and
+  // a subject line is where a phishing string does the most work.
+  const subject = "Approve your new Stratum account";
+  const fromLine = requestedFrom ? ` The request came from ${requestedFrom}.` : "";
+
+  const text = `Hi there,
+
+An AI agent calling itself "${agentName}" asked to create a Stratum account for ${email}, with the username @${username}.${fromLine}
+
+If you set this up, approve it here. You'll be asked for the code your agent showed you:
+
+${approveLink}
+
+If no agent of yours showed you a code, do not approve: someone else asked for this account.
+
+Approving creates your account, signs you in, and gives "${agentName}" its own agent token under your account. The agent can work on your projects, but it can never approve a change: reviews are for humans only. You can revoke it any time from Settings.
+
+This link expires in 15 minutes and can only be used once. If you didn't expect this, ignore this email and no account will be created.
+
+--
+Stratum
+Your code management platform`;
+
+  const body = `
+    <div class="text-primary" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 20px; font-weight: 600; color: #e5e5e5; padding-bottom: 16px;">
+      An agent asked to create your Stratum account
+    </div>
+    <div class="text-secondary" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 16px; line-height: 1.6; color: #a0a0a0; padding-bottom: 24px;">
+      An AI agent calling itself <strong style="color: #e5e5e5;">${escapeHtml(agentName)}</strong> asked to create an account for
+      <strong style="color: #e5e5e5;">${escapeHtml(email)}</strong> with the username
+      <strong style="color: #e5e5e5;">@${escapeHtml(username)}</strong>.${requestedFrom ? ` The request came from ${escapeHtml(requestedFrom)}.` : ""}
+    </div>
+    <div class="text-secondary" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 16px; line-height: 1.6; color: #a0a0a0; padding-bottom: 24px;">
+      You'll be asked for the code your agent showed you. <strong style="color: #e5e5e5;">If no agent of yours showed you a code, do not approve</strong>: someone else asked for this account.
+    </div>
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+      <tr>
+        <td style="border-radius: 8px; background-color: #e5e5e5;">
+          <a href="${escapeHtml(safeUrl)}" class="button" style="display: inline-block; padding: 12px 28px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 16px; font-weight: 600; color: #0f0f0f; text-decoration: none; border-radius: 8px;">
+            Approve and create account
+          </a>
+        </td>
+      </tr>
+    </table>
+    <div class="text-secondary" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.6; color: #a0a0a0; padding-top: 24px;">
+      Approving creates your account, signs you in, and gives the agent its own token under your account.
+      It can work on your projects but can never approve a change &mdash; reviews are for humans only.
+      You can revoke it any time from Settings.
+    </div>
+    <div class="text-secondary" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; line-height: 1.6; color: #a0a0a0; padding-top: 16px;">
+      This link expires in 15 minutes and can only be used once. If you didn't expect this, ignore this email and no account will be created.
+    </div>`;
+
+  return { subject, text, html: wrapEmail({ title: subject, body }) };
+}

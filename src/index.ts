@@ -18,6 +18,7 @@ import { handleDeployQueue } from "./queue/deploy-queue";
 import { handleEventQueue } from "./queue/event-consumer";
 import type { EventQueueMessage } from "./queue/events";
 import { handleImportQueue } from "./queue/import-queue";
+import { agentSignupRouter } from "./routes/agent-signup";
 import { agentsRouter } from "./routes/agents";
 import { auditRouter, orgAuditRouter } from "./routes/audit";
 import { authRouter } from "./routes/auth";
@@ -260,6 +261,7 @@ app.route("/api/workspaces", workspacesRouter);
 // Ahead of usersRouter, which also claims /api/users (#256).
 app.route("/api/users/me/passkeys", passkeysRouter);
 app.route("/api/users", usersRouter);
+app.route("/api/agent-signup", agentSignupRouter);
 app.route("/api/agents", agentsRouter);
 app.route("/api", changesRouter);
 app.route("/api", reviewsRouter);

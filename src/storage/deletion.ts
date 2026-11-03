@@ -993,6 +993,9 @@ export async function deleteAccountCascade(
     // Passkeys and recovery codes (#256) reference users(id) too, and are
     // authenticators tied to the person being erased.
     await deleteSecondFactorDataForUser(db, userId);
+    // The agent-signup request that created this account, if any, still names
+    // the email address it was sent to (migration 058).
+    await db.prepare("DELETE FROM agent_signups WHERE user_id = ?").bind(userId).run();
     // The owner-scoped usage aggregate (migration 054). Erasing the account is
     // the ONLY event that may clear it: `usage_periods` is deliberately outside
     // `PROJECT_SCOPED_TABLES` because an allowance a user can reset by deleting

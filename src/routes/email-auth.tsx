@@ -5,7 +5,19 @@ import { admitAndDeliverCodes, betaGateEnabled, validateInviteCode } from "../be
 import { getMagicLinkEmail } from "../email/templates";
 import { enforceSameOrigin } from "../middleware/csrf";
 import { completeBrowserSignIn } from "../services/second-factor";
-import { consumeMagicLink, createMagicLink, inspectMagicLink } from "../storage/magic-links";
+import {
+  approveAgentSignup,
+  checkAgentSignupUserCode,
+  getAgentSignup,
+} from "../storage/agent-signups";
+import { recordAudit } from "../storage/audit";
+import {
+  type MagicLinkPayload,
+  consumeMagicLink,
+  createMagicLink,
+  inspectMagicLink,
+  peekMagicLink,
+} from "../storage/magic-links";
 import { usernameNamespaceTaken } from "../storage/project-namespace";
 import { createUser, getUserByEmail, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
@@ -29,7 +41,7 @@ export const MAGIC_LINK_IP_RATE_LIMIT = 20; // max 20 magic-link sends per hour 
 const MAGIC_LINK_RATE_WINDOW = 60 * 60; // 1 hour in seconds
 
 // Generate a secure random token (32 bytes = 64 hex chars)
-function generateSecureToken(): string {
+export function generateSecureToken(): string {
   const array = new Uint8Array(32);
   crypto.getRandomValues(array);
   return Array.from(array, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -166,7 +178,7 @@ async function refundSend(
  * @param logger - Request logger
  * @returns Whether the send is refused; when it is not, the send is already counted
  */
-async function checkMagicLinkRateLimits(
+export async function checkMagicLinkRateLimits(
   c: Context<{ Bindings: Env }>,
   email: string,
   logger: Logger,
@@ -200,7 +212,7 @@ function emailAuthRedirect(
 }
 
 // Helper function to hash email for logging (privacy)
-function hashEmail(email: string): string {
+export function hashEmail(email: string): string {
   // Simple hash - take first 8 chars of a basic hash
   let hash = 0;
   for (let i = 0; i < email.length; i++) {
@@ -579,12 +591,39 @@ app.post("/send", async (c) => {
 // for the ATTACKER's account. Requiring an explicit same-origin POST (below) means
 // the sign-in is a deliberate action, not a drive-by, and cross-site auto-submits
 // are blocked by the CSRF middleware's Origin check.
-app.get("/verify", (c) => {
+app.get("/verify", async (c) => {
   const token = c.req.query("token");
   if (!token) {
     return emailAuthRedirect(c, "error", "invalid_link");
   }
   const safeToken = escapeHtml(token);
+
+  // An agent-requested signup asks for the code the agent showed its human.
+  // Peeking does not consume, so a link scanner fetching this page spends
+  // nothing, and an unknown or dead token simply gets the ordinary page (the
+  // POST then reports it expired, as before).
+  const logger = createLogger({ requestId: crypto.randomUUID(), path: c.req.path, method: "GET" });
+  const peeked = await peekMagicLink(c.env.DB, token, logger);
+  if (peeked.success && peeked.data?.intent === "agent-signup") {
+    const wrongCode = c.req.query("error") === "wrong_code";
+    return c.html(
+      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Approve your agent's signup</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;text-align:center">
+<h1 style="font-size:1.25rem">Approve your new Stratum account</h1>
+<p style="color:#555">Enter the code your agent showed you. If no agent of yours showed you a code, close this page: someone else asked for this account.</p>
+${wrongCode ? '<p role="alert" style="color:#b00020">That code doesn\'t match. Check what your agent showed you and try again.</p>' : ""}
+<form method="POST" action="/auth/email/verify">
+<input type="hidden" name="token" value="${safeToken}">
+<label for="userCode" style="display:block;margin-bottom:0.5rem">Code from your agent</label>
+<input id="userCode" name="userCode" required autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX" style="font:1.25rem ui-monospace,monospace;letter-spacing:0.15em;text-align:center;padding:0.5rem;width:12rem;margin-bottom:1rem">
+<br>
+<button type="submit" style="padding:0.6rem 1.4rem;font-size:1rem;border:0;border-radius:0.5rem;background:#111;color:#fff;cursor:pointer">Approve and create account</button>
+</form>
+${SOURCE_FOOTER_HTML_INLINE}
+</body></html>`,
+    );
+  }
+
   return c.html(
     `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Complete sign-in</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem;text-align:center">
@@ -625,6 +664,12 @@ app.post("/verify", async (c) => {
   }
 
   try {
+    // An agent-requested signup must carry the code the agent showed its
+    // human, checked BEFORE the link is consumed so a typo costs an attempt,
+    // not the link. Attempts are capped per request in storage.
+    const codeGate = await checkAgentSignupCodeBeforeConsume(c, token, form.userCode, logger);
+    if (codeGate) return codeGate;
+
     // Atomically consume the token: single-use is enforced by a conditional D1
     // UPDATE, so two concurrent verifies can't both succeed.
     const consumed = await consumeMagicLink(c.env.DB, token, logger);
@@ -666,63 +711,13 @@ app.post("/verify", async (c) => {
         return await createSessionAndRedirect(c, userId, emailHash, rememberMe, logger);
       }
 
-      // Closed-beta gate: re-validate the invite code before creating the account.
-      if (betaGateEnabled(c.env)) {
-        const inviteCheck = await validateInviteCode(c.env, inviteCode, logger);
-        if (!inviteCheck.valid) {
-          logger.warn("Invite code no longer valid at verification", { emailHash });
-          return emailAuthRedirect(c, "error", "invalid_invite", "/auth/signup");
-        }
-      }
-
-      // Double-check username is still available (race condition protection)
-      const existingUserByUsername = await getUserByUsername(c.env.DB, username, logger);
-      if (existingUserByUsername.success) {
-        logger.error("Username taken during signup verification", undefined, { username });
-        return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
-      }
-      const namespaceTaken = await usernameNamespaceTaken(c.env, username, logger);
-      if (!namespaceTaken.success) {
-        logger.error(
-          "Failed to check username namespace at signup verification",
-          namespaceTaken.error,
-          { username },
-        );
-        return emailAuthRedirect(c, "error", "signup_failed", "/auth/signup");
-      }
-      if (namespaceTaken.data) {
-        logger.warn("Username namespace unavailable at signup verification", { username });
-        return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
-      }
-
-      // Create new user with selected username
-      const createResult = await createUser(c.env.DB, email, logger, username);
-      if (!createResult.success && createResult.error.statusCode === 409) {
-        logger.warn("Username taken at insert during signup verification", { username });
-        return emailAuthRedirect(c, "error", "username_taken", "/auth/signup");
-      }
-      if (!createResult.success) {
-        logger.error("Failed to create user", undefined, { emailHash, username });
-        return emailAuthRedirect(c, "error", "signup_failed", "/auth/signup");
-      }
-
-      const userId = createResult.data.user.id;
-      logger.info("New user created via signup", { userId, emailHash, username });
-
-      // Beta program: record the redemption, mint this user's 5 codes, and email
-      // them. Best-effort — never blocks the now-created account, and no longer
-      // delays its first redirect either: scheduled past the response where an
-      // ExecutionContext exists, awaited inline where none does (tests).
-      if (betaGateEnabled(c.env)) {
-        const delivery = admitAndDeliverCodes(
-          c.env,
-          { userId, email, inviteCode, source: "magic_link" },
-          logger,
-        );
-        const waitUntil = getWaitUntil(c);
-        if (waitUntil) waitUntil(delivery);
-        else await delivery;
-      }
+      const account = await createAccountFromSignupLink(
+        c,
+        { email, username, inviteCode, source: "magic_link" },
+        logger,
+      );
+      if (!account.ok) return emailAuthRedirect(c, "error", account.code, account.path);
+      const userId = account.userId;
 
       // Create session and redirect to welcome/onboarding
       return await createSessionAndRedirect(
@@ -734,6 +729,10 @@ app.post("/verify", async (c) => {
         "/welcome",
         "signup",
       );
+    }
+
+    if (intent === "agent-signup") {
+      return await completeAgentSignup(c, tokenData, emailHash, rememberMe, logger);
     }
 
     if (intent === "login") {
@@ -821,6 +820,216 @@ async function auditDisabledSignIn(
     actorId: userId,
     subject: userId,
   });
+}
+
+/**
+ * For an agent-signup link, require the user code before the link can be
+ * spent. Returns the response to send when the code is missing or wrong, or
+ * null to carry on (not an agent-signup link, or the code matched).
+ *
+ * @param c - Request context
+ * @param token - The magic-link token from the form
+ * @param userCodeField - The `userCode` form field, as submitted
+ * @param logger - Request logger
+ * @returns A redirect to show instead of verifying, or null
+ */
+async function checkAgentSignupCodeBeforeConsume(
+  c: Context<{ Bindings: Env }>,
+  token: string,
+  userCodeField: unknown,
+  logger: Logger,
+): Promise<Response | null> {
+  const peeked = await peekMagicLink(c.env.DB, token, logger);
+  if (!peeked.success) return emailAuthRedirect(c, "error", "verify_failed");
+  const payload = peeked.data;
+  if (payload?.intent !== "agent-signup") return null;
+
+  const retry = (): Response =>
+    c.redirect(`/auth/email/verify?${new URLSearchParams({ token, error: "wrong_code" })}`);
+  const userCode = typeof userCodeField === "string" ? userCodeField : "";
+  if (!payload.agentSignupId) return emailAuthRedirect(c, "error", "invalid_link", "/auth/signup");
+  if (!userCode.trim()) return retry();
+
+  const check = await checkAgentSignupUserCode(c.env.DB, payload.agentSignupId, userCode, logger);
+  if (!check.success) return emailAuthRedirect(c, "error", "verify_failed");
+  if (check.data === "locked") {
+    logger.warn("Agent signup out of code attempts", { agentSignupId: payload.agentSignupId });
+    // Spend the link too, so a dead request leaves nothing usable behind.
+    await consumeMagicLink(c.env.DB, token, logger);
+    return emailAuthRedirect(c, "error", "link_expired", "/auth/signup");
+  }
+  if (check.data === "mismatch") {
+    logger.warn("Agent signup code mismatch", { agentSignupId: payload.agentSignupId });
+    return retry();
+  }
+  return null;
+}
+
+type AccountCreation = { ok: true; userId: string } | { ok: false; code: string; path: string };
+
+/**
+ * The account-creating half of a signup link: re-checks the invite and the
+ * username at the moment of creation (both may have changed since the link was
+ * sent), creates the user, and admits them to the beta. Shared by a plain
+ * signup and an agent-requested one, so the two can never drift on what a new
+ * account requires.
+ *
+ * The caller has already handled an email that now belongs to an account.
+ *
+ * @param c - Request context
+ * @param input - The verified email, chosen username, invite code, and the
+ *   funnel source recorded with the beta admission
+ * @param logger - Request logger
+ * @returns The new user's id, or the error code and page to send the browser to
+ */
+async function createAccountFromSignupLink(
+  c: Context<{ Bindings: Env }>,
+  input: { email: string; username: string; inviteCode: string; source: string },
+  logger: Logger,
+): Promise<AccountCreation> {
+  const { email, username, inviteCode, source } = input;
+  const emailHash = hashEmail(email);
+
+  // Closed-beta gate: re-validate the invite code before creating the account.
+  if (betaGateEnabled(c.env)) {
+    const inviteCheck = await validateInviteCode(c.env, inviteCode, logger);
+    if (!inviteCheck.valid) {
+      logger.warn("Invite code no longer valid at verification", { emailHash });
+      return { ok: false, code: "invalid_invite", path: "/auth/signup" };
+    }
+  }
+
+  // Double-check username is still available (race condition protection)
+  const existingUserByUsername = await getUserByUsername(c.env.DB, username, logger);
+  if (existingUserByUsername.success) {
+    logger.error("Username taken during signup verification", undefined, { username });
+    return { ok: false, code: "username_taken", path: "/auth/signup" };
+  }
+  const namespaceTaken = await usernameNamespaceTaken(c.env, username, logger);
+  if (!namespaceTaken.success) {
+    logger.error(
+      "Failed to check username namespace at signup verification",
+      namespaceTaken.error,
+      {
+        username,
+      },
+    );
+    return { ok: false, code: "signup_failed", path: "/auth/signup" };
+  }
+  if (namespaceTaken.data) {
+    logger.warn("Username namespace unavailable at signup verification", { username });
+    return { ok: false, code: "username_taken", path: "/auth/signup" };
+  }
+
+  // Create new user with selected username
+  const createResult = await createUser(c.env.DB, email, logger, username);
+  if (!createResult.success && createResult.error.statusCode === 409) {
+    logger.warn("Username taken at insert during signup verification", { username });
+    return { ok: false, code: "username_taken", path: "/auth/signup" };
+  }
+  if (!createResult.success) {
+    logger.error("Failed to create user", undefined, { emailHash, username });
+    return { ok: false, code: "signup_failed", path: "/auth/signup" };
+  }
+
+  const userId = createResult.data.user.id;
+  logger.info("New user created via signup", { userId, emailHash, username, source });
+
+  // Beta program: record the redemption, mint this user's 5 codes, and email
+  // them. Best-effort — never blocks the now-created account, and no longer
+  // delays its first redirect either: scheduled past the response where an
+  // ExecutionContext exists, awaited inline where none does (tests).
+  if (betaGateEnabled(c.env)) {
+    const delivery = admitAndDeliverCodes(c.env, { userId, email, inviteCode, source }, logger);
+    const waitUntil = getWaitUntil(c);
+    if (waitUntil) waitUntil(delivery);
+    else await delivery;
+  }
+
+  return { ok: true, userId };
+}
+
+/**
+ * Approves an agent-requested signup: creates the account exactly as a plain
+ * signup would, then marks the request approved so the agent's next poll can
+ * collect its token. The human lands signed in, on a page that names the agent.
+ *
+ * Unlike a plain signup link, an address that already has an account is NOT
+ * treated as a login. Doing so would attach an agent to an existing account on
+ * the strength of a link the agent asked for, which is a grant of access this
+ * flow was never meant to make — an existing user connects an agent from
+ * Settings or over OAuth instead.
+ *
+ * @param c - Request context
+ * @param tokenData - The consumed magic-link payload
+ * @param emailHash - Log-safe digest of the address
+ * @param rememberMe - Session persistence carried by the link
+ * @param logger - Request logger
+ * @returns The redirect to send the browser on
+ */
+async function completeAgentSignup(
+  c: Context<{ Bindings: Env }>,
+  tokenData: MagicLinkPayload,
+  emailHash: string,
+  rememberMe: boolean,
+  logger: Logger,
+): Promise<Response> {
+  const { email, username, inviteCode = "", agentSignupId } = tokenData;
+  if (!username || !agentSignupId) {
+    logger.warn("Agent signup link missing username or request id", { emailHash });
+    return emailAuthRedirect(c, "error", "invalid_link", "/auth/signup");
+  }
+
+  const signup = await getAgentSignup(c.env.DB, agentSignupId, logger);
+  if (!signup.success) return emailAuthRedirect(c, "error", "signup_failed", "/auth/signup");
+  if (
+    !signup.data ||
+    signup.data.status !== "pending" ||
+    signup.data.expiresAt <= Math.floor(Date.now() / 1000)
+  ) {
+    logger.warn("Agent signup request is no longer pending", { emailHash, agentSignupId });
+    return emailAuthRedirect(c, "error", "link_expired", "/auth/signup");
+  }
+
+  const existingUserByEmail = await getUserByEmail(c.env.DB, email, logger);
+  if (existingUserByEmail.success) {
+    logger.warn("Agent signup for an address that already has an account", { emailHash });
+    return emailAuthRedirect(c, "error", "email_exists", "/auth/login");
+  }
+
+  const account = await createAccountFromSignupLink(
+    c,
+    { email, username, inviteCode, source: "agent_signup" },
+    logger,
+  );
+  if (!account.ok) return emailAuthRedirect(c, "error", account.code, account.path);
+  const userId = account.userId;
+
+  const approved = await approveAgentSignup(c.env.DB, agentSignupId, userId, logger);
+  if (!approved.success || !approved.data) {
+    // The account exists and the human is signed in below; only the agent's
+    // hand-off missed (the request expired in the moments since the check
+    // above). They can still connect the agent from Settings.
+    logger.warn("Agent signup could not be marked approved", { agentSignupId, userId });
+  } else {
+    await recordAudit(c.env.DB, logger, {
+      action: "agent_signup.approved",
+      actorType: "user",
+      actorId: userId,
+      subject: agentSignupId,
+      detail: { agentName: signup.data.agentName },
+    });
+  }
+
+  return await createSessionAndRedirect(
+    c,
+    userId,
+    emailHash,
+    rememberMe,
+    logger,
+    "/welcome?agent=connected",
+    "signup",
+  );
 }
 
 // Helper function to create session and redirect
