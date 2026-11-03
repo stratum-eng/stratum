@@ -19,6 +19,15 @@ export const BACKUP_TABLES: readonly string[] = [
   // silently invalidated every API credential is a worse failure than holding
   // token hashes a backup already carries on `users.token_hash`.
   "api_tokens",
+  // Passkeys and recovery-code hashes (migration 056, #256). Backed up for the
+  // same reason as api_tokens: a restore that silently dropped them would turn
+  // off every account's second factor with no signal to anyone. Both hold no
+  // plaintext secret: a public key, and per-user hashes of ~59-bit recovery
+  // codes (HMAC-keyed when RECOVERY_CODE_PEPPER is set, a secret that is NOT
+  // in any backup). Without the pepper a stolen backup still allows an offline
+  // guess per user, which is why codes are single-use and regenerable.
+  "webauthn_credentials",
+  "recovery_codes",
   // MCP OAuth (#349), FK-ordered: `oauth_clients` has no parent, and
   // `oauth_tokens` references both it and `users`. Included for the same reason
   // as `api_tokens` — these are live credentials held by editors the user has

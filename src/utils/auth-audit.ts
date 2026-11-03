@@ -37,7 +37,11 @@ export type AuthFailureMethod =
   | "agent_token"
   | "oauth_token"
   | "magic_link"
-  | "sso";
+  | "sso"
+  // The second factor (#256): a wrong passkey or recovery code after the
+  // primary sign-in succeeded. Always identifies a real account.
+  | "passkey"
+  | "recovery_code";
 
 export interface AuthFailure {
   method: AuthFailureMethod;

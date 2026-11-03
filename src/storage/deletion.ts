@@ -12,6 +12,7 @@ import { deleteOAuthDataForUser } from "./oauth";
 import { deleteAllUserSessions } from "./sessions";
 import { reenableUsersForConnectionRemoval } from "./sso";
 import { listProjects } from "./state";
+import { deleteSecondFactorDataForUser } from "./webauthn";
 
 /**
  * Shared tombstone for anonymized cross-project contributions. A single
@@ -989,6 +990,9 @@ export async function deleteAccountCascade(
     // dangling mapping (#253).
     await db.prepare("DELETE FROM agents WHERE owner_id = ?").bind(userId).run();
     await db.prepare("DELETE FROM api_tokens WHERE user_id = ?").bind(userId).run();
+    // Passkeys and recovery codes (#256) reference users(id) too, and are
+    // authenticators tied to the person being erased.
+    await deleteSecondFactorDataForUser(db, userId);
     // The owner-scoped usage aggregate (migration 054). Erasing the account is
     // the ONLY event that may clear it: `usage_periods` is deliberately outside
     // `PROJECT_SCOPED_TABLES` because an allowance a user can reset by deleting

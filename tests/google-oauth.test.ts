@@ -10,6 +10,12 @@ vi.mock("../src/storage/users", () => ({
   signInGitHubUser: vi.fn(),
 }));
 
+// No passkeys: this suite exercises primary sign-in, not the second factor
+// (#256), and its DB is a stub the passkey lookup cannot read.
+vi.mock("../src/storage/webauthn", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/storage/webauthn")>()),
+  countPasskeys: vi.fn(async () => ({ success: true, data: 0 })),
+}));
 vi.mock("../src/storage/sessions", () => ({
   createSession: vi.fn(),
   deleteSession: vi.fn(),
@@ -357,7 +363,7 @@ describe("Google OAuth", () => {
       GOOGLE_ISSUER,
       "g-sub-x",
     );
-    expect(createSession).toHaveBeenCalledWith(env.DB, "usr_a", expect.anything());
+    expect(createSession).toHaveBeenCalledWith(env.DB, "usr_a", expect.anything(), true, {});
     expect(getUserByEmail).not.toHaveBeenCalled();
   });
 
@@ -397,7 +403,7 @@ describe("Google OAuth", () => {
     const res = await app.fetch(callbackRequest(), env);
 
     expect(res.status).toBe(302);
-    expect(createSession).toHaveBeenCalledWith(env.DB, "usr_uv", expect.anything());
+    expect(createSession).toHaveBeenCalledWith(env.DB, "usr_uv", expect.anything(), true, {});
     // The unverified claim must not overwrite the identity email.
     expect(upsertIdentity).toHaveBeenCalledWith(
       env.DB,

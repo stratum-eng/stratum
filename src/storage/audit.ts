@@ -78,7 +78,15 @@ export type AuditAction =
   // A rejected credential or sign-in that identified a real account or an
   // org's SSO connection (#255). Unknown credentials are deliberately NOT
   // recorded — see src/utils/auth-audit.ts for the flood-control policy.
-  | "auth.failed";
+  | "auth.failed"
+  // Passkeys as a second factor (#256).
+  | "passkey.registered"
+  | "passkey.renamed"
+  | "passkey.removed"
+  | "second_factor.succeeded"
+  | "recovery_code.used"
+  | "recovery_codes.regenerated"
+  | "org.second_factor_policy_changed";
 
 export interface AuditEntry {
   id: string;

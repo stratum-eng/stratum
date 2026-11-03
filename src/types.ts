@@ -305,6 +305,22 @@ export interface Env {
   ENVIRONMENT?: string;
   /** Comma-separated extra CORS origin allowlist (beyond same-origin). Optional. */
   ALLOWED_ORIGINS?: string;
+  /**
+   * The canonical public URL of this instance (e.g. `https://app.usestratum.dev`).
+   * Optional. When set, passkeys (#256) are bound to its origin and hostname
+   * (the WebAuthn RP ID) instead of the request's own — pin it in an
+   * environment that is reachable under more than one hostname, so a passkey
+   * registered on one is not silently unusable on another.
+   */
+  APP_URL?: string;
+  /**
+   * Optional secret keying the stored hashes of passkey recovery codes (#256):
+   * with it, a copy of the `recovery_codes` table (or a D1 backup) is not
+   * enough to test guesses. Set with `wrangler secret put`. Changing or
+   * removing it invalidates codes issued under it — users regenerate them from
+   * Settings → Security. Without it, hashes are user-bound SHA-256.
+   */
+  RECOVERY_CODE_PEPPER?: string;
   /** Master key for the per-project deploy secret store: provider credentials
    * are AES-GCM encrypted under a key derived from it. Optional because a
    * self-hoster who never deploys never needs one — but a project that HAS

@@ -5,10 +5,14 @@ import type { Env } from "../../types";
 import { createLogger } from "../../utils/logger";
 import { Layout } from "../layout";
 
-const STATUS_COPY: Record<400 | 404 | 500, { title: string; hint: string }> = {
+const STATUS_COPY: Record<400 | 403 | 404 | 500, { title: string; hint: string }> = {
   400: {
     title: "Bad request",
     hint: "The address is not a valid Stratum path. Check the URL for typos.",
+  },
+  403: {
+    title: "Forbidden",
+    hint: "You don't have permission to view this page.",
   },
   404: {
     title: "Page not found",
@@ -21,7 +25,7 @@ const STATUS_COPY: Record<400 | 404 | 500, { title: string; hint: string }> = {
 };
 
 interface ErrorPageProps {
-  status: 400 | 404 | 500;
+  status: 400 | 403 | 404 | 500;
   /** Optional specific message, shown in place of the generic hint. */
   message?: string;
   user?: { id: string; email: string; username: string } | null;

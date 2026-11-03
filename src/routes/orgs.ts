@@ -242,10 +242,33 @@ app.delete("/:slug/members/:uid", async (c) => {
   }
   const org = orgResult.data;
 
-  const adminResult = await isOrgAdmin(c.env.DB, logger, org.id, userId);
-  if (!adminResult.success || !adminResult.data) {
-    logger.warn("User not authorized to remove org member", { orgId: org.id, userId });
-    return c.json({ error: "Forbidden" }, 403);
+  // A member may always remove THEMSELVES. Membership is granted by the org
+  // without the member's consent, so leaving must never depend on the org —
+  // including on its second-factor policy (#256), which this route is exempt
+  // from for exactly this case. The owner cannot leave: ownership lives on the
+  // org row and would outlive the membership.
+  const isSelf = uid === userId;
+  if (isSelf && org.ownerId === userId) {
+    return c.json(
+      { error: "The org owner cannot leave the organization", code: "OWNER_CANNOT_LEAVE" },
+      409,
+    );
+  }
+  if (isSelf) {
+    // A non-member "leaving" must not get a success, and must not learn the
+    // org exists: answered like every other non-member org request (404). A
+    // lookup failure fails closed the same way.
+    const memberResult = await isOrgMember(c.env.DB, logger, org.id, userId);
+    if (!memberResult.success || !memberResult.data) {
+      logger.debug("Self-removal by a non-member", { orgId: org.id });
+      return notFound("Org", slug);
+    }
+  } else {
+    const adminResult = await isOrgAdmin(c.env.DB, logger, org.id, userId);
+    if (!adminResult.success || !adminResult.data) {
+      logger.warn("User not authorized to remove org member", { orgId: org.id, userId });
+      return c.json({ error: "Forbidden" }, 403);
+    }
   }
 
   const priorRole = await getOrgMemberRole(c.env.DB, logger, org.id, uid);

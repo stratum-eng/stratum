@@ -39,7 +39,7 @@ function makeSessionsD1(): {
         return { success: true, meta: { changes: 1 } };
       },
       first: async <T>() => {
-        const m = sql.match(/WHERE id = \?/i);
+        const m = sql.match(/WHERE (?:s\.)?id = \?/i);
         if (m) {
           const r = rows.get(binds[0] as string);
           return r ? ({ id: binds[0], user_id: r.user_id, expires_at: r.expires_at } as T) : null;

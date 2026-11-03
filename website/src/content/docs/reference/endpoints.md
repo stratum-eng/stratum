@@ -638,6 +638,28 @@ cannot be revoked individually, so letting a scoped token rotate it would mean
 revoking that token contained nothing — it could have issued itself a permanent
 replacement on the way out.
 
+### Passkeys
+
+Passkeys (WebAuthn) are the second factor of browser sign-in. See
+[Passkeys and two-factor sign-in](/guides/passkeys/). Every endpoint
+below accepts the **browser session cookie only** (`403 SESSION_REQUIRED` for a
+token). Registering, removing, and regenerating recovery codes also need a
+session from the last 15 minutes that used the account's existing passkey, if it
+has one. Otherwise they return `403 REAUTHENTICATION_REQUIRED`.
+
+- `GET /api/users/me/passkeys` — the passkeys (name, created, last used) and
+  `recoveryCodesRemaining`
+- `POST /api/users/me/passkeys/registration/options` — WebAuthn creation options
+  for `navigator.credentials.create()`; the challenge is single-use and expires
+  after 5 minutes
+- `POST /api/users/me/passkeys/registration/verify` —
+  `{ "name": "Laptop", "response": <RegistrationResponseJSON> }`; on the first
+  passkey the `201` also carries ten one-time `recoveryCodes`, shown once
+- `PATCH /api/users/me/passkeys/{id}` — `{ "name": "…" }`
+- `DELETE /api/users/me/passkeys/{id}` — removing the last passkey also deletes
+  the recovery codes
+- `POST /api/users/me/passkeys/recovery-codes` — replace the recovery codes
+
 ### Delete Account
 `DELETE /api/users/me`
 
@@ -678,7 +700,25 @@ mismatched `confirm` returns `400`.
 See the [OpenAPI specification](/reference/openapi/) for full request/response
 shapes, and [Authentication](/reference/authentication/) for the SCIM token class.
 
+### Security policy
+
+- `GET /api/orgs/:slug/security` — read the policy (any member)
+- `PUT /api/orgs/:slug/security` — `{ "requireSecondFactor": true }` (admins/owner)
+
+With `requireSecondFactor` on, a member's browser session reaches this org's
+projects and `/api/orgs/:slug/` endpoints only if it passed a passkey check or
+signed in through this org's own SSO. Otherwise those requests return
+`403 SECOND_FACTOR_REQUIRED`. The policy never affects members' personal
+projects, other orgs, or account settings. See
+[Passkeys and two-factor sign-in](/guides/passkeys/). Turning it on
+returns `409 ADMIN_SECOND_FACTOR_REQUIRED` until you have a passkey yourself.
+API tokens are not affected.
+
 ### Members and teams
+
+Any member can leave with `DELETE /api/orgs/:slug/members/<own user id>`, even
+when the org's second-factor policy blocks them. The owner cannot leave
+(`409 OWNER_CANNOT_LEAVE`). Removing anyone else requires an org admin.
 
 Members and teams are managed under `/api/orgs/{slug}/members` and
 `/api/orgs/{slug}/teams` — add and remove a member, create, list and delete a

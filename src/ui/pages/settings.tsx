@@ -417,6 +417,9 @@ export const SettingsPage: FC<SettingsPageProps> = ({
       <div class="page-header">
         <h1>Settings</h1>
         <div class="header-actions">
+          <a class="btn" href="/settings/security">
+            Security
+          </a>
           <a class="btn" href="/settings/usage">
             Usage
           </a>

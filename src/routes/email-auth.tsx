@@ -1,15 +1,12 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { setCookie } from "hono/cookie";
-import { captureAuthCompleted } from "../analytics/auth";
 import type { AuthKind } from "../analytics/events";
 import { admitAndDeliverCodes, betaGateEnabled, validateInviteCode } from "../beta/gate";
 import { getMagicLinkEmail } from "../email/templates";
 import { enforceSameOrigin } from "../middleware/csrf";
-import { recordAudit } from "../storage/audit";
+import { completeBrowserSignIn } from "../services/second-factor";
 import { consumeMagicLink, createMagicLink, inspectMagicLink } from "../storage/magic-links";
 import { usernameNamespaceTaken } from "../storage/project-namespace";
-import { createSession } from "../storage/sessions";
 import { createUser, getUserByEmail, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
 import { SOURCE_FOOTER_HTML_INLINE } from "../ui/components/source-footer";
@@ -840,39 +837,24 @@ async function createSessionAndRedirect(
   kind: AuthKind = "signin",
 ): Promise<Response> {
   const sessionLogger = logger.child({ userId });
-  const sessionResult = await createSession(c.env.DB, userId, sessionLogger, rememberMe);
-  if (sessionResult.success) {
-    await recordAudit(c.env.DB, sessionLogger, {
-      action: "session.created",
-      actorType: "user",
-      actorId: userId,
-      detail: { method: "magic-link" },
-    });
-    await captureAuthCompleted(c, sessionLogger, { kind, provider: "email", userId });
-  }
-
-  if (!sessionResult.success) {
-    sessionLogger.error("Failed to create session");
-    return emailAuthRedirect(c, "error", "verify_failed");
-  }
-
-  const session = sessionResult.data;
-
-  // Set session cookie with appropriate expiration
-  const cookieMaxAge = rememberMe ? 2592000 : 86400; // 30 days or 1 day
-  setCookie(c, "stratum_session", session.id, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "Lax",
-    maxAge: cookieMaxAge,
-    path: "/",
-  });
-
-  sessionLogger.info("Session created, redirecting user");
-
   // Same-origin validation and the one-shot clear both live in the shared
   // helper, so all three sign-in paths agree on where "back where I was" is.
-  return c.redirect(consumePostLoginRedirect(c, defaultRedirect));
+  const redirectTo = consumePostLoginRedirect(c, defaultRedirect);
+  // Mints the session — or, when the account has a passkey, parks the sign-in
+  // behind the second factor (#256) and sends the browser to /auth/2fa.
+  const signedIn = await completeBrowserSignIn(c, sessionLogger, {
+    userId,
+    method: "magic-link",
+    rememberMe,
+    redirectTo,
+    analytics: { kind, provider: "email" },
+  });
+  if (!signedIn.success) {
+    sessionLogger.error("Failed to create session", signedIn.error);
+    return emailAuthRedirect(c, "error", "verify_failed");
+  }
+  sessionLogger.info("Primary sign-in complete, redirecting user");
+  return signedIn.data;
 }
 
 export { app as emailAuthRouter };

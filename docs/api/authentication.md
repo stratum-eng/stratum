@@ -243,6 +243,30 @@ applications**, and by the client itself at `POST /oauth/revoke`
 immediate and covers both halves of the pair — revoking either the access token
 or the refresh token ends the grant.
 
+## Second factor (passkeys)
+
+Browser sign-in can require a passkey after the first step (magic link, GitHub,
+Google, or SSO). Stratum issues the `stratum_session` cookie only after the
+passkey or a recovery code is verified at `/auth/2fa`. An org can require this
+for its members (`PUT /api/orgs/{slug}/security`). The requirement covers only
+**that org's** projects and `/api/orgs/{slug}/` endpoints. A session without the
+second factor gets `403 SECOND_FACTOR_REQUIRED` there, and keeps all of its
+other access.
+
+**Non-interactive credentials are not subject to a second factor.** They are
+not all scoped, so treat every one of them like a password:
+
+| Credential | What it can reach | How to cut it off |
+|------------|-------------------|-------------------|
+| Named API token (`stratum_user_…`) | `read` or `read_write`, as chosen when it was created | Revoke it individually; it can also expire |
+| Legacy API key | Full `read_write` account access, no scope, never expires | Rotate it (invalidates the old key) or disable it permanently; it cannot be revoked on its own |
+| Agent token (`stratum_agent_…`) | The owning user's full access, no scope | Revoke the agent |
+| MCP OAuth grant (`stratum_mcp_…`) | `mcp:read` or `mcp:write`; never the admin API | Disconnect the app in settings, or `POST /oauth/revoke` |
+| SCIM token (`stratum_scim_…`) | Only `/scim/v2` for one org's SSO connection | An org admin rotates it |
+| git over HTTPS | Whatever the token it presents can reach | Revoke that token |
+
+See [Passkeys and two-factor sign-in](../user-guide/passkeys.md).
+
 ## Anonymous access
 
 Read endpoints on projects with `visibility: public` accept anonymous

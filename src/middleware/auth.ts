@@ -6,7 +6,12 @@ import { isOAuthClientEndpoint } from "../routes/mcp-oauth";
 import { getAgentByToken } from "../storage/agents";
 import { resolveApiToken, touchApiTokenLastUsed } from "../storage/api-tokens";
 import { SCOPE_WRITE, resolveOAuthAccessToken, touchOAuthTokenLastUsed } from "../storage/oauth";
-import { deleteSession, getSession } from "../storage/sessions";
+import {
+  type SessionSecondFactor,
+  type UnmetSecondFactorOrg,
+  deleteSession,
+  getSession,
+} from "../storage/sessions";
 import { getSsoConnectionByScimTokenHash } from "../storage/sso";
 import { getUser, getUserByToken } from "../storage/users";
 import type { ApiTokenScope, CredentialBinding, Env, User } from "../types";
@@ -61,6 +66,20 @@ declare module "hono" {
      * callers, who have no preference to honor.
      */
     telemetryOptOut?: boolean;
+    /** Session callers only (#256): when the session was minted, i.e. when the
+     * user last completed sign-in. Gates "fresh session" operations. */
+    sessionCreatedAt?: string;
+    /** Session callers only: the second factor the session passed, if any. */
+    sessionSecondFactor?: SessionSecondFactor;
+    /** Session callers only: the org whose IdP authenticated the session. */
+    sessionSsoOrgId?: string;
+    /**
+     * Session callers only: orgs whose "require a second factor" policy this
+     * session does not satisfy. Consulted ONLY when the request reaches one of
+     * those orgs' resources (`src/middleware/org-second-factor.tsx` and
+     * `src/utils/authz.ts`); it never restricts the user's other access.
+     */
+    secondFactorUnmetOrgs?: UnmetSecondFactorOrg[];
     logger: Logger;
   }
 }
@@ -629,8 +648,25 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
           return c.json({ error: "Unauthorized" }, 401);
         }
 
+        // Org second-factor policy (#256): recorded, not enforced, here. An org
+        // grants membership without the member's consent, so its policy may
+        // bind only its OWN resources — enforced at org-resource access
+        // (authz + org routes), never as a gate on the whole session. Tokens
+        // never reach this branch: the policy governs interactive sign-in.
+        const unmetOrgs = sessionResult.data.unmetSecondFactorOrgs ?? [];
+        if (unmetOrgs.length > 0) c.set("secondFactorUnmetOrgs", unmetOrgs);
+
         c.set("userId", sessionResult.data.userId);
         c.set("authVia", "session");
+        if (sessionResult.data.createdAt !== undefined) {
+          c.set("sessionCreatedAt", sessionResult.data.createdAt);
+        }
+        if (sessionResult.data.secondFactor !== undefined) {
+          c.set("sessionSecondFactor", sessionResult.data.secondFactor);
+        }
+        if (sessionResult.data.ssoOrgId !== undefined) {
+          c.set("sessionSsoOrgId", sessionResult.data.ssoOrgId);
+        }
         c.set("telemetryOptOut", userResult.data.telemetryOptOut === true);
 
         // Generate username from email if missing (backward compatibility)

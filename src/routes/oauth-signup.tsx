@@ -1,13 +1,12 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { captureAuthCompleted } from "../analytics/auth";
 import type { AuthKind } from "../analytics/events";
 import { admitAndDeliverCodes, betaGateEnabled, validateInviteCode } from "../beta/gate";
 import { enforceSameOrigin } from "../middleware/csrf";
-import { recordAudit } from "../storage/audit";
+import { completeBrowserSignIn } from "../services/second-factor";
 import { usernameNamespaceTaken } from "../storage/project-namespace";
-import { createSession, getSession } from "../storage/sessions";
+import { getSession } from "../storage/sessions";
 import { createUser, getUserByEmail, getUserByUsername, linkGitHub } from "../storage/users";
 import type { Env } from "../types";
 import { SourceFooter } from "../ui/components/source-footer";
@@ -182,30 +181,24 @@ async function issueSessionAndRedirect(
   kind: AuthKind,
 ): Promise<Response> {
   const sessionLogger = logger.child({ userId });
-  const sessionResult = await createSession(c.env.DB, userId, sessionLogger, rememberMe);
-  if (!sessionResult.success) {
-    sessionLogger.error("Failed to create session after OAuth signup");
-    return c.json({ error: "Failed to create session" }, 500);
-  }
-  await recordAudit(c.env.DB, sessionLogger, {
-    action: "session.created",
-    actorType: "user",
-    actorId: userId,
-    detail: { method: `${record.provider}-oauth` },
-  });
-  await captureAuthCompleted(c, sessionLogger, { kind, provider: record.provider, userId });
-  setCookie(c, "stratum_session", sessionResult.data.id, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "Lax",
-    maxAge: rememberMe ? 2592000 : 86400,
-    path: "/",
-  });
-  sessionLogger.info("OAuth signup complete, session created", { provider: record.provider });
   // Consumed unconditionally so a stale destination never survives into the
   // next sign-in; a `next` from the OAuth start URL still wins when given.
   const remembered = consumePostLoginRedirect(c, "/");
-  return c.redirect(record.next ?? remembered);
+  // A brand-new account has no passkey, so this mints the session directly; an
+  // existing account linked here with a passkey goes through /auth/2fa (#256).
+  const signedIn = await completeBrowserSignIn(c, sessionLogger, {
+    userId,
+    method: `${record.provider}-oauth`,
+    rememberMe,
+    redirectTo: record.next ?? remembered,
+    analytics: { kind, provider: record.provider },
+  });
+  if (!signedIn.success) {
+    sessionLogger.error("Failed to create session after OAuth signup", signedIn.error);
+    return c.json({ error: "Failed to create session" }, 500);
+  }
+  sessionLogger.info("OAuth signup complete", { provider: record.provider });
+  return signedIn.data;
 }
 
 const app = new Hono<{ Bindings: Env }>();

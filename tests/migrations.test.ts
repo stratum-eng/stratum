@@ -42,6 +42,8 @@ const EXPECTED_CORE_TABLES = [
   "org_sso_connections",
   "scim_members",
   "oidc_login_states",
+  "webauthn_credentials",
+  "recovery_codes",
 ];
 
 // 024 was duplicated historically and is already applied to production under

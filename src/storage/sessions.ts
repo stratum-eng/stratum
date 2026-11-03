@@ -9,24 +9,95 @@ import { type Result, err, ok } from "../utils/result";
 // sessions table (SQLi read, a backup, logs) therefore yields no replayable
 // credential — matching how user/agent/magic-link tokens are stored.
 
+/** How a session passed a second factor (#256). */
+export type SessionSecondFactor = "passkey" | "recovery_code";
+
 export interface Session {
   id: string;
   userId: string;
   expiresAt: string;
+  /** When the session was minted — i.e. when the user last authenticated. */
+  createdAt?: string;
+  /** Set when the session passed a second factor at sign-in (or was upgraded
+   * by registering the account's first passkey). */
+  secondFactor?: SessionSecondFactor;
+  /** The org whose IdP authenticated this session (OIDC SSO sign-in). */
+  ssoOrgId?: string;
+  /**
+   * Orgs the user belongs to that require a second factor this session does
+   * NOT satisfy — computed by `getSession` in the same query, so the policy
+   * costs no extra round-trip. Empty when the session is compliant.
+   *
+   * This is NOT a gate on the session: an org's policy binds only that org's
+   * own resources (see `src/utils/authz.ts`). Membership is granted by the org
+   * without the user's consent, so a session-wide gate would let any org lock
+   * any user out of everything they own.
+   */
+  unmetSecondFactorOrgs?: UnmetSecondFactorOrg[];
+}
+
+export interface UnmetSecondFactorOrg {
+  id: string;
+  slug: string;
 }
 
 interface SessionRow {
   id: string;
   user_id: string;
   expires_at: string;
+  created_at?: string | null;
+  second_factor?: string | null;
+  sso_org_id?: string | null;
+  unmet_policy_orgs?: string | null;
+}
+
+/** `id:slug,id:slug` (ids are `org_<hex>`, slugs are `[a-z0-9-]`, so both
+ * separators are unambiguous). */
+function parseUnmetOrgs(raw: string | null | undefined): UnmetSecondFactorOrg[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((pair) => {
+      const at = pair.indexOf(":");
+      return { id: pair.slice(0, at), slug: pair.slice(at + 1) };
+    })
+    .filter((org) => org.id.length > 0 && org.slug.length > 0);
+}
+
+function parseSecondFactor(value: string | null | undefined): SessionSecondFactor | undefined {
+  return value === "passkey" || value === "recovery_code" ? value : undefined;
 }
 
 function rowToSession(row: SessionRow): Session {
+  const secondFactor = parseSecondFactor(row.second_factor);
   return {
     id: row.id,
     userId: row.user_id,
     expiresAt: row.expires_at,
+    ...(row.created_at ? { createdAt: row.created_at } : {}),
+    ...(secondFactor !== undefined ? { secondFactor } : {}),
+    ...(row.sso_org_id ? { ssoOrgId: row.sso_org_id } : {}),
+    ...(row.unmet_policy_orgs
+      ? { unmetSecondFactorOrgs: parseUnmetOrgs(row.unmet_policy_orgs) }
+      : {}),
   };
+}
+
+/** What a new session records about how it was authenticated (#256). */
+export interface SessionFactors {
+  secondFactor?: SessionSecondFactor;
+  ssoOrgId?: string;
+}
+
+/**
+ * `sessions.created_at` defaults to `datetime('now')` ("YYYY-MM-DD HH:MM:SS",
+ * UTC with no zone marker); parse either that or an ISO string as UTC.
+ */
+export function sessionCreatedAtMs(createdAt: string | undefined): number | null {
+  if (!createdAt) return null;
+  const iso = createdAt.includes("T") ? createdAt : `${createdAt.replace(" ", "T")}Z`;
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? null : ms;
 }
 
 export async function createSession(
@@ -34,6 +105,7 @@ export async function createSession(
   userId: string,
   logger: Logger,
   rememberMe = true,
+  factors: SessionFactors = {},
 ): Promise<Result<Session, AppError>> {
   logger.debug("Creating session", { userId, rememberMe });
   try {
@@ -43,13 +115,27 @@ export async function createSession(
     const expiresAt = new Date(Date.now() + expirationDays * 24 * 60 * 60 * 1000).toISOString();
 
     await db
-      .prepare("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)")
-      .bind(await hashToken(id), userId, expiresAt)
+      .prepare(
+        "INSERT INTO sessions (id, user_id, expires_at, second_factor, sso_org_id) VALUES (?, ?, ?, ?, ?)",
+      )
+      .bind(
+        await hashToken(id),
+        userId,
+        expiresAt,
+        factors.secondFactor ?? null,
+        factors.ssoOrgId ?? null,
+      )
       .run();
 
-    logger.info("Session created", { userId, rememberMe });
+    logger.info("Session created", { userId, rememberMe, secondFactor: factors.secondFactor });
     // Return the RAW id — it becomes the cookie; only its hash is persisted.
-    return ok({ id, userId, expiresAt });
+    return ok({
+      id,
+      userId,
+      expiresAt,
+      ...(factors.secondFactor !== undefined ? { secondFactor: factors.secondFactor } : {}),
+      ...(factors.ssoOrgId !== undefined ? { ssoOrgId: factors.ssoOrgId } : {}),
+    });
   } catch (error) {
     logger.error("Failed to create session", error instanceof Error ? error : undefined, {
       userId,
@@ -69,8 +155,23 @@ export async function getSession(
 ): Promise<Result<Session, NotFoundError | AppError>> {
   logger.debug("Fetching session");
   try {
+    // The org-policy column (#256) rides on this lookup so the per-request
+    // org-resource check costs no extra round-trip. It is only evaluated for a
+    // session without a second factor: a passkey-verified session satisfies
+    // every org, and an SSO session satisfies the org whose IdP issued it.
     const row = await db
-      .prepare("SELECT id, user_id, expires_at FROM sessions WHERE id = ?")
+      .prepare(
+        `SELECT s.id, s.user_id, s.expires_at, s.created_at, s.second_factor, s.sso_org_id,
+                CASE WHEN s.second_factor IS NULL THEN (
+                  SELECT group_concat(o.id || ':' || o.slug, ',') FROM orgs o
+                  WHERE o.require_second_factor = 1
+                    AND (s.sso_org_id IS NULL OR o.id != s.sso_org_id)
+                    AND (o.owner_id = s.user_id
+                         OR EXISTS (SELECT 1 FROM org_members m
+                                    WHERE m.org_id = o.id AND m.user_id = s.user_id))
+                ) END AS unmet_policy_orgs
+         FROM sessions s WHERE s.id = ?`,
+      )
       .bind(await hashToken(id))
       .first<SessionRow>();
 
@@ -82,7 +183,7 @@ export async function getSession(
 
     // Return the caller's raw id (the row's id is the hash) so downstream refresh/
     // isCurrent comparisons against the cookie keep working.
-    return ok({ id, userId: row.user_id, expiresAt: row.expires_at });
+    return ok({ ...rowToSession(row), id });
   } catch (error) {
     // hashToken or the D1 read can reject; surface it as a Result so callers never
     // get a thrown error instead of Result<Session, …>.
@@ -119,6 +220,32 @@ export async function deleteSession(
       userId,
     });
     return err(new AppError("Failed to delete session", "STORAGE_ERROR", 500, { userId }));
+  }
+}
+
+/**
+ * Record that an existing session has now passed a second factor — used when a
+ * user registers their FIRST passkey from a session that predates it: they just
+ * proved possession of the authenticator, so the session counts as verified.
+ */
+export async function markSessionSecondFactor(
+  db: D1Database,
+  id: string,
+  secondFactor: SessionSecondFactor,
+  logger: Logger,
+): Promise<Result<boolean, AppError>> {
+  try {
+    const result = await db
+      .prepare("UPDATE sessions SET second_factor = ? WHERE id = ?")
+      .bind(secondFactor, await hashToken(id))
+      .run();
+    return ok((result.meta?.changes ?? 0) > 0);
+  } catch (error) {
+    logger.error(
+      "Failed to mark session second factor",
+      error instanceof Error ? error : undefined,
+    );
+    return err(new AppError("Failed to update session", "STORAGE_ERROR", 500));
   }
 }
 
