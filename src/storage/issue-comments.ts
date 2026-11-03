@@ -14,6 +14,10 @@ export interface IssueComment {
   authorType: "user" | "agent";
   authorId: string;
   body: string;
+  /** GitHub login of an imported comment's author with no linked Stratum account (#421). */
+  externalAuthor?: string;
+  /** Link back to the original comment, set only on imported comments (#421). */
+  externalUrl?: string;
   createdAt: string;
 }
 
@@ -23,12 +27,14 @@ interface IssueCommentRow {
   author_type: string;
   author_id: string;
   body: string;
+  external_author?: string | null;
+  external_url?: string | null;
   created_at: string;
 }
 
 /** Map a raw `issue_comments` row to the camelCase `IssueComment` shape. */
 function rowToComment(row: IssueCommentRow): IssueComment {
-  return {
+  const comment: IssueComment = {
     id: row.id,
     issueId: row.issue_id,
     authorType: row.author_type as IssueComment["authorType"],
@@ -36,6 +42,9 @@ function rowToComment(row: IssueCommentRow): IssueComment {
     body: row.body,
     createdAt: row.created_at,
   };
+  if (row.external_author != null) comment.externalAuthor = row.external_author;
+  if (row.external_url != null) comment.externalUrl = row.external_url;
+  return comment;
 }
 
 /**

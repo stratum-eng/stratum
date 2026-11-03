@@ -35,6 +35,7 @@ import { emailAuthRouter } from "./routes/email-auth";
 import { gitHttpRouter } from "./routes/git-http";
 import { githubAppRouter } from "./routes/github-app";
 import { healthRouter } from "./routes/health";
+import { issueImportRouter } from "./routes/issue-import";
 import { issuesRouter } from "./routes/issues";
 import { loginRouter } from "./routes/login";
 import { mcpRouter } from "./routes/mcp";
@@ -64,7 +65,13 @@ import { workspacesRouter } from "./routes/workspaces";
 import { runScheduledJobs } from "./scheduled";
 import { createSession } from "./storage/sessions";
 import { createUser, getUserByEmail } from "./storage/users";
-import type { Env, ImportJobMessage, MessageBatch, SyncJobMessage } from "./types";
+import type {
+  Env,
+  ImportJobMessage,
+  IssueImportJobMessage,
+  MessageBatch,
+  SyncJobMessage,
+} from "./types";
 import { notFoundResponse, serverErrorResponse } from "./ui/pages/error";
 import { CSS } from "./ui/styles";
 import { CSS_VERSION } from "./ui/stylesheet";
@@ -256,6 +263,8 @@ app.route("/auth/sessions", sessionRouter);
 // Second step of browser sign-in: passkey assertion or recovery code (#256).
 app.route("/auth/2fa", twoFactorRouter);
 app.route("/api/projects", webhooksRouter);
+// Before issuesRouter: its `/issues/:number` routes would otherwise see "import".
+app.route("/api/projects", issueImportRouter);
 app.route("/api/projects", issuesRouter);
 // Ahead of projectsRouter: both claim /api/projects, and Hono matches in mount
 // order, so the narrower :namespace/:slug/{secrets,deployments} paths have to be
@@ -356,7 +365,10 @@ export default {
         queue: queueName,
         messageCount: batch.messages.length,
       });
-      await handleImportQueue(batch as MessageBatch<ImportJobMessage | SyncJobMessage>, env);
+      await handleImportQueue(
+        batch as MessageBatch<ImportJobMessage | SyncJobMessage | IssueImportJobMessage>,
+        env,
+      );
     } else if (queueName.startsWith("stratum-events")) {
       await handleEventQueue(batch as MessageBatch<EventQueueMessage>, env);
     } else if (queueName.startsWith("stratum-deploys")) {

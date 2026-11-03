@@ -73,3 +73,27 @@ Read access is enough. `body` max 20,000 chars.
 `GET /api/projects/{namespace}/{slug}/issues/{number}/comments`
 
 Paginated with `limit` (default 100, max 500) and `offset`.
+
+## Import Issues from GitHub
+`POST /api/projects/{namespace}/{slug}/issues/import/github`
+
+Project admin, user identity. Queues a background import of the project's GitHub
+source repository's issues (pull requests skipped) and answers `202` with
+`{ "run": … }`. Idempotent: re-running updates previously imported issues and
+comments instead of duplicating them. Form posts redirect to the settings page.
+
+| Status | Code | Meaning |
+|---|---|---|
+| `400` | `no-source` | The project has no GitHub source |
+| `403` | `private` | The GitHub repository is private |
+| `409` | `active` | An import is already queued or running |
+| `409` | `incomplete` | The project's code import has not completed |
+| `409` | `deleting` | The project is being deleted |
+| `502` | `github` | GitHub could not be reached to check the repository |
+| `503` | `not-configured` | The instance has no GitHub credential |
+
+`GET` on the same path returns `{ "run": … }` for the latest run, or
+`{ "run": null }`. Imported issues and comments carry `externalUrl` (the GitHub
+original) and, when the author has no linked Stratum account, `externalAuthor`
+(their GitHub login). See the
+[user guide](../../user-guide/issues.md#importing-issues-from-github).

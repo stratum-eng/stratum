@@ -1,4 +1,5 @@
 import type { FC } from "hono/jsx";
+import type { IssueImportRun } from "../../storage/github-issue-import";
 import type { ProjectSecretSummary } from "../../storage/project-secrets";
 import { FieldError, fieldAttrs } from "../components/field-error";
 import { ProjectHeader } from "../components/project-header";
@@ -41,7 +42,31 @@ interface ProjectSettingsProps {
    * renders under that field instead of above the form.
    */
   secretErrorField?: "name" | "value" | undefined;
+  /**
+   * The GitHub issue import card (#421), present only for project admins of a
+   * GitHub-sourced project. `notice` is the outcome of the last form post.
+   */
+  issueImport?: {
+    githubRepo: string;
+    latestRun: IssueImportRun | null;
+    notice?: string;
+  };
   user?: { id: string; email: string; username: string } | null;
+}
+
+/** One line describing an import run's state, counters included. */
+function describeRun(run: IssueImportRun): string {
+  const counts = `${run.issuesCreated} created, ${run.issuesUpdated} updated, ${run.commentsImported} comments, ${run.pullsSkipped} pull requests skipped`;
+  switch (run.status) {
+    case "queued":
+      return "Queued — waiting for the import worker.";
+    case "running":
+      return `Running (${counts}).`;
+    case "completed":
+      return `Completed ${new Date(run.completedAt ?? run.updatedAt).toLocaleString()} (${counts}).`;
+    case "failed":
+      return `Failed (${counts}).`;
+  }
 }
 
 export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
@@ -52,6 +77,7 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
   canManageSecrets,
   secretError,
   secretErrorField,
+  issueImport,
   user,
 }) => {
   const nameError = secretErrorField === "name" ? secretError : undefined;
@@ -96,6 +122,33 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
               Sync settings &amp; history
             </a>
           </div>
+        </div>
+      )}
+
+      {issueImport && (
+        <div class="card" id="issue-import">
+          <h3 style={{ marginTop: 0 }}>Import GitHub issues</h3>
+          <p class="settings-help">
+            Copy the issues of <code>{issueImport.githubRepo}</code> — titles, descriptions, state,
+            labels and comments, each linked back to GitHub — into this project's issue tracker.
+            Pull requests are skipped. Running it again updates what was already imported instead of
+            duplicating it, so you can catch up right before switching over.
+          </p>
+          {issueImport.notice !== undefined && <p class="settings-help">{issueImport.notice}</p>}
+          {issueImport.latestRun && (
+            <p class="settings-help">
+              Last import: {describeRun(issueImport.latestRun)}
+              {issueImport.latestRun.message !== undefined && ` ${issueImport.latestRun.message}`}
+            </p>
+          )}
+          <form
+            method="post"
+            action={`/api/projects/${project.namespace}/${project.slug}/issues/import/github`}
+          >
+            <button type="submit" class="btn">
+              {issueImport.latestRun ? "Import issues again" : "Import issues"}
+            </button>
+          </form>
         </div>
       )}
 

@@ -77,6 +77,26 @@ const PageNav: FC<{
   );
 };
 
+/**
+ * Who to show as an issue's or comment's author. An item imported from GitHub
+ * whose author has no Stratum account records the importer as `authorId` and
+ * the GitHub login as `externalAuthor`; the login is the honest answer.
+ */
+const authorLabel = (
+  item: { authorId: string; authorType: string; externalAuthor?: string },
+  authors: Record<string, string>,
+) =>
+  item.externalAuthor !== undefined
+    ? `${item.externalAuthor} (GitHub)`
+    : (authors[item.authorId] ?? item.authorType);
+
+/** Link back to the GitHub original of an imported issue or comment. */
+const GitHubBackLink: FC<{ href: string; label: string }> = ({ href, label }) => (
+  <a href={href} target="_blank" rel="noopener noreferrer nofollow">
+    {label}
+  </a>
+);
+
 const statusBadge = (status: Issue["status"]) =>
   status === "open" ? "badge badge-open" : "badge badge-merged";
 
@@ -199,7 +219,7 @@ export const IssuesPage: FC<IssuesPageProps> = ({
               )}
               <span class="issues-meta">
                 opened {new Date(issue.createdAt).toLocaleDateString()} by{" "}
-                {authors[issue.authorId] ?? issue.authorType}
+                {authorLabel(issue, authors)}
                 {issue.assignee
                   ? ` · assigned to ${authors[issue.assignee] ?? issue.assignee}`
                   : ""}
@@ -254,11 +274,16 @@ export const IssueDetailPage: FC<IssueDetailPageProps> = ({
         <span class={statusBadge(issue.status)}>{issue.status}</span>
         <LabelChips labels={labels} base={base} />
         <span class="issues-meta">
-          opened {new Date(issue.createdAt).toLocaleString()} by{" "}
-          {authors[issue.authorId] ?? issue.authorType}
+          opened {new Date(issue.createdAt).toLocaleString()} by {authorLabel(issue, authors)}
           {issue.assignee ? ` · assigned to ${authors[issue.assignee] ?? issue.assignee}` : ""}
           {issue.closedAt ? ` · closed ${new Date(issue.closedAt).toLocaleString()}` : ""}
           {issue.closedBy === "system" ? " (auto-closed by merged change)" : ""}
+          {issue.externalUrl !== undefined && (
+            <>
+              {" · "}
+              <GitHubBackLink href={issue.externalUrl} label="imported from GitHub" />
+            </>
+          )}
         </span>
         {canWrite && (
           <form method="post" action={`${apiBase}/${issue.number}/close`}>
@@ -291,8 +316,13 @@ export const IssueDetailPage: FC<IssueDetailPageProps> = ({
         {comments.map((comment) => (
           <div key={comment.id} class="card issue-comment">
             <div class="issues-meta">
-              {authors[comment.authorId] ?? comment.authorType} ·{" "}
-              {new Date(comment.createdAt).toLocaleString()}
+              {authorLabel(comment, authors)} · {new Date(comment.createdAt).toLocaleString()}
+              {comment.externalUrl !== undefined && (
+                <>
+                  {" · "}
+                  <GitHubBackLink href={comment.externalUrl} label="on GitHub" />
+                </>
+              )}
             </div>
             <pre class="issue-body-text">{comment.body}</pre>
           </div>

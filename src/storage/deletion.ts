@@ -37,10 +37,11 @@ export interface DeletionTarget {
   changeIds: string[];
   webhookIds: string[];
   /**
-   * Issue ids, captured so `issue_comments` and `issue_labels` can be deleted
-   * by id-set. Those tables key on `issue_id` alone, so they are unreachable
-   * from a project-scoped DELETE, and migration 036 declares no foreign keys —
-   * nothing removes them when their issue goes.
+   * Issue ids, captured so `issue_comments`, `issue_labels` and
+   * `github_issue_comment_map` can be deleted by id-set. Those tables key on
+   * `issue_id` alone, so they are unreachable from a project-scoped DELETE, and
+   * neither migration 036 nor 064 declares foreign keys — nothing removes them
+   * when their issue goes.
    */
   issueIds: string[];
   /**
@@ -83,7 +84,13 @@ const PROJECT_SCOPED_TABLES = [
  * `github_repo_links` (migration 060) names the project as a repo's canonical
  * target; left behind, it would keep the repo from being claimed by anyone.
  */
-const PROJECT_ID_ONLY_TABLES = ["project_secrets", "github_repo_links"] as const;
+const PROJECT_ID_ONLY_TABLES = [
+  "project_secrets",
+  "github_repo_links",
+  // GitHub issue import (migration 064): the run log and the number map.
+  "github_issue_imports",
+  "github_issue_map",
+] as const;
 
 /** Tables keyed by the globally-unique (namespace, slug) tuple. */
 const NS_SLUG_TABLES = ["sync_history", "import_jobs", "import_metrics", "failed_imports"] as const;
@@ -466,6 +473,7 @@ export async function deleteProjectCascade(
     await deleteByIdChunks(env.DB, "webhook_deliveries", "webhook_id", target.webhookIds);
     await deleteByIdChunks(env.DB, "issue_comments", "issue_id", target.issueIds);
     await deleteByIdChunks(env.DB, "issue_labels", "issue_id", target.issueIds);
+    await deleteByIdChunks(env.DB, "github_issue_comment_map", "issue_id", target.issueIds);
     for (const table of PROJECT_SCOPED_TABLES) {
       await deleteProjectScopedTable(env.DB, table, target, residuals);
     }
@@ -611,6 +619,7 @@ export async function verifyProjectDeleted(
       ["webhook_deliveries", "webhook_id", target.webhookIds],
       ["issue_comments", "issue_id", target.issueIds],
       ["issue_labels", "issue_id", target.issueIds],
+      ["github_issue_comment_map", "issue_id", target.issueIds],
     ];
     for (const [table, column, ids] of childCounts) {
       const n = await countByIdChunks(env.DB, table, column, ids);

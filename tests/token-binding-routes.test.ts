@@ -804,6 +804,8 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   "GET /api/projects/:namespace/:slug/issues",
   "GET /api/projects/:namespace/:slug/issues/:number",
   "GET /api/projects/:namespace/:slug/issues/:number/comments",
+  // GitHub issue import (#421): authorizes through isProjectAdmin/canWriteProject.
+  "GET /api/projects/:namespace/:slug/issues/import/github",
   "GET /api/projects/:namespace/:slug/log",
   "GET /api/projects/:namespace/:slug/provenance",
   "GET /api/projects/:namespace/:slug/secrets",
@@ -832,6 +834,7 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   "POST /api/projects/:namespace/:slug/issues",
   "POST /api/projects/:namespace/:slug/issues/:number/close",
   "POST /api/projects/:namespace/:slug/issues/:number/comments",
+  "POST /api/projects/:namespace/:slug/issues/import/github",
   "POST /api/projects/:namespace/:slug/secrets",
   "POST /api/projects/:namespace/:slug/secrets/:name/delete",
   "POST /api/projects/:namespace/:slug/sync/settings",
