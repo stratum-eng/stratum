@@ -275,7 +275,13 @@ app.post("/api/github/installations/:id/link", async (c) => {
     target = { type: "org", id: org.data.id };
   }
 
-  if (!bindingAllowsCreateIn(credentialBindingFrom(c), target)) {
+  // Both ends of a move: the binding must admit the owner being displaced as
+  // well as the new one, matching what unlink requires of the former.
+  const binding = credentialBindingFrom(c);
+  if (
+    !bindingAllowsCreateIn(binding, target) ||
+    (installation.owner && !bindingAllowsCreateIn(binding, installation.owner))
+  ) {
     return respond(c, { ok: false, notice: "bound_token", status: 403 });
   }
 
