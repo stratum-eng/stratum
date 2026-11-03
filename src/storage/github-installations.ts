@@ -206,17 +206,21 @@ export async function listInstallationsVisibleTo(
   logger: Logger,
 ): Promise<Result<GitHubInstallation[], AppError>> {
   try {
+    // Plain `?` placeholders with repeated binds, not numbered `?1`/`?2`:
+    // node:sqlite on the engines-floor Node (22.13) cannot bind numbered
+    // parameters (#340), and the test suite runs this SQL there.
+    const githubId = user.githubId ?? null;
     const { results } = await db
       .prepare(
         `SELECT * FROM github_app_installations
-          WHERE (?1 IS NOT NULL AND (installer_github_id = ?1
-                 OR (account_type = 'User' AND account_id = ?1)))
-             OR (stratum_owner_type = 'user' AND stratum_owner_id = ?2)
+          WHERE (? IS NOT NULL AND (installer_github_id = ?
+                 OR (account_type = 'User' AND account_id = ?)))
+             OR (stratum_owner_type = 'user' AND stratum_owner_id = ?)
              OR (stratum_owner_type = 'org' AND stratum_owner_id IN
-                  (SELECT org_id FROM org_members WHERE user_id = ?2 AND role = 'admin'))
+                  (SELECT org_id FROM org_members WHERE user_id = ? AND role = 'admin'))
           ORDER BY account_login`,
       )
-      .bind(user.githubId ?? null, user.id)
+      .bind(githubId, githubId, githubId, user.id, user.id)
       .all<InstallationRow>();
     return ok(results.map(rowToInstallation));
   } catch (error) {
