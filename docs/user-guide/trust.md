@@ -224,7 +224,9 @@ The code does not check this inequality or warn when it fails.
 backups until those runs age out of `BACKUP_RETENTION` (about two weeks with the
 defaults, sooner if extra on-demand runs are taken). One exception: the newest
 healthy run is never pruned, so if every run after it fails, that run, and
-anything deleted after it was taken, stays until a healthy run replaces it.
+anything deleted after it was taken, stays until a later healthy run completes.
+After that, it stays until it ages out of the `BACKUP_RETENTION` window, which
+can span several later healthy runs.
 It also does not delete
 PostHog events or log lines already written.
 
