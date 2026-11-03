@@ -171,8 +171,13 @@ Store the key as a **project secret** and name it with `secretRef`. Add it in
 `PUT /api/projects/{namespace}/{slug}/secrets/WEBHOOK_EVALUATOR_SECRET` — the
 same encrypted store, permissions, and `secret.written` / `secret.deleted`
 audit trail deploys use ([Storing a secret](deployments.md#storing-a-secret)).
-The name must match `^[A-Z][A-Z0-9_]{0,63}$`; anything else fails the policy
-file closed. The value is looked up each time the evaluator runs, so rotating
+The name must start with **`WEBHOOK_`** (uppercase letters, digits and
+underscores, at most 64 characters, not ending in `_API_KEY`); anything else
+fails the policy file closed. The prefix is a fence: a policy can only sign with
+a secret stored *for signing*, never with a deploy credential
+(`CLOUDFLARE_API_TOKEN`, `VERCEL_TOKEN`) or a BYOK provider key (`*_API_KEY`).
+Otherwise anyone who can merge a policy edit could point `url` at their own
+server and collect HMACs keyed with those credentials. The value is looked up each time the evaluator runs, so rotating
 it takes effect on the next evaluation with no policy change.
 
 - **A reference that does not resolve fails closed.** If the named secret is

@@ -197,6 +197,18 @@ describe("resolveSigningKey", () => {
     expect(badName.status).toBe("unavailable");
   });
 
+  it("refuses to sign with a deploy or BYOK credential, even when it is stored", async () => {
+    const store = await storeWith({
+      CLOUDFLARE_API_TOKEN: "deploy-credential",
+      ANTHROPIC_API_KEY: "byok-credential",
+    });
+    for (const secretRef of ["CLOUDFLARE_API_TOKEN", "ANTHROPIC_API_KEY"]) {
+      const resolved = await resolveSigningKey({ secretRef }, store, logger, "test");
+      expect(resolved.status).toBe("unavailable");
+      expect(JSON.stringify(resolved)).not.toContain("credential");
+    }
+  });
+
   it("scopes a reference to its own project", async () => {
     const store = await storeWith({ WEBHOOK_EVALUATOR_SECRET: "other-project" });
     const resolved = await resolveSigningKey(
@@ -372,6 +384,10 @@ describe("policy loader: webhook secretRef", () => {
     ["a lower-case name", "secretRef: webhook_secret"],
     ["a non-string", "secretRef: 42"],
     ["an empty string", 'secretRef: ""'],
+    ["a deploy credential", "secretRef: CLOUDFLARE_API_TOKEN"],
+    ["a BYOK provider key", "secretRef: ANTHROPIC_API_KEY"],
+    ["an _API_KEY name inside the namespace", "secretRef: WEBHOOK_API_KEY"],
+    ["the bare prefix", "secretRef: WEBHOOK_"],
   ])("fails the file closed on %s", (_label, line) => {
     const parsed = parse(`evaluators:\n  - type: webhook\n    url: ${URL}\n    ${line}\n`);
     expect(parsed.status).toBe("malformed");

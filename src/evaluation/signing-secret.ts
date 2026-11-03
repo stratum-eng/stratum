@@ -40,6 +40,32 @@ import {
 import type { Env } from "../types";
 import type { Logger } from "../utils/logger";
 
+/**
+ * The project secrets a `secretRef` may name: `WEBHOOK_` followed by the usual
+ * secret-name alphabet, and never an `_API_KEY` name.
+ *
+ * A namespace, not "any project secret", because the policy file is chosen by
+ * whoever can get an edit merged, and the `url` it signs for is chosen by the
+ * same person. Without this, `secretRef: CLOUDFLARE_API_TOKEN` pointed at a URL
+ * they control would hand them an HMAC under the project's deploy credential —
+ * a way to check guesses offline, and a way to tell which secrets exist. Deploy
+ * target credentials (`CLOUDFLARE_*`, `VERCEL_*`) fall outside the prefix.
+ * BYOK keys are `<PROVIDER>_API_KEY` (`providerSecretName`), so the suffix
+ * rule also covers a provider that happens to be called `webhook`.
+ */
+export function isSigningSecretName(name: string): boolean {
+  return (
+    SECRET_NAME_PATTERN.test(name) &&
+    name.startsWith("WEBHOOK_") &&
+    name.length > 8 &&
+    !name.endsWith("_API_KEY")
+  );
+}
+
+/** What a rejected name is told, in both the loader and the resolver. */
+export const SIGNING_SECRET_NAME_RULE =
+  "must be a project secret name starting with WEBHOOK_ (matching ^WEBHOOK_[A-Z0-9_]+$, at most 64 characters, not ending in _API_KEY)";
+
 /** The two ways a policy entry may supply a signing key. */
 export interface SigningSecretSpec {
   /** Deprecated: a literal key, readable by anyone with repo read access. */
@@ -107,11 +133,8 @@ async function resolveReference(
   // The loader already rejects a malformed name and fails the file closed;
   // checked again because a policy can reach here another way (a cached one),
   // and the name is about to be bound into a query and quoted in a reason.
-  if (!SECRET_NAME_PATTERN.test(name)) {
-    return {
-      status: "unavailable",
-      reason: "secretRef is not a valid project secret name (^[A-Z][A-Z0-9_]{0,63}$)",
-    };
+  if (!isSigningSecretName(name)) {
+    return { status: "unavailable", reason: `secretRef ${SIGNING_SECRET_NAME_RULE}` };
   }
   if (store === undefined) {
     return {

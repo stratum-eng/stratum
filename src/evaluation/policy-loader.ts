@@ -1,7 +1,6 @@
 import YAML from "yaml";
 import { sanitizeDeploys } from "../deploy/config";
 import { readFileFromRepo } from "../storage/git-ops";
-import { SECRET_NAME_PATTERN } from "../storage/project-secrets";
 import { type Logger, defaultLogger } from "../utils/logger";
 import {
   MAX_COMMAND_LENGTH,
@@ -13,6 +12,7 @@ import {
   MIN_TOTAL_BUDGET_MS,
 } from "./limits";
 import type { LlmProviderCatalog } from "./llm-providers";
+import { SIGNING_SECRET_NAME_RULE, isSigningSecretName } from "./signing-secret";
 import type {
   EvalPolicy,
   EvaluatorConfig,
@@ -690,13 +690,11 @@ function sanitizeEvaluator(
     // a signing requirement nothing can meet; fail the file closed rather than
     // let the entry fall back to an unsigned (or literal-signed) request.
     if (source.secretRef !== undefined) {
-      if (typeof source.secretRef !== "string" || !SECRET_NAME_PATTERN.test(source.secretRef)) {
+      if (typeof source.secretRef !== "string" || !isSigningSecretName(source.secretRef)) {
         logger.warn("Dropping webhook evaluator entry with an invalid secretRef", {
           submitted: forLog(source.secretRef),
         });
-        rejections.push(
-          `${at}: webhook 'secretRef' must be a project secret name matching ^[A-Z][A-Z0-9_]{0,63}$`,
-        );
+        rejections.push(`${at}: webhook 'secretRef' ${SIGNING_SECRET_NAME_RULE}`);
         return null;
       }
       webhook.secretRef = source.secretRef;

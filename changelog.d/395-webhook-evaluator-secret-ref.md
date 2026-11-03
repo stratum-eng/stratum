@@ -8,8 +8,9 @@
   as a project secret, switch to `secretRef`, and rotate it. A reference that
   does not resolve (missing, empty, undecryptable, or no `DEPLOY_SECRET_KEY`)
   fails the evaluation closed without contacting the receiver; it never sends
-  unsigned or signs with an empty key. An invalid `secretRef` name fails the
-  policy file closed.
+  unsigned or signs with an empty key. The name must start with `WEBHOOK_`, so a
+  policy cannot sign with a deploy credential or a BYOK provider key; any other
+  name fails the policy file closed.
 
 ### Deprecated
 - **The webhook evaluator's literal `secret` field.** It still signs requests
