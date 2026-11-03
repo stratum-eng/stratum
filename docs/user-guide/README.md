@@ -24,6 +24,7 @@ Welcome to Stratum! This guide helps you get started.
 - [The MCP server](mcp.md) — the change flow for any MCP-capable agent or editor
 - [Troubleshooting](troubleshooting.md) — symptoms and fixes
 - [FAQ](faq.md) — including honest current limitations
+- [Trust and data residency](trust.md) — architecture, subprocessors, encryption, backups, and compliance status
 
 These pages are also published at
 [docs.usestratum.dev](https://docs.usestratum.dev/).

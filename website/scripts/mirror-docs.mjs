@@ -29,6 +29,7 @@ const GUIDES = [
   ["mcp", "Connect any MCP-capable agent or editor to the evaluation-gated change flow over the hosted /mcp endpoint — OAuth 2.1, nothing to install."],
   ["troubleshooting", "Symptoms and fixes for auth, imports, evaluation, merges, and access."],
   ["faq", "Common questions about Stratum's merge gate, provenance, CI, limitations, and telemetry."],
+  ["trust", "Security architecture, subprocessors, encryption, backups, data residency, and compliance status — what the code does today."],
 ];
 
 /** Pages published as /reference/<slug>/, keyed by their file in docs/api. */

@@ -3,6 +3,14 @@
 Stratum hosts source code and handles authentication tokens, agent credentials, and secret
 scanning. We take security seriously and appreciate responsible disclosure.
 
+## Security architecture and data handling
+
+Where data is stored, which subprocessors receive it, what is encrypted, how backups and
+retention work, what data-residency guarantees exist, and the current compliance status (no
+SOC 2 or ISO certification today) are documented in
+[Trust, Security Architecture, and Data Residency](docs/user-guide/trust.md), also published at
+[docs.usestratum.dev/guides/trust/](https://docs.usestratum.dev/guides/trust/).
+
 ## Supported versions
 
 Stratum is pre-1.0 and under active development. Security fixes are applied to the `main` branch

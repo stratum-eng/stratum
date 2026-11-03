@@ -37,6 +37,7 @@
     ["/guides/mcp/", "The MCP server — the eval-gated change flow for any MCP client"],
     ["/guides/troubleshooting/", "Troubleshooting"],
     ["/guides/faq/", "FAQ"],
+    ["/guides/trust/", "Security architecture, subprocessors, and data residency"],
     ["/reference/authentication/", "Bearer tokens, sessions, and the admin API key"],
     ["/reference/endpoints/", "REST API endpoint reference"],
     ["/reference/errors/", "Error codes"],

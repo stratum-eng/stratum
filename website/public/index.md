@@ -15,6 +15,7 @@
 - [MCP server](https://docs.usestratum.dev/guides/mcp/)
 - [Troubleshooting](https://docs.usestratum.dev/guides/troubleshooting/)
 - [FAQ](https://docs.usestratum.dev/guides/faq/)
+- [Trust and data residency](https://docs.usestratum.dev/guides/trust/)
 - [Authentication](https://docs.usestratum.dev/reference/authentication/)
 - [API reference](https://docs.usestratum.dev/reference/endpoints/)
 - [Error codes](https://docs.usestratum.dev/reference/errors/)
