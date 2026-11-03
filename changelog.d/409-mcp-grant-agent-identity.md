@@ -12,6 +12,10 @@
   or `actingAs: "user"`.
 
 ### Changed
+- **New MCP connections act as an agent by default.** Such a connection can open
+  changes, push and comment, but cannot merge, reject, approve or list your
+  projects, because those actions are reserved for you. To keep the previous
+  behaviour, choose "Me" on the consent screen.
 - **Settings → Connected applications shows who each connection acts as.**
   Connections made before this release keep acting as you and are labelled
   "You (no agent provenance)". Reconnect to choose an agent.
