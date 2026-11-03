@@ -23,12 +23,14 @@ const GUIDES = [
   ["code-review", "Line-anchored comment threads, replies, resolve/unresolve, and the three review verdicts."],
   ["issues", "Open, triage, search, and link issues — and how a merged change closes them."],
   ["ci-integration", "Bring your own CI: run evaluations on your existing infrastructure and report verdicts back."],
+  ["webhook-executor", "Run a webhook evaluator's executor safely: process, filesystem, and network isolation, resource and time bounds, credential hygiene, Git hazards, and reference setups."],
   ["deployments", "Publish the merged tree to Cloudflare or Vercel after a change lands — the deploys: policy block, encrypted project secrets, the approval gate, limits, and what v1 does not do."],
   ["cli", "Install and use @stratum-eng/cli — projects, workspaces, commits, and the change flow from the terminal."],
   ["mcp", "Connect any MCP-capable agent or editor to the evaluation-gated change flow over the hosted /mcp endpoint — OAuth 2.1, nothing to install."],
   ["passkeys", "Add a passkey as a second factor, keep recovery codes, and require two-factor sign-in for an organization."],
   ["troubleshooting", "Symptoms and fixes for auth, imports, evaluation, merges, and access."],
   ["faq", "Common questions about Stratum's merge gate, provenance, CI, limitations, and telemetry."],
+  ["trust", "Security architecture, subprocessors, encryption, backups, data residency, and compliance status — what the code does today."],
 ];
 
 /** Pages published as /reference/<slug>/, keyed by their file in docs/api. */

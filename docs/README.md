@@ -35,8 +35,10 @@ docs/
 │   ├── code-review.md                  # Comment threads and review verdicts
 │   ├── issues.md                       # The built-in issue tracker
 │   ├── ci-integration.md               # Bring-your-own-CI guide
+│   ├── webhook-executor.md             # Running a webhook evaluator executor safely
 │   ├── troubleshooting.md              # Problem solving
-│   └── faq.md                          # Frequently asked questions
+│   ├── faq.md                          # Frequently asked questions
+│   └── trust.md                        # Security architecture, subprocessors, data residency
 ├── developer/                          # Developer Documentation
 │   ├── README.md                       # Developer guide overview
 │   ├── architecture.md                 # System architecture (comprehensive)
@@ -88,10 +90,12 @@ docs/
 4. [Code Review](user-guide/code-review.md)
 5. [Issues](user-guide/issues.md)
 6. [CI Integration (Bring Your Own CI)](user-guide/ci-integration.md)
+7. [Running a Webhook Evaluator Executor Safely](user-guide/webhook-executor.md)
 
 **Help:**
 - [Troubleshooting](user-guide/troubleshooting.md)
 - [FAQ](user-guide/faq.md)
+- [Trust, Security Architecture, and Data Residency](user-guide/trust.md)
 
 ### For API Consumers
 
@@ -163,8 +167,10 @@ short stub that needs to be fleshed out.
 | User Guide - Code Review | ✅ Complete | High | 2026-08-31 |
 | User Guide - Issues | ✅ Complete | High | 2026-08-31 |
 | User Guide - CI Integration | ✅ Complete | High | 2026-08-31 |
+| User Guide - Webhook Executor Safety | ✅ Complete | High | 2026-11-02 |
 | User Guide - Troubleshooting | ✅ Complete | Medium | 2026-08-31 |
 | User Guide - FAQ | ✅ Complete | Medium | 2026-08-31 |
+| User Guide - Trust and Data Residency | ✅ Complete | High | 2026-11-02 |
 | Developer - Architecture | ✅ Complete | High | 2026-08-31 |
 | Developer - Deployment | ✅ Complete | Medium | 2026-08-31 |
 | Developer - Local Setup | 🚧 Outline | High | 2026-08-29 |

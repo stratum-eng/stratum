@@ -27,6 +27,7 @@ import type { Env } from "../types";
 import { SourceFooter } from "../ui/components/source-footer";
 import { StylesheetLinks } from "../ui/stylesheet";
 import { WEBAUTHN_CLIENT_SCRIPT } from "../ui/webauthn-client";
+import { auditAuthFailure } from "../utils/auth-audit";
 import { type Logger, createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 
@@ -208,19 +209,43 @@ async function accountStillActive(c: AppContext, logger: Logger, userId: string)
   return user.success && !user.data.disabledAt && !user.data.deletingAt;
 }
 
+/**
+ * A failed second factor is a failed authentication, so it is audited through
+ * the same path as every other one (#255): `auth.failed`, deduped to one row
+ * per subject per org scope per minute. The subject is the passkey when the
+ * attempt named a registered one, else the account — the same convention the
+ * token and magic-link failures use. Scoped to the SSO org when the primary
+ * factor was that org's IdP, so the org sees attempts against its sign-ins.
+ *
+ * The dedupe bounds the audit table; the attempt cap on the parked sign-in
+ * (`recordPendingFailure`) bounds the guessing.
+ */
 async function recordFailure(
   c: AppContext,
   logger: Logger,
   pending: PendingSignIn,
-  detail: { method: "passkey" | "recovery_code"; reason: CeremonyFailure | "invalid_code" },
+  failure: {
+    method: "passkey" | "recovery_code";
+    reason: CeremonyFailure | "invalid_code";
+    passkeyId?: string;
+  },
 ): Promise<boolean> {
-  await recordAudit(c.env.DB, logger, {
-    action: "second_factor.failed",
+  const { userId, ssoOrgId } = pending.signIn;
+  await auditAuthFailure(c, c.env.DB, logger, {
+    method: failure.method,
+    reason: failure.reason,
     actorType: "user",
-    actorId: pending.signIn.userId,
-    detail,
+    actorId: userId,
+    subject: failure.passkeyId ?? userId,
+    ...(ssoOrgId !== undefined ? { orgId: ssoOrgId } : {}),
+    detail: { stage: "second_factor" },
   });
   return recordPendingFailure(c, pending);
+}
+
+/** SSO sign-ins audit into that org's log, like their `session.created` row. */
+function orgScope(pending: PendingSignIn): { orgId?: string } {
+  return pending.signIn.ssoOrgId !== undefined ? { orgId: pending.signIn.ssoOrgId } : {};
 }
 
 const FAILURE_MESSAGES: Record<CeremonyFailure, string> = {
@@ -247,8 +272,12 @@ app.post("/verify", async (c) => {
     return c.json({ error: "response must be a WebAuthn authentication response" }, 400);
   }
 
-  const fail = async (reason: CeremonyFailure): Promise<Response> => {
-    const voided = await recordFailure(c, logger, pending, { method: "passkey", reason });
+  const fail = async (reason: CeremonyFailure, passkeyId?: string): Promise<Response> => {
+    const voided = await recordFailure(c, logger, pending, {
+      method: "passkey",
+      reason,
+      ...(passkeyId !== undefined ? { passkeyId } : {}),
+    });
     return c.json({ error: FAILURE_MESSAGES[reason], restart: voided }, 400);
   };
 
@@ -266,13 +295,13 @@ app.post("/verify", async (c) => {
     response,
     logger,
   );
-  if (!verified.ok) return fail(verified.reason);
+  if (!verified.ok) return fail(verified.reason, passkey.data.id);
 
   // Compare-and-swap: a replay racing this request against the same stored
   // counter loses here even though both passed the library's check.
   const advanced = await advancePasskeyCounter(c.env.DB, logger, passkey.data, verified.newCounter);
   if (!advanced.success) return c.json({ error: "Could not verify passkey" }, 500);
-  if (!advanced.data) return fail("counter_regression");
+  if (!advanced.data) return fail("counter_regression", passkey.data.id);
 
   await clearPendingSignIn(c, pending);
   if (!(await accountStillActive(c, logger, userId))) {
@@ -283,6 +312,7 @@ app.post("/verify", async (c) => {
     actorType: "user",
     actorId: userId,
     subject: passkey.data.id,
+    ...orgScope(pending),
     detail: { method: "passkey" },
   });
   const minted = await mintBrowserSession(c, logger, pending.signIn, "passkey");
@@ -329,12 +359,14 @@ app.post("/recovery", async (c) => {
     action: "recovery_code.used",
     actorType: "user",
     actorId: userId,
+    ...orgScope(pending),
     detail: {},
   });
   await recordAudit(c.env.DB, logger, {
     action: "second_factor.succeeded",
     actorType: "user",
     actorId: userId,
+    ...orgScope(pending),
     detail: { method: "recovery_code" },
   });
   const minted = await mintBrowserSession(c, logger, pending.signIn, "recovery_code");

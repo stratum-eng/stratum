@@ -23,7 +23,7 @@ const GITDIR = "/.git";
 /**
  * Reconstructs a repository in an in-memory Git store from a snapshot.
  *
- * Restores the default branch, any tagged references, and any other branch
+ * Restores the default branch (when the manifest has a tip), any tagged references, and any other branch
  * refs the manifest carries, verifying that their referenced objects are
  * present in the snapshot.
  *
@@ -36,7 +36,7 @@ const GITDIR = "/.git";
  * Operates on an in-memory store, so it is fully testable without Artifacts.
  *
  * @param pack - Serialized Git objects from the snapshot
- * @param manifest - Snapshot metadata containing the tip and optional tags
+ * @param manifest - Snapshot metadata containing the tip (absent for a tag-only snapshot, #251) and optional tags
  * @param branch - The branch to point at the tip; defaults to `main`, but imported repos keep their source branch name (master/trunk/…), and restoring one under the wrong name would leave the repo with no branch at its own default
  * @returns The in-memory filesystem, the repository directory, and the names of
  * the extra branch refs actually written — which is NOT simply
@@ -58,29 +58,43 @@ export async function reconstructRepo(
     for (const obj of unpackObjects(pack)) {
       await placeLooseObject(fs, GITDIR, obj.oid, obj.bytes);
     }
-    await git.writeRef({
-      fs,
-      dir: DIR,
-      ref: `refs/heads/${branch}`,
-      value: manifest.tipSha,
-      force: true,
-    });
-
-    const resolved = await git.resolveRef({ fs, dir: DIR, ref: branch });
-    if (resolved !== manifest.tipSha) {
+    const tipSha = manifest.tipSha;
+    // A manifest without a tip is a tag-only snapshot (#251), but only when it
+    // actually carries tags. With neither it describes nothing restorable, and
+    // "succeeding" would publish an empty repo in place of whatever was lost.
+    if (tipSha === undefined && (manifest.tags ?? []).length === 0) {
       return err(
-        new AppError(
-          `Reconstructed tip ${resolved} does not match manifest ${manifest.tipSha}`,
-          "BACKUP_ERROR",
-          500,
-        ),
+        new AppError("Repo manifest has neither a tip sha nor any tags", "BACKUP_ERROR", 500),
       );
     }
-    // resolveRef only reads back the ref we just wrote; it does not prove the tip
-    // COMMIT OBJECT actually unpacked into the store. readCommit does — it throws
-    // if the object (or any pack it needs) is missing, catching a corrupt pack
-    // that reconstructs a dangling ref.
-    await git.readCommit({ fs, dir: DIR, oid: manifest.tipSha });
+    if (tipSha !== undefined) {
+      await git.writeRef({
+        fs,
+        dir: DIR,
+        ref: `refs/heads/${branch}`,
+        value: tipSha,
+        force: true,
+      });
+
+      const resolved = await git.resolveRef({ fs, dir: DIR, ref: branch });
+      if (resolved !== tipSha) {
+        return err(
+          new AppError(
+            `Reconstructed tip ${resolved} does not match manifest ${tipSha}`,
+            "BACKUP_ERROR",
+            500,
+          ),
+        );
+      }
+      // resolveRef only reads back the ref we just wrote; it does not prove the tip
+      // COMMIT OBJECT actually unpacked into the store. readCommit does — it throws
+      // if the object (or any pack it needs) is missing, catching a corrupt pack
+      // that reconstructs a dangling ref.
+      await git.readCommit({ fs, dir: DIR, oid: tipSha });
+    }
+    // No tip: HEAD stays an unborn symref to `branch`, exactly as in the source
+    // repository. Pointing the branch at a tag's target instead would fabricate
+    // a default branch the source never had.
 
     // Tag refs (#182). `tags` is OPTIONAL: manifests from backups taken before
     // tag support omit it, and such a restore must keep working unchanged.
@@ -148,11 +162,19 @@ export async function reconstructRepo(
         // oid is the one an operator needs: it means the branch moved between
         // the ref advertisement and the object walk, so the tip this restore
         // verified is not the commit the manifest recorded for that name.
-        if (branchRef.oid !== manifest.tipSha) {
+        if (tipSha === undefined) {
+          // A tag-only snapshot recording a default-branch ref is internally
+          // inconsistent: the walk found no HEAD history, so the advertisement
+          // and the walk disagree. Restore stays tag-only rather than guess.
+          logger.warn("Restore: skipping default-branch entry in a manifest with no tip", {
+            name: branchRef.name,
+            manifestOid: branchRef.oid,
+          });
+        } else if (branchRef.oid !== tipSha) {
           logger.warn("Restore: manifest entry for the tip branch is stale; keeping verified tip", {
             name: branchRef.name,
             manifestOid: branchRef.oid,
-            tipSha: manifest.tipSha,
+            tipSha,
           });
         }
         continue;
@@ -204,7 +226,7 @@ export async function reconstructRepo(
     }
 
     logger.debug("Reconstructed repo", {
-      tipSha: manifest.tipSha,
+      tipSha,
       tagCount: manifest.tags?.length ?? 0,
       branchCount: branches.length,
     });
@@ -226,14 +248,14 @@ export async function reconstructRepo(
  *
  * @param snapshot - The repository snapshot and manifest to restore.
  * @param opts - Restore options; set `force` to overwrite an existing repository.
- * @returns The restored manifest tip SHA.
+ * @returns The restored manifest tip SHA; absent for a tag-only restore (#251).
  */
 export async function restoreProjectRepo(
   env: Env,
   snapshot: RepoSnapshot,
   opts: { force?: boolean },
   logger: Logger,
-): Promise<Result<{ tipSha: string }, AppError>> {
+): Promise<Result<{ tipSha?: string }, AppError>> {
   if (!env.ARTIFACTS)
     return err(new AppError("ARTIFACTS binding not configured", "CONFIG_ERROR", 500));
 
@@ -286,27 +308,42 @@ export async function restoreProjectRepo(
     return err(rebuilt.error);
   }
 
-  const pushed = await pushMain(remote, token, rebuilt.data.fs, rebuilt.data.dir, logger, {
-    force: repoExists,
-    branch,
-  });
-  if (!pushed.success) {
-    // A PUSH_TIMEOUT is not a confirmed failure — the underlying push is
-    // never actually cancelled, so it may still land after this returns.
-    // Deleting the repo on that ambiguous a signal risks destroying a
-    // restore that actually succeeded (or racing a delete against a push
-    // still in flight); leave it in place and say the outcome is unknown
-    // rather than assuming either "definitely restored" or "safe to clean up".
-    if (pushed.error.code === "PUSH_TIMEOUT") {
-      logger.error("Restore push timed out; outcome unknown, not rolling back", undefined, {
-        name,
-        repoExists,
-        detail: pushed.error.message,
-      });
+  // A tag-only snapshot (#251) has no default branch to push, so only its tags
+  // (below) are published and nothing is fabricated to stand in for `main`. A
+  // fresh target therefore keeps an unborn default branch, as the source did.
+  // A forced restore over an existing repo leaves that repo's default branch
+  // as it was: deleting a branch the snapshot never recorded is not a restore's
+  // call (docs/runbooks/backup-restore.md, tag-only snapshots).
+  const tipSha = snapshot.manifest.tipSha;
+  const mainPushed = tipSha !== undefined;
+  if (mainPushed) {
+    const pushed = await pushMain(remote, token, rebuilt.data.fs, rebuilt.data.dir, logger, {
+      force: repoExists,
+      branch,
+    });
+    if (!pushed.success) {
+      // A PUSH_TIMEOUT is not a confirmed failure — the underlying push is
+      // never actually cancelled, so it may still land after this returns.
+      // Deleting the repo on that ambiguous a signal risks destroying a
+      // restore that actually succeeded (or racing a delete against a push
+      // still in flight); leave it in place and say the outcome is unknown
+      // rather than assuming either "definitely restored" or "safe to clean up".
+      if (pushed.error.code === "PUSH_TIMEOUT") {
+        logger.error("Restore push timed out; outcome unknown, not rolling back", undefined, {
+          name,
+          repoExists,
+          detail: pushed.error.message,
+        });
+        return err(pushed.error);
+      }
+      await rollbackIfCreated();
       return err(pushed.error);
     }
-    await rollbackIfCreated();
-    return err(pushed.error);
+  } else {
+    logger.info("Restoring a tag-only snapshot; no default-branch ref will be pushed", {
+      name,
+      branch,
+    });
   }
 
   // Tag refs (#182): push after main so their target commits are already on the
@@ -341,8 +378,8 @@ export async function restoreProjectRepo(
       if (repoExists) {
         logger.error("Forced restore left partial state on an existing repo", undefined, {
           name,
-          tipSha: snapshot.manifest.tipSha,
-          mainPushed: true,
+          tipSha,
+          mainPushed,
           tagCount: tagNames.length,
           detail: tagsPushed.error.message,
         });
@@ -374,8 +411,8 @@ export async function restoreProjectRepo(
     if (repoExists) {
       logger.error("Forced restore left partial state on an existing repo", undefined, {
         name,
-        tipSha: snapshot.manifest.tipSha,
-        mainPushed: true,
+        tipSha,
+        mainPushed,
         tagCount: tagNames.length,
         branchCount: branchNames.length,
         detail: branchesPushed.error.message,
@@ -387,9 +424,9 @@ export async function restoreProjectRepo(
 
   logger.info("Restored project repo", {
     name,
-    tipSha: snapshot.manifest.tipSha,
+    tipSha,
     tagCount: tagNames.length,
     branchCount: branchNames.length,
   });
-  return ok({ tipSha: snapshot.manifest.tipSha });
+  return ok(tipSha !== undefined ? { tipSha } : {});
 }

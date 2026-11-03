@@ -57,6 +57,8 @@ export interface BrowserSignIn {
   ssoOrgId?: string;
   /** Extra audit detail (e.g. `{ orgId }` for SSO). */
   auditDetail?: Record<string, unknown>;
+  /** The org whose audit log the sign-in's rows belong to (#255) — the SSO org. */
+  auditOrgId?: string;
   /** Funnel analytics, when the flow reports one. */
   analytics?: { kind: AuthKind; provider: AuthProvider };
 }
@@ -151,6 +153,7 @@ export async function mintBrowserSession(
     action: "session.created",
     actorType: "user",
     actorId: signIn.userId,
+    ...(signIn.auditOrgId !== undefined ? { orgId: signIn.auditOrgId } : {}),
     detail: {
       method: signIn.method,
       ...(signIn.auditDetail ?? {}),

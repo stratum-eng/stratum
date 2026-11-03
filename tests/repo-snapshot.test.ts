@@ -95,11 +95,10 @@ describe("repo snapshot capture", () => {
   });
 
   // #251: a repo with no branch ref (unborn HEAD) but a tag pointing at a
-  // commit is reported empty and its tag-reachable objects are skipped. The
-  // full fix is a backup-format migration (tracked separately); this is the
-  // interim "loud, explicit skip" — the drop must be logged, not silent.
-  it("logs a loud warning naming the dropped tags for a tag-only repo (unborn HEAD)", async () => {
-    const { fs, tipSha } = await buildRepo([{ "a.txt": "one" }]);
+  // commit used to be reported empty, dropping the tag and everything only it
+  // reached. It now snapshots its tags alone, with no tip.
+  it("snapshots a tag-only repo (unborn HEAD) with its tag objects and no tip", async () => {
+    const { fs, tipSha } = await buildRepo([{ "a.txt": "one" }, { "b.txt": "two" }]);
     await git.tag({ fs, dir: DIR, ref: "v1", object: tipSha });
     // Remove the only branch ref directly (not via git.deleteBranch, which
     // detaches HEAD onto the sha instead of leaving it unborn) so HEAD stays
@@ -109,46 +108,56 @@ describe("repo snapshot capture", () => {
 
     const walk = await walkRepoObjects(fs, DIR, 1_000_000, logger);
     expect(walk.success).toBe(true);
-    if (!walk.success) return;
-    expect("empty" in walk.data).toBe(true);
+    if (!walk.success || !("objects" in walk.data)) throw new Error("expected a tag-only walk");
+    expect(walk.data.tipSha).toBeUndefined();
+    expect(walk.data.tags).toEqual([{ name: "v1", oid: tipSha }]);
+    const oids = walk.data.objects.map((o) => o.oid);
+    expect(oids).toContain(tipSha);
+    // Both commits (the tag's ancestry), with their trees and blobs.
+    expect(oids.length).toBeGreaterThanOrEqual(4);
+    expect(logger.warn).not.toHaveBeenCalled();
 
-    expect(logger.warn).toHaveBeenCalledTimes(1);
-    const [message, meta] = (logger.warn as ReturnType<typeof vi.fn>).mock.calls[0] as [
-      string,
-      Record<string, unknown>,
-    ];
-    expect(message).toMatch(/dropping/i);
-    expect(message).toMatch(/tag/i);
-    expect(meta.tags).toEqual(["v1"]);
-    expect(meta.tagCount).toBe(1);
-    expect(meta.tagsTruncated).toBeUndefined();
+    const snap = buildSnapshot(project, walk.data, "2026-07-19T00:00:00Z");
+    // Absent, not `undefined`-valued: the stored JSON carries no tipSha key.
+    expect("tipSha" in snap.manifest).toBe(false);
+    expect(JSON.parse(JSON.stringify(snap.manifest))).not.toHaveProperty("tipSha");
+    expect(snap.manifest.tags).toEqual([{ name: "v1", oid: tipSha }]);
+    expect(snap.manifest.objectCount).toBe(walk.data.objects.length);
   });
 
-  it("caps the named tags but still reports the true count", async () => {
-    // The warning's job is to make the loss visible. An unbounded name list
-    // on a repo with a large tag set would push the entry past the log
-    // pipeline's size limit and drop it entirely -- silence, which is exactly
-    // what this warning exists to prevent. The sample is bounded; the count
-    // is not.
-    const { fs, tipSha } = await buildRepo([{ "a.txt": "one" }]);
-    for (let i = 0; i < 60; i++) {
-      await git.tag({ fs, dir: DIR, ref: `v${String(i).padStart(3, "0")}`, object: tipSha });
-    }
-    await fs.promises.unlink(`${DIR}/.git/refs/heads/main`);
+  it("fails, rather than snapshotting tags only, when HEAD resolves but a commit is missing", async () => {
+    // A gap in the history makes git.log throw NotFoundError too. Read as an
+    // unborn HEAD, it would drop the default branch and still report success.
+    const { fs, tipSha } = await buildRepo([{ "a.txt": "1" }, { "a.txt": "2" }]);
+    // biome-ignore lint/suspicious/noExplicitAny: isomorphic-git fs shape
+    const gfs = fs as any;
+    const { commit } = await git.readCommit({ fs: gfs, dir: DIR, oid: tipSha });
+    const parent = commit.parent[0] as string;
+    await gfs.promises.unlink(`${DIR}/.git/objects/${parent.slice(0, 2)}/${parent.slice(2)}`);
+    await git.tag({ fs: gfs, dir: DIR, ref: "v1", object: tipSha });
+
+    const walk = await walkRepoObjects(fs, DIR, 1_000_000, logger);
+
+    expect(walk.success).toBe(false);
+    if (walk.success) return;
+    expect(walk.error.code).toBe("GIT_ERROR");
+  });
+
+  it("still reports empty when HEAD is unborn and no tag resolves", async () => {
+    const fs = new MemoryFS().toNodeFS() as unknown as NodeFS;
+    // biome-ignore lint/suspicious/noExplicitAny: isomorphic-git fs shape
+    await git.init({ fs: fs as any, dir: DIR, defaultBranch: "main" });
+    // A tag ref whose object is absent: there is nothing to back up.
+    await git.writeRef({ fs, dir: DIR, ref: "refs/tags/ghost", value: "f".repeat(40) });
 
     const walk = await walkRepoObjects(fs, DIR, 1_000_000, logger);
     expect(walk.success).toBe(true);
-
-    expect(logger.warn).toHaveBeenCalledTimes(1);
-    const [, meta] = (logger.warn as ReturnType<typeof vi.fn>).mock.calls[0] as [
-      string,
-      Record<string, unknown>,
-    ];
-    expect(meta.tagCount).toBe(60);
-    expect((meta.tags as string[]).length).toBe(50);
-    expect(meta.tagsTruncated).toBe(true);
-    // Sorted, so the sample is the first 50 by name rather than arbitrary.
-    expect((meta.tags as string[])[0]).toBe("v000");
-    expect((meta.tags as string[])[49]).toBe("v049");
+    if (!walk.success) return;
+    expect("empty" in walk.data).toBe(true);
+    // The dropped tag is named in a warning rather than lost silently.
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Backup: skipping unresolvable tag",
+      expect.objectContaining({ name: "ghost" }),
+    );
   });
 });

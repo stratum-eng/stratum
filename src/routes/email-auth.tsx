@@ -5,11 +5,12 @@ import { admitAndDeliverCodes, betaGateEnabled, validateInviteCode } from "../be
 import { getMagicLinkEmail } from "../email/templates";
 import { enforceSameOrigin } from "../middleware/csrf";
 import { completeBrowserSignIn } from "../services/second-factor";
-import { consumeMagicLink, createMagicLink } from "../storage/magic-links";
+import { consumeMagicLink, createMagicLink, inspectMagicLink } from "../storage/magic-links";
 import { usernameNamespaceTaken } from "../storage/project-namespace";
 import { createUser, getUserByEmail, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
 import { SOURCE_FOOTER_HTML_INLINE } from "../ui/components/source-footer";
+import { auditAuthFailure } from "../utils/auth-audit";
 import { hashToken } from "../utils/crypto";
 import { getWaitUntil } from "../utils/execution-ctx";
 import { escapeHtml } from "../utils/html";
@@ -633,6 +634,7 @@ app.post("/verify", async (c) => {
     const tokenData = consumed.data;
     if (!tokenData) {
       logger.warn("Token not found, expired, or already used", { tokenPrefix: token.slice(0, 8) });
+      await auditFailedMagicLink(c, token, logger);
       return emailAuthRedirect(c, "error", "link_expired");
     }
 
@@ -657,6 +659,7 @@ app.post("/verify", async (c) => {
         // account must not slip through (no session mint, no audit row).
         if (existingUserByEmail.data.disabledAt || existingUserByEmail.data.deletingAt) {
           logger.warn("Rejected signup-as-login for disabled account", { emailHash });
+          await auditDisabledSignIn(c, existingUserByEmail.data.id, logger);
           return emailAuthRedirect(c, "error", "account_disabled", "/auth/login");
         }
         const userId = existingUserByEmail.data.id;
@@ -753,6 +756,7 @@ app.post("/verify", async (c) => {
           emailHash,
           userId: existingUser.data.id,
         });
+        await auditDisabledSignIn(c, existingUser.data.id, logger);
         return emailAuthRedirect(c, "error", "account_disabled", "/auth/login");
       }
 
@@ -771,6 +775,53 @@ app.post("/verify", async (c) => {
     return emailAuthRedirect(c, "error", "verify_failed");
   }
 });
+
+/**
+ * A verify that failed on a link which still EXISTS (already used, or
+ * expired) names the account it was minted for: audit it against that
+ * account (#255). An unknown token names nobody and is not recorded — see the
+ * policy in src/utils/auth-audit.ts. Neither does a signup link for an email
+ * with no account yet: there is no account to attribute the attempt to.
+ */
+async function auditFailedMagicLink(
+  c: Context<{ Bindings: Env }>,
+  token: string,
+  logger: Logger,
+): Promise<void> {
+  // Auditing must never turn a "link expired" answer into a verify failure.
+  try {
+    const link = await inspectMagicLink(c.env.DB, token, logger);
+    if (!link) return;
+    const user = await getUserByEmail(c.env.DB, link.payload.email, logger);
+    if (!user.success) return;
+    await auditAuthFailure(c, c.env.DB, logger, {
+      method: "magic_link",
+      reason: link.consumed ? "link_already_used" : "link_expired",
+      actorType: "user",
+      actorId: user.data.id,
+      subject: user.data.id,
+    });
+  } catch (error) {
+    logger.warn("Failed to audit magic-link verify failure", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/** A valid magic link for a disabled or deleting account (#255). */
+async function auditDisabledSignIn(
+  c: Context<{ Bindings: Env }>,
+  userId: string,
+  logger: Logger,
+): Promise<void> {
+  await auditAuthFailure(c, c.env.DB, logger, {
+    method: "magic_link",
+    reason: "account_disabled",
+    actorType: "user",
+    actorId: userId,
+    subject: userId,
+  });
+}
 
 // Helper function to create session and redirect
 async function createSessionAndRedirect(

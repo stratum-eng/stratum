@@ -634,6 +634,23 @@ describe("OIDC SSO login", () => {
       setIdToken(await signIdToken({ nonce: "f".repeat(64) }));
       const res = await app.fetch(callbackRequest(state, cookie), env);
       expect(res.headers.get("Location")).toBe("/auth/sso?error=invalid_state");
+      // The state was valid, so this is an org-scoped failed sign-in (#255).
+      const failure = raw
+        .prepare(
+          "SELECT actor_type, subject, org_id, detail FROM audit_log WHERE action = 'auth.failed'",
+        )
+        .all() as { actor_type: string; subject: string; org_id: string; detail: string }[];
+      expect(failure).toHaveLength(1);
+      expect(failure[0]).toMatchObject({
+        actor_type: "system",
+        subject: connectionId,
+        org_id: orgId,
+      });
+      expect(JSON.parse(failure[0]?.detail ?? "{}")).toEqual({
+        method: "sso",
+        reason: "nonce_mismatch",
+        connectionId,
+      });
     });
 
     it("rejects an HS256 id_token (asymmetric algs only)", async () => {
@@ -756,6 +773,12 @@ describe("OIDC SSO login", () => {
       const res = await app.fetch(callbackRequest(state, cookie), env);
       expect(res.headers.get("Location")).toBe("/auth/sso?error=account_disabled");
       expect(res.headers.get("Set-Cookie") ?? "").not.toContain("stratum_session=");
+      // Attributed to the disabled account, in the org's trail (#255).
+      const failure = raw
+        .prepare("SELECT actor_id, org_id, detail FROM audit_log WHERE action = 'auth.failed'")
+        .get() as { actor_id: string; org_id: string; detail: string } | undefined;
+      expect(failure).toMatchObject({ actor_id: created.data.user.id, org_id: orgId });
+      expect(JSON.parse(failure?.detail ?? "{}")).toMatchObject({ reason: "account_disabled" });
     });
 
     it("refuses a disabled user on the email-adopt branch (no membership written)", async () => {

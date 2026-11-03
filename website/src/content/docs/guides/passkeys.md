@@ -151,8 +151,13 @@ above).
 ## Audit trail
 
 Stratum records these events in the instance audit log: passkey added, renamed,
-and removed; second-factor success and failure; recovery code used; recovery
-codes regenerated; and organization policy changes.
+and removed; second-factor success; recovery code used; recovery codes
+regenerated; and organization policy changes.
+
+A failed second factor (a wrong passkey or recovery code) is recorded the same
+way as every other failed sign-in: as `auth.failed`, at most once per minute for
+the same account or passkey. Events from a sign-in through an organization's SSO
+also appear in that organization's audit log, as do changes to its policy.
 
 ## For operators
 

@@ -95,6 +95,7 @@ app.put("/:slug/security", async (c) => {
       actorType: "user",
       actorId: userId,
       subject: org.id,
+      orgId: org.id,
       detail: { slug: org.slug, requireSecondFactor: required },
     });
   }

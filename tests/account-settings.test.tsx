@@ -322,7 +322,9 @@ describe("POST /settings/account (display name)", () => {
       makeEnv(),
     );
     expect(res.status).toBe(400);
-    expect(await res.text()).toContain("at most 60 characters");
+    const html = await res.text();
+    expect(html).toContain('id="settings-display-name-error">A display name can be at most 60');
+    expect(html).toMatch(/<input[^>]*id="settings-display-name"[^>]*aria-invalid="true"/);
     expect(setUserDisplayName).not.toHaveBeenCalled();
   });
 
@@ -531,6 +533,21 @@ describe("POST /settings/username", () => {
     const html = await res.text();
     expect(html).toContain("already taken");
     expect(html).toContain('action="/settings/username"');
+    // Under the field, with the refused name left in it to correct.
+    const input = html.match(/<input[^>]*id="settings-username"[^>]*>/)?.[0] ?? "";
+    expect(input).toContain('aria-invalid="true"');
+    expect(input).toContain('aria-describedby="settings-username-error settings-username-help"');
+    expect(input).toContain('value="bob"');
+    expect(html).toContain('id="settings-username-error">That username is already taken.');
+  });
+
+  it("keeps a refusal about the account, not the name, as a page notice", async () => {
+    vi.mocked(ownerHasClaims).mockResolvedValue(hasClaims);
+    const res = await makeApp().fetch(post("/settings/username", { username: "bob" }), makeEnv());
+    expect(res.status).toBe(403);
+    const html = await res.text();
+    expect(html).toContain("cannot be changed while you own projects");
+    expect(html).not.toContain('aria-invalid="true"');
   });
 
   it("refuses an API-token caller", async () => {

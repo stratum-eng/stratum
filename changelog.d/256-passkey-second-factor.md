@@ -17,8 +17,11 @@
   id}` works for any member, including when the org's policy blocks them. The
   owner cannot leave.
 - New audit events: `passkey.registered`, `passkey.renamed`, `passkey.removed`,
-  `second_factor.succeeded`, `second_factor.failed`, `recovery_code.used`,
-  `recovery_codes.regenerated`, and `org.second_factor_policy_changed`.
+  `second_factor.succeeded`, `recovery_code.used`, `recovery_codes.regenerated`,
+  and `org.second_factor_policy_changed` (in the org's audit log). A failed
+  second factor is recorded as `auth.failed` (method `passkey` or
+  `recovery_code`), with the same once-a-minute deduplication as other failed
+  sign-ins.
 - Optional `APP_URL` setting binds passkeys to one origin on instances reachable
   under more than one hostname.
 

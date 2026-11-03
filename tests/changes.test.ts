@@ -3493,6 +3493,8 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
       actorType: "user",
       actorId: "user_test",
       subject: "chg_abc123",
+      // The project rides along so an org-owned project scopes the row (#255).
+      project: expect.objectContaining({ id: mockProject.id }),
       detail: {
         project: "my-project",
         dismissed: 2,

@@ -1,8 +1,10 @@
 import { Hono } from "hono";
+import { recordAudit } from "../storage/audit";
 import {
   addOrgMember,
   createOrg,
   getOrgBySlug,
+  getOrgMemberRole,
   isOrgAdmin,
   isOrgMember,
   listOrgsForUser,
@@ -91,6 +93,15 @@ app.post("/", async (c) => {
     logger.error("Failed to add org member", memberResult.error, { orgId: org.id, userId });
     return c.json({ error: "Failed to add organization member" }, 500);
   }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "org.created",
+    actorType: "user",
+    actorId: userId,
+    subject: org.id,
+    orgId: org.id,
+    detail: { slug: org.slug, name: org.name },
+  });
 
   logger.info("Org created successfully", { orgId: org.id, slug: org.slug });
   return created({ org });
@@ -183,6 +194,10 @@ app.post("/:slug/members", async (c) => {
 
   const role = body.role === "admin" ? "admin" : "member";
 
+  // addOrgMember is an upsert, so the same request is an add, a role change,
+  // or a no-op depending on the prior row; the audit says which (#255).
+  const priorRole = await getOrgMemberRole(c.env.DB, logger, org.id, body.userId);
+
   const addResult = await addOrgMember(c.env.DB, logger, org.id, body.userId, role);
   if (!addResult.success) {
     logger.error("Failed to add org member", addResult.error, {
@@ -190,6 +205,18 @@ app.post("/:slug/members", async (c) => {
       userId: body.userId,
     });
     return c.json({ error: "Failed to add organization member" }, 500);
+  }
+
+  const previousRole = priorRole.success ? priorRole.data : "unknown";
+  if (previousRole !== role) {
+    await recordAudit(c.env.DB, logger, {
+      action: previousRole === null ? "org.member.added" : "org.member.role_changed",
+      actorType: "user",
+      actorId: userId,
+      subject: body.userId,
+      orgId: org.id,
+      detail: previousRole === null ? { role } : { role, previousRole },
+    });
   }
 
   logger.info("Org member added", { orgId: org.id, userId: body.userId, role });
@@ -244,10 +271,23 @@ app.delete("/:slug/members/:uid", async (c) => {
     }
   }
 
+  const priorRole = await getOrgMemberRole(c.env.DB, logger, org.id, uid);
   const removeResult = await removeOrgMember(c.env.DB, logger, org.id, uid);
   if (!removeResult.success) {
     logger.error("Failed to remove org member", removeResult.error, { orgId: org.id, userId: uid });
     return c.json({ error: "Failed to remove organization member" }, 500);
+  }
+
+  // A DELETE for someone who was not a member changed nothing; don't record it.
+  if (!priorRole.success || priorRole.data !== null) {
+    await recordAudit(c.env.DB, logger, {
+      action: "org.member.removed",
+      actorType: "user",
+      actorId: userId,
+      subject: uid,
+      orgId: org.id,
+      detail: { previousRole: priorRole.success ? priorRole.data : "unknown" },
+    });
   }
 
   logger.info("Org member removed", { orgId: org.id, userId: uid });
@@ -303,6 +343,15 @@ app.post("/:slug/teams", async (c) => {
     logger.error("Failed to create team", teamResult.error, { orgId: org.id, slug: body.slug });
     return c.json({ error: "Failed to create team" }, 500);
   }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "team.created",
+    actorType: "user",
+    actorId: userId,
+    subject: teamResult.data.id,
+    orgId: org.id,
+    detail: { slug: body.slug, permissions },
+  });
 
   logger.info("Team created", { teamId: teamResult.data.id, orgId: org.id, slug: body.slug });
   return created({ team: teamResult.data });
@@ -386,6 +435,15 @@ app.delete("/:slug/teams/:id", async (c) => {
     return c.json({ error: "Failed to delete team" }, 500);
   }
 
+  await recordAudit(c.env.DB, logger, {
+    action: "team.deleted",
+    actorType: "user",
+    actorId: userId,
+    subject: id,
+    orgId: org.id,
+    detail: { slug: team.slug },
+  });
+
   logger.info("Team deleted", { teamId: id, orgId: org.id });
   return ok({ deleted: true, id });
 });
@@ -439,6 +497,15 @@ app.post("/:slug/teams/:id/members", async (c) => {
     return c.json({ error: "Failed to add team member" }, 500);
   }
 
+  await recordAudit(c.env.DB, logger, {
+    action: "team.member.added",
+    actorType: "user",
+    actorId: userId,
+    subject: body.userId,
+    orgId: org.id,
+    detail: { teamId: id, teamSlug: team.slug },
+  });
+
   logger.info("Team member added", { teamId: id, userId: body.userId });
   return ok({ added: true, teamId: id, userId: body.userId });
 });
@@ -486,6 +553,15 @@ app.delete("/:slug/teams/:id/members/:uid", async (c) => {
     logger.error("Failed to remove team member", removeResult.error, { teamId: id, userId: uid });
     return c.json({ error: "Failed to remove team member" }, 500);
   }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "team.member.removed",
+    actorType: "user",
+    actorId: userId,
+    subject: uid,
+    orgId: org.id,
+    detail: { teamId: id, teamSlug: team.slug },
+  });
 
   logger.info("Team member removed", { teamId: id, userId: uid });
   return ok({ removed: true, teamId: id, userId: uid });

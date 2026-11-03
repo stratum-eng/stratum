@@ -71,7 +71,6 @@ import {
   setUserDisplayName,
   setUserTelemetryOptOut,
 } from "../storage/users";
-import { listDeliveries, listWebhooks } from "../storage/webhooks";
 import type { ApiTokenScope, CommitLogEntry, Env, ProjectEntry } from "../types";
 import { getUserNamespace, projectDefaultBranch } from "../types";
 import { parseUnifiedDiff } from "../ui/components/diff-view";
@@ -85,11 +84,14 @@ import { ErrorPage } from "../ui/pages/error";
 import { FileViewerPage } from "../ui/pages/file-viewer";
 import { HomePage } from "../ui/pages/home";
 import { IssueDetailPage, IssuesPage, NewIssuePage } from "../ui/pages/issues";
-import { NewProjectPage, newProjectErrorMessage } from "../ui/pages/new-project";
+import { NewProjectPage, newProjectError } from "../ui/pages/new-project";
 import { ProjectSettingsPage } from "../ui/pages/project-settings";
 import { RepoPage } from "../ui/pages/repo";
 import {
   type FreshCredential,
+  type SettingsField,
+  type SettingsFieldError,
+  type SettingsFormValues,
   type SettingsNotice,
   SettingsPage,
   type UsernameChange,
@@ -97,7 +99,6 @@ import {
 import { SyncPage } from "../ui/pages/sync";
 import { TagsPage } from "../ui/pages/tags";
 import { UsagePage } from "../ui/pages/usage";
-import { WebhooksPage } from "../ui/pages/webhooks";
 import { WorkspacesPage } from "../ui/pages/workspaces";
 import {
   type BindingContext,
@@ -114,6 +115,7 @@ import { createLogger } from "../utils/logger";
 import { type Result, ok } from "../utils/result";
 import { isValidNamespace, isValidSlug } from "../utils/validation";
 import { canManageSecrets, secretErrorMessage } from "./deployments";
+import { getCurrentUser, renderWebhooksPage } from "./form-pages";
 import { DEFAULT_COMMENTS_PAGE, DEFAULT_ISSUES_PAGE } from "./issues";
 import { SUBSCRIBABLE_EVENTS } from "./webhooks";
 
@@ -145,28 +147,6 @@ function stripLogTail(deployment: Deployment, canWrite: boolean): Deployment {
   if (canWrite) return deployment;
   const { logTail: _logTail, ...rest } = deployment;
   return rest;
-}
-
-// Helper to get current user info
-async function getCurrentUser(
-  c: { get: (key: "userId") => string | undefined; env: { DB: D1Database } },
-  logger: ReturnType<typeof createLogger>,
-): Promise<{ id: string; email: string; username: string; displayName?: string } | null> {
-  const userId = c.get("userId");
-  if (!userId) return null;
-  const result = await getUser(c.env.DB, userId, logger);
-  if (!result.success) return null;
-
-  const user = result.data;
-  // Username is always present - enforced by database schema and validation.
-  // The display name rides along so the header shows it on every page, not
-  // only on Settings.
-  return {
-    id: user.id,
-    email: user.email,
-    username: user.username,
-    ...(user.displayName !== undefined ? { displayName: user.displayName } : {}),
-  };
 }
 
 /**
@@ -324,14 +304,10 @@ app.get("/new", async (c) => {
   }
 
   logger.debug("Rendering new project page");
-  const error = newProjectErrorMessage(c.req.query("error"));
-  return c.html(
-    <NewProjectPage
-      user={user}
-      nonce={c.get("cspNonce") ?? ""}
-      {...(error !== undefined ? { error } : {})}
-    />,
-  );
+  // `?error=` selects fixed copy by code (the plan-limit redirect uses it);
+  // nothing else in the query reaches the form. See routes/form-pages.tsx.
+  const error = newProjectError(c.req.query("error"));
+  return c.html(<NewProjectPage user={user} nonce={c.get("cspNonce") ?? ""} error={error} />);
 });
 
 async function loadAgentSummaries(
@@ -516,7 +492,12 @@ async function renderSettings(
   user: AccountUser,
   telemetryOptOut: boolean,
   logger: ReturnType<typeof createLogger>,
-  extras: { freshToken?: FreshCredential; notice?: SettingsNotice } = {},
+  extras: {
+    freshToken?: FreshCredential;
+    notice?: SettingsNotice;
+    fieldError?: SettingsFieldError;
+    formValues?: SettingsFormValues;
+  } = {},
 ) {
   const [agents, tokens, grants, usernameChange, invites, usageNotice] = await Promise.all([
     loadAgentSummaries(c.env.DB, user.id, logger),
@@ -557,6 +538,8 @@ async function renderSettings(
       nonce={c.get("cspNonce") ?? ""}
       {...(extras.freshToken !== undefined ? { freshToken: extras.freshToken } : {})}
       {...(notice !== undefined ? { notice } : {})}
+      fieldError={extras.fieldError}
+      formValues={extras.formValues}
     />
   );
 }
@@ -654,10 +637,11 @@ app.post("/settings/account", async (c) => {
   const displayName = normalizeDisplayName(raw);
   if (displayName.length > MAX_DISPLAY_NAME_LENGTH) {
     const page = await renderSettings(c, user, telemetryOptOut, logger, {
-      notice: {
-        kind: "error",
+      fieldError: {
+        field: "displayName",
         message: `A display name can be at most ${MAX_DISPLAY_NAME_LENGTH} characters.`,
       },
+      formValues: { displayName: raw },
     });
     return c.html(page, 400);
   }
@@ -697,10 +681,26 @@ app.post("/settings/username", async (c) => {
   const requested = typeof form.username === "string" ? form.username.trim().toLowerCase() : "";
   if (requested === user.username) return c.redirect("/settings#account", 302);
 
-  const refuse = async (message: string, status: 400 | 403 | 409) => {
-    const page = await renderSettings(c, user, telemetryOptOut, logger, {
-      notice: { kind: "error", message },
-    });
+  // A 403 is about the account (it owns projects), so it is a page notice; a
+  // 400 or 409 is about the name typed (malformed, taken), so it goes under
+  // the field with the name left in it to correct.
+  const refuse = async (
+    message: string,
+    status: 400 | 403 | 409,
+    about: "name" | "account" = status === 403 ? "account" : "name",
+  ) => {
+    const page = await renderSettings(
+      c,
+      user,
+      telemetryOptOut,
+      logger,
+      about === "account"
+        ? { notice: { kind: "error", message } }
+        : {
+            fieldError: { field: "username", message },
+            formValues: { username: requested },
+          },
+    );
     return c.html(page, status);
   };
 
@@ -791,6 +791,7 @@ app.post("/settings/username", async (c) => {
     return refuse(
       "A project was created under your account while the username was changing, so the change was undone.",
       409,
+      "account",
     );
   }
 
@@ -808,10 +809,10 @@ function parseTokenForm(
   form: Record<string, string | File>,
 ):
   | { name: string; scope: ApiTokenScope; expiresInDays?: number; binding: BindingRequest }
-  | { error: string } {
+  | { error: string; field?: SettingsField } {
   const rawName = typeof form.name === "string" ? form.name.trim() : "";
   if (rawName.length === 0 || rawName.length > 100) {
-    return { error: "Give the token a name of 1 to 100 characters." };
+    return { error: "Give the token a name of 1 to 100 characters.", field: "tokenName" };
   }
 
   const rawScope = typeof form.scope === "string" ? form.scope : "read";
@@ -840,9 +841,24 @@ function parseTokenForm(
   ) {
     return {
       error: `Expiry must be a whole number of days between ${MIN_TOKEN_EXPIRY_DAYS} and ${MAX_TOKEN_EXPIRY_DAYS}, or blank for no expiry.`,
+      field: "tokenExpiry",
     };
   }
   return { name: rawName, scope: rawScope, expiresInDays, binding };
+}
+
+/** The token form's fields as submitted, for refilling it after a refusal. */
+function tokenFormValues(form: Record<string, string | File>): SettingsFormValues {
+  const text = (value: string | File | undefined) =>
+    typeof value === "string" ? value : undefined;
+  const entries: Array<[keyof SettingsFormValues, string | undefined]> = [
+    ["tokenName", text(form.name)],
+    ["tokenScope", text(form.scope)],
+    ["tokenProject", text(form.project)],
+    ["tokenOrg", text(form.org)],
+    ["tokenExpiry", text(form.expiresInDays)],
+  ];
+  return Object.fromEntries(entries.filter(([, value]) => value !== undefined));
 }
 
 // POST /settings/tokens — Mint a named API token; renders the plaintext once
@@ -852,11 +868,22 @@ app.post("/settings/tokens", async (c) => {
   if ("response" in access) return access.response;
   const user = access.user;
 
-  const parsed = parseTokenForm(await c.req.parseBody());
+  const form = await c.req.parseBody();
+  // Every refusal below re-renders the form with ALL of this, not just the
+  // field at fault: see `SettingsFormValues` for why scope and binding matter.
+  const formValues = tokenFormValues(form);
+  const parsed = parseTokenForm(form);
   if ("error" in parsed) {
-    const page = await renderSettings(c, user, access.telemetryOptOut, logger, {
-      notice: { kind: "error", message: parsed.error },
-    });
+    // A bad scope or binding has no field-level slot; it stays a page notice.
+    const page = await renderSettings(
+      c,
+      user,
+      access.telemetryOptOut,
+      logger,
+      parsed.field === undefined
+        ? { notice: { kind: "error", message: parsed.error }, formValues }
+        : { fieldError: { field: parsed.field, message: parsed.error }, formValues },
+    );
     return c.html(page, 400);
   }
 
@@ -885,6 +912,7 @@ app.post("/settings/tokens", async (c) => {
               ? "No project or organization you can access matches that name."
               : resolvedBinding.error.message,
       },
+      formValues,
     });
     return c.html(page, status);
   }
@@ -911,6 +939,7 @@ app.post("/settings/tokens", async (c) => {
         kind: "error",
         message: status === 500 ? "Could not create the token." : createResult.error.message,
       },
+      formValues,
     });
     return c.html(page, status);
   }
@@ -1148,7 +1177,13 @@ app.post("/settings/agents", async (c) => {
 
   const form = await c.req.parseBody();
   const name = typeof form.name === "string" ? form.name.trim().slice(0, 100) : "";
-  if (!name) return c.html(errorPage(400, "Agent name is required.", user), 400);
+  if (!name) {
+    const page = await renderSettings(c, user, telemetryOptOut, logger, {
+      fieldError: { field: "agentName", message: "Give the agent a name." },
+      ...(typeof form.model === "string" ? { formValues: { agentModel: form.model } } : {}),
+    });
+    return c.html(page, 400);
+  }
   const model =
     typeof form.model === "string" && form.model.trim()
       ? form.model.trim().slice(0, 100)
@@ -2308,30 +2343,13 @@ app.get("/:namespace/:slug/webhooks", async (c) => {
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, userResult), 404);
   }
 
-  const webhooksResult = await listWebhooks(c.env.DB, logger, project.id);
-  if (!webhooksResult.success) {
-    logger.error("Failed to list webhooks", webhooksResult.error);
+  // Always a fresh form: a refused "Add webhook" is re-rendered by its POST
+  // handler, never prefilled from this URL (see routes/form-pages.tsx).
+  const page = await renderWebhooksPage(c, logger, project, SUBSCRIBABLE_EVENTS);
+  if ("error" in page) {
     return c.html(errorPage(500, "Error loading webhooks. Please try again.", userResult), 500);
   }
-
-  const webhooks = await Promise.all(
-    // Strip the signing secret before it reaches the HTML — it is shown once on
-    // creation via the JSON API and must never render in the management page.
-    webhooksResult.data.map(async ({ secret: _secret, ...webhook }) => {
-      const deliveriesResult = await listDeliveries(c.env.DB, logger, webhook.id, 5);
-      return { webhook, deliveries: deliveriesResult.success ? deliveriesResult.data : [] };
-    }),
-  );
-
-  return c.html(
-    <WebhooksPage
-      project={projectRef(project)}
-      webhooks={webhooks}
-      subscribableEvents={SUBSCRIBABLE_EVENTS}
-      user={userResult}
-      nonce={c.get("cspNonce") ?? ""}
-    />,
-  );
+  return page;
 });
 
 // GET /:namespace/:slug/workspaces — Workspaces list (namespace format)
@@ -2606,7 +2624,8 @@ app.get("/:namespace/:slug/settings", async (c) => {
   }
   // The secret forms post to the API router and come back here with the reason
   // as a fixed code; anything not in that closed set resolves to no message.
-  const secretError = secretErrorMessage(c.req.query("secretError"));
+  const secretErrorCode = c.req.query("secretError");
+  const secretError = secretErrorMessage(secretErrorCode);
 
   return c.html(
     <ProjectSettingsPage
@@ -2620,6 +2639,9 @@ app.get("/:namespace/:slug/settings", async (c) => {
       secrets={secretsResult?.success ? secretsResult.data : []}
       secretsUnavailable={secretsResult !== null && !secretsResult.success}
       {...(secretError !== undefined ? { secretError } : {})}
+      secretErrorField={
+        secretErrorCode === "name" || secretErrorCode === "value" ? secretErrorCode : undefined
+      }
       user={userResult}
     />,
   );

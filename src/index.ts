@@ -19,7 +19,7 @@ import { handleEventQueue } from "./queue/event-consumer";
 import type { EventQueueMessage } from "./queue/events";
 import { handleImportQueue } from "./queue/import-queue";
 import { agentsRouter } from "./routes/agents";
-import { auditRouter } from "./routes/audit";
+import { auditRouter, orgAuditRouter } from "./routes/audit";
 import { authRouter } from "./routes/auth";
 import { backfillRouter } from "./routes/backfill";
 import { backupRouter } from "./routes/backup";
@@ -268,6 +268,8 @@ app.route("/api/orgs", orgsRouter);
 app.route("/api/orgs", orgSsoRouter);
 // Org security policy (/api/orgs/:slug/security) — require a second factor (#256).
 app.route("/api/orgs", orgSecurityRouter);
+// Org audit log read + NDJSON export (/api/orgs/:slug/audit) — org admins only (#255).
+app.route("/api/orgs", orgAuditRouter);
 app.route("/api", syncRouter);
 app.route("/api", syncManagementRouter);
 app.route("/api/bulk-import", bulkImportRouter);

@@ -793,6 +793,15 @@ async function resolveOrgOwnership(
   if (successor) {
     await db.prepare("UPDATE orgs SET owner_id = ? WHERE id = ?").bind(successor, org.id).run();
     logger.info("Promoted org successor during account erasure", { orgId: org.id, successor });
+    // The erased owner is not named: their id is about to be anonymized, and
+    // `previousOwner` in a detail blob would survive that rewrite.
+    await recordAudit(db, logger, {
+      action: "org.owner_transferred",
+      actorType: "system",
+      subject: org.id,
+      orgId: org.id,
+      detail: { via: "account.deleted", newOwnerId: successor },
+    });
     return;
   }
 
@@ -852,6 +861,7 @@ async function resolveOrgOwnership(
       action: "sso.connection.deleted",
       actorType: "system",
       subject: org.id,
+      orgId: org.id,
       detail: {
         via: "org.deleted",
         orgId: org.id,
@@ -894,6 +904,15 @@ async function resolveOrgOwnership(
     return;
   }
   await db.prepare("DELETE FROM orgs WHERE id = ?").bind(org.id).run();
+  // The org's audit rows outlive it (the trail is append-only); this is the
+  // last one, so instance admins can see why the org's history stops.
+  await recordAudit(db, logger, {
+    action: "org.deleted",
+    actorType: "system",
+    subject: org.id,
+    orgId: org.id,
+    detail: { via: "account.deleted" },
+  });
 }
 
 /** Capture + cascade + verify one owned project, prefixing any residuals. */

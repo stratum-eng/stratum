@@ -483,9 +483,19 @@ describe("passkeys as a second factor", () => {
       );
       expect(res.status).toBe(400);
       expect((await jsonOf(res)).error).toMatch(/counter/i);
-      expect(auditActions(raw)).toContain("second_factor.failed");
       const stored = await getPasskeyByCredentialId(db, logger, USER, authn.credentialId);
       expect(stored.success && stored.data.counter).toBe(11);
+      // Audited as a failed authentication, against the passkey (#255 path).
+      const failure = raw
+        .prepare("SELECT actor_id, subject, detail FROM audit_log WHERE action = 'auth.failed'")
+        .get() as { actor_id: string; subject: string; detail: string };
+      expect(failure.actor_id).toBe(USER);
+      expect(failure.subject).toBe(stored.success ? stored.data.id : "");
+      expect(JSON.parse(failure.detail)).toMatchObject({
+        method: "passkey",
+        reason: "counter_regression",
+        stage: "second_factor",
+      });
     });
 
     it("accepts a recovery code exactly once", async () => {
@@ -580,6 +590,16 @@ describe("passkeys as a second factor", () => {
       }
       expect(location).toBe("/auth/login?error=second_factor_failed");
       expect((await req("/auth/2fa", { cookie: pending })).status).toBe(302);
+      // Five failures inside the dedupe window are ONE audit row: failed
+      // second factors share the flood control of every failed sign-in.
+      const rows = raw
+        .prepare("SELECT detail FROM audit_log WHERE action = 'auth.failed' AND subject = ?")
+        .all(USER) as { detail: string }[];
+      expect(rows).toHaveLength(1);
+      expect(JSON.parse(rows[0]?.detail ?? "{}")).toMatchObject({
+        method: "recovery_code",
+        reason: "invalid_code",
+      });
     });
 
     it("rejects cross-site POSTs to the second-factor endpoints", async () => {
@@ -763,6 +783,12 @@ describe("passkeys as a second factor", () => {
       expect(res.status).toBe(200);
       expect(await jsonOf(res)).toEqual({ requireSecondFactor: true });
       expect(auditActions(raw)).toContain("org.second_factor_policy_changed");
+      // Org-scoped, so it shows up in the org's own audit log (#255).
+      expect(
+        raw
+          .prepare("SELECT org_id FROM audit_log WHERE action = 'org.second_factor_policy_changed'")
+          .get(),
+      ).toEqual({ org_id: "org_1" });
       const read = await req("/api/orgs/acme/security", { cookie: admin });
       expect(await jsonOf(read)).toEqual({ requireSecondFactor: true });
     });

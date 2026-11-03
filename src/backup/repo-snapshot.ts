@@ -15,14 +15,6 @@ import { type Result, err, ok } from "../utils/result";
 
 export const DEFAULT_MAX_BACKUP_BYTES = 128 * 1024 * 1024;
 
-/**
- * How many dropped tag names the tag-only-repo warning will name inline.
- * The count is always reported in full; only the sample is bounded, so a
- * repo with a very large tag set cannot produce a log entry too big to be
- * recorded at all.
- */
-const MAX_LOGGED_TAG_NAMES = 50;
-
 /** A tag ref captured in a snapshot: refs/tags/<name> → oid (the annotated tag
  * object for annotated tags, the target itself for lightweight ones). */
 export interface TagRefRecord {
@@ -42,7 +34,12 @@ export interface RepoManifest {
   /** Full identity so restore can recreate the correctly-named Artifacts repo
    * without depending on KV (which is backed up separately). */
   project: ProjectEntry;
-  tipSha: string;
+  /** The default branch's tip commit. OPTIONAL since #251: a repository whose
+   * only refs are tags (unborn HEAD) snapshots with no tip, and restore then
+   * writes no default-branch ref rather than fabricating one. Manifests written
+   * before #251 always carry it and read back unchanged. A manifest with
+   * neither a tip nor any tag is invalid. */
+  tipSha?: string;
   objectCount: number;
   byteCount: number;
   capturedAt: string;
@@ -80,7 +77,8 @@ export type SnapshotResult =
 
 interface WalkResult {
   objects: { oid: string; bytes: Uint8Array }[];
-  tipSha: string;
+  /** Absent when HEAD is unborn and the objects come from tags alone (#251). */
+  tipSha?: string;
   tags: TagRefRecord[];
 }
 
@@ -110,58 +108,39 @@ export async function walkRepoObjects(
   maxBytes: number,
   logger: Logger,
 ): Promise<Result<WalkResult | { tooLarge: true } | { empty: true }, AppError>> {
-  // A repo with no commits has no HEAD ref, so git.log throws a NotFoundError:
-  // treat that as an empty repo (skip). Any OTHER error is a real read failure
-  // (transient or a corrupt object) and must surface as a failure, not be
-  // silently mislabeled "empty" — which would advance the coverage cursor and
-  // never retry the repo.
-  let log: Awaited<ReturnType<typeof git.log>>;
+  // A repo with no commits has no HEAD ref, so git.log throws a NotFoundError.
+  // That is NOT yet "empty": tag refs can still point at objects reached no
+  // other way (an unborn HEAD in a tag-only repo, #251), so the walk carries on
+  // to the tags and the repo is reported empty only if none of them resolve
+  // either. Any OTHER error is a real read failure (transient or a corrupt
+  // object) and must surface as a failure, not be silently mislabeled "empty" —
+  // which would advance the coverage cursor and never retry the repo.
+  let log: Awaited<ReturnType<typeof git.log>> = [];
   try {
     log = await git.log({ fs, dir, depth: -1 });
   } catch (error) {
-    if (error instanceof Error && error.name === "NotFoundError") {
-      // No HEAD history, but the repo can still have tag refs pointing at
-      // objects reached no other way (unborn HEAD, tag-only repo — #251).
-      // The full fix (a backup-format migration: optional tipSha, restore
-      // without refs/heads/main) is a product decision tracked separately;
-      // until then this loses those objects, so make the loss explicit and
-      // loud instead of a silent "empty" debug line.
-      let tagNames: string[] = [];
-      try {
-        tagNames = await git.listTags({ fs, dir });
-      } catch {
-        // Unreadable ref store on an already-unborn HEAD: nothing more to
-        // report than "no commits", so fall through to the debug case below.
-      }
-      if (tagNames.length > 0) {
-        // Name the tags, but cap the list: this warning exists to make the
-        // loss visible, and a repo with thousands of tags would push the line
-        // past the log pipeline's per-entry limit and lose the whole thing --
-        // the failure mode the warning is here to prevent. `tagCount` is the
-        // number that always survives; `tags` is the sample.
-        const sorted = [...tagNames].sort();
-        logger.warn(
-          "Repo has no commits (unborn HEAD) but has tag refs; skipping as empty and DROPPING these tags — tag-only backup is not yet supported (#251)",
-          {
-            dir,
-            tagCount: sorted.length,
-            tags: sorted.slice(0, MAX_LOGGED_TAG_NAMES),
-            ...(sorted.length > MAX_LOGGED_TAG_NAMES ? { tagsTruncated: true } : {}),
-          },
-        );
-      } else {
-        logger.debug("Repo has no commits; skipping as empty", { dir });
-      }
-      return ok({ empty: true });
+    if (!(error instanceof Error && error.name === "NotFoundError")) {
+      logger.error("Failed to read repo log", error instanceof Error ? error : undefined, { dir });
+      return err(new AppError("Failed to read repo log", "GIT_ERROR", 500));
     }
-    logger.error("Failed to read repo log", error instanceof Error ? error : undefined, { dir });
-    return err(new AppError("Failed to read repo log", "GIT_ERROR", 500));
+    // NotFoundError also comes from a MISSING COMMIT OBJECT while HEAD still
+    // resolves (a gap in the history). Only a HEAD that does not resolve is
+    // unborn; anything else would be recorded as a tag-only snapshot that
+    // silently drops the default branch, and reported as success.
+    const headResolves = await git
+      .resolveRef({ fs, dir, ref: "HEAD" })
+      .then(() => true)
+      .catch(() => false);
+    if (headResolves) {
+      logger.error("Repo log is missing a commit while HEAD resolves", error, { dir });
+      return err(new AppError("Failed to read repo log: missing commit", "GIT_ERROR", 500));
+    }
   }
-  if (log.length === 0) return ok({ empty: true });
 
   try {
+    // Undefined for an unborn HEAD: the snapshot then carries tags only, and
+    // its manifest has no tip (restore writes no default branch for it).
     const tipSha = log[0]?.oid;
-    if (!tipSha) return ok({ empty: true });
 
     const seen = new Set<string>();
     const objects: { oid: string; bytes: Uint8Array }[] = [];
@@ -286,7 +265,9 @@ export async function walkRepoObjects(
       }
     };
 
-    if (!(await addCommitHistory(tipSha, log))) return ok({ tooLarge: true });
+    if (tipSha !== undefined && !(await addCommitHistory(tipSha, log))) {
+      return ok({ tooLarge: true });
+    }
 
     // Tags: walk every refs/tags/* tip too. A tag whose objects are missing
     // locally (e.g. the clone could not deliver them) is SKIPPED with a warning
@@ -362,13 +343,29 @@ export async function walkRepoObjects(
       }
     }
 
+    if (tipSha === undefined && tags.length === 0) {
+      // Neither HEAD history nor any resolvable tag contributed an object.
+      // Unresolvable tags were already warned about individually above.
+      logger.debug("Repo has no commits and no resolvable tags; skipping as empty", {
+        dir,
+        tagRefCount: tagNames.length,
+      });
+      return ok({ empty: true });
+    }
+    if (tipSha === undefined) {
+      logger.info("Repo has no HEAD history; snapshotting its tags only (#251)", {
+        dir,
+        tagCount: tags.length,
+      });
+    }
+
     logger.debug("Walked repo objects", {
       tipSha,
       objectCount: objects.length,
       byteCount,
       tagCount: tags.length,
     });
-    return ok({ objects, tipSha, tags });
+    return ok({ objects, ...(tipSha !== undefined ? { tipSha } : {}), tags });
   } catch (error) {
     logger.error("Failed to walk repo objects", error instanceof Error ? error : undefined);
     return err(new AppError("Failed to walk repo objects", "GIT_ERROR", 500));
@@ -405,7 +402,7 @@ export function buildSnapshot(
     manifest: {
       projectId: project.id,
       project,
-      tipSha: walk.tipSha,
+      ...(walk.tipSha !== undefined ? { tipSha: walk.tipSha } : {}),
       objectCount: walk.objects.length,
       byteCount,
       capturedAt,
@@ -457,6 +454,13 @@ export async function snapshotRepo(
   // bounded/streaming fetch that aborts mid-clone would be the real fix (tracked
   // as a follow-up); for now MAX_BACKUP_BYTES should be set well under the
   // Worker's memory budget so a normal repo never approaches it.
+  //
+  // The clone targets the default branch, so a remote WITHOUT one fails here
+  // and the run records an error for it. That is deliberate and left as-is
+  // (#251): every path that creates repository content establishes the default
+  // branch first, so a tag-only remote is not reachable in practice. The
+  // snapshot format and `walkRepoObjects` still handle a tag-only repository
+  // correctly, so widening this clone later needs no format change.
   const clone = await cloneRepo(project.remote, token.data, logger, {
     fullHistory: true,
     ref: projectDefaultBranch(project),
