@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AppError } from "../src/utils/errors";
 import { createLogger } from "../src/utils/logger";
 
 const logger = createLogger({ component: "test" });
@@ -28,11 +29,16 @@ vi.mock("../src/storage/changes", () => ({
   }),
 }));
 
+vi.mock("../src/storage/change-reviews", () => ({
+  applyExternalChangesRequested: vi.fn().mockResolvedValue({ success: true, data: "evaluating" }),
+}));
+
 vi.mock("../src/storage/state", () => ({
   getWorkspace: vi.fn(),
 }));
 
 import { handlePullRequest, handlePullRequestReview } from "../src/github/webhooks";
+import { applyExternalChangesRequested } from "../src/storage/change-reviews";
 import {
   createChange,
   getChangeByGitHubBranch,
@@ -351,6 +357,24 @@ describe("handlePullRequestReview", () => {
     await handlePullRequestReview(env, makeReviewPayload("changes_requested"), logger);
 
     expect(updateChangeStatus).toHaveBeenCalledWith(env.DB, logger, CHANGE.id, "needs_changes");
+  });
+
+  it("changes_requested during a pending evaluation is held for the run, not dropped", async () => {
+    const env = makeEnv();
+    vi.mocked(updateChangeStatus).mockResolvedValueOnce({
+      success: false,
+      error: new AppError("Evaluation pending", "EVALUATION_PENDING", 409),
+    });
+    await handlePullRequestReview(env, makeReviewPayload("changes_requested"), logger);
+
+    expect(applyExternalChangesRequested).toHaveBeenCalledWith(env.DB, logger, CHANGE.id);
+  });
+
+  it("changes_requested applied directly does not take the held path", async () => {
+    const env = makeEnv();
+    await handlePullRequestReview(env, makeReviewPayload("changes_requested"), logger);
+
+    expect(applyExternalChangesRequested).not.toHaveBeenCalled();
   });
 
   it("dismissed makes no status change", async () => {

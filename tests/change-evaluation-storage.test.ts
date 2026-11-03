@@ -6,7 +6,12 @@ import {
   failEvaluationRun,
   finalizeEvaluationRun,
 } from "../src/storage/change-evaluation";
-import { listReviews, submitApproval, submitChangesRequested } from "../src/storage/change-reviews";
+import {
+  applyExternalChangesRequested,
+  listReviews,
+  submitApproval,
+  submitChangesRequested,
+} from "../src/storage/change-reviews";
 import {
   createChange,
   getChange,
@@ -337,6 +342,34 @@ describe("review verdicts against a pending run (#412)", () => {
     expect(read.success && read.data.status).toBe("needs_changes");
     // The verdict itself is still recorded.
     expect(read.success && read.data.evalPassed).toBe(true);
+  });
+
+  it("holds a GitHub changes-requested review across a pending run, like a Stratum one", async () => {
+    const { db } = makeSqliteD1();
+    const change = await queuedChange(db);
+
+    const held = await applyExternalChangesRequested(db, logger, change.id);
+    expect(held.success && held.data).toBe("evaluating");
+
+    const done = await finalizeEvaluationRun(db, logger, {
+      changeId: change.id,
+      runId: "erun_first",
+      ...passing,
+    });
+    expect(done.success && done.data.status).toBe("needs_changes");
+  });
+
+  it("moves a settled change to needs_changes on a GitHub changes-requested review", async () => {
+    const { db } = makeSqliteD1();
+    const change = await queuedChange(db);
+    await finalizeEvaluationRun(db, logger, {
+      changeId: change.id,
+      runId: "erun_first",
+      ...passing,
+    });
+
+    const held = await applyExternalChangesRequested(db, logger, change.id);
+    expect(held.success && held.data).toBe("needs_changes");
   });
 
   it("lets a later re-evaluation pass, as a re-evaluation after a request always has", async () => {

@@ -4,6 +4,7 @@
  */
 
 import { Hono } from "hono";
+import { applyExternalChangesRequested } from "../storage/change-reviews";
 import {
   createChange,
   getChangeByGitHubBranch,
@@ -356,9 +357,18 @@ export async function handlePullRequestReview(
   }
 
   const marked = await updateChangeStatus(env.DB, logger, existing.id, "needs_changes");
+  if (!marked.success && marked.error.code === "EVALUATION_PENDING") {
+    // A pending run owns the status. Flag the change instead, so the run's
+    // verdict lands on needs_changes rather than dropping this signal.
+    const held = await applyExternalChangesRequested(env.DB, logger, existing.id);
+    if (!held.success) return;
+    logger.info("GitHub changes-requested review held for the pending evaluation", {
+      changeId: existing.id,
+      status: held.data,
+    });
+    return;
+  }
   if (!marked.success) {
-    // EVALUATION_PENDING included: a pending run owns the status, and this
-    // signal has no reviewer row for the run to honour when it finishes.
     logger.warn("GitHub changes-requested review not applied", {
       changeId: existing.id,
       code: marked.error.code,

@@ -655,7 +655,7 @@ app.post("/changes/:id/merge", async (c) => {
   if (lacksEvaluatedRevision(change)) {
     return c.json(
       {
-        error: "This change has no evaluated revision; re-evaluate it before force-merging",
+        error: "This change has no evaluated revision; re-evaluate it before merging",
         code: "EVALUATION_MISSING",
       },
       409,

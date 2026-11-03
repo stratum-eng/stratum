@@ -385,6 +385,23 @@ describe("asynchronous evaluation (#412)", () => {
     expect(((await res.json()) as { code: string }).code).toBe("EVALUATION_PENDING");
   });
 
+  it("fails an inline run closed when the evaluation throws, rather than leaving it evaluating", async () => {
+    send.mockRejectedValueOnce(new Error("queue unavailable"));
+    vi.mocked(getDiffBetweenRepos).mockRejectedValueOnce(new Error("artifacts blew up"));
+
+    const res = await makeApp().fetch(
+      json("POST", "/api/projects/@owner%2Frepo/changes", { workspace: "ws" }),
+      env,
+    );
+
+    expect(res.status).toBe(500);
+    const message = ((await res.json()) as { error: string }).error;
+    const changeId = /change (chg_\w+)/.exec(message)?.[1];
+    expect(changeId).toBeDefined();
+    const change = await getChange(env.DB, logger, changeId as string);
+    expect(change.success && change.data.status).toBe("needs_changes");
+  });
+
   it("runs inline when the queue send fails, rather than stranding the change", async () => {
     send.mockRejectedValueOnce(new Error("queue unavailable"));
 

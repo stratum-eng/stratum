@@ -360,7 +360,16 @@ export async function dispatchEvaluationRun(
       );
     }
   }
-  const result = await runEvaluationJob(env, logger, message, options);
+  let result: Result<EvaluationJobOutcome, EvaluationJobError>;
+  try {
+    result = await runEvaluationJob(env, logger, message, options);
+  } catch (error) {
+    // `runEvaluationJob` returns a Result, but a runtime fault below it must
+    // still fail the run closed: no redelivery will come for an inline run.
+    const cause = error instanceof Error ? error : new Error(String(error));
+    logger.error("Inline evaluation threw", cause, message);
+    result = err(transient(cause));
+  }
   if (!result.success) {
     await failEvaluationJob(env, logger, {
       ...message,

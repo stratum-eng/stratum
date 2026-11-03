@@ -337,6 +337,41 @@ const CHANGES_REQUESTABLE_STATUSES: readonly Change["status"][] = [
   "approved",
 ];
 
+/**
+ * Apply a changes-requested signal that carries no Stratum reviewer row — a
+ * GitHub "changes requested" review (#412). Same status rule as
+ * {@link submitChangesRequested}: a change still `evaluating` keeps its status
+ * and is flagged, so the run's verdict lands on `needs_changes` rather than
+ * erasing the signal; any other requestable status moves to `needs_changes`.
+ * Returns the resulting status, or undefined when the change was in no
+ * requestable status.
+ */
+export async function applyExternalChangesRequested(
+  db: D1Database,
+  logger: Logger,
+  changeId: string,
+): Promise<Result<Change["status"] | undefined, AppError>> {
+  const placeholders = CHANGES_REQUESTABLE_STATUSES.map(() => "?").join(", ");
+  try {
+    // SET expressions all read the pre-update row, so both CASEs see the
+    // same status.
+    const row = await db
+      .prepare(
+        `UPDATE changes SET
+           changes_requested_during_eval = CASE WHEN status = 'evaluating' THEN 1 ELSE changes_requested_during_eval END,
+           status = CASE WHEN status = 'evaluating' THEN status ELSE 'needs_changes' END
+         WHERE id = ? AND status IN (${placeholders}) RETURNING status`,
+      )
+      .bind(changeId, ...CHANGES_REQUESTABLE_STATUSES)
+      .first<{ status: Change["status"] }>();
+    return ok(row?.status);
+  } catch (error) {
+    const appError = toAppError(error, "applyExternalChangesRequested", { changeId });
+    logger.error("Failed to apply an external request for changes", appError, { changeId });
+    return err(appError);
+  }
+}
+
 const UPSERT_VERDICT = `INSERT INTO change_reviews (id, change_id, reviewer_id, verdict, comment, created_at)
   SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM changes WHERE %GUARD%)
   ON CONFLICT(change_id, reviewer_id)
