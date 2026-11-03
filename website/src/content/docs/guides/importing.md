@@ -44,7 +44,8 @@ curl -X POST "$STRATUM_HOST/api/projects/@acme/repo/import" \
 ```
 
 The target is either your own namespace or an organization where you have
-**write** access (a write or admin role, or a team grant). The project is owned
+**write** access: you are an org owner or admin, or a member of a team with
+`write` or `admin` permission (a `read` team does not count). The project is owned
 by the organization, exactly as if it had been created with
 `POST /api/projects` and `"org": "acme"`. Anything else — an organization you
 are not a member of, one where you are read-only, one that does not exist — is

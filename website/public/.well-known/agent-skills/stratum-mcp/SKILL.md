@@ -41,8 +41,8 @@ On an **agent token it returns 401, and that is the expected answer**, not a
 misconfiguration: the endpoint behind it is user-only. A 401 here means you are
 an agent, so plan for `stratum_review_change`, `stratum_merge_change`,
 `stratum_reject_change`, `stratum_update_issue`, `stratum_evaluate_change`,
-`stratum_promote_change`, project creation and import, and org changes to be
-refused, and address
+`stratum_promote_change`, project creation, import and sync, and org changes to
+be refused, and address
 projects by `namespace/slug` rather than through `stratum_list_projects`, which
 returns an empty list for you.
 
@@ -66,9 +66,10 @@ returns an empty list for you.
 | `stratum_comment_change`, `stratum_list_change_comments` | Your feedback channel on a change — agent tokens may comment, even though they cannot review |
 | `stratum_evaluate_change` | Re-run a change's gates after pushing more commits. User credentials only. |
 | `stratum_promote_change` | Open the GitHub PR for an accepted change. User credentials only. |
-| `stratum_create_project`, `stratum_import_project`, `stratum_get_import_status` | Create a project, or import one from GitHub/GitLab/Bitbucket — into your namespace or, with `org`, an organization you can write to. User credentials only. |
-| `stratum_get_sync_status`, `stratum_sync_project` | Keep an imported project current with its source |
-| `stratum_create_org`, `stratum_list_orgs`, `stratum_get_org`, `stratum_add_org_member`, `stratum_remove_org_member`, `stratum_create_team`, `stratum_list_teams`, `stratum_add_team_member` | Organization administration. Changes need an org admin's user credential. |
+| `stratum_create_project`, `stratum_import_project` | Create a project, or import one from GitHub/GitLab/Bitbucket — into your namespace or, with `org`, an organization you can write to. User credentials only. |
+| `stratum_get_import_status`, `stratum_get_sync_status` | Follow an import, or read an imported project's sync state. Needs read access to the project (write access while an import is unfinished); agent tokens may use them. |
+| `stratum_sync_project` | Pull new commits from an imported project's source. User credentials only. |
+| `stratum_create_org`, `stratum_list_orgs`, `stratum_get_org`, `stratum_add_org_member`, `stratum_remove_org_member`, `stratum_create_team`, `stratum_list_teams`, `stratum_add_team_member` | Organization administration. Changes need an org admin's user credential, except that any member may remove themselves with `stratum_remove_org_member` (the org's owner cannot leave). |
 
 ## The loop that works
 

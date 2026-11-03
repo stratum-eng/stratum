@@ -539,6 +539,7 @@ function describeScope(scope: string): string[] {
     lines.push("Create workspaces, commit files, and open changes for evaluation");
     lines.push("Merge, reject, review, comment on and promote changes, and manage issues");
     lines.push("Create organizations and manage their members and teams, where you are an admin");
+    lines.push("Remove you from an organization you belong to, even where you are not an admin");
   }
   return lines;
 }
