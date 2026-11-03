@@ -219,20 +219,10 @@ function wantsJson(c: { req: { header: (name: string) => string | undefined } })
 }
 
 /** The settings page a secret form came from, anchored at its own section. */
-function secretsSettingsUrl(project: ProjectEntry, error?: SecretErrorCode, name?: string): string {
+function secretsSettingsUrl(project: ProjectEntry, error?: SecretErrorCode): string {
   const base = `/${project.namespace}/${project.slug}/settings`;
-  if (error === undefined) return `${base}#secrets`;
-  const params = new URLSearchParams({ secretError: error });
-  // The NAME comes back so the form can be refilled; the value never does —
-  // it would land in browser history, logs and any Referer.
-  if (name !== undefined && name !== "" && name.length <= MAX_ECHOED_SECRET_NAME) {
-    params.set("secretName", name);
-  }
-  return `${base}?${params.toString()}#secrets`;
+  return error === undefined ? `${base}#secrets` : `${base}?secretError=${error}#secrets`;
 }
-
-/** Longest secret name echoed back into the form; longer input is dropped. */
-const MAX_ECHOED_SECRET_NAME = 200;
 
 /**
  * Stores one secret and audits the write. Shared by the PUT route and its
@@ -400,12 +390,12 @@ projectApp.post("/:namespace/:slug/secrets", async (c) => {
   if (!SECRET_NAME_PATTERN.test(name)) {
     return json
       ? badRequest(SECRET_ERRORS.name)
-      : c.redirect(secretsSettingsUrl(access.project, "name", name), 302);
+      : c.redirect(secretsSettingsUrl(access.project, "name"), 302);
   }
   if (value.length === 0) {
     return json
       ? badRequest(SECRET_ERRORS.value)
-      : c.redirect(secretsSettingsUrl(access.project, "value", name), 302);
+      : c.redirect(secretsSettingsUrl(access.project, "value"), 302);
   }
 
   const result = await writeSecret(c.env, logger, access, name, value);

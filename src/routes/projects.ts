@@ -82,7 +82,7 @@ import {
   NEW_PROJECT_ERROR_NAME_TAKEN,
   NEW_PROJECT_ERROR_PRIVATE_LIMIT,
   type NewProjectFormValues,
-  newProjectErrorUrl,
+  newProjectError,
 } from "../ui/pages/new-project";
 import {
   type BindingContext,
@@ -121,6 +121,7 @@ import {
   slugify,
   validateCloneDepth,
 } from "../utils/validation";
+import { renderNewProjectPage } from "./form-pages";
 
 const DEFAULT_FILES: Record<string, string> = {
   "README.md": "# My Project\n\nCreated with Stratum.\n",
@@ -181,16 +182,26 @@ app.post("/", async (c) => {
     body = { name: form.name, visibility: form.visibility, seed: form.seed, org: form.org };
   }
 
-  // A browser submitting the new-project form lands back on the form with the
-  // reason under the field it is about, not on a raw JSON 400. Like the gauge
-  // redirect below, the query carries a fixed code, never the reason text.
+  // A browser submitting the new-project form gets the form back with the
+  // reason under the field it is about and its own values refilled, not a raw
+  // JSON 400. Rendered from this request rather than redirected with the
+  // values in the query, which would let a crafted link prefill the form (see
+  // routes/form-pages.tsx).
   const isForm = !contentType.includes("application/json");
   const formName = typeof body.name === "string" ? body.name : undefined;
-  const backToForm = (code: string) =>
-    c.redirect(newProjectErrorUrl(code, { mode: "blank", name: formName }), 303);
+  const backToForm = (code: string, status: 400 | 409) =>
+    renderNewProjectPage(
+      c,
+      logger,
+      {
+        error: newProjectError(code),
+        values: { mode: "blank", ...(formName !== undefined ? { name: formName } : {}) },
+      },
+      status,
+    );
 
   if (!isValidSlug(body.name)) {
-    if (isForm) return backToForm(NEW_PROJECT_ERROR_INVALID_NAME);
+    if (isForm) return backToForm(NEW_PROJECT_ERROR_INVALID_NAME, 400);
     return badRequest("name must be a 1-64 char alphanumeric slug");
   }
 
@@ -273,7 +284,7 @@ app.post("/", async (c) => {
 
   // Validate slug length after slugification
   if (!isValidSlug(slug)) {
-    if (isForm) return backToForm(NEW_PROJECT_ERROR_INVALID_NAME);
+    if (isForm) return backToForm(NEW_PROJECT_ERROR_INVALID_NAME, 400);
     return badRequest("Slug too long (max 100 characters)");
   }
   const projectId = generateProjectId();
@@ -281,7 +292,7 @@ app.post("/", async (c) => {
   // Check if project already exists
   const existingResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
   if (existingResult.success) {
-    if (isForm) return backToForm(NEW_PROJECT_ERROR_NAME_TAKEN);
+    if (isForm) return backToForm(NEW_PROJECT_ERROR_NAME_TAKEN, 409);
     return badRequest(`Project '${slug}' already exists in your namespace`);
   }
 
@@ -575,9 +586,17 @@ app.post(
       // lock. A refusal starts no import, so it gives the lock back; otherwise
       // the user's corrected resubmission would be refused as "already
       // importing" until the lock's TTL ran out.
-      const refuseToForm = async (code: string, values: NewProjectFormValues) => {
+      //
+      // The form is re-rendered from this request, with its own values, not
+      // redirected with them in the query: a link that prefilled an import URL
+      // could lure someone into importing a repository of the sender's choosing.
+      const refuseToForm = async (
+        code: string,
+        values: NewProjectFormValues,
+        status: 400 | 403 = 400,
+      ) => {
         await releaseImportLock(c.env.STATE, namespace, slug, logger);
-        return c.redirect(newProjectErrorUrl(code, values), 303);
+        return renderNewProjectPage(c, logger, { error: newProjectError(code), values }, status);
       };
       if (!isValidSlug(slug)) {
         if (isForm) {
@@ -764,7 +783,7 @@ app.post(
           waitUntil: getWaitUntil(c),
         });
         if (!gauge.admitted) {
-          if (isForm) return refuseToForm(NEW_PROJECT_ERROR_PRIVATE_LIMIT, formValues);
+          if (isForm) return refuseToForm(NEW_PROJECT_ERROR_PRIVATE_LIMIT, formValues, 403);
           return forbidden(gauge.reason);
         }
         gaugeSubjectId = gauge.gaugeSubjectId;

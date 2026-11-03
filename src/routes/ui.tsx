@@ -71,7 +71,6 @@ import {
   setUserDisplayName,
   setUserTelemetryOptOut,
 } from "../storage/users";
-import { listDeliveries, listWebhooks } from "../storage/webhooks";
 import type { ApiTokenScope, CommitLogEntry, Env, ProjectEntry } from "../types";
 import { getUserNamespace, projectDefaultBranch } from "../types";
 import { parseUnifiedDiff } from "../ui/components/diff-view";
@@ -85,7 +84,7 @@ import { ErrorPage } from "../ui/pages/error";
 import { FileViewerPage } from "../ui/pages/file-viewer";
 import { HomePage } from "../ui/pages/home";
 import { IssueDetailPage, IssuesPage, NewIssuePage } from "../ui/pages/issues";
-import { NewProjectPage, newProjectError, newProjectFormValues } from "../ui/pages/new-project";
+import { NewProjectPage, newProjectError } from "../ui/pages/new-project";
 import { ProjectSettingsPage } from "../ui/pages/project-settings";
 import { RepoPage } from "../ui/pages/repo";
 import {
@@ -100,7 +99,6 @@ import {
 import { SyncPage } from "../ui/pages/sync";
 import { TagsPage } from "../ui/pages/tags";
 import { UsagePage } from "../ui/pages/usage";
-import { WebhooksPage, webhookFormError, webhookFormValues } from "../ui/pages/webhooks";
 import { WorkspacesPage } from "../ui/pages/workspaces";
 import {
   type BindingContext,
@@ -117,6 +115,7 @@ import { createLogger } from "../utils/logger";
 import { type Result, ok } from "../utils/result";
 import { isValidNamespace, isValidSlug } from "../utils/validation";
 import { canManageSecrets, secretErrorMessage } from "./deployments";
+import { getCurrentUser, renderWebhooksPage } from "./form-pages";
 import { DEFAULT_COMMENTS_PAGE, DEFAULT_ISSUES_PAGE } from "./issues";
 import { SUBSCRIBABLE_EVENTS } from "./webhooks";
 
@@ -148,28 +147,6 @@ function stripLogTail(deployment: Deployment, canWrite: boolean): Deployment {
   if (canWrite) return deployment;
   const { logTail: _logTail, ...rest } = deployment;
   return rest;
-}
-
-// Helper to get current user info
-async function getCurrentUser(
-  c: { get: (key: "userId") => string | undefined; env: { DB: D1Database } },
-  logger: ReturnType<typeof createLogger>,
-): Promise<{ id: string; email: string; username: string; displayName?: string } | null> {
-  const userId = c.get("userId");
-  if (!userId) return null;
-  const result = await getUser(c.env.DB, userId, logger);
-  if (!result.success) return null;
-
-  const user = result.data;
-  // Username is always present - enforced by database schema and validation.
-  // The display name rides along so the header shows it on every page, not
-  // only on Settings.
-  return {
-    id: user.id,
-    email: user.email,
-    username: user.username,
-    ...(user.displayName !== undefined ? { displayName: user.displayName } : {}),
-  };
 }
 
 /**
@@ -327,15 +304,10 @@ app.get("/new", async (c) => {
   }
 
   logger.debug("Rendering new project page");
+  // `?error=` selects fixed copy by code (the plan-limit redirect uses it);
+  // nothing else in the query reaches the form. See routes/form-pages.tsx.
   const error = newProjectError(c.req.query("error"));
-  return c.html(
-    <NewProjectPage
-      user={user}
-      nonce={c.get("cspNonce") ?? ""}
-      error={error}
-      values={newProjectFormValues((key) => c.req.query(key))}
-    />,
-  );
+  return c.html(<NewProjectPage user={user} nonce={c.get("cspNonce") ?? ""} error={error} />);
 });
 
 async function loadAgentSummaries(
@@ -2371,41 +2343,13 @@ app.get("/:namespace/:slug/webhooks", async (c) => {
     return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, userResult), 404);
   }
 
-  const webhooksResult = await listWebhooks(c.env.DB, logger, project.id);
-  if (!webhooksResult.success) {
-    logger.error("Failed to list webhooks", webhooksResult.error);
+  // Always a fresh form: a refused "Add webhook" is re-rendered by its POST
+  // handler, never prefilled from this URL (see routes/form-pages.tsx).
+  const page = await renderWebhooksPage(c, logger, project, SUBSCRIBABLE_EVENTS);
+  if ("error" in page) {
     return c.html(errorPage(500, "Error loading webhooks. Please try again.", userResult), 500);
   }
-
-  const webhooks = await Promise.all(
-    // Strip the signing secret before it reaches the HTML — it is shown once on
-    // creation via the JSON API and must never render in the management page.
-    webhooksResult.data.map(async ({ secret: _secret, ...webhook }) => {
-      const deliveriesResult = await listDeliveries(c.env.DB, logger, webhook.id, 5);
-      return { webhook, deliveries: deliveriesResult.success ? deliveriesResult.data : [] };
-    }),
-  );
-
-  const formError = webhookFormError(c.req.query("error"));
-  return c.html(
-    <WebhooksPage
-      project={projectRef(project)}
-      webhooks={webhooks}
-      subscribableEvents={SUBSCRIBABLE_EVENTS}
-      formError={formError}
-      // Refilled only alongside a recognized refusal.
-      formValues={
-        formError !== undefined
-          ? webhookFormValues(
-              (key) => c.req.query(key),
-              (key) => c.req.queries(key),
-            )
-          : undefined
-      }
-      user={userResult}
-      nonce={c.get("cspNonce") ?? ""}
-    />,
-  );
+  return page;
 });
 
 // GET /:namespace/:slug/workspaces — Workspaces list (namespace format)
@@ -2697,12 +2641,6 @@ app.get("/:namespace/:slug/settings", async (c) => {
       {...(secretError !== undefined ? { secretError } : {})}
       secretErrorField={
         secretErrorCode === "name" || secretErrorCode === "value" ? secretErrorCode : undefined
-      }
-      // Only alongside a recognized refusal, and only ever as an input value.
-      secretName={
-        secretError !== undefined && (c.req.query("secretName")?.length ?? 0) <= 200
-          ? c.req.query("secretName")
-          : undefined
       }
       user={userResult}
     />,

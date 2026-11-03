@@ -13,7 +13,7 @@ interface WebhooksPageProps {
   };
   webhooks: Array<{ webhook: Omit<Webhook, "secret">; deliveries: WebhookDelivery[] }>;
   subscribableEvents: string[];
-  /** A refused "Add webhook" submission, resolved from its `?error=` code. */
+  /** A refused "Add webhook" submission, set by the POST that refused it. */
   formError?: WebhookFormError | undefined;
   /** What the refused submission held; absent for a fresh form. */
   formValues?: WebhookFormValues | undefined;
@@ -37,57 +37,22 @@ const WEBHOOK_FORM_ERRORS: Record<WebhookFormField, string> = {
 };
 
 /**
- * Maps a `?error=` code to its copy. The code is the field name and the copy
- * is ours: the query string can select a message but never supply one.
+ * Maps a refused field to its copy. The copy is ours, keyed by field name.
  */
 export function webhookFormError(code: string | undefined): WebhookFormError | undefined {
   if (code !== "url" && code !== "events") return undefined;
   return { field: code, message: WEBHOOK_FORM_ERRORS[code] };
 }
 
-/** What a refused "Add webhook" submission held, to refill the form. */
+/**
+ * What a refused "Add webhook" submission held, to refill the form. Only ever
+ * taken from the refused request's own body — never from a URL, which anyone
+ * could send an admin with their own endpoint in it.
+ */
 export interface WebhookFormValues {
   url?: string | undefined;
   /** The checked event boxes, `*` for "All events". */
   events?: string[] | undefined;
-}
-
-/** Longest URL echoed back into the form; the API's own cap is 2048. */
-const MAX_ECHOED_URL_LENGTH = 2048;
-
-/**
- * Where a refused form submission goes: back to the management page with the
- * field as a fixed code and what was entered. Values only ever render as an
- * input value or a checked box, never as copy.
- */
-export function webhookFormErrorUrl(
-  page: string,
-  field: WebhookFormField,
-  values: WebhookFormValues,
-): string {
-  const params = new URLSearchParams({ error: field });
-  if (values.url !== undefined && values.url !== "" && values.url.length <= MAX_ECHOED_URL_LENGTH) {
-    params.set("url", values.url);
-  }
-  // At least one `events` entry, even if none were checked, so the page can
-  // tell "came back with nothing checked" from "fresh form, default to all".
-  const events = values.events ?? [];
-  if (events.length === 0) params.append("events", "");
-  for (const event of events.slice(0, 64)) params.append("events", event);
-  return `${page}?${params.toString()}`;
-}
-
-/** Reads `webhookFormErrorUrl`'s values back off the page's query string. */
-export function webhookFormValues(
-  query: (key: string) => string | undefined,
-  queries: (key: string) => string[] | undefined,
-): WebhookFormValues {
-  const url = query("url");
-  const events = queries("events");
-  return {
-    ...(url !== undefined && url.length <= MAX_ECHOED_URL_LENGTH ? { url } : {}),
-    ...(events !== undefined ? { events: events.filter((event) => event !== "") } : {}),
-  };
 }
 
 const DeliveryRow: FC<{ delivery: WebhookDelivery }> = ({ delivery }) => (

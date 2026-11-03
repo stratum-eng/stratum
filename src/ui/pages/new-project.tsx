@@ -54,45 +54,16 @@ export function newProjectError(code: string | undefined): NewProjectError | und
     : undefined;
 }
 
-/** Longest value echoed back into the form; longer input is dropped, not cut. */
-const MAX_ECHOED_LENGTH = 2048;
-
-/** What the user had typed, carried through the redirect back to the form. */
+/**
+ * What the user had submitted, to refill the form after a refusal. Only ever
+ * taken from the refused request's own body (see routes/form-pages.tsx), never
+ * from the query string: a link that prefilled an import URL could lure an
+ * import of the sender's repository.
+ */
 export interface NewProjectFormValues {
   mode?: "blank" | "import";
   name?: string;
   url?: string;
-}
-
-/**
- * Where a refused form submission goes: back to `/new` with the error code
- * and what the user had entered, so the form comes back filled in with the
- * reason under the field. Values are only ever rendered as input values
- * (escaped by JSX), never as copy.
- */
-export function newProjectErrorUrl(code: string, values: NewProjectFormValues = {}): string {
-  const params = new URLSearchParams({ error: code });
-  if (values.mode === "import") params.set("mode", "import");
-  for (const key of ["name", "url"] as const) {
-    const value = values[key];
-    if (value !== undefined && value !== "" && value.length <= MAX_ECHOED_LENGTH) {
-      params.set(key, value);
-    }
-  }
-  return `/new?${params.toString()}`;
-}
-
-/** Reads the echoed form values back off the `/new` query string. */
-export function newProjectFormValues(
-  query: (key: string) => string | undefined,
-): NewProjectFormValues {
-  const values: NewProjectFormValues = {};
-  if (query("mode") === "import") values.mode = "import";
-  for (const key of ["name", "url"] as const) {
-    const value = query(key);
-    if (value !== undefined && value.length <= MAX_ECHOED_LENGTH) values[key] = value;
-  }
-  return values;
 }
 
 interface NewProjectProps {

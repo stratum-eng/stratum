@@ -25,7 +25,7 @@ vi.mock("../src/storage/users", () => ({ getUserByToken: vi.fn(), getUser: vi.fn
 
 import { recordAudit } from "../src/storage/audit";
 import { getProjectByPath } from "../src/storage/state";
-import { getUserByToken } from "../src/storage/users";
+import { getUser, getUserByToken } from "../src/storage/users";
 import {
   type Webhook,
   createWebhook,
@@ -219,30 +219,54 @@ describe("webhook management routes — project-id scoping (SA-1)", () => {
     expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
-  it("sends a refused form submission back to the page with a field code, not JSON", async () => {
-    const submit = (url: string, contentType: string) =>
-      makeApp().fetch(
+  it("re-renders a refused form submission with the user's own values, not a redirect", async () => {
+    vi.mocked(listWebhooks).mockResolvedValue({ success: true, data: [webhook()] });
+    vi.mocked(listDeliveries).mockResolvedValue({ success: true, data: [] });
+    vi.mocked(getUser).mockResolvedValue({
+      success: true,
+      data: {
+        id: "user_test",
+        email: "t@x.io",
+        username: "test",
+        tokenHash: "h",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    const submit = (fields: Record<string, string | string[]>, contentType: string) => {
+      const form = new URLSearchParams();
+      for (const [key, value] of Object.entries(fields)) {
+        for (const v of [value].flat()) form.append(key, v);
+      }
+      return makeApp().fetch(
         new Request("http://localhost/@alice/api/webhooks", {
           method: "POST",
           headers: { ...AUTH, "Content-Type": contentType },
-          body:
-            contentType === "application/json"
-              ? JSON.stringify({ url })
-              : new URLSearchParams({ url }).toString(),
+          body: contentType === "application/json" ? JSON.stringify(fields) : form.toString(),
         }),
         env,
       );
+    };
 
-    const form = await submit("http://127.0.0.1/hook", "application/x-www-form-urlencoded");
-    expect(form.status).toBe(303);
-    // A fixed code naming the field (the page owns the copy), plus what was
-    // entered so the form comes back filled in. No box was checked here.
-    expect(form.headers.get("location")).toBe(
-      "/@alice/api/webhooks?error=url&url=http%3A%2F%2F127.0.0.1%2Fhook&events=",
+    const form = await submit(
+      { url: "http://127.0.0.1/hook", events: ["change.merged"] },
+      "application/x-www-form-urlencoded",
     );
+    // Rendered from this POST: nothing about the refusal travels in a URL, so
+    // no link can reproduce a prefilled form.
+    expect(form.status).toBe(400);
+    expect(form.headers.get("location")).toBeNull();
+    const html = await form.text();
+    expect(html).toMatch(/<input[^>]*id="webhook-url"[^>]*value="http:\/\/127\.0\.0\.1\/hook"/);
+    expect(html).toMatch(/<input[^>]*id="webhook-url"[^>]*aria-invalid="true"/);
+    expect(html).toMatch(/value="change\.merged" checked/);
+    expect(html).not.toMatch(/value="\*" checked/);
+    // The management page's other content still renders, secret-free.
+    expect(html).toContain("https://alice.example.com/hook");
+    expect(html).not.toContain("stm_whsec_abcdef");
 
-    const json = await submit("http://127.0.0.1/hook", "application/json");
+    const json = await submit({ url: "http://127.0.0.1/hook" }, "application/json");
     expect(json.status).toBe(400);
+    expect(json.headers.get("content-type")).toContain("application/json");
     expect(createWebhook).not.toHaveBeenCalled();
   });
 

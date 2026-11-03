@@ -438,23 +438,14 @@ describe("deploy secret form aliases", () => {
       value: SECRET_VALUE,
     });
     expect(badName.status).toBe(302);
-    // The typed name comes back to refill the form (rendered only as an input
-    // value, escaped); the error is still a fixed code, and the VALUE never
-    // leaves in a URL.
-    const badNameLocation = badName.headers.get("location") ?? "";
-    expect(badNameLocation).toBe(
-      `${SETTINGS}?secretError=name&secretName=%3Cscript%3Elower+case%3C%2Fscript%3E#secrets`,
-    );
-    expect(badNameLocation).not.toContain(encodeURIComponent(SECRET_VALUE));
+    expect(badName.headers.get("location")).toBe(`${SETTINGS}?secretError=name#secrets`);
 
     const noValue = await form("/api/projects/@owner/site/secrets", {
       name: "VERCEL_TOKEN",
       value: "",
     });
     expect(noValue.status).toBe(302);
-    expect(noValue.headers.get("location")).toBe(
-      `${SETTINGS}?secretError=value&secretName=VERCEL_TOKEN#secrets`,
-    );
+    expect(noValue.headers.get("location")).toBe(`${SETTINGS}?secretError=value#secrets`);
 
     expect(putSecret).not.toHaveBeenCalled();
   });

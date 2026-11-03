@@ -9,8 +9,31 @@
  */
 import { Hono } from "hono";
 import { renderToString } from "hono/jsx/dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// The re-rendered form pages read the signed-in user for the header.
+vi.mock("../src/storage/users", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/storage/users")>()),
+  getUser: vi.fn(async () => ({
+    success: true,
+    data: {
+      id: "usr_1",
+      email: "a@b.com",
+      username: "alice",
+      tokenHash: "h",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    },
+  })),
+}));
+
+vi.mock("../src/storage/webhooks", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/storage/webhooks")>()),
+  listWebhooks: vi.fn(async () => ({ success: true, data: [] })),
+  listDeliveries: vi.fn(async () => ({ success: true, data: [] })),
+}));
+
 import { projectsRouter } from "../src/routes/projects";
+import { uiRouter } from "../src/routes/ui";
 import type { Env, ProjectEntry } from "../src/types";
 import { FieldError, fieldAttrs, fieldErrorId } from "../src/ui/components/field-error";
 import { Layout } from "../src/ui/layout";
@@ -19,19 +42,12 @@ import {
   NEW_PROJECT_ERROR_INVALID_URL,
   NEW_PROJECT_ERROR_NAME_TAKEN,
   NEW_PROJECT_ERROR_PRIVATE_LIMIT,
+  type NewProjectFormValues,
   NewProjectPage,
   newProjectError,
-  newProjectErrorUrl,
-  newProjectFormValues,
 } from "../src/ui/pages/new-project";
 import { ProjectSettingsPage } from "../src/ui/pages/project-settings";
-import {
-  type WebhookFormValues,
-  WebhooksPage,
-  webhookFormError,
-  webhookFormErrorUrl,
-  webhookFormValues,
-} from "../src/ui/pages/webhooks";
+import { type WebhookFormValues, WebhooksPage, webhookFormError } from "../src/ui/pages/webhooks";
 
 const user = { id: "usr_1", email: "a@b.com", username: "alice" };
 
@@ -129,14 +145,9 @@ describe("FieldError and fieldAttrs", () => {
 });
 
 describe("new project form errors", () => {
-  const render = (code?: string, query: Record<string, string> = {}) =>
+  const render = (code?: string, values: NewProjectFormValues = {}) =>
     renderToString(
-      <NewProjectPage
-        user={user}
-        nonce="n0nce"
-        error={newProjectError(code)}
-        values={newProjectFormValues((key) => query[key])}
-      />,
+      <NewProjectPage user={user} nonce="n0nce" error={newProjectError(code)} values={values} />,
     );
 
   it("opts out of native bubbles, since the script and the server both validate", () => {
@@ -179,18 +190,29 @@ describe("new project form errors", () => {
     expect(newProjectError("<script>")).toBeUndefined();
     expect(newProjectError(undefined)).toBeUndefined();
   });
+});
 
-  it("carries the typed values through the redirect, dropping oversized ones", () => {
-    expect(newProjectErrorUrl(NEW_PROJECT_ERROR_NAME_TAKEN, { mode: "blank", name: "a b&c" })).toBe(
-      "/new?error=name_taken&name=a+b%26c",
+describe("GET /new never prefills from the query string", () => {
+  // A link that opened the import form holding someone else's repository is
+  // one click from importing it.
+  it("shows a coded error but none of the URL's values", async () => {
+    const app = new Hono<{ Bindings: Env }>();
+    app.use("*", async (c, next) => {
+      c.set("userId", "usr_1");
+      await next();
+    });
+    app.route("/", uiRouter);
+    const res = await app.fetch(
+      new Request(
+        "https://t.test/new?error=invalid_url&mode=import&name=evil&url=https%3A%2F%2Fgithub.com%2Fattacker%2Frepo",
+      ),
+      { DB: {} as D1Database } as Env,
     );
-    expect(
-      newProjectErrorUrl(NEW_PROJECT_ERROR_INVALID_URL, {
-        mode: "import",
-        name: "x",
-        url: `https://github.com/${"a".repeat(3000)}`,
-      }),
-    ).toBe("/new?error=invalid_url&mode=import&name=x");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('id="np-url-error">Enter a GitHub repository URL');
+    expect(html).not.toContain("attacker");
+    expect(html).not.toContain('value="evil"');
   });
 });
 
@@ -219,6 +241,7 @@ describe("POST /projects from the new-project form", () => {
       // Every key holds the existing project: a refusal for a taken name is all
       // these tests need to reach.
       STATE: { get: async () => JSON.stringify(existing) } as unknown as KVNamespace,
+      DB: {} as D1Database,
     } as Env;
     return app.fetch(
       new Request("https://t.test/projects", {
@@ -231,16 +254,22 @@ describe("POST /projects from the new-project form", () => {
     );
   }
 
-  it("sends an invalid name back to the form with the name refilled", async () => {
+  it("re-renders the form itself for an invalid name, refilled from the POST", async () => {
     const res = await submit({ name: "no spaces!", visibility: "public" });
-    expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/new?error=invalid_name&name=no+spaces%21");
+    expect(res.status).toBe(400);
+    expect(res.headers.get("location")).toBeNull();
+    const html = await res.text();
+    expect(tagWithId(html, "np-name")).toContain('value="no spaces!"');
+    expect(tagWithId(html, "np-name")).toContain('aria-invalid="true"');
+    expect(html).toContain('id="np-name-error">That name cannot be used for a project.');
   });
 
-  it("sends a taken name back to the form", async () => {
+  it("re-renders the form for a taken name", async () => {
     const res = await submit({ name: "taken", visibility: "public" });
-    expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe("/new?error=name_taken&name=taken");
+    expect(res.status).toBe(409);
+    const html = await res.text();
+    expect(tagWithId(html, "np-name")).toContain('value="taken"');
+    expect(html).toContain('id="np-name-error">You already have a project');
   });
 
   it("still answers an API caller with JSON", async () => {
@@ -282,19 +311,21 @@ describe("POST /projects/:namespace/:slug/import from the new-project form", () 
           method: "POST",
           body: new URLSearchParams({ url: "not a url", visibility: "public" }),
         }),
-        { STATE: kv } as Env,
+        { STATE: kv, DB: {} as D1Database } as Env,
       );
 
     const first = await submit();
-    expect(first.status).toBe(303);
-    expect(first.headers.get("location")).toBe(
-      "/new?error=invalid_url&mode=import&name=myrepo&url=not+a+url",
-    );
+    expect(first.status).toBe(400);
+    const html = await first.text();
+    // The user's own submission comes back, in import mode, from the POST.
+    expect(html).toMatch(/value="import" checked/);
+    expect(tagWithId(html, "np-url")).toContain('value="not a url"');
+    expect(tagWithId(html, "np-name")).toContain('value="myrepo"');
     expect(store.has("ratelimit:import:project:@alice:myrepo")).toBe(false);
 
     // Without the release this is a 429 "Project import in progress".
     const retry = await submit();
-    expect(retry.status).toBe(303);
+    expect(retry.status).toBe(400);
   });
 });
 
@@ -350,19 +381,45 @@ describe("webhook form errors", () => {
     }
   });
 
-  it("refills the URL and exactly the checked events after a refusal", () => {
-    const location = webhookFormErrorUrl("/@alice/api/webhooks", "url", {
-      url: "http://10.0.0.1/hook",
-      events: ["change.merged"],
+  // The attack this guards against: a link that opens the management page
+  // already holding the sender's endpoint with every event checked, one Save
+  // from delivering all of the project's events to them.
+  it("never prefills the add form from the page's query string", async () => {
+    const project: ProjectEntry = {
+      id: "prj_1",
+      name: "api",
+      slug: "api",
+      namespace: "@alice",
+      ownerId: "usr_1",
+      ownerType: "user",
+      remote: "https://example.invalid/api.git",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const app = new Hono<{ Bindings: Env }>();
+    app.use("*", async (c, next) => {
+      c.set("userId", "usr_1");
+      await next();
     });
-    const query = new URL(location, "https://t.test").searchParams;
-    const values = webhookFormValues(
-      (key) => query.get(key) ?? undefined,
-      (key) => query.getAll(key),
+    app.route("/", uiRouter);
+    const res = await app.fetch(
+      new Request(
+        "https://t.test/@alice/api/webhooks?error=url&url=https%3A%2F%2Fattacker.example%2Fcollect&events=*&events=change.merged",
+      ),
+      {
+        DB: {} as D1Database,
+        STATE: { get: async () => JSON.stringify(project) } as unknown as KVNamespace,
+      } as Env,
     );
-    expect(values).toEqual({ url: "http://10.0.0.1/hook", events: ["change.merged"] });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('id="webhook-url"');
+    expect(html).not.toContain("attacker.example");
+    expect(html).not.toContain('aria-invalid="true"');
+    expect(html).not.toMatch(/value="change\.merged" checked/);
+  });
 
-    const html = render("url", values);
+  it("refills the URL and exactly the checked events after a refusal", () => {
+    const html = render("url", { url: "http://10.0.0.1/hook", events: ["change.merged"] });
     expect(tagWithId(html, "webhook-url")).toContain('value="http://10.0.0.1/hook"');
     expect(html).toMatch(/value="change\.merged" checked/);
     // "All events" was not checked, so it does not come back checked.
@@ -389,22 +446,5 @@ describe("deploy secret form errors", () => {
     expect(html).toContain('id="secret-value-error">A secret value is required.');
     expect(html).not.toContain("settings-help-error");
     expect(html).toMatch(/class="secret-form" novalidate/);
-  });
-
-  it("refills the secret's name but never its value", () => {
-    const html = renderToString(
-      <ProjectSettingsPage
-        project={{ name: "api", namespace: "@alice", slug: "api", createdAt: "2026-01-01" }}
-        isOwner={true}
-        secrets={[]}
-        canManageSecrets={true}
-        secretError="A secret value is required."
-        secretErrorField="value"
-        secretName="VERCEL_TOKEN"
-        user={user}
-      />,
-    );
-    expect(tagWithId(html, "secret-name")).toContain('value="VERCEL_TOKEN"');
-    expect(tagWithId(html, "secret-value")).not.toContain("value=");
   });
 });
