@@ -222,6 +222,14 @@ button.nav-auth-link {
     border: none;
     box-shadow: none;
   }
+  /* A 39-character username (or a long display name) must wrap, not run off
+     a phone-width panel. */
+  .nav-menu-toggle ~ .nav-auth .nav-user,
+  .nav-menu-toggle ~ .nav-auth .nav-user-handle {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .nav-menu-toggle ~ .nav-auth .nav-user-name { max-width: none; min-width: 0; }
   /* Full-width rows at least 44px tall, so a thumb hits one link and not two. */
   .nav-menu-toggle ~ .nav-auth .nav-auth-link {
     display: flex;

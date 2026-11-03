@@ -81,6 +81,7 @@ import {
   NEW_PROJECT_ERROR_INVALID_URL,
   NEW_PROJECT_ERROR_NAME_TAKEN,
   NEW_PROJECT_ERROR_PRIVATE_LIMIT,
+  type NewProjectFormValues,
   newProjectErrorUrl,
 } from "../ui/pages/new-project";
 import {
@@ -570,12 +571,17 @@ app.post(
       // The new-project form posts here in import mode; like POST /, a refusal
       // the user can fix goes back to the form rather than to a JSON body.
       const isForm = !(c.req.header("content-type") ?? "").includes("application/json");
+      // `importRateLimitMiddleware` has already taken this project's import
+      // lock. A refusal starts no import, so it gives the lock back; otherwise
+      // the user's corrected resubmission would be refused as "already
+      // importing" until the lock's TTL ran out.
+      const refuseToForm = async (code: string, values: NewProjectFormValues) => {
+        await releaseImportLock(c.env.STATE, namespace, slug, logger);
+        return c.redirect(newProjectErrorUrl(code, values), 303);
+      };
       if (!isValidSlug(slug)) {
         if (isForm) {
-          return c.redirect(
-            newProjectErrorUrl(NEW_PROJECT_ERROR_INVALID_NAME, { mode: "import", name: slug }),
-            303,
-          );
+          return refuseToForm(NEW_PROJECT_ERROR_INVALID_NAME, { mode: "import", name: slug });
         }
         return badRequest("Slug too long (max 100 characters)");
       }
@@ -714,8 +720,7 @@ app.post(
         ...(typeof body.url === "string" ? { url: body.url } : {}),
       };
       if (!isValidRepoUrl(body.url) && !isValidGitHubUrl(body.url)) {
-        if (isForm)
-          return c.redirect(newProjectErrorUrl(NEW_PROJECT_ERROR_INVALID_URL, formValues), 303);
+        if (isForm) return refuseToForm(NEW_PROJECT_ERROR_INVALID_URL, formValues);
         return badRequest("url must be a valid repository URL from GitHub, GitLab, or Bitbucket");
       }
 
@@ -759,9 +764,7 @@ app.post(
           waitUntil: getWaitUntil(c),
         });
         if (!gauge.admitted) {
-          if (isForm) {
-            return c.redirect(newProjectErrorUrl(NEW_PROJECT_ERROR_PRIVATE_LIMIT, formValues), 303);
-          }
+          if (isForm) return refuseToForm(NEW_PROJECT_ERROR_PRIVATE_LIMIT, formValues);
           return forbidden(gauge.reason);
         }
         gaugeSubjectId = gauge.gaugeSubjectId;

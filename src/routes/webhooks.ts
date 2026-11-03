@@ -14,7 +14,7 @@ import {
 } from "../storage/webhooks";
 import type { Env, ProjectEntry } from "../types";
 import { SOURCE_FOOTER_HTML } from "../ui/components/source-footer";
-import type { WebhookFormField } from "../ui/pages/webhooks";
+import { type WebhookFormField, webhookFormErrorUrl } from "../ui/pages/webhooks";
 import { STYLESHEET_LINKS_HTML } from "../ui/stylesheet";
 import {
   type BindingContext,
@@ -226,7 +226,15 @@ app.post("/:namespace/:slug/webhooks", async (c) => {
   // fixed code; the page owns the copy (see `webhookFormError`).
   const isForm = !contentType.includes("application/json");
   const backToForm = (field: WebhookFormField) =>
-    c.redirect(`/${project.namespace}/${project.slug}/webhooks?error=${field}`, 303);
+    c.redirect(
+      webhookFormErrorUrl(`/${project.namespace}/${project.slug}/webhooks`, field, {
+        url: typeof body.url === "string" ? body.url : undefined,
+        events: (Array.isArray(body.events) ? body.events : [body.events]).filter(
+          (event): event is string => typeof event === "string",
+        ),
+      }),
+      303,
+    );
 
   const urlResult = validateWebhookUrl(body.url, logger);
   if (!urlResult.success) {

@@ -15,6 +15,8 @@ interface WebhooksPageProps {
   subscribableEvents: string[];
   /** A refused "Add webhook" submission, resolved from its `?error=` code. */
   formError?: WebhookFormError | undefined;
+  /** What the refused submission held; absent for a fresh form. */
+  formValues?: WebhookFormValues | undefined;
   user?: { id: string; email: string; username: string } | null;
   /** Per-request CSP nonce — required so the regenerate confirm script passes `script-src`. */
   nonce: string;
@@ -43,6 +45,51 @@ export function webhookFormError(code: string | undefined): WebhookFormError | u
   return { field: code, message: WEBHOOK_FORM_ERRORS[code] };
 }
 
+/** What a refused "Add webhook" submission held, to refill the form. */
+export interface WebhookFormValues {
+  url?: string | undefined;
+  /** The checked event boxes, `*` for "All events". */
+  events?: string[] | undefined;
+}
+
+/** Longest URL echoed back into the form; the API's own cap is 2048. */
+const MAX_ECHOED_URL_LENGTH = 2048;
+
+/**
+ * Where a refused form submission goes: back to the management page with the
+ * field as a fixed code and what was entered. Values only ever render as an
+ * input value or a checked box, never as copy.
+ */
+export function webhookFormErrorUrl(
+  page: string,
+  field: WebhookFormField,
+  values: WebhookFormValues,
+): string {
+  const params = new URLSearchParams({ error: field });
+  if (values.url !== undefined && values.url !== "" && values.url.length <= MAX_ECHOED_URL_LENGTH) {
+    params.set("url", values.url);
+  }
+  // At least one `events` entry, even if none were checked, so the page can
+  // tell "came back with nothing checked" from "fresh form, default to all".
+  const events = values.events ?? [];
+  if (events.length === 0) params.append("events", "");
+  for (const event of events.slice(0, 64)) params.append("events", event);
+  return `${page}?${params.toString()}`;
+}
+
+/** Reads `webhookFormErrorUrl`'s values back off the page's query string. */
+export function webhookFormValues(
+  query: (key: string) => string | undefined,
+  queries: (key: string) => string[] | undefined,
+): WebhookFormValues {
+  const url = query("url");
+  const events = queries("events");
+  return {
+    ...(url !== undefined && url.length <= MAX_ECHOED_URL_LENGTH ? { url } : {}),
+    ...(events !== undefined ? { events: events.filter((event) => event !== "") } : {}),
+  };
+}
+
 const DeliveryRow: FC<{ delivery: WebhookDelivery }> = ({ delivery }) => (
   <li class="webhook-delivery">
     <span class={`badge ${delivery.status === "success" ? "badge-merged" : "badge-rejected"}`}>
@@ -62,10 +109,15 @@ export const WebhooksPage: FC<WebhooksPageProps> = ({
   webhooks,
   subscribableEvents,
   formError,
+  formValues,
   user,
   nonce,
 }) => {
   const base = `/api/projects/${project.namespace}/${project.slug}/webhooks`;
+  // A fresh form defaults to "All events"; a refilled one shows what was checked.
+  const checkedEvents = formValues?.events;
+  const isChecked = (event: string) =>
+    checkedEvents === undefined ? event === "*" : checkedEvents.includes(event);
   const urlError = formError?.field === "url" ? formError.message : undefined;
   const eventsError = formError?.field === "events" ? formError.message : undefined;
   return (
@@ -91,6 +143,7 @@ export const WebhooksPage: FC<WebhooksPageProps> = ({
               {...fieldAttrs("webhook-url", urlError)}
               type="url"
               name="url"
+              value={formValues?.url}
               placeholder="https://example.com/hooks/stratum"
               required
             />
@@ -105,13 +158,13 @@ export const WebhooksPage: FC<WebhooksPageProps> = ({
             <legend>Events to deliver</legend>
             <FieldError for="webhook-events" message={eventsError} />
             <label class="checkbox-label">
-              <input type="checkbox" name="events" value="*" checked />
+              <input type="checkbox" name="events" value="*" checked={isChecked("*")} />
               All events
             </label>
             <div class="webhook-events-grid">
               {subscribableEvents.map((event) => (
                 <label class="checkbox-label" key={event}>
-                  <input type="checkbox" name="events" value={event} />
+                  <input type="checkbox" name="events" value={event} checked={isChecked(event)} />
                   {event}
                 </label>
               ))}

@@ -25,7 +25,13 @@ import {
   newProjectFormValues,
 } from "../src/ui/pages/new-project";
 import { ProjectSettingsPage } from "../src/ui/pages/project-settings";
-import { WebhooksPage, webhookFormError } from "../src/ui/pages/webhooks";
+import {
+  type WebhookFormValues,
+  WebhooksPage,
+  webhookFormError,
+  webhookFormErrorUrl,
+  webhookFormValues,
+} from "../src/ui/pages/webhooks";
 
 const user = { id: "usr_1", email: "a@b.com", username: "alice" };
 
@@ -244,12 +250,61 @@ describe("POST /projects from the new-project form", () => {
   });
 });
 
+describe("POST /projects/:namespace/:slug/import from the new-project form", () => {
+  /** An in-memory KV with the calls the import limiter and the route make. */
+  function memoryKv(): { kv: KVNamespace; store: Map<string, string> } {
+    const store = new Map<string, string>();
+    const kv = {
+      get: async (key: string) => store.get(key) ?? null,
+      getWithMetadata: async (key: string) => ({ value: store.get(key) ?? null, metadata: null }),
+      put: async (key: string, value: string) => {
+        store.set(key, value);
+      },
+      delete: async (key: string) => {
+        store.delete(key);
+      },
+    } as unknown as KVNamespace;
+    return { kv, store };
+  }
+
+  it("gives back the import lock on a refusal, so a corrected retry is not refused as busy", async () => {
+    const { kv, store } = memoryKv();
+    const app = new Hono<{ Bindings: Env }>();
+    app.use("*", async (c, next) => {
+      c.set("userId", "usr_1");
+      c.set("username", "alice");
+      await next();
+    });
+    app.route("/projects", projectsRouter);
+    const submit = () =>
+      app.fetch(
+        new Request("https://t.test/projects/@alice/myrepo/import", {
+          method: "POST",
+          body: new URLSearchParams({ url: "not a url", visibility: "public" }),
+        }),
+        { STATE: kv } as Env,
+      );
+
+    const first = await submit();
+    expect(first.status).toBe(303);
+    expect(first.headers.get("location")).toBe(
+      "/new?error=invalid_url&mode=import&name=myrepo&url=not+a+url",
+    );
+    expect(store.has("ratelimit:import:project:@alice:myrepo")).toBe(false);
+
+    // Without the release this is a 429 "Project import in progress".
+    const retry = await submit();
+    expect(retry.status).toBe(303);
+  });
+});
+
 describe("webhook form errors", () => {
   const project = { name: "api", namespace: "@alice", slug: "api" };
-  const render = (code?: string) =>
+  const render = (code?: string, formValues?: WebhookFormValues) =>
     renderToString(
       <WebhooksPage
         project={project}
+        formValues={formValues}
         webhooks={[
           {
             webhook: {
@@ -294,6 +349,27 @@ describe("webhook form errors", () => {
       expect(html).not.toContain("aria-invalid");
     }
   });
+
+  it("refills the URL and exactly the checked events after a refusal", () => {
+    const location = webhookFormErrorUrl("/@alice/api/webhooks", "url", {
+      url: "http://10.0.0.1/hook",
+      events: ["change.merged"],
+    });
+    const query = new URL(location, "https://t.test").searchParams;
+    const values = webhookFormValues(
+      (key) => query.get(key) ?? undefined,
+      (key) => query.getAll(key),
+    );
+    expect(values).toEqual({ url: "http://10.0.0.1/hook", events: ["change.merged"] });
+
+    const html = render("url", values);
+    expect(tagWithId(html, "webhook-url")).toContain('value="http://10.0.0.1/hook"');
+    expect(html).toMatch(/value="change\.merged" checked/);
+    // "All events" was not checked, so it does not come back checked.
+    expect(html).not.toMatch(/value="\*" checked/);
+    // A fresh form still defaults to "All events".
+    expect(render()).toMatch(/value="\*" checked/);
+  });
 });
 
 describe("deploy secret form errors", () => {
@@ -313,5 +389,22 @@ describe("deploy secret form errors", () => {
     expect(html).toContain('id="secret-value-error">A secret value is required.');
     expect(html).not.toContain("settings-help-error");
     expect(html).toMatch(/class="secret-form" novalidate/);
+  });
+
+  it("refills the secret's name but never its value", () => {
+    const html = renderToString(
+      <ProjectSettingsPage
+        project={{ name: "api", namespace: "@alice", slug: "api", createdAt: "2026-01-01" }}
+        isOwner={true}
+        secrets={[]}
+        canManageSecrets={true}
+        secretError="A secret value is required."
+        secretErrorField="value"
+        secretName="VERCEL_TOKEN"
+        user={user}
+      />,
+    );
+    expect(tagWithId(html, "secret-name")).toContain('value="VERCEL_TOKEN"');
+    expect(tagWithId(html, "secret-value")).not.toContain("value=");
   });
 });

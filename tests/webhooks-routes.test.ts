@@ -235,8 +235,11 @@ describe("webhook management routes — project-id scoping (SA-1)", () => {
 
     const form = await submit("http://127.0.0.1/hook", "application/x-www-form-urlencoded");
     expect(form.status).toBe(303);
-    // A fixed code naming the field; the page owns the copy.
-    expect(form.headers.get("location")).toBe("/@alice/api/webhooks?error=url");
+    // A fixed code naming the field (the page owns the copy), plus what was
+    // entered so the form comes back filled in. No box was checked here.
+    expect(form.headers.get("location")).toBe(
+      "/@alice/api/webhooks?error=url&url=http%3A%2F%2F127.0.0.1%2Fhook&events=",
+    );
 
     const json = await submit("http://127.0.0.1/hook", "application/json");
     expect(json.status).toBe(400);

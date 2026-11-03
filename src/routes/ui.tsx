@@ -92,6 +92,7 @@ import {
   type FreshCredential,
   type SettingsField,
   type SettingsFieldError,
+  type SettingsFormValues,
   type SettingsNotice,
   SettingsPage,
   type UsernameChange,
@@ -99,7 +100,7 @@ import {
 import { SyncPage } from "../ui/pages/sync";
 import { TagsPage } from "../ui/pages/tags";
 import { UsagePage } from "../ui/pages/usage";
-import { WebhooksPage, webhookFormError } from "../ui/pages/webhooks";
+import { WebhooksPage, webhookFormError, webhookFormValues } from "../ui/pages/webhooks";
 import { WorkspacesPage } from "../ui/pages/workspaces";
 import {
   type BindingContext,
@@ -523,6 +524,7 @@ async function renderSettings(
     freshToken?: FreshCredential;
     notice?: SettingsNotice;
     fieldError?: SettingsFieldError;
+    formValues?: SettingsFormValues;
   } = {},
 ) {
   const [agents, tokens, grants, usernameChange, invites, usageNotice] = await Promise.all([
@@ -565,6 +567,7 @@ async function renderSettings(
       {...(extras.freshToken !== undefined ? { freshToken: extras.freshToken } : {})}
       {...(notice !== undefined ? { notice } : {})}
       fieldError={extras.fieldError}
+      formValues={extras.formValues}
     />
   );
 }
@@ -665,8 +668,8 @@ app.post("/settings/account", async (c) => {
       fieldError: {
         field: "displayName",
         message: `A display name can be at most ${MAX_DISPLAY_NAME_LENGTH} characters.`,
-        values: { displayName: raw },
       },
+      formValues: { displayName: raw },
     });
     return c.html(page, 400);
   }
@@ -721,7 +724,10 @@ app.post("/settings/username", async (c) => {
       logger,
       about === "account"
         ? { notice: { kind: "error", message } }
-        : { fieldError: { field: "username", message, values: { username: requested } } },
+        : {
+            fieldError: { field: "username", message },
+            formValues: { username: requested },
+          },
     );
     return c.html(page, status);
   };
@@ -869,6 +875,20 @@ function parseTokenForm(
   return { name: rawName, scope: rawScope, expiresInDays, binding };
 }
 
+/** The token form's fields as submitted, for refilling it after a refusal. */
+function tokenFormValues(form: Record<string, string | File>): SettingsFormValues {
+  const text = (value: string | File | undefined) =>
+    typeof value === "string" ? value : undefined;
+  const entries: Array<[keyof SettingsFormValues, string | undefined]> = [
+    ["tokenName", text(form.name)],
+    ["tokenScope", text(form.scope)],
+    ["tokenProject", text(form.project)],
+    ["tokenOrg", text(form.org)],
+    ["tokenExpiry", text(form.expiresInDays)],
+  ];
+  return Object.fromEntries(entries.filter(([, value]) => value !== undefined));
+}
+
 // POST /settings/tokens — Mint a named API token; renders the plaintext once
 app.post("/settings/tokens", async (c) => {
   const logger = createLogger({ path: c.req.path, userId: c.get("userId") });
@@ -877,6 +897,9 @@ app.post("/settings/tokens", async (c) => {
   const user = access.user;
 
   const form = await c.req.parseBody();
+  // Every refusal below re-renders the form with ALL of this, not just the
+  // field at fault: see `SettingsFormValues` for why scope and binding matter.
+  const formValues = tokenFormValues(form);
   const parsed = parseTokenForm(form);
   if ("error" in parsed) {
     // A bad scope or binding has no field-level slot; it stays a page notice.
@@ -886,19 +909,8 @@ app.post("/settings/tokens", async (c) => {
       access.telemetryOptOut,
       logger,
       parsed.field === undefined
-        ? { notice: { kind: "error", message: parsed.error } }
-        : {
-            fieldError: {
-              field: parsed.field,
-              message: parsed.error,
-              values: {
-                ...(typeof form.name === "string" ? { tokenName: form.name } : {}),
-                ...(typeof form.expiresInDays === "string"
-                  ? { tokenExpiry: form.expiresInDays }
-                  : {}),
-              },
-            },
-          },
+        ? { notice: { kind: "error", message: parsed.error }, formValues }
+        : { fieldError: { field: parsed.field, message: parsed.error }, formValues },
     );
     return c.html(page, 400);
   }
@@ -928,6 +940,7 @@ app.post("/settings/tokens", async (c) => {
               ? "No project or organization you can access matches that name."
               : resolvedBinding.error.message,
       },
+      formValues,
     });
     return c.html(page, status);
   }
@@ -954,6 +967,7 @@ app.post("/settings/tokens", async (c) => {
         kind: "error",
         message: status === 500 ? "Could not create the token." : createResult.error.message,
       },
+      formValues,
     });
     return c.html(page, status);
   }
@@ -1194,6 +1208,7 @@ app.post("/settings/agents", async (c) => {
   if (!name) {
     const page = await renderSettings(c, user, telemetryOptOut, logger, {
       fieldError: { field: "agentName", message: "Give the agent a name." },
+      ...(typeof form.model === "string" ? { formValues: { agentModel: form.model } } : {}),
     });
     return c.html(page, 400);
   }
@@ -2371,12 +2386,22 @@ app.get("/:namespace/:slug/webhooks", async (c) => {
     }),
   );
 
+  const formError = webhookFormError(c.req.query("error"));
   return c.html(
     <WebhooksPage
       project={projectRef(project)}
       webhooks={webhooks}
       subscribableEvents={SUBSCRIBABLE_EVENTS}
-      formError={webhookFormError(c.req.query("error"))}
+      formError={formError}
+      // Refilled only alongside a recognized refusal.
+      formValues={
+        formError !== undefined
+          ? webhookFormValues(
+              (key) => c.req.query(key),
+              (key) => c.req.queries(key),
+            )
+          : undefined
+      }
       user={userResult}
       nonce={c.get("cspNonce") ?? ""}
     />,
@@ -2672,6 +2697,12 @@ app.get("/:namespace/:slug/settings", async (c) => {
       {...(secretError !== undefined ? { secretError } : {})}
       secretErrorField={
         secretErrorCode === "name" || secretErrorCode === "value" ? secretErrorCode : undefined
+      }
+      // Only alongside a recognized refusal, and only ever as an input value.
+      secretName={
+        secretError !== undefined && (c.req.query("secretName")?.length ?? 0) <= 200
+          ? c.req.query("secretName")
+          : undefined
       }
       user={userResult}
     />,

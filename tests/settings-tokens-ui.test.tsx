@@ -301,6 +301,41 @@ describe("POST /settings/tokens — creating a token", () => {
     expect(html).toMatch(/role="alert"[\s\S]*?<a href="#settings-token-expiry">Expiry must be/);
   });
 
+  // Re-rendering a bound read-write submission with the scope reset to
+  // read-only and the binding inputs empty would turn "fix the name and
+  // resubmit" into minting an account-wide token (#398).
+  it("refills scope and binding when a bound read-write submission is refused", async () => {
+    const res = await post("/settings/tokens", {
+      name: "  ",
+      scope: "read_write",
+      project: "@alice/api",
+      org: "acme",
+      expiresInDays: "30",
+    });
+    expect(res.status).toBe(400);
+    const html = await res.text();
+    expect(html).toMatch(/<option value="read_write" selected(="")?>/);
+    expect(html).not.toMatch(/<option value="read" selected(="")?>/);
+    expect(html).toMatch(/<input[^>]*name="project"[^>]*value="@alice\/api"/);
+    expect(html).toMatch(/<input[^>]*name="org"[^>]*value="acme"/);
+    expect(html).toMatch(/<input[^>]*name="expiresInDays"[^>]*value="30"/);
+    expect(html).toMatch(/<input[^>]*id="settings-token-name"[^>]*aria-invalid="true"/);
+    expect(createApiToken).not.toHaveBeenCalled();
+  });
+
+  it("refills the form on a refusal that has no field, such as an unknown binding", async () => {
+    const res = await post("/settings/tokens", {
+      name: "ci",
+      scope: "read_write",
+      project: "not a path",
+    });
+    expect(res.status).toBe(400);
+    const html = await res.text();
+    expect(html).toMatch(/<option value="read_write" selected(="")?>/);
+    expect(html).toMatch(/<input[^>]*name="project"[^>]*value="not a path"/);
+    expect(html).toMatch(/<input[^>]*name="name"[^>]*value="ci"/);
+  });
+
   it("shows the cap message when the user already holds the maximum", async () => {
     vi.mocked(createApiToken).mockResolvedValue({
       success: false,

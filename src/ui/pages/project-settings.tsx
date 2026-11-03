@@ -41,6 +41,11 @@ interface ProjectSettingsProps {
    * renders under that field instead of above the form.
    */
   secretErrorField?: "name" | "value" | undefined;
+  /**
+   * The secret name a refused add was submitted with, to refill the form. The
+   * value is never carried back: it would travel in the redirect's URL.
+   */
+  secretName?: string | undefined;
   user?: { id: string; email: string; username: string } | null;
 }
 
@@ -52,6 +57,7 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
   canManageSecrets,
   secretError,
   secretErrorField,
+  secretName,
   user,
 }) => {
   const nameError = secretErrorField === "name" ? secretError : undefined;
@@ -145,6 +151,7 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
                   {...fieldAttrs("secret-name", nameError)}
                   type="text"
                   name="name"
+                  value={secretName}
                   placeholder="VERCEL_TOKEN"
                   pattern="[A-Z][A-Z0-9_]{0,63}"
                   required

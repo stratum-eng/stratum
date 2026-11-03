@@ -62,9 +62,18 @@ export type SettingsField = "displayName" | "username" | "tokenName" | "tokenExp
 export interface SettingsFieldError {
   field: SettingsField;
   message: string;
-  /** What the user had typed into the refused form, so it comes back filled in. */
-  values?: Partial<Record<SettingsField, string>>;
 }
+
+/**
+ * What the user had entered into a refused form, so it comes back as they
+ * left it. The token form carries every field, not only the ones that can be
+ * refused inline: a re-render that dropped the scope or the project/org
+ * binding would turn "fix the name and resubmit" into minting a read-write or
+ * account-wide token nobody asked for (#398).
+ */
+export type SettingsFormValues = Partial<
+  Record<SettingsField | "tokenScope" | "tokenProject" | "tokenOrg" | "agentModel", string>
+>;
 
 /** Each field's control id: the error summary links to it. */
 const FIELD_IDS: Record<SettingsField, string> = {
@@ -131,6 +140,8 @@ interface SettingsPageProps {
   notice?: SettingsNotice;
   /** A refused form field, rendered inline; see `SettingsFieldError`. */
   fieldError?: SettingsFieldError | undefined;
+  /** What a refused form held, to refill it; see `SettingsFormValues`. */
+  formValues?: SettingsFormValues | undefined;
   /** Per-request CSP nonce for the copy-button scripts. */
   nonce?: string;
   /** True when the user has opted out of product analytics (#257). */
@@ -286,7 +297,8 @@ const AccountCard: FC<{
   user: SettingsUser;
   usernameChange: UsernameChange;
   fieldError?: SettingsFieldError | undefined;
-}> = ({ user, usernameChange, fieldError }) => (
+  formValues?: SettingsFormValues | undefined;
+}> = ({ user, usernameChange, fieldError, formValues }) => (
   <div class="card" id="account">
     <h2>Account</h2>
     <dl class="detail-list">
@@ -313,7 +325,7 @@ const AccountCard: FC<{
           {...settingsFieldAttrs(fieldError, "displayName", "settings-display-name-help")}
           type="text"
           name="displayName"
-          value={fieldError?.values?.displayName ?? user.displayName ?? ""}
+          value={formValues?.displayName ?? user.displayName ?? ""}
           maxlength={MAX_DISPLAY_NAME_LENGTH}
           placeholder={user.username}
           autocomplete="name"
@@ -338,7 +350,7 @@ const AccountCard: FC<{
             {...settingsFieldAttrs(fieldError, "username", "settings-username-help")}
             type="text"
             name="username"
-            value={fieldError?.values?.username ?? user.username}
+            value={formValues?.username ?? user.username}
             required
             minlength={3}
             maxlength={39}
@@ -388,6 +400,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({
   freshToken,
   notice,
   fieldError,
+  formValues,
   nonce,
   telemetryOptOut,
   usageNotice,
@@ -460,7 +473,12 @@ export const SettingsPage: FC<SettingsPageProps> = ({
         </div>
       )}
 
-      <AccountCard user={user} usernameChange={usernameChange} fieldError={fieldError} />
+      <AccountCard
+        user={user}
+        usernameChange={usernameChange}
+        fieldError={fieldError}
+        formValues={formValues}
+      />
 
       {invites !== undefined && (
         <InviteCodesCard
@@ -560,7 +578,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({
               {...settingsFieldAttrs(fieldError, "tokenName")}
               type="text"
               name="name"
-              value={fieldError?.values?.tokenName}
+              value={formValues?.tokenName}
               required
               maxlength={100}
               placeholder="buildkite"
@@ -572,19 +590,33 @@ export const SettingsPage: FC<SettingsPageProps> = ({
             {/* Read-only is the default: a token created without a deliberate
                 choice must not be able to write. */}
             <select name="scope">
-              <option value="read" selected>
+              <option value="read" selected={formValues?.tokenScope !== "read_write"}>
                 Read-only — GET/HEAD and git clone
               </option>
-              <option value="read_write">Read &amp; write — everything you can do</option>
+              <option value="read_write" selected={formValues?.tokenScope === "read_write"}>
+                Read &amp; write — everything you can do
+              </option>
             </select>
           </label>
           <label>
             Limit to one project (optional)
-            <input type="text" name="project" maxlength={200} placeholder="@owner/repo" />
+            <input
+              type="text"
+              name="project"
+              value={formValues?.tokenProject}
+              maxlength={200}
+              placeholder="@owner/repo"
+            />
           </label>
           <label>
             Or limit to one organization's projects (optional)
-            <input type="text" name="org" maxlength={100} placeholder="acme" />
+            <input
+              type="text"
+              name="org"
+              value={formValues?.tokenOrg}
+              maxlength={100}
+              placeholder="acme"
+            />
           </label>
           <label>
             Expires in days (optional — blank never expires)
@@ -592,7 +624,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({
               {...settingsFieldAttrs(fieldError, "tokenExpiry")}
               type="number"
               name="expiresInDays"
-              value={fieldError?.values?.tokenExpiry}
+              value={formValues?.tokenExpiry}
               min={MIN_TOKEN_EXPIRY_DAYS}
               max={MAX_TOKEN_EXPIRY_DAYS}
               placeholder="90"
@@ -720,7 +752,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({
               {...settingsFieldAttrs(fieldError, "agentName")}
               type="text"
               name="name"
-              value={fieldError?.values?.agentName}
+              value={formValues?.agentName}
               required
               maxlength={100}
             />
@@ -728,7 +760,13 @@ export const SettingsPage: FC<SettingsPageProps> = ({
           <SettingsFieldErrorText fieldError={fieldError} field="agentName" />
           <label>
             Model (optional)
-            <input type="text" name="model" placeholder="claude-sonnet-4-6" maxlength={100} />
+            <input
+              type="text"
+              name="model"
+              value={formValues?.agentModel}
+              placeholder="claude-sonnet-4-6"
+              maxlength={100}
+            />
           </label>
           <button type="submit" class="btn btn-primary">
             Create agent token
