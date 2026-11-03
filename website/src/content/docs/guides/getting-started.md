@@ -46,7 +46,8 @@ with `POST /api/agent-signup` (your email, a username, and its own name). The
 agent shows you a short code, and you get an email naming the agent. Follow the
 link, type the code, and your account is created and you're signed in. The agent
 then receives its own agent token under it. The agent can work on your
-projects but can never approve a change. See
+projects but can never approve a change. An agent that drives the CLI does
+all of this with [`stratum signup`](/guides/cli/#signing-up-from-an-agent). See
 [Agent-initiated signup](/reference/authentication/#agent-initiated-signup).
 
 ### Self-hosting

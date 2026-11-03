@@ -15,6 +15,10 @@ stratum logout                   # revoke this machine's session
 # Headless (CI, containers): an API token instead of the browser.
 stratum login --host https://your-stratum-instance --key stratum_user_…
 # or set STRATUM_HOST and STRATUM_API_KEY (these override the config file)
+
+# No account yet? An agent can request one for its human, who approves by email
+# and a code the command prints; the agent token is then saved like --key.
+stratum signup --email you@example.com --username you [--invite CODE] [--agent-name "Claude Code"]
 ```
 
 ## Commands
