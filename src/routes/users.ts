@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { buildUsageReport } from "../billing/usage-report";
 import { cannotMintLegacyCredential } from "../middleware/auth";
+import { credentialMintRefused, orgBlockingCredentialMint } from "../services/org-second-factor";
 import {
   describeTokenBindings,
   parseBindingRequest,
@@ -133,6 +134,11 @@ app.post("/me/rotate-token", async (c) => {
       403,
     );
   }
+
+  // The legacy key is account-wide, so an unmet org second-factor policy (#256)
+  // refuses it outright.
+  const blockingOrg = orgBlockingCredentialMint(c);
+  if (blockingOrg) return credentialMintRefused(c, blockingOrg, { bindable: false });
 
   const result = await rotateUserToken(c.env.DB, userId, logger);
   if (!result.success) {
@@ -277,6 +283,12 @@ app.post("/me/tokens", async (c) => {
     logger.error("Failed to resolve token binding", resolvedBinding.error);
     return internalError("Could not check the requested binding");
   }
+
+  // Org second-factor policy (#256): an unbound token reaches every org the
+  // user belongs to, so a session short of any org's policy may only mint one
+  // bound to a target the binding check above admitted.
+  const blockingOrg = orgBlockingCredentialMint(c, { bound: resolvedBinding.data !== null });
+  if (blockingOrg) return credentialMintRefused(c, blockingOrg, { bindable: true });
 
   const result = await createApiToken(c.env.DB, logger, {
     userId: access.userId,

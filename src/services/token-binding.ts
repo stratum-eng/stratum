@@ -1,10 +1,3 @@
-/**
- * Turning a requested token binding into a stored one, and a stored one back
- * into something a person can read (#323).
- *
- * Shared by `POST /api/users/me/tokens` and the settings form so the two doors
- * to token creation cannot drift on what they accept or who may bind to what.
- */
 import type { ApiTokenSummary } from "../storage/api-tokens";
 import { findOrgSlugById, getOrgAccessLevel, getOrgBySlug } from "../storage/orgs";
 import { getProjectByPath, listProjects } from "../storage/state";
@@ -13,6 +6,14 @@ import { canReadProject } from "../utils/authz";
 import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+/**
+ * Turning a requested token binding into a stored one, and a stored one back
+ * into something a person can read (#323).
+ *
+ * Shared by `POST /api/users/me/tokens` and the settings form so the two doors
+ * to token creation cannot drift on what they accept or who may bind to what.
+ */
+import { orgBlockedBySecondFactor } from "./org-second-factor";
 
 /** What a caller asked to bind a new token to, before it is checked. */
 export type BindingRequest =
@@ -105,6 +106,11 @@ export async function resolveBindingRequest(
       if (creatorBinding.kind === "org" && creatorBinding.orgId !== found.data.id) {
         return err(orgNotFound(request.slug));
       }
+      // An org whose second-factor policy this session has not met grants
+      // nothing here either (#256): binding a token to it would hand the
+      // session a credential for exactly the resources the policy withholds.
+      // Recorded, so the response can name the policy instead of "not found".
+      if (orgBlockedBySecondFactor(found.data.id)) return err(orgNotFound(request.slug));
       const level = await getOrgAccessLevel(env.DB, logger, found.data.id, userId);
       if (level === "none") return err(orgNotFound(request.slug));
       return ok({ binding: { kind: "org", orgId: found.data.id }, label: `@${found.data.slug}` });

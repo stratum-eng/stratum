@@ -6,6 +6,10 @@ import { buildUsageReport } from "../billing/usage-report";
 import { cannotMintLegacyCredential } from "../middleware/auth";
 import { NO_ANALYTICS_HEADER } from "../middleware/web-analytics";
 import {
+  credentialMintRefusalMessage,
+  orgBlockingCredentialMint,
+} from "../services/org-second-factor";
+import {
   type BindingRequest,
   describeTokenBindings,
   parseBindingRequest,
@@ -894,6 +898,21 @@ app.post("/settings/tokens", async (c) => {
     creatorBinding: credentialBindingFrom(c),
     request: parsed.binding,
   });
+  // A binding refused by an org's second-factor policy (#256) is answered here,
+  // on the settings page, not as the generic JSON the org-policy middleware
+  // would swap in for this form POST's 404.
+  const deniedOrg = c.get("secondFactorDeniedOrg");
+  if (!resolvedBinding.success && deniedOrg !== undefined) {
+    c.set("secondFactorDeniedOrg", undefined);
+    const page = await renderSettings(c, user, access.telemetryOptOut, logger, {
+      notice: {
+        kind: "error",
+        message: credentialMintRefusalMessage(deniedOrg, { bindable: true }),
+      },
+      formValues,
+    });
+    return c.html(page, 403);
+  }
   if (!resolvedBinding.success) {
     const status =
       resolvedBinding.error.statusCode === 400
@@ -915,6 +934,20 @@ app.post("/settings/tokens", async (c) => {
       formValues,
     });
     return c.html(page, status);
+  }
+
+  // Same rule as `POST /api/users/me/tokens`: under an unmet org second-factor
+  // policy (#256) only a bound token may be minted.
+  const blockingOrg = orgBlockingCredentialMint(c, { bound: resolvedBinding.data !== null });
+  if (blockingOrg) {
+    const page = await renderSettings(c, user, access.telemetryOptOut, logger, {
+      notice: {
+        kind: "error",
+        message: credentialMintRefusalMessage(blockingOrg.slug, { bindable: true }),
+      },
+      formValues,
+    });
+    return c.html(page, 403);
   }
 
   const createResult = await createApiToken(c.env.DB, logger, {
@@ -1134,6 +1167,17 @@ app.post("/settings/rotate-token", async (c) => {
     return c.html(sessionRequiredError(), 403);
   }
 
+  const blockingOrg = orgBlockingCredentialMint(c);
+  if (blockingOrg) {
+    const page = await renderSettings(c, user, telemetryOptOut, logger, {
+      notice: {
+        kind: "error",
+        message: credentialMintRefusalMessage(blockingOrg.slug, { bindable: false }),
+      },
+    });
+    return c.html(page, 403);
+  }
+
   const rotateResult = await rotateUserToken(c.env.DB, user.id, logger);
   if (!rotateResult.success) {
     logger.error("Failed to rotate API key", rotateResult.error);
@@ -1188,6 +1232,18 @@ app.post("/settings/agents", async (c) => {
     typeof form.model === "string" && form.model.trim()
       ? form.model.trim().slice(0, 100)
       : undefined;
+
+  const blockingOrg = orgBlockingCredentialMint(c);
+  if (blockingOrg) {
+    const page = await renderSettings(c, user, telemetryOptOut, logger, {
+      notice: {
+        kind: "error",
+        message: credentialMintRefusalMessage(blockingOrg.slug, { bindable: false }),
+      },
+      formValues: { agentName: name, ...(model !== undefined ? { agentModel: model } : {}) },
+    });
+    return c.html(page, 403);
+  }
 
   const createResult = await createAgent(c.env.DB, user.id, name, logger, model);
   if (!createResult.success) {

@@ -132,6 +132,25 @@ resources return `403` with code `SECOND_FACTOR_REQUIRED` and a link to
 Two org endpoints stay open even when the policy blocks you: reading the policy
 (`GET /api/orgs/{slug}/security`) and leaving the org.
 
+### Creating credentials
+
+A credential you create keeps working after you create it, whatever session it
+came from, so the policy also applies when a credential is **created**. While
+your session has not met an org's policy, you cannot create anything that could
+reach that org:
+
+- an API token that is not limited to one project or organization
+- a token limited to that org, or to one of its projects
+- an agent token
+- a rotated legacy API key
+- a connection for an MCP client or the CLI (the consent screen explains why
+  instead of asking you to allow)
+
+These requests return `403 SECOND_FACTOR_REQUIRED`, and the settings pages
+show the same explanation. You can still create a token limited to one of your
+own projects, or to an organization without the policy. Meeting the policy as
+described above lifts the restriction, and so does leaving the org.
+
 ### Leaving an organization
 
 Any member can remove themselves from an organization with

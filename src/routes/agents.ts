@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cannotMintLegacyCredential } from "../middleware/auth";
+import { credentialMintRefused, orgBlockingCredentialMint } from "../services/org-second-factor";
 import { createAgent, deleteAgent, getAgent, listAgents } from "../storage/agents";
 import { recordAudit } from "../storage/audit";
 import type { Env } from "../types";
@@ -40,6 +41,11 @@ app.post("/", async (c) => {
       403,
     );
   }
+
+  // An agent token is account-wide, so an unmet org second-factor policy
+  // (#256) refuses it: the agent would reach that org's projects.
+  const blockingOrg = orgBlockingCredentialMint(c);
+  if (blockingOrg) return credentialMintRefused(c, blockingOrg, { bindable: false });
 
   const body = await readJsonWithLimit<{
     name?: unknown;
