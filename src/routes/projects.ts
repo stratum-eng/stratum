@@ -1775,6 +1775,7 @@ app.post("/:namespace/:slug/branches", async (c) => {
     action: "branch.created",
     ...auditActor(c),
     subject: `${project.namespace}/${project.slug}`,
+    project,
     detail: { branch: createResult.data.name, oid: createResult.data.oid },
   });
 
@@ -1826,6 +1827,7 @@ app.delete("/:namespace/:slug/branches/*", async (c) => {
     action: "branch.deleted",
     ...auditActor(c),
     subject: `${project.namespace}/${project.slug}`,
+    project,
     detail: { branch: name },
   });
 
@@ -2922,6 +2924,7 @@ async function handleProjectDelete(c: Context<{ Bindings: Env }>) {
     actorType: "user",
     actorId: userId,
     subject: job.id,
+    project,
     detail: { kind: "project", namespace: project.namespace, slug: project.slug },
   });
 

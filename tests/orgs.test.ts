@@ -31,6 +31,9 @@ vi.mock("../src/storage/orgs", () => ({
   removeOrgMember: vi.fn(),
   isOrgAdmin: vi.fn(),
   isOrgMember: vi.fn(),
+  // Default: the target is not yet a member, so a POST is an add and a
+  // DELETE is a no-op as far as the audit trail is concerned (#255).
+  getOrgMemberRole: vi.fn().mockResolvedValue({ success: true, data: null }),
 }));
 
 vi.mock("../src/storage/project-namespace", () => ({

@@ -10,7 +10,9 @@ import { deleteSession, getSession } from "../storage/sessions";
 import { getSsoConnectionByScimTokenHash } from "../storage/sso";
 import { getUser, getUserByToken } from "../storage/users";
 import type { ApiTokenScope, CredentialBinding, Env, User } from "../types";
+import { auditAuthFailure } from "../utils/auth-audit";
 import { hashToken } from "../utils/crypto";
+import { RejectedCredentialError } from "../utils/errors";
 import { getWaitUntil } from "../utils/execution-ctx";
 import { isWriteMethod } from "../utils/http-methods";
 import { type Logger, createLogger } from "../utils/logger";
@@ -272,6 +274,19 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         lastUsedAt = scopedToken.data.lastUsedAt;
         binding = scopedToken.data.binding;
       } else {
+        // A scoped token that exists but was refused (revoked, expired, owner
+        // disabled/deleting) names an account: audit it (#255). The legacy
+        // lookup below still runs and still fails — distinct hashes — so the
+        // outcome is unchanged.
+        if (scopedToken.error instanceof RejectedCredentialError) {
+          await auditAuthFailure(c, c.env.DB, logger, {
+            method: "api_token",
+            reason: scopedToken.error.reason,
+            actorType: "user",
+            actorId: scopedToken.error.userId,
+            subject: scopedToken.error.credentialId,
+          });
+        }
         const userResult = await getUserByToken(c.env.DB, token, logger);
         if (!userResult.success) {
           logger.warn("Auth failed - invalid user token", {
@@ -288,6 +303,13 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
           logger.warn("Auth rejected - user is deleting or disabled", {
             path: c.req.path,
             userId: userResult.data.id,
+          });
+          await auditAuthFailure(c, c.env.DB, logger, {
+            method: "legacy_token",
+            reason: userResult.data.deletingAt ? "owner-deleting" : "owner-disabled",
+            actorType: "user",
+            actorId: userResult.data.id,
+            subject: userResult.data.id,
           });
           return rejectToken("Invalid token");
         }
@@ -402,6 +424,18 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         logger.warn("Auth failed - agent owner is missing, deleting, or disabled", {
           path: c.req.path,
         });
+        await auditAuthFailure(c, c.env.DB, logger, {
+          method: "agent_token",
+          reason: !ownerResult.success
+            ? "owner-missing"
+            : ownerResult.data.deletingAt
+              ? "owner-deleting"
+              : "owner-disabled",
+          actorType: "agent",
+          actorId: agentResult.data.id,
+          subject: agentResult.data.id,
+          detail: { ownerId: agentResult.data.ownerId },
+        });
         return rejectToken("Invalid token");
       }
       c.set("agentId", agentResult.data.id);
@@ -476,6 +510,15 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
           path: c.req.path,
           tokenHint: sanitizeToken(token),
         });
+        if (grant.error instanceof RejectedCredentialError) {
+          await auditAuthFailure(c, c.env.DB, logger, {
+            method: "oauth_token",
+            reason: grant.error.reason,
+            actorType: "user",
+            actorId: grant.error.userId,
+            subject: grant.error.credentialId,
+          });
+        }
         return rejectToken("Invalid token");
       }
 

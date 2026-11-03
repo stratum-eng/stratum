@@ -3036,6 +3036,99 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/orgs/{slug}/audit:
+    parameters:
+      - $ref: "#/components/parameters/OrgSlug"
+    get:
+      operationId: listOrgAudit
+      tags: [orgs]
+      summary: Read the organization's audit log (org admins/owner only)
+      description: |
+        Audit events that belong to this organization, newest first: membership
+        and role changes, teams, SSO and SCIM administration, failed SSO
+        sign-ins, and events on the org's projects (forced merges, webhooks,
+        branches, deploy secrets and approvals, deletions). Rows recorded before
+        org scoping existed are not attributed to any org and appear only in
+        the instance-wide admin view.
+
+        Paginate by passing the response's `nextCursor` back as `cursor`; it is
+        absent on the last page. `format=ndjson` returns the same stream as
+        `GET /api/orgs/{slug}/audit/export`.
+
+        Plain members get 403. Non-members get the same 404 as a missing org.
+      parameters:
+        - $ref: "#/components/parameters/AuditAction"
+        - name: actor
+          in: query
+          schema: { type: string }
+          description: Filter by actor id
+        - $ref: "#/components/parameters/AuditSince"
+        - $ref: "#/components/parameters/AuditUntil"
+        - $ref: "#/components/parameters/AuditCursor"
+        - $ref: "#/components/parameters/AuditLimit"
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, ndjson] }
+          description: "`ndjson` streams the export instead of returning one page"
+      responses:
+        "200":
+          description: One page of audit entries (or an NDJSON stream with `format=ndjson`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditPage" }
+            application/x-ndjson:
+              schema: { $ref: "#/components/schemas/AuditEntry" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/orgs/{slug}/audit/export:
+    parameters:
+      - $ref: "#/components/parameters/OrgSlug"
+    get:
+      operationId: exportOrgAudit
+      tags: [orgs]
+      summary: Export the organization's audit log as NDJSON (org admins/owner only)
+      description: |
+        Streams every entry in `[since, until)` as newline-delimited JSON, one
+        `AuditEntry` per line, newest first, as a file download. `until`
+        defaults to now and `since` to 30 days before `until`; the window may
+        not exceed 90 days (400 otherwise) — export longer periods in
+        consecutive windows. A storage failure after the stream has started
+        aborts the download rather than ending it early, so a complete file is
+        always a complete window.
+      parameters:
+        - $ref: "#/components/parameters/AuditAction"
+        - name: actor
+          in: query
+          schema: { type: string }
+          description: Filter by actor id
+        - $ref: "#/components/parameters/AuditSince"
+        - $ref: "#/components/parameters/AuditUntil"
+      responses:
+        "200":
+          description: NDJSON stream of audit entries
+          content:
+            application/x-ndjson:
+              schema: { $ref: "#/components/schemas/AuditEntry" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/orgs/{slug}/sso:
     parameters:
       - $ref: "#/components/parameters/OrgSlug"
@@ -4158,33 +4251,36 @@ paths:
     get:
       operationId: adminAudit
       tags: [admin]
-      summary: Query the audit trail
+      summary: Query the instance-wide audit trail
+      description: |
+        Every audit row on the instance, newest first, including account-level
+        events that belong to no organization. Paginated with an opaque
+        `cursor`; see `GET /api/orgs/{slug}/audit` for the org-scoped view.
       security:
         - bearerAuth: []
         - adminApiKey: []
       parameters:
-        - name: action
-          in: query
-          schema: { type: string }
-          description: Filter by audit action (e.g. merge.forced, token.rotated)
+        - $ref: "#/components/parameters/AuditAction"
         - name: actor
           in: query
           schema: { type: string }
           description: Filter by actor id
-        - name: limit
+        - name: org
           in: query
-          schema: { type: integer }
+          schema: { type: string }
+          description: Filter to one organization's rows, by org id
+        - $ref: "#/components/parameters/AuditSince"
+        - $ref: "#/components/parameters/AuditUntil"
+        - $ref: "#/components/parameters/AuditCursor"
+        - $ref: "#/components/parameters/AuditLimit"
       responses:
         "200":
-          description: Audit entries
+          description: One page of audit entries
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  entries:
-                    type: array
-                    items: { $ref: "#/components/schemas/AuditEntry" }
+              schema: { $ref: "#/components/schemas/AuditPage" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
         "500":
@@ -4893,6 +4989,31 @@ components:
       required: true
       schema: { type: string }
       description: Organization slug
+    AuditAction:
+      name: action
+      in: query
+      schema: { type: string }
+      description: Filter by audit action (e.g. org.member.role_changed, auth.failed, merge.forced)
+    AuditSince:
+      name: since
+      in: query
+      schema: { type: string, format: date-time }
+      description: Inclusive lower bound on createdAt (ISO-8601)
+    AuditUntil:
+      name: until
+      in: query
+      schema: { type: string, format: date-time }
+      description: Exclusive upper bound on createdAt (ISO-8601)
+    AuditCursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+      description: Opaque cursor from a previous page's `nextCursor`
+    AuditLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      description: Page size; values above 500 are clamped
     ChangeId:
       name: id
       in: path
@@ -5664,16 +5785,36 @@ components:
         id: { type: string }
         action:
           type: string
-          description: e.g. token.rotated, agent.created, merge.forced, deletion.requested
+          description: |
+            e.g. token.rotated, agent.created, merge.forced, deletion.requested,
+            org.member.added, org.member.removed, org.member.role_changed,
+            team.created, team.member.added, auth.failed
         actorType:
           type: string
           enum: [user, agent, system]
         actorId: { type: string }
         subject: { type: string }
+        orgId:
+          type: string
+          description: The organization the event belongs to; absent for account-level events
+        projectId:
+          type: string
+          description: The project the event happened in, when it happened in one
         detail:
           type: object
           additionalProperties: true
         createdAt: { type: string, format: date-time }
+
+    AuditPage:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEntry" }
+        nextCursor:
+          type: string
+          description: Pass back as `cursor` for the next (older) page; absent on the last page
 
     DeletionAccepted:
       type: object

@@ -482,6 +482,13 @@ describe("account-level surfaces refuse a bound token", () => {
     ["GET", "/api/orgs"],
     ["GET", "/api/orgs/acme"],
     ["POST", "/api/orgs/acme/members", { userId: "usr_other" }],
+    // The org audit log (#255) is org administration: refused even for a token
+    // bound to that same org. A binding narrows a credential to a project/org's
+    // CODE, not to administering it, and the trail names every member's
+    // activity — reading it stays a session or unbound-token privilege.
+    ["GET", "/api/orgs/acme/audit"],
+    ["GET", "/api/orgs/acme/audit/export"],
+    ["GET", "/api/orgs/acme/audit?format=ndjson"],
     ["POST", "/api/bulk-import", {}],
     ["GET", "/api/admin/audit"],
     ["GET", "/auth/sessions"],

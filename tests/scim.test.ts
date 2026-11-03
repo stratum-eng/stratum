@@ -1114,7 +1114,14 @@ describe("Goal-8 E2E: deactivate kills every credential; reactivate restores", (
     expect(actions.map((row) => row.action)).toEqual(
       expect.arrayContaining(["scim.user.deactivated", "user.disabled"]),
     );
-    for (const row of actions) expect(row.actor_type).toBe("system");
+    const lifecycle = actions.filter((row) => row.action !== "auth.failed");
+    for (const row of lifecycle) expect(row.actor_type).toBe("system");
+    // The disabled user's legacy token was presented (HTTP and git) — it
+    // names a real account, so it lands as a failed authentication (#255),
+    // deduped to one row for the minute however many times it was tried.
+    const failures = actions.filter((row) => row.action === "auth.failed");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.actor_type).toBe("user");
 
     // Reactivate — the SAME token and agent credentials work again (sessions
     // were destroyed, not suspended, so the cookie stays dead).

@@ -1,6 +1,11 @@
 import type { ApiTokenScope, BoundCredentialBinding, CredentialBinding, User } from "../types";
 import { generateApiKey, hashToken } from "../utils/crypto";
-import { AppError, NotFoundError } from "../utils/errors";
+import {
+  AppError,
+  type CredentialRejection,
+  NotFoundError,
+  RejectedCredentialError,
+} from "../utils/errors";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
@@ -380,6 +385,11 @@ interface ResolvedTokenRow {
   token_binding_id: string | null;
 }
 
+/** A refusal that names the account, for the auth-failure audit (#255). */
+function rejected(reason: CredentialRejection, row: ResolvedTokenRow): RejectedCredentialError {
+  return new RejectedCredentialError(reason, row.user_id, row.token_id);
+}
+
 /**
  * Resolves a `stratum_user_` plaintext against the scoped-token table.
  *
@@ -428,14 +438,17 @@ export async function resolveApiToken(
   }
 
   if (!row) return err(new NotFoundError("Token", "by-token"));
-  if (row.token_revoked_at !== null) return err(new NotFoundError("Token", "revoked"));
-  if (row.deleting_at !== null) return err(new NotFoundError("Token", "owner-deleting"));
+  if (row.token_revoked_at !== null) return err(rejected("revoked", row));
+  if (row.deleting_at !== null) return err(rejected("owner-deleting", row));
   // A SCIM-disabled owner is as inert as a deleting one (#253); the column is
   // NULL on enabled accounts, and `!= null` also tolerates a stub row without it.
-  if (row.disabled_at != null) return err(new NotFoundError("Token", "owner-disabled"));
-  if (isExpired(row.token_expires_at)) return err(new NotFoundError("Token", "expired"));
+  if (row.disabled_at != null) return err(rejected("owner-disabled", row));
+  if (isExpired(row.token_expires_at)) return err(rejected("expired", row));
   // Rejected, not read as account-wide: see `narrowTokenBinding`. Answered here
   // rather than falling through, so the legacy fallback cannot launder it.
+  // Deliberately a plain NotFoundError, not a RejectedCredentialError: a
+  // malformed binding is a storage-integrity fault (already logged here), not
+  // something the credential's holder did, so it is not an auth-failure audit.
   const binding = narrowTokenBinding(row.token_binding_kind, row.token_binding_id);
   if (binding === null) {
     logger.warn("Scoped token has a malformed binding; refusing it", { tokenId: row.token_id });

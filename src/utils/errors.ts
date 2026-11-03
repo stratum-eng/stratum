@@ -24,6 +24,27 @@ export class NotFoundError extends AppError {
   }
 }
 
+/** Why a credential that DOES exist was refused. */
+export type CredentialRejection = "revoked" | "expired" | "owner-deleting" | "owner-disabled";
+
+/**
+ * A credential lookup that found a real row and refused it. Still a
+ * NotFoundError — callers that only care "did it authenticate" treat it like
+ * an unknown token — but it carries who the credential belongs to, so the
+ * auth middleware can audit a failure that identifies an account (#255)
+ * without a second lookup.
+ */
+export class RejectedCredentialError extends NotFoundError {
+  constructor(
+    public readonly reason: CredentialRejection,
+    public readonly userId: string,
+    public readonly credentialId: string,
+  ) {
+    super("Token", reason);
+    this.name = "RejectedCredentialError";
+  }
+}
+
 export class AuthError extends AppError {
   constructor(message = "Authentication required") {
     super(message, "AUTH_ERROR", 401);
