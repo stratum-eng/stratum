@@ -4,8 +4,10 @@ import { readFileFromRepo } from "../storage/git-ops";
 import { type Logger, defaultLogger } from "../utils/logger";
 import {
   MAX_COMMAND_LENGTH,
+  MAX_LLM_TIMEOUT_MS,
   MAX_PHASE_TIMEOUT_MS,
   MAX_TOTAL_BUDGET_MS,
+  MIN_LLM_TIMEOUT_MS,
   MIN_PHASE_TIMEOUT_MS,
   MIN_TOTAL_BUDGET_MS,
 } from "./limits";
@@ -480,7 +482,14 @@ function sanitizeSandboxConfig(
 }
 
 /** Fields an `llm` evaluator entry may carry. Everything else is ignored. */
-const LLM_CONFIG_KEYS = new Set(["type", "provider", "model", "threshold", "maxDiffChars"]);
+const LLM_CONFIG_KEYS = new Set([
+  "type",
+  "provider",
+  "model",
+  "threshold",
+  "maxDiffChars",
+  "timeoutMs",
+]);
 
 /**
  * Longest `model` a policy may name. Generous for every provider's identifiers
@@ -595,6 +604,17 @@ export function sanitizeLlmConfig(
       submitted: forLog(source.maxDiffChars),
     });
   }
+
+  // Clamped like every other evaluator timeout: an out-of-range value is a
+  // bounded mistake, not a malformed file, and the ceiling is what stops a
+  // policy holding an evaluation consumer open indefinitely (#412).
+  const timeoutMs = clampDuration(
+    source.timeoutMs,
+    { min: MIN_LLM_TIMEOUT_MS, max: MAX_LLM_TIMEOUT_MS },
+    "llm.timeoutMs",
+    logger,
+  );
+  if (timeoutMs !== undefined) config.timeoutMs = timeoutMs;
 
   return config;
 }

@@ -125,9 +125,24 @@ branch. See the [OpenAPI specification](/reference/openapi/) for exact schemas, 
 ### Create Change
 `POST /api/projects/{name}/changes`
 
-Evaluation runs **synchronously** at creation, so a slow evaluator stretches the
-request. A workspace containing git submodules is refused here with a `400`
-carrying the explanatory message.
+Evaluation runs **off the request** where the instance has an evaluation queue
+(the hosted instance does): the response is `202` with the change in status
+`evaluating` and no verdict. Poll `GET /api/changes/{id}` until the status leaves
+`evaluating` — it becomes `accepted` or `needs_changes`, with the evaluation runs
+recorded exactly as an inline evaluation records them. A change cannot be merged
+while it is `evaluating`, even with `force`.
+
+Each evaluator runs under its own deadline, so one that hangs fails closed in
+place (score 0, a reason naming the deadline) without holding up the others. A
+run that cannot finish at all — retries exhausted, or a consumer that never
+reported back, which the five-minute sweep detects — leaves the change
+`needs_changes` with `evalReason` starting `Evaluation did not complete`.
+Re-evaluate to try again.
+
+On an instance with no evaluation queue bound, or when enqueueing fails,
+evaluation runs inline and the response is `201` with the verdict, as it always
+was. A workspace containing git submodules is refused with the explanatory
+message — inline as a `400`, queued as a `needs_changes` verdict.
 
 ### Get Change
 `GET /api/changes/{id}`
@@ -136,6 +151,13 @@ carrying the explanatory message.
 `POST /api/changes/{id}/evaluate`
 
 Users only. Merged, rejected, and promoted changes cannot be re-evaluated.
+
+With an evaluation queue this **re-enqueues** and answers `202`: the change
+moves to `evaluating` under a new run, and any run still in flight is
+superseded — its verdict is discarded when it finishes, so an older run can
+never overwrite a newer revision's result. Re-evaluating a change that is stuck
+in `evaluating` is allowed, and is the manual way to recover it. Without the
+queue the evaluation runs inline and answers `200` with the verdict.
 
 Re-evaluation runs under the **current** evaluator defaults, so a change that
 passed under older limits may fail. Approvals are dismissed when the evaluated
@@ -154,6 +176,8 @@ the full list and the response shapes):
 
 | Code | Meaning |
 |---|---|
+| `EVALUATION_PENDING` | The change is still `evaluating`; refused even with `force` |
+| `EVALUATION_MISSING` | The evaluation failed closed and pinned no revision; refused even with `force` — re-evaluate first |
 | `STALE_BASE` | The recorded base is behind project HEAD (`merge.requireFreshBase`) |
 | `STALE_WORKSPACE` | The workspace advanced after evaluation |
 | `WORKSPACE_UNVERIFIABLE` | Workspace state could not be verified against what was evaluated |
@@ -184,6 +208,11 @@ The PR base is **always the project's own recorded default branch** and is not
 accepted from the request body: this endpoint acts with the instance-wide GitHub
 token, so honouring a caller-supplied base would let any caller aim that shared
 credential at a branch of its choosing.
+
+If a re-evaluation begins while the branch is being pushed, the response is
+`409 EVALUATION_PENDING`: the PR exists and its link is recorded (`github` in
+the body), but the change is not marked `promoted`. Promote again once the
+evaluation finishes; that re-pushes to the same PR.
 
 Once a change has a linked PR, each evaluation posts the verdict to the PR as a
 comment (edited in place on re-evaluation) and as a `stratum/evaluation` commit
@@ -231,8 +260,21 @@ does not gate a merge.
 `POST /api/changes/{id}/reviews`
 
 **Users only** — agent tokens are refused, on every surface. Requires **write**
-access to the project. Valid on changes in `open`, `needs_changes`,
-`accepted`, or `approved`.
+access to the project. Valid on changes in `open`, `evaluating`,
+`needs_changes`, `accepted`, or `approved`.
+
+While a change is `evaluating`, `approve` is refused with `409
+EVALUATION_PENDING`. Until the evaluation pins the revision it judged, an
+approval cannot be tied to the code the reviewer actually saw. `request_changes`
+and `comment` are accepted but do not change the status; the evaluation's
+verdict sets it — except that a `request_changes` made while it was pending
+outranks a pass: the change lands on `needs_changes`, not `accepted`.
+
+An approval is recorded only if the change is still exactly as it was loaded —
+same status, evaluation run, evaluated revision and base. If it moved in
+between, nothing is recorded and the response is `409 EVALUATION_PENDING` (an
+evaluation started) or `409 REVIEW_STALE` (anything else); reload and review
+again.
 
 **Approvals are made by a signed-in human.** `approve` requires a browser
 session (or the legacy user key). A scoped API token or an OAuth grant — what

@@ -238,7 +238,9 @@ requiring a human approval and refusing force-merge.
   `model` picks the reviewer (default: `@cf/meta/llama-3.1-8b-instruct`, which
   the **Workers AI binding** serves); `threshold` is the minimum passing score
   (0.0–1.0); `maxDiffChars` bounds how much diff is sent (default 24,000, max
-  100,000); `provider` runs the review on your own key instead of the
+  100,000); `timeoutMs` is how long the reviewer may take (default 30s,
+  clamped to 1s–120s) — a model that has not answered by then **fails closed**,
+  score 0; `provider` runs the review on your own key instead of the
   instance's binding (see [Bringing your own model key](#bringing-your-own-model-key)).
   An unavailable model or unparseable verdict fails closed. Token usage is
   recorded on the change as a cost record — the counts the provider reports,
@@ -247,11 +249,20 @@ requiring a human approval and refusing force-merge.
   merge-blocking policy error, because the two entries cannot both be the
   configuration in force.
 
-  Those four keys are the *only* keys this entry accepts. It is a whitelist:
+  Those five keys are the *only* keys this entry accepts. It is a whitelist:
   anything else you write here — including `baseUrl` — is ignored with a
   warning in the instance's logs and never reaches the reviewer. There is
   deliberately no way for a policy file to name an endpoint; a project may
   only select a provider the operator has already configured.
+
+Evaluators run **off the request** on an instance with an evaluation queue
+(the hosted instance has one): opening a change returns at once with the change
+`evaluating`, and the verdict lands a few seconds to a few minutes later — use
+the change page's **Refresh** link to see it. A change cannot merge, and cannot
+be approved, while it is `evaluating`; you can still request changes, and that
+request stands even if the evaluation then passes. Every evaluator runs under its own deadline (its configured
+timeout plus a short grace), so one that hangs fails closed on its own and the
+rest still report. See [ADR 009](https://github.com/stratum-eng/stratum/blob/main/docs/adr/009-asynchronous-evaluation.md).
 
 A policy may declare **at most 16 `evaluators:` entries**; more than that is a
 policy error and blocks merges, the same as any other unusable entry. (The

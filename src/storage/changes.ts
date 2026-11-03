@@ -35,6 +35,10 @@ interface ChangeRow {
   github_comment_id: number | null;
   promoted_at: string | null;
   promoted_by: string | null;
+  /** Added by migration 063; optional so a row from an older schema (or a
+   * test fixture) still maps. */
+  eval_run_id?: string | null;
+  eval_requested_at?: string | null;
 }
 
 function rowToChange(row: ChangeRow): Change {
@@ -70,6 +74,8 @@ function rowToChange(row: ChangeRow): Change {
   if (row.github_comment_id !== null) change.githubCommentId = row.github_comment_id;
   if (row.promoted_at !== null) change.promotedAt = row.promoted_at;
   if (row.promoted_by !== null) change.promotedBy = row.promoted_by;
+  if (typeof row.eval_run_id === "string") change.evalRunId = row.eval_run_id;
+  if (typeof row.eval_requested_at === "string") change.evalRequestedAt = row.eval_requested_at;
   return change;
 }
 
@@ -90,28 +96,39 @@ export async function createChange(
     /** Human author (acting user, or an agent's owner). Excluded from the
      * required-approval count so a change cannot be self-approved. */
     createdByUserId?: string;
+    /**
+     * Create the change already waiting on this evaluation run (#412), in
+     * status `evaluating`, rather than `open`. One INSERT rather than an
+     * INSERT and an UPDATE, so there is no window in which the row exists
+     * with neither a verdict nor a run that will produce one.
+     */
+    evaluation?: { runId: string; requestedBy?: string };
   },
 ): Promise<Result<Change, AppError>> {
   const id = newId("chg");
   const createdAt = new Date().toISOString();
+  const status: Change["status"] = opts.evaluation ? "evaluating" : "open";
 
   try {
     await db
       .prepare(
-        "INSERT INTO changes (id, project, project_id, workspace, status, agent_id, base_sha, agent_model, agent_prompt_hash, created_by_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO changes (id, project, project_id, workspace, status, agent_id, base_sha, agent_model, agent_prompt_hash, created_by_user_id, created_at, eval_run_id, eval_requested_at, eval_requested_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         id,
         opts.project,
         opts.projectId ?? null,
         opts.workspace,
-        "open",
+        status,
         opts.agentId ?? null,
         opts.baseSha ?? null,
         opts.agentModel ?? null,
         opts.agentPromptHash ?? null,
         opts.createdByUserId ?? null,
         createdAt,
+        opts.evaluation?.runId ?? null,
+        opts.evaluation ? createdAt : null,
+        opts.evaluation?.requestedBy ?? null,
       )
       .run();
 
@@ -119,9 +136,13 @@ export async function createChange(
       id,
       project: opts.project,
       workspace: opts.workspace,
-      status: "open",
+      status,
       createdAt,
     };
+    if (opts.evaluation) {
+      change.evalRunId = opts.evaluation.runId;
+      change.evalRequestedAt = createdAt;
+    }
     if (opts.projectId !== undefined) change.projectId = opts.projectId;
     if (opts.agentId !== undefined) change.agentId = opts.agentId;
     if (opts.baseSha !== undefined) change.baseSha = opts.baseSha;
@@ -315,7 +336,32 @@ export interface UpdateChangeStatusOpts {
   githubHeadSha?: string;
   promotedAt?: string;
   promotedBy?: string;
+  /**
+   * Not a column. Lets a non-terminal status overwrite `evaluating` — only the
+   * inline evaluation paths, which ARE the verdict, may set it. See
+   * {@link STATUSES_ALLOWED_FROM_EVALUATING}.
+   */
+  allowFromEvaluating?: boolean;
 }
+
+/**
+ * Statuses that may replace `evaluating` through an ordinary status write.
+ *
+ * Every other transition out of `evaluating` belongs to the run that is
+ * pending (#412): a review approving the change, a promotion, a GitHub review
+ * marking it needs_changes — each read the status before a re-evaluation moved
+ * it to `evaluating`, and landing after would both make the change mergeable
+ * with no verdict and orphan the run, whose write is conditional on the status
+ * still being `evaluating`. Those writes are therefore guarded to leave an
+ * evaluating row alone. Closing or merging a change is final and wins over a
+ * pending run, which then finds the row moved on and records nothing.
+ */
+const STATUSES_ALLOWED_FROM_EVALUATING: readonly Change["status"][] = [
+  "evaluating",
+  "rejected",
+  "merged",
+  "reverted",
+];
 
 /**
  * Build (without running) the `UPDATE changes` statement for a status/opts
@@ -365,7 +411,77 @@ function buildUpdateChangeStatusStatement(
 
   bindings.push(id);
 
-  return db.prepare(`UPDATE changes SET ${assignments.join(", ")} WHERE id = ?`).bind(...bindings);
+  const guard =
+    opts?.allowFromEvaluating === true || STATUSES_ALLOWED_FROM_EVALUATING.includes(status)
+      ? ""
+      : " AND status != 'evaluating'";
+  return db
+    .prepare(`UPDATE changes SET ${assignments.join(", ")} WHERE id = ?${guard}`)
+    .bind(...bindings);
+}
+
+/** The error a status write held back by a pending run reports (#412). */
+export function evaluationPendingError(changeId: string): AppError {
+  return new AppError("Evaluation is still pending", "EVALUATION_PENDING", 409, { changeId });
+}
+
+/** A change's GitHub PR link: written without touching its status. */
+export type GithubPrLink = Pick<
+  UpdateChangeStatusOpts,
+  | "githubOwner"
+  | "githubRepo"
+  | "githubBranch"
+  | "githubPrNumber"
+  | "githubPrUrl"
+  | "githubPrState"
+  | "githubHeadSha"
+>;
+
+/**
+ * Record a change's GitHub PR link and nothing else.
+ *
+ * The link describes a PR that exists on GitHub whatever state the change is
+ * in, so it is never subject to the evaluating guard a status write is. A
+ * promotion whose status write a pending run held back records the link
+ * through here, so the next promotion re-pushes to that PR instead of opening
+ * a second one.
+ */
+export async function recordGithubPrLink(
+  db: D1Database,
+  logger: Logger,
+  id: string,
+  link: GithubPrLink,
+): Promise<Result<void, AppError>> {
+  const columns: Array<[string, unknown]> = [
+    ["github_owner", link.githubOwner],
+    ["github_repo", link.githubRepo],
+    ["github_branch", link.githubBranch],
+    ["github_pr_number", link.githubPrNumber],
+    ["github_pr_url", link.githubPrUrl],
+    ["github_pr_state", link.githubPrState],
+    ["github_head_sha", link.githubHeadSha],
+  ];
+  const set = columns.filter(([, value]) => value !== undefined);
+  if (set.length === 0) return ok(undefined);
+  try {
+    await db
+      .prepare(
+        `UPDATE changes SET ${set.map(([column]) => `${column} = ?`).join(", ")} WHERE id = ?`,
+      )
+      .bind(...set.map(([, value]) => value), id)
+      .run();
+    logger.debug("GitHub PR link recorded", { changeId: id });
+    return ok(undefined);
+  } catch (error) {
+    const appError = new AppError(
+      error instanceof Error ? error.message : "Failed to record GitHub PR link",
+      "DATABASE_ERROR",
+      500,
+      { operation: "recordGithubPrLink", changeId: id },
+    );
+    logger.error("Failed to record GitHub PR link", appError, { changeId: id });
+    return err(appError);
+  }
 }
 
 /**
@@ -392,7 +508,15 @@ export async function updateChangeStatus(
       return err(notFoundError);
     }
 
-    await buildUpdateChangeStatusStatement(db, id, status, opts).run();
+    const result = await buildUpdateChangeStatusStatement(db, id, status, opts).run();
+    // The row exists, so a zero-row write means the evaluating guard held it:
+    // a run began between the caller's read and this write. Report it rather
+    // than answer success for a write that never landed — a caller carrying
+    // data alongside the status (a promotion's PR link) must not lose it.
+    if (result?.meta?.changes === 0) {
+      logger.info("Change status write held: evaluation pending", { changeId: id, status });
+      return err(evaluationPendingError(id));
+    }
 
     logger.debug("Change status updated", { changeId: id, status, opts });
     return ok(undefined);

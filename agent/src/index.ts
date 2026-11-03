@@ -140,12 +140,26 @@ async function main(): Promise<void> {
 
   process.stdout.write("Opening Change (runs evaluation)…\n");
   const result = await agentApi.createChange(project.name, workspaceName);
+  let verdict: { status: string; score?: number; passed: boolean; reason?: string };
+  if (result.eval) {
+    verdict = { status: result.change.status, ...result.eval };
+  } else {
+    process.stdout.write(`Change ${result.change.id} queued for evaluation; waiting…\n`);
+    const done = await agentApi.waitForEvaluation(result.change.id);
+    verdict = {
+      status: done.status,
+      passed: done.evalPassed === true,
+      ...(done.evalScore !== undefined ? { score: done.evalScore } : {}),
+      ...(done.evalReason !== undefined ? { reason: done.evalReason } : {}),
+    };
+  }
+  const score = verdict.score !== undefined ? verdict.score.toFixed(2) : "n/a";
   process.stdout.write(
-    `Change ${result.change.id}: ${result.change.status} — eval ${result.eval.score.toFixed(2)} ${result.eval.passed ? "passed" : "failed"}\n`,
+    `Change ${result.change.id}: ${verdict.status} — eval ${score} ${verdict.passed ? "passed" : "failed"}\n`,
   );
-  process.stdout.write(`Reason: ${result.eval.reason}\n`);
+  if (verdict.reason !== undefined) process.stdout.write(`Reason: ${verdict.reason}\n`);
 
-  if (!result.eval.passed) {
+  if (!verdict.passed) {
     process.exitCode = 2;
   }
 }

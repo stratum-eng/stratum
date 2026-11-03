@@ -182,6 +182,28 @@ describe("request_changes", () => {
   });
 });
 
+describe("while evaluation is pending (#412)", () => {
+  beforeEach(() => {
+    raw
+      .prepare("UPDATE changes SET status = 'evaluating', eval_run_id = 'erun_1' WHERE id = ?")
+      .run(changeId);
+  });
+
+  it("refuses an approval, because nothing pins the revision the reviewer saw", async () => {
+    const res = await review({ session: true }, "approve");
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe("EVALUATION_PENDING");
+    expect(approvals()).toBe(0);
+    expect(status()).toBe("evaluating");
+  });
+
+  it("records request_changes without taking the status from the pending run", async () => {
+    const res = await review({ session: true }, "request_changes");
+    expect(res.status).toBe(201);
+    expect(status()).toBe("evaluating");
+  });
+});
+
 describe("over MCP", () => {
   async function tool(verdict: string): Promise<{ isError?: boolean; text: string }> {
     const res = await app.fetch(

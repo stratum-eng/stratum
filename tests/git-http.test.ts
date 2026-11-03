@@ -49,6 +49,7 @@ vi.mock("../src/services/change-flow", async (importActual) => {
     createChangeWithEvaluation: vi.fn(async () => ({
       success: true,
       data: {
+        mode: "evaluated",
         change: { id: "chg_push1", status: "accepted" },
         evalResult: { score: 0.9, passed: true, reason: "clean" },
         evalRuns: [],

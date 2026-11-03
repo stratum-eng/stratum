@@ -1107,6 +1107,14 @@ gitHttpRouter.post("/:namespace/:slug/git-receive-pack", async (c) => {
     );
   }
 
+  // The gated push evaluates inline (no `queueRun`), so a verdict is always
+  // here; the push's own response is how the pusher learns it (#412 keeps
+  // this path synchronous — see ADR 009).
+  if (outcome.data.mode !== "evaluated") {
+    return refuseAll(`gated: change ${outcome.data.change.id} created — evaluation pending`, [
+      `Review and merge: /changes/${outcome.data.change.id}`,
+    ]);
+  }
   const { change, evalResult } = outcome.data;
   logger.info("Gated push created change", {
     changeId: change.id,

@@ -15,6 +15,7 @@ import { securityHeadersMiddleware, setHtmlSecurityHeaders } from "./middleware/
 import { sourceOfferMiddleware } from "./middleware/source-offer";
 import { webAnalyticsMiddleware } from "./middleware/web-analytics";
 import { handleDeployQueue } from "./queue/deploy-queue";
+import { handleEvaluationQueue } from "./queue/evaluation-queue";
 import { handleEventQueue } from "./queue/event-consumer";
 import type { EventQueueMessage } from "./queue/events";
 import { handleImportQueue } from "./queue/import-queue";
@@ -336,7 +337,7 @@ export default {
     const logger = createLogger({ component: "scheduled" });
     runScheduledJobs(event.cron, env, logger, (promise) => ctx.waitUntil(promise));
   },
-  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+  async queue(batch: MessageBatch<unknown>, env: Env, ctx?: ExecutionContext): Promise<void> {
     const logger = createLogger({ component: "queue" });
 
     // Route by queue-name prefix: Cloudflare queues are account-level, so each
@@ -354,6 +355,12 @@ export default {
       await handleEventQueue(batch as MessageBatch<EventQueueMessage>, env);
     } else if (queueName.startsWith("stratum-deploys")) {
       await handleDeployQueue(batch, env);
+    } else if (queueName.startsWith("stratum-evaluations")) {
+      await handleEvaluationQueue(
+        batch,
+        env,
+        ctx ? (promise: Promise<unknown>) => ctx.waitUntil(promise) : undefined,
+      );
     } else {
       // Unknown queue - ack all messages to prevent retries
       logger.warn("Unknown queue", { queue: queueName });

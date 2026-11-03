@@ -9,6 +9,7 @@ import {
   diffTouchesProtectedConfig,
   loadPolicy,
 } from "../evaluation";
+import { DEFAULT_TOTAL_BUDGET_MS, llmTimeoutMs } from "../evaluation/limits";
 import { resolveLlmProvider } from "../evaluation/llm-byok";
 import { llmProviderCatalog } from "../evaluation/llm-providers";
 import type { SandboxRepoAccess } from "../evaluation/sandbox-evaluator";
@@ -18,6 +19,7 @@ import type {
   EvalResult,
   EvaluationContext,
   Evaluator,
+  EvaluatorConfig,
 } from "../evaluation/types";
 import { buildEvaluationReport, reportEvaluationToGitHub } from "../github/sync";
 import { type EventActor, emitEvent } from "../queue/events";
@@ -153,6 +155,44 @@ export function billingContextFor(
   };
 }
 
+/** One evaluator, ready to run, with the wall clock it is allowed. */
+export interface BuiltEvaluator {
+  type: string;
+  evaluator: Evaluator;
+  /**
+   * How long `runEvaluation` waits for this evaluator before recording a
+   * failing verdict in its place (#412). Absent means
+   * `DEFAULT_EVALUATOR_DEADLINE_MS`.
+   */
+  deadlineMs?: number;
+}
+
+/**
+ * Headroom added on top of an evaluator's own configured timeout. The outer
+ * deadline is a backstop for an evaluator that does not honour its own — a
+ * Durable Object RPC that never settles, a binding with no signal — so it must
+ * sit far enough past the inner one that a well-behaved evaluator always
+ * reports its own, more specific, reason first.
+ */
+export const EVALUATOR_DEADLINE_GRACE_MS = 10_000;
+
+/** Deadline for an evaluator with no configurable timeout (secret scan, diff). */
+export const DEFAULT_EVALUATOR_DEADLINE_MS = 60_000;
+
+/** The outer deadline for one configured evaluator; see {@link BuiltEvaluator}. */
+export function evaluatorDeadlineMs(cfg: EvaluatorConfig): number {
+  switch (cfg.type) {
+    case "webhook":
+      return (cfg.timeoutMs ?? 10_000) + EVALUATOR_DEADLINE_GRACE_MS;
+    case "llm":
+      return llmTimeoutMs(cfg) + EVALUATOR_DEADLINE_GRACE_MS;
+    case "sandbox":
+      return (cfg.totalBudgetMs ?? DEFAULT_TOTAL_BUDGET_MS) + EVALUATOR_DEADLINE_GRACE_MS;
+    default:
+      return DEFAULT_EVALUATOR_DEADLINE_MS;
+  }
+}
+
 /**
  * Build the evaluator set for a policy: the always-on blocking secret scan plus
  * whatever the policy configures. Evaluators whose binding is missing become
@@ -188,7 +228,7 @@ export async function buildEvaluators(
    * behaviour, never a blocking fetch on the merge path.
    */
   waitUntil?: (promise: Promise<unknown>) => void,
-): Promise<Array<{ type: string; evaluator: Evaluator }>> {
+): Promise<BuiltEvaluator[]> {
   // Async only because of this: a policy that selects a BYOK provider needs the
   // project's credential resolved before the evaluator exists. It is a no-op —
   // no D1 read, no key derivation — for every policy that names no provider,
@@ -198,90 +238,116 @@ export async function buildEvaluators(
   // Guarded, because a legacy entry can carry no namespace — see
   // `projectDisplayName`, and this file's own `resolveProjectHead`.
   const projectName = projectDisplayName(project);
-  const evaluators: Array<{ type: string; evaluator: Evaluator }> = [
+  const evaluators: BuiltEvaluator[] = [
     { type: "secret_scan", evaluator: new SecretScanEvaluator() },
   ];
 
   evaluators.push(
-    ...policy.evaluators.flatMap((cfg): Array<{ type: string; evaluator: Evaluator }> => {
-      switch (cfg.type) {
-        case "diff":
-          return [{ type: "diff", evaluator: new DiffEvaluator() }];
-        case "webhook":
-          return [{ type: "webhook", evaluator: new WebhookEvaluator(cfg) }];
-        case "llm": {
-          // Every failure to resolve a project-supplied credential lands here,
-          // and NONE of them falls back to `env.AI`. Falling back would move
-          // the spend to the operator's bill — the hole BYOK closes — and would
-          // turn a misconfigured gate into one that quietly passes on someone
-          // else's budget. Fail closed with the reason instead.
-          if (llmProvider.status === "unavailable") {
-            return [
-              { type: "llm", evaluator: new UnavailableEvaluator("llm", llmProvider.reason) },
-            ];
-          }
-          const enforcement = { env, ...(waitUntil !== undefined ? { waitUntil } : {}) };
-          if (llmProvider.status === "byok") {
-            return [
-              {
-                type: "llm",
-                evaluator: new LLMEvaluator(llmProvider.provider, "byok", enforcement),
-              },
-            ];
-          }
-          if (env.AI)
-            return [
-              {
-                type: "llm",
-                evaluator: new LLMEvaluator(new WorkersAiProvider(env.AI), "platform", enforcement),
-              },
-            ];
-          return [
-            {
-              type: "llm",
-              evaluator: new UnavailableEvaluator("llm", "AI binding is not configured"),
-            },
-          ];
-        }
-        case "sandbox":
-          if (!env.SANDBOX) {
-            // Fail closed with an actionable reason: the [[sandboxes]] binding
-            // is commented out in wrangler.toml until the beta is enabled, and
-            // any policy naming `sandbox` blocks merges until it is (or the
-            // evaluator is removed from the policy).
-            return [
-              {
-                type: "sandbox",
-                evaluator: new UnavailableEvaluator(
-                  "sandbox",
-                  "SANDBOX binding is not configured — enable [[sandboxes]] in wrangler.toml or remove the sandbox evaluator from the policy",
-                ),
-              },
-            ];
-          }
-          if (!workspaceRepo) {
-            return [
-              {
-                type: "sandbox",
-                evaluator: new UnavailableEvaluator(
-                  "sandbox",
-                  "workspace repository access was not provided to the evaluation pipeline",
-                ),
-              },
-            ];
-          }
-          return [{ type: "sandbox", evaluator: new SandboxEvaluator(env.SANDBOX, workspaceRepo) }];
-        default:
-          logger.warn(
-            `Unknown evaluator type "${(cfg as { type: string }).type}" in policy for project ${projectName}`,
-            { evaluatorType: (cfg as { type: string }).type, projectName },
-          );
-          return [];
-      }
+    ...policy.evaluators.flatMap((cfg): BuiltEvaluator[] => {
+      const built = buildOne(cfg);
+      return built.map((entry) => ({ ...entry, deadlineMs: evaluatorDeadlineMs(cfg) }));
     }),
   );
 
   return evaluators;
+
+  function buildOne(cfg: EvaluatorConfig): BuiltEvaluator[] {
+    switch (cfg.type) {
+      case "diff":
+        return [{ type: "diff", evaluator: new DiffEvaluator() }];
+      case "webhook":
+        return [{ type: "webhook", evaluator: new WebhookEvaluator(cfg) }];
+      case "llm": {
+        // Every failure to resolve a project-supplied credential lands here,
+        // and NONE of them falls back to `env.AI`. Falling back would move
+        // the spend to the operator's bill — the hole BYOK closes — and would
+        // turn a misconfigured gate into one that quietly passes on someone
+        // else's budget. Fail closed with the reason instead.
+        if (llmProvider.status === "unavailable") {
+          return [{ type: "llm", evaluator: new UnavailableEvaluator("llm", llmProvider.reason) }];
+        }
+        const enforcement = { env, ...(waitUntil !== undefined ? { waitUntil } : {}) };
+        if (llmProvider.status === "byok") {
+          return [
+            {
+              type: "llm",
+              evaluator: new LLMEvaluator(llmProvider.provider, "byok", enforcement),
+            },
+          ];
+        }
+        if (env.AI)
+          return [
+            {
+              type: "llm",
+              evaluator: new LLMEvaluator(
+                // The binding gets the policy's deadline as well as the
+                // evaluator, so neither gives up before the other.
+                new WorkersAiProvider(env.AI, { timeoutMs: llmTimeoutMs(cfg) }),
+                "platform",
+                enforcement,
+              ),
+            },
+          ];
+        return [
+          {
+            type: "llm",
+            evaluator: new UnavailableEvaluator("llm", "AI binding is not configured"),
+          },
+        ];
+      }
+      case "sandbox":
+        if (!env.SANDBOX) {
+          // Fail closed with an actionable reason: the [[sandboxes]] binding
+          // is commented out in wrangler.toml until the beta is enabled, and
+          // any policy naming `sandbox` blocks merges until it is (or the
+          // evaluator is removed from the policy).
+          return [
+            {
+              type: "sandbox",
+              evaluator: new UnavailableEvaluator(
+                "sandbox",
+                "SANDBOX binding is not configured — enable [[sandboxes]] in wrangler.toml or remove the sandbox evaluator from the policy",
+              ),
+            },
+          ];
+        }
+        if (!workspaceRepo) {
+          return [
+            {
+              type: "sandbox",
+              evaluator: new UnavailableEvaluator(
+                "sandbox",
+                "workspace repository access was not provided to the evaluation pipeline",
+              ),
+            },
+          ];
+        }
+        return [{ type: "sandbox", evaluator: new SandboxEvaluator(env.SANDBOX, workspaceRepo) }];
+      default:
+        logger.warn(
+          `Unknown evaluator type "${(cfg as { type: string }).type}" in policy for project ${projectName}`,
+          { evaluatorType: (cfg as { type: string }).type, projectName },
+        );
+        return [];
+    }
+  }
+}
+
+const DEADLINE_EXPIRED = Symbol("evaluator-deadline-expired");
+
+async function raceDeadline<T>(
+  work: Promise<T>,
+  timeoutMs: number,
+): Promise<T | typeof DEADLINE_EXPIRED> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<typeof DEADLINE_EXPIRED>((resolve) => {
+    timer = setTimeout(() => resolve(DEADLINE_EXPIRED), timeoutMs);
+  });
+  try {
+    return await Promise.race([work, expiry]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 export interface EvaluationRun {
@@ -296,7 +362,7 @@ export interface EvaluationRun {
  * and the re-evaluate route so the two verdicts can't drift.
  */
 export async function runEvaluation(
-  evaluators: Array<{ type: string; evaluator: Evaluator }>,
+  evaluators: BuiltEvaluator[],
   diff: string,
   policy: EvalPolicy,
   logger: Logger,
@@ -312,7 +378,7 @@ export async function runEvaluation(
   context?: EvaluationContext,
 ): Promise<{ evalRuns: EvaluationRun[]; evalResult: EvalResult }> {
   const evalRuns = await Promise.all(
-    evaluators.map(async ({ type, evaluator }) => {
+    evaluators.map(async ({ type, evaluator, deadlineMs }) => {
       // `evaluate` returns a Result by contract, and this catch is what keeps
       // that contract from being a promise the caller cannot rely on. One
       // evaluator that REJECTS — a Durable Object RPC that could not be
@@ -322,7 +388,28 @@ export async function runEvaluation(
       // that did not pass; it is reported as a failing verdict, exactly as a
       // returned error already is, and never as a missing one.
       try {
-        const result = await evaluator.evaluate(diff, policy, logger, context);
+        // Each evaluator gets its own deadline (#412), so one that never
+        // settles costs its own verdict and nothing else: it fails closed in
+        // place, and every other evaluator's verdict still lands.
+        const limitMs = deadlineMs ?? DEFAULT_EVALUATOR_DEADLINE_MS;
+        const result = await raceDeadline(
+          evaluator.evaluate(diff, policy, logger, context),
+          limitMs,
+        );
+        if (result === DEADLINE_EXPIRED) {
+          logger.warn(`Evaluator "${type}" did not finish within its deadline`, {
+            evaluatorType: type,
+            deadlineMs: limitMs,
+          });
+          return {
+            evaluatorType: type,
+            result: {
+              score: 0,
+              passed: false,
+              reason: `${type} evaluator did not finish within ${limitMs}ms`,
+            },
+          };
+        }
         return {
           evaluatorType: type,
           result: result.success
@@ -368,6 +455,124 @@ export async function runEvaluation(
   return { evalRuns, evalResult };
 }
 
+/** Everything one evaluation pass of a workspace produced. */
+export interface WorkspaceEvaluation {
+  diff: string;
+  /** Workspace tip the diff was built from; the merge gate pins to it. */
+  evaluatedSha: string;
+  evaluatedTreeOid: string;
+  workspaceHeadSha: string;
+  /** The base the diff was built against, from the same clone (#274). */
+  baseOid: string;
+  evalRuns: EvaluationRun[];
+  evalResult: EvalResult;
+  /** Resolved once and shared by the meters and the ledger. */
+  billingSubject: BillingSubject | null;
+}
+
+/**
+ * Diff a workspace against its project and run the policy's evaluators over
+ * it: tokens, policy, diff, evaluators, verdict. Writes nothing.
+ *
+ * The one sequence every evaluation front door runs — inline change creation,
+ * the inline re-evaluate route, and the evaluation queue consumer (#412) — so
+ * a queued verdict and an inline one are the same computation, not two copies
+ * of it that can drift.
+ *
+ * Errors keep the failing layer's code: a token mint is a 500, a diff failure
+ * a 400 carrying the diff's own code (`SUBMODULES_UNSUPPORTED` is how a caller
+ * tells a permanent refusal from a transient one).
+ */
+export async function evaluateWorkspace(
+  env: Env,
+  logger: Logger,
+  args: {
+    project: ProjectEntry;
+    workspaceRemote: string;
+    /** The user an allowance follows (PRD §4a), when one is known. */
+    actorUserId?: string;
+    waitUntil?: (promise: Promise<unknown>) => void;
+  },
+): Promise<Result<WorkspaceEvaluation, AppError>> {
+  const { project, workspaceRemote, actorUserId, waitUntil } = args;
+  const [projectReadToken, workspaceReadToken] = await Promise.all([
+    freshRepoToken(env.ARTIFACTS, project.remote, "read", logger),
+    freshRepoToken(env.ARTIFACTS, workspaceRemote, "read", logger),
+  ]);
+  if (!projectReadToken.success) {
+    return err(new AppError(projectReadToken.error.message, projectReadToken.error.code, 500));
+  }
+  if (!workspaceReadToken.success) {
+    return err(new AppError(workspaceReadToken.error.message, workspaceReadToken.error.code, 500));
+  }
+
+  const branch = projectDefaultBranch(project);
+  const policy = await loadPolicy(
+    project.remote,
+    projectReadToken.data,
+    logger,
+    branch,
+    llmProviderCatalog(env, logger),
+  );
+
+  const diffResult = await getDiffBetweenRepos(
+    project.remote,
+    projectReadToken.data,
+    workspaceRemote,
+    workspaceReadToken.data,
+    logger,
+    branch,
+  );
+  if (!diffResult.success) {
+    logger.error("Failed to get diff between repos", diffResult.error);
+    return err(new AppError(diffResult.error.message, diffResult.error.code, 400));
+  }
+  // workspaceOid === workspaceSha (same evaluated tip): #133 pins evaluatedSha +
+  // tree oid for content-addressing, #115 pins workspaceHeadSha for the merge.
+  const {
+    diff,
+    workspaceOid: evaluatedSha,
+    workspaceTreeOid: evaluatedTreeOid,
+    workspaceSha: workspaceHeadSha,
+    baseOid,
+  } = diffResult.data;
+
+  const evaluators = await buildEvaluators(
+    env,
+    policy,
+    project,
+    logger,
+    {
+      remote: workspaceRemote,
+      token: workspaceReadToken.data,
+      ref: evaluatedSha,
+    },
+    waitUntil,
+  );
+  // Once per pass, and before the evaluation rather than after it: the same
+  // subject gates the meters and is recorded in the ledger, so resolving it
+  // twice would pay for two agent walks and could name two different payers.
+  const billingSubject = await resolveBillingSubject(env.DB, logger, project);
+  // `baseOid`, not a base resolved before the diff clone: the default branch
+  // can advance in between, and the evaluated base must be the one the diff
+  // was actually built against (#274).
+  const { evalRuns, evalResult } = await runEvaluation(evaluators, diff, policy, logger, {
+    baseSha: baseOid,
+    billing: billingContextFor(billingSubject, project.id, actorUserId),
+  });
+
+  return ok({
+    diff,
+    evaluatedSha,
+    evaluatedTreeOid,
+    workspaceHeadSha,
+    baseOid,
+    evalRuns,
+    evalResult,
+    billingSubject,
+  });
+}
+
 type RecordedEvalRuns = Extract<
   Awaited<ReturnType<typeof recordEvalRuns>>,
   { success: true }
@@ -381,17 +586,25 @@ export interface ChangeCreationActor {
   agentOwnerId?: string;
 }
 
-export interface ChangeCreationOutcome {
-  change: Change;
-  evalResult: EvalResult;
-  evalRuns: RecordedEvalRuns;
-}
+/**
+ * What change creation produced: a change evaluated inline, or one created in
+ * `evaluating` and waiting on a run the caller must dispatch (#412).
+ */
+export type ChangeCreationOutcome =
+  | { mode: "evaluated"; change: Change; evalResult: EvalResult; evalRuns: RecordedEvalRuns }
+  | { mode: "queued"; change: Change; runId: string };
 
 /**
- * Create a change from a workspace and synchronously run the full evaluation
- * suite, recording eval runs, costs, status, and events. Callers must have
- * already authorized the actor for project write and verified the workspace
- * belongs to the project and the project is not being deleted.
+ * Create a change from a workspace and either run the full evaluation suite
+ * inline — recording eval runs, costs, status, and events — or, with
+ * `queueRun`, create it in `evaluating` under a fresh run id and return
+ * without evaluating anything. The queued caller owns dispatching that run
+ * (`dispatchEvaluationRun`); nothing here sends a message, so a queued change
+ * is never left waiting on a run that was not created.
+ *
+ * Callers must have already authorized the actor for project write and
+ * verified the workspace belongs to the project and the project is not being
+ * deleted.
  *
  * Errors preserve the underlying failure's statusCode (5xx for infrastructure
  * — D1 writes, token minting — 4xx otherwise) so HTTP front doors can map them
@@ -408,9 +621,15 @@ export async function createChangeWithEvaluation(
     actor: ChangeCreationActor;
     /** Cloudflare Workers `ExecutionContext.waitUntil`, when the caller has one. */
     waitUntil?: (promise: Promise<unknown>) => void;
+    /**
+     * Create the change waiting on this evaluation run instead of evaluating
+     * inline (#412). The run id is the caller's so it can dispatch the same
+     * run it asked for.
+     */
+    queueRun?: { runId: string };
   },
 ): Promise<Result<ChangeCreationOutcome, AppError>> {
-  const { project, projectName, workspaceName, workspaceRemote, actor, waitUntil } = args;
+  const { project, projectName, workspaceName, workspaceRemote, actor, waitUntil, queueRun } = args;
   const { userId, agentId } = actor;
   // The human author: the acting user, or (for agent-authored changes) the
   // agent's owner. Excluded from the required-approval count at merge time.
@@ -448,6 +667,14 @@ export async function createChangeWithEvaluation(
     ...(agentModel !== undefined ? { agentModel } : {}),
     ...(agentPromptHash !== undefined ? { agentPromptHash } : {}),
     ...(createdByUserId !== undefined ? { createdByUserId } : {}),
+    ...(queueRun
+      ? {
+          evaluation: {
+            runId: queueRun.runId,
+            ...(createdByUserId !== undefined ? { requestedBy: createdByUserId } : {}),
+          },
+        }
+      : {}),
   });
   if (!changeResult.success) {
     logger.error("Failed to create change", changeResult.error);
@@ -482,83 +709,40 @@ export async function createChangeWithEvaluation(
     project.id,
   );
 
-  const [projectReadToken, workspaceReadToken] = await Promise.all([
-    freshRepoToken(env.ARTIFACTS, project.remote, "read", logger),
-    freshRepoToken(env.ARTIFACTS, workspaceRemote, "read", logger),
-  ]);
-  if (!projectReadToken.success) {
-    return err(
-      new AppError(projectReadToken.error.message, projectReadToken.error.code, 500, {
-        changeId: change.id,
-      }),
-    );
-  }
-  if (!workspaceReadToken.success) {
-    return err(
-      new AppError(workspaceReadToken.error.message, workspaceReadToken.error.code, 500, {
-        changeId: change.id,
-      }),
-    );
+  if (queueRun) {
+    logger.info("Change created; evaluation queued", {
+      changeId: change.id,
+      project: projectName,
+      workspace: workspaceName,
+      runId: queueRun.runId,
+    });
+    return ok({ mode: "queued", change, runId: queueRun.runId });
   }
 
-  const branch = projectDefaultBranch(project);
-  const policy = await loadPolicy(
-    project.remote,
-    projectReadToken.data,
-    logger,
-    branch,
-    llmProviderCatalog(env, logger),
-  );
-
-  const diffResult = await getDiffBetweenRepos(
-    project.remote,
-    projectReadToken.data,
-    workspaceRemote,
-    workspaceReadToken.data,
-    logger,
-    branch,
-  );
-  if (!diffResult.success) {
-    logger.error("Failed to get diff between repos", diffResult.error);
-    return err(
-      new AppError(diffResult.error.message, diffResult.error.code, 400, { changeId: change.id }),
-    );
-  }
-  // workspaceOid === workspaceSha (same evaluated tip): #133 pins evaluatedSha +
-  // tree oid for content-addressing, #115 pins workspaceHeadSha for the merge.
-  const {
-    diff,
-    workspaceOid: evaluatedSha,
-    workspaceTreeOid: evaluatedTreeOid,
-    workspaceSha: workspaceHeadSha,
-    baseOid,
-  } = diffResult.data;
-
-  const evaluators = await buildEvaluators(
-    env,
-    policy,
+  const evaluation = await evaluateWorkspace(env, logger, {
     project,
-    logger,
-    {
-      remote: workspaceRemote,
-      token: workspaceReadToken.data,
-      ref: evaluatedSha,
-    },
-    waitUntil,
-  );
-  // `baseOid`, not the `baseSha` resolved further up: that one is read before
-  // the diff clone, so the default branch can advance in between. The evaluated
-  // base must be the one the diff was actually built against (#274).
-  // Once per request, and before the evaluation rather than after it: the same
-  // subject gates the meters below and is recorded in the ledger, so resolving
-  // it twice would pay for two agent walks and could name two different payers.
-  const createSubject = await resolveBillingSubject(env.DB, logger, project);
-  const { evalRuns, evalResult } = await runEvaluation(evaluators, diff, policy, logger, {
-    baseSha: baseOid,
+    workspaceRemote,
     // The actor is the human behind the change — the agent's owner for an
     // agent-authored one — which is who an allowance follows under PRD §4a.
-    billing: billingContextFor(createSubject, project.id, createdByUserId),
+    ...(createdByUserId !== undefined ? { actorUserId: createdByUserId } : {}),
+    ...(waitUntil !== undefined ? { waitUntil } : {}),
   });
+  if (!evaluation.success) {
+    return err(
+      new AppError(evaluation.error.message, evaluation.error.code, evaluation.error.statusCode, {
+        changeId: change.id,
+      }),
+    );
+  }
+  const {
+    diff,
+    evaluatedSha,
+    evaluatedTreeOid,
+    workspaceHeadSha,
+    evalRuns,
+    evalResult,
+    billingSubject: createSubject,
+  } = evaluation.data;
 
   const newStatus: Change["status"] = evalResult.passed ? "accepted" : "needs_changes";
 
@@ -670,7 +854,12 @@ export async function createChangeWithEvaluation(
     evalScore: evalResult.score,
   });
 
-  return ok({ change: updatedChange, evalResult, evalRuns: recordResult.data });
+  return ok({
+    mode: "evaluated",
+    change: updatedChange,
+    evalResult,
+    evalRuns: recordResult.data,
+  });
 }
 
 /**

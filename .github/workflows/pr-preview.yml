@@ -13,6 +13,10 @@ env:
   PREVIEW_SUBDOMAIN: pr-${{ github.event.number }}
   DB_NAME: stratum-pr-${{ github.event.number }}
   WORKER_NAME: stratum-pr-${{ github.event.number }}
+  # Per-PR, like the database: queue names are account-level, and a shared
+  # queue would hand one preview's evaluation runs to another preview's
+  # consumer, whose D1 has no such change (#412).
+  EVAL_QUEUE_NAME: stratum-evaluations-pr-${{ github.event.number }}
 
 jobs:
   # =======================================================================
@@ -83,6 +87,33 @@ jobs:
               echo "Response: $DELETE_RESPONSE"
               exit 1
             fi
+          fi
+
+      # After the Worker: a queue with a live consumer cannot be deleted, and
+      # deleting the Worker removes its consumer.
+      - name: Delete Evaluation Queue
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "Deleting queue: ${{ env.EVAL_QUEUE_NAME }}"
+          LIST=$(curl -sf -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/queues?name=${{ env.EVAL_QUEUE_NAME }}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || { echo "❌ Could not list queues"; exit 1; }
+          QUEUE_ID=$(echo "$LIST" | jq -r --arg n "${{ env.EVAL_QUEUE_NAME }}" '[.result[]? | select(.queue_name == $n) | .queue_id] | first // empty')
+          if [ -z "$QUEUE_ID" ]; then
+            echo "Queue not found, may have been already deleted"
+            exit 0
+          fi
+          DELETE_RESPONSE=$(curl -s -X DELETE \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/queues/${QUEUE_ID}" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+          if [ "$(echo "$DELETE_RESPONSE" | jq -r '.success // false')" = "true" ]; then
+            echo "✓ Queue deleted"
+          else
+            echo "❌ Failed to delete queue"
+            echo "Response: $DELETE_RESPONSE"
+            exit 1
           fi
 
       - name: Delete KV Namespace
@@ -309,6 +340,23 @@ jobs:
             fi
           fi
 
+      # `wrangler deploy` fails outright on a bound queue that does not exist.
+      # Idempotent, matching ci.yml's queue step.
+      - name: Ensure Evaluation Queue Exists
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          queue="${{ env.EVAL_QUEUE_NAME }}"
+          if out=$(npx wrangler queues create "$queue" 2>&1); then
+            echo "✓ Created queue $queue"
+          elif echo "$out" | grep -qiE "already (exists|taken)|11009"; then
+            echo "✓ Queue $queue already exists"
+          else
+            echo "$out"
+            exit 1
+          fi
+
       - name: Generate Wrangler Config
         env:
           DB_ID: ${{ steps.db.outputs.db_id }}
@@ -375,6 +423,18 @@ jobs:
 
           [[send_email]]
           name = "EMAIL"
+
+          # Evaluation runs (#412); knobs mirror the stratum-evaluations
+          # consumer in wrangler.toml. No DLQ: the preview is disposable.
+          [[queues.producers]]
+          binding = "EVALUATION_QUEUE"
+          queue = "${{ env.EVAL_QUEUE_NAME }}"
+
+          [[queues.consumers]]
+          queue = "${{ env.EVAL_QUEUE_NAME }}"
+          max_batch_size = 1
+          max_retries = 2
+          retry_delay = 30
 
           # Add custom domain - wrangler will create this automatically on deploy
           # Note: zone_name must be the actual Cloudflare zone (usestratum.dev), not the subdomain

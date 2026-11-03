@@ -204,7 +204,7 @@ export function buildTools(client: StratumClient): ToolDef[] {
     // ── Changes (eval-gated merge proposals) ──────────────────────────────
     tool(
       "stratum_create_change",
-      "Open a change (merge proposal) from a workspace. This synchronously runs the project's evaluation gates from .stratum/policy.yaml — secret scan, diff policy, LLM review, sandbox tests — and returns the verdicts. A failing gate blocks the merge.",
+      "Open a change (merge proposal) from a workspace. The project's evaluation gates from .stratum/policy.yaml — secret scan, diff policy, LLM review, sandbox tests — run on it. On instances with an evaluation queue the change comes back with status `evaluating` and no verdict yet: poll stratum_get_change until the status leaves `evaluating` (it becomes `accepted` or `needs_changes`) before deciding anything. Otherwise the verdicts are returned directly. A failing gate blocks the merge, and a change still evaluating cannot be merged.",
       { project: projectArg, workspace: { type: "string", description: "Source workspace name" } },
       (a) => {
         const ref = parseProjectRef(a.project);
@@ -213,7 +213,7 @@ export function buildTools(client: StratumClient): ToolDef[] {
     ),
     tool(
       "stratum_list_changes",
-      "List changes for a Stratum project, optionally filtered by status (open, merged, rejected, reverted).",
+      "List changes for a Stratum project, optionally filtered by status (open, evaluating, needs_changes, accepted, approved, promoted, merged, rejected).",
       {
         project: projectArg,
         status: { type: "string", description: "Optional status filter", optional: true },
@@ -225,13 +225,13 @@ export function buildTools(client: StratumClient): ToolDef[] {
     ),
     tool(
       "stratum_get_change",
-      "Get one change with its evaluation runs (per-gate score, pass/fail, reason) and metered costs (LLM tokens, sandbox time, git ops).",
+      "Get one change with its evaluation runs (per-gate score, pass/fail, reason) and metered costs (LLM tokens, sandbox time, git ops). Status `evaluating` means the gates are still running and no verdict exists yet; poll again rather than treating it as a result.",
       { change_id: { type: "string", description: "Change id, e.g. chg_abc123" } },
       (a) => client.getChange(a.change_id),
     ),
     tool(
       "stratum_merge_change",
-      "Merge a change that has passed its evaluation gates and required human approvals. Fails with the blocking reasons otherwise; a stale base is rejected until re-evaluated. Force requires the policy to allow it. User credentials only — agent tokens cannot merge, and neither can a connection bound to an agent; ask the user to merge, or to reconnect acting as themselves.",
+      "Merge a change that has passed its evaluation gates and required human approvals. Fails with the blocking reasons otherwise; a change still `evaluating` is refused (EVALUATION_PENDING), even with force, and a stale base is rejected until re-evaluated. Force requires the policy to allow it. User credentials only — agent tokens cannot merge, and neither can a connection bound to an agent; ask the user to merge, or to reconnect acting as themselves.",
       {
         change_id: { type: "string", description: "Change id" },
         force: {

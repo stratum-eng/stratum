@@ -1,0 +1,18 @@
+-- Asynchronous evaluation (#412, ADR 009): a request for changes made while a
+-- run is pending must survive that run.
+--
+-- A request_changes review normally moves the change to 'needs_changes'. While
+-- the change is 'evaluating' the status is the pending run's to set, so the
+-- review route records the verdict and sets this flag instead; the run, when it
+-- finalizes, lands on 'needs_changes' rather than 'accepted' if the flag is set.
+-- That is what the review would have done had it landed after the verdict,
+-- which is the order it was made in relative to the reviewer reading the page.
+--
+-- A flag rather than a timestamp comparison: the stuck-run sweep re-dispatches
+-- by rewriting eval_run_id and eval_requested_at, so neither identifies "during
+-- this evaluation". Starting a NEW evaluation clears it — the same as a
+-- re-evaluation after a request for changes does outside a run (a passing run
+-- is accepted; request_changes rows are not consulted by the merge gate).
+--
+-- Additive only: defaulted, so every existing row reads as "no request".
+ALTER TABLE changes ADD COLUMN changes_requested_during_eval INTEGER NOT NULL DEFAULT 0;

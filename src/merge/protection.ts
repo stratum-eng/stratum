@@ -31,6 +31,14 @@ export async function checkMergeProtection(
     return ok({ allowed: false, reasons: [policy.configError] });
   }
 
+  // No verdict yet (#412). Checked before anything else so a pending run can
+  // never be read as "no rules apply": a policy with no merge block would
+  // otherwise allow it below. Once the run has recorded its result the change
+  // leaves `evaluating` and every rule after this applies exactly as before.
+  if (change.status === "evaluating") {
+    return ok({ allowed: false, reasons: ["Evaluation is still pending"] });
+  }
+
   const merge = policy.merge;
   // A change that edits the merge-protection config is gated even when the policy
   // has no merge block at all (SA-3), so we can't early-return on a missing merge.

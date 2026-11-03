@@ -11,7 +11,8 @@ import { ExternalServiceError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import type { Result } from "../utils/result";
 import { err, ok } from "../utils/result";
-import type { LlmProvider } from "./llm-provider";
+import { llmTimeoutMs } from "./limits";
+import type { LlmProvider, LlmResponse } from "./llm-provider";
 import { LlmProviderResponseError } from "./llm-provider";
 import { sanitizePolicy } from "./sanitize-policy";
 import type {
@@ -51,6 +52,36 @@ const MAX_OUTPUT_TOKENS = 1_000;
  * metered gates below cannot describe the same evaluator differently.
  */
 const GATE_LABEL = "AI review";
+
+/** Distinguishes our own deadline from anything the provider could resolve with. */
+const TIMED_OUT = Symbol("llm-timed-out");
+
+/**
+ * Race a provider call against the evaluator's deadline.
+ *
+ * The provider has a transport timeout of its own, but it is the provider's,
+ * not the policy's: it is not configurable from `.stratum/policy.yaml`, and a
+ * provider that never settles (an RPC binding with no signal to abort) is held
+ * only by it. This deadline is the one the policy sets, and expiry resolves to
+ * a sentinel the evaluator turns into a failing verdict — never a pass and
+ * never a missing verdict.
+ */
+async function withDeadline<T>(
+  start: () => Promise<T>,
+  timeoutMs: number,
+): Promise<T | typeof TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Armed before the work starts, so when the provider is handed the same
+  // timeout this deadline fires first and the reason names the policy's limit.
+  const expiry = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
+  });
+  try {
+    return await Promise.race([start(), expiry]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 const SYSTEM_PROMPT = [
   "You are a rigorous code reviewer acting as an automated merge gate.",
@@ -117,7 +148,9 @@ export class LLMEvaluator implements Evaluator {
             )
           : DEFAULT_MAX_DIFF_CHARS;
 
-      logger.debug("LLM config", { model, threshold, maxDiffChars });
+      const timeoutMs = llmTimeoutMs(config);
+
+      logger.debug("LLM config", { model, threshold, maxDiffChars, timeoutMs });
 
       const truncated = diff.length > maxDiffChars;
       const truncationNote = truncated
@@ -223,7 +256,28 @@ export class LLMEvaluator implements Evaluator {
       const source = this.costSource === "byok" ? { source: "byok" as const } : {};
 
       reachedProvider = true;
-      const runResult = await this.provider.run(model, messages);
+      const raced = await withDeadline<Result<LlmResponse, AppError>>(
+        () => this.provider.run(model, messages),
+        timeoutMs,
+      );
+
+      if (raced === TIMED_OUT) {
+        // Fail closed (#412). The request is out the door and may still be
+        // billed, so the token reservation is NOT refunded: settling it at the
+        // estimate charges what the call could have cost, which is the honest
+        // upper bound when the provider never said. The ledger records the same
+        // number, marked estimated, so the counter and the ledger agree.
+        logger.warn("LLM evaluation timed out, failing closed", { timeoutMs, model });
+        const estimate = Math.ceil(promptChars / 4) + MAX_OUTPUT_TOKENS;
+        tokensSpent = tokensReserved ?? estimate;
+        return ok({
+          score: 0,
+          passed: false,
+          reason: `LLM evaluator failed closed: no verdict within ${timeoutMs}ms`,
+          costs: [{ kind: "llm_tokens", quantity: tokensSpent, estimated: true, ...source }],
+        });
+      }
+      const runResult = raced;
 
       if (!runResult.success) {
         // A response that arrived but cannot be used fails the gate closed with

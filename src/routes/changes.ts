@@ -10,21 +10,23 @@ import { enqueueMergeDeploy } from "../queue/deploy-queue";
 import { emitEvent } from "../queue/events";
 import type { MergeOutcome } from "../queue/merge-queue";
 import {
-  billingContextFor,
-  buildEvaluators,
   createChangeWithEvaluation,
+  evaluateWorkspace,
   resolveProjectHead,
-  runEvaluation,
 } from "../services/change-flow";
+import { type DispatchOutcome, dispatchEvaluationRun } from "../services/evaluation-run";
 import { getCommitLogPreferNative } from "../storage/artifacts-reads";
 import { recordAudit } from "../storage/audit";
+import { beginEvaluationRun, newEvaluationRunId } from "../storage/change-evaluation";
 import {
+  type GithubPrLink,
   dismissApprovalsAndUpdateStatus,
   getChange,
   getChangesByIds,
   listChanges,
   markChangeMerged,
   mergeTransitionOpts,
+  recordGithubPrLink,
   updateChangeStatus,
 } from "../storage/changes";
 import {
@@ -42,7 +44,6 @@ import {
   batchMergeStagedTrees,
   cloneRepo,
   freshRepoToken,
-  getDiffBetweenRepos,
   mergeWorkspaceIntoProject,
   parseStagedTree,
   pushBranchToRemote,
@@ -207,7 +208,12 @@ const MAX_CHANGES_PAGE = 500;
  * Browsers send a form content type; API/CLI/agent callers send JSON or no body at all,
  * so only form posts are redirected back to the change page.
  */
-function okOrFormRedirect<T>(c: Context<{ Bindings: Env }>, changeId: string, data: T): Response {
+function okOrFormRedirect<T>(
+  c: Context<{ Bindings: Env }>,
+  changeId: string,
+  data: T,
+  status = 200,
+): Response {
   const contentType = c.req.header("content-type") ?? "";
   if (
     contentType.includes("application/x-www-form-urlencoded") ||
@@ -215,7 +221,7 @@ function okOrFormRedirect<T>(c: Context<{ Bindings: Env }>, changeId: string, da
   ) {
     return c.redirect(`/changes/${changeId}`, 302);
   }
-  return ok(data);
+  return ok(data, status);
 }
 
 /**
@@ -240,6 +246,103 @@ async function resolveWorkspaceTip(
     branch,
   );
   return logResult.success ? (logResult.data[0]?.sha ?? null) : null;
+}
+
+/**
+ * A change evaluated under asynchronous evaluation (#412) whose run ended
+ * without pinning a revision — it failed closed. There is nothing to merge
+ * against: force bypasses a failing verdict, not a missing one.
+ */
+function lacksEvaluatedRevision(change: Change): boolean {
+  return change.evaluatedSha === undefined && change.evalRunId !== undefined;
+}
+
+/**
+ * A promotion whose `promoted` write a pending run held back (#412): a
+ * re-evaluation began while the branch was being pushed. The PR exists on
+ * GitHub regardless, so its link is kept — otherwise the next promotion opens
+ * a duplicate — but the change is not promoted: the run owns its status, and
+ * the pushed head may not be the revision it judges. Promoting again once it
+ * finishes re-pushes to this PR.
+ */
+async function promotionHeldByEvaluation(
+  c: Context<{ Bindings: Env }>,
+  logger: Logger,
+  changeId: string,
+  pr: {
+    owner: string;
+    repo: string;
+    branch: string;
+    prNumber: number;
+    prUrl: string;
+    link: GithubPrLink;
+  },
+): Promise<Response> {
+  const linkResult = await recordGithubPrLink(c.env.DB, logger, changeId, pr.link);
+  if (!linkResult.success) {
+    logger.error("Pushed to the PR but did not record its link", linkResult.error, {
+      changeId,
+      prNumber: pr.prNumber,
+    });
+  }
+  return c.json(
+    {
+      error:
+        "Evaluation started while the change was being promoted; promote again once it has finished",
+      code: "EVALUATION_PENDING",
+      github: {
+        owner: pr.owner,
+        repo: pr.repo,
+        branch: pr.branch,
+        pullRequestNumber: pr.prNumber,
+        pullRequestUrl: pr.prUrl,
+      },
+    },
+    409,
+  );
+}
+
+/**
+ * The response for a change whose evaluation run was just dispatched (#412).
+ *
+ * Queued: `202` with the change in `evaluating` and no verdict — the caller
+ * polls `GET /changes/:id` until the status leaves `evaluating`. Run inline
+ * because the queue was unavailable: the verdict exists, so the response is
+ * what the synchronous API always returned (`201` on creation, `200` on
+ * re-evaluation). An inline run that could not finish is reported as the
+ * error it is, naming the change so the caller can re-evaluate it rather than
+ * open a duplicate.
+ */
+function respondToDispatch(
+  c: Context<{ Bindings: Env }>,
+  dispatched: DispatchOutcome,
+  change: Change,
+  opts: { inlineStatus: 200 | 201 },
+): Response {
+  if (dispatched.mode === "queued") {
+    return okOrFormRedirect(
+      c,
+      change.id,
+      { change, evaluation: { status: "evaluating", runId: change.evalRunId } },
+      202,
+    );
+  }
+  const { result } = dispatched;
+  if (!result.success) {
+    const message = `${result.error.message} (change ${change.id})`;
+    return result.error.statusCode >= 500 ? internalError(message) : badRequest(message);
+  }
+  if (result.data.status === "superseded") {
+    // Something moved the change on while the inline run was executing (a
+    // reject, a newer run): report where it is rather than a verdict that was
+    // never recorded.
+    return okOrFormRedirect(c, change.id, { change, evaluation: { status: "superseded" } }, 202);
+  }
+  const { change: evaluated, evalResult, evalRuns } = result.data;
+  const body = { change: evaluated, changeId: evaluated.id, eval: evalResult, evalRuns };
+  return opts.inlineStatus === 201
+    ? created(body)
+    : okOrFormRedirect(c, change.id, body, opts.inlineStatus);
 }
 
 app.post("/projects/:name/changes", async (c) => {
@@ -305,6 +408,11 @@ app.post("/projects/:name/changes", async (c) => {
     return badRequest(`Workspace '${body.workspace}' does not belong to project '${projectName}'`);
   }
 
+  // With an evaluation queue bound, the change is created in `evaluating` and
+  // the evaluators run on the queue consumer, so creation latency no longer
+  // includes them (#412). Without one, evaluation runs inline as it always did.
+  const queueRun = c.env.EVALUATION_QUEUE ? { runId: newEvaluationRunId() } : undefined;
+  const waitUntil = getWaitUntil(c);
   const outcome = await createChangeWithEvaluation(c.env, logger, {
     project,
     projectName,
@@ -315,7 +423,8 @@ app.post("/projects/:name/changes", async (c) => {
       ...(agentId !== undefined ? { agentId } : {}),
       ...(agentOwnerId !== undefined ? { agentOwnerId } : {}),
     },
-    waitUntil: getWaitUntil(c),
+    waitUntil,
+    ...(queueRun ? { queueRun } : {}),
   });
   if (!outcome.success) {
     // Post-creation failures leave an open change row; name it so the caller
@@ -327,8 +436,21 @@ app.post("/projects/:name/changes", async (c) => {
         : outcome.error.message;
     return outcome.error.statusCode >= 500 ? internalError(message) : badRequest(message);
   }
-  const { change: updatedChange, evalResult, evalRuns: recordedRuns } = outcome.data;
-  return created({ change: updatedChange, eval: evalResult, evalRuns: recordedRuns });
+  if (outcome.data.mode === "evaluated") {
+    const { change: updatedChange, evalResult, evalRuns: recordedRuns } = outcome.data;
+    return created({ change: updatedChange, eval: evalResult, evalRuns: recordedRuns });
+  }
+  return respondToDispatch(
+    c,
+    await dispatchEvaluationRun(
+      c.env,
+      logger,
+      { changeId: outcome.data.change.id, runId: outcome.data.runId },
+      waitUntil ? { waitUntil } : {},
+    ),
+    outcome.data.change,
+    { inlineStatus: 201 },
+  );
 });
 
 app.get("/projects/:name/changes", async (c) => {
@@ -359,6 +481,7 @@ app.get("/projects/:name/changes", async (c) => {
   const statusParam = c.req.query("status");
   const validStatuses: Change["status"][] = [
     "open",
+    "evaluating",
     "needs_changes",
     "accepted",
     "approved",
@@ -506,6 +629,36 @@ app.post("/changes/:id/merge", async (c) => {
   if (force && change.touchesProtectedConfig) {
     return badRequest(
       "This change modifies the merge-protection config and cannot be force-merged; it requires a human approval",
+    );
+  }
+
+  // Refused even under force (#412). Force bypasses a verdict; it cannot bypass
+  // the absence of one. A change still evaluating has no evaluated revision
+  // pinned — or, on a re-evaluation, a pin the pending run is about to replace
+  // — so the merge would land code no gate has judged.
+  if (change.status === "evaluating") {
+    return c.json(
+      {
+        error: "Evaluation is still pending; merge once it has finished",
+        code: "EVALUATION_PENDING",
+      },
+      409,
+    );
+  }
+
+  // The same rule once a run has ended without a verdict: one that failed
+  // closed (retries exhausted, the sweep gave up, the workspace vanished)
+  // leaves the change needs_changes with nothing pinned, and a merge — forced,
+  // or after a human approved it anyway — would land the live workspace tip.
+  // Changes from before asynchronous evaluation carry no run id and keep their
+  // old behaviour; every change since has one.
+  if (lacksEvaluatedRevision(change)) {
+    return c.json(
+      {
+        error: "This change has no evaluated revision; re-evaluate it before merging",
+        code: "EVALUATION_MISSING",
+      },
+      409,
     );
   }
 
@@ -990,6 +1143,8 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
       if (!change) return { id, skip: "not found" };
       if (change.project !== projectName && change.project !== project.id)
         return { id, skip: "wrong project" };
+      if (change.status === "evaluating") return { id, skip: "evaluation pending" };
+      if (lacksEvaluatedRevision(change)) return { id, skip: "no evaluated revision" };
       if (!MERGEABLE_STATUSES.includes(change.status)) return { id, skip: "not mergeable" };
       if (!change.baseSha) return { id, skip: "no base" };
       if (!force) {
@@ -1395,69 +1550,65 @@ app.post("/changes/:id/evaluate", async (c) => {
   }
   const workspace = workspaceResult.data;
 
-  const [projectReadToken, workspaceReadToken] = await Promise.all([
-    freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger),
-    freshRepoToken(c.env.ARTIFACTS, workspace.remote, "read", logger),
-  ]);
-  if (!projectReadToken.success) return internalError(projectReadToken.error.message);
-  if (!workspaceReadToken.success) return internalError(workspaceReadToken.error.message);
-
-  const branch = projectDefaultBranch(project);
-  const policy = await loadPolicy(
-    project.remote,
-    projectReadToken.data,
-    logger,
-    branch,
-    llmProviderCatalog(c.env, logger),
-  );
-
-  const diffResult = await getDiffBetweenRepos(
-    project.remote,
-    projectReadToken.data,
-    workspace.remote,
-    workspaceReadToken.data,
-    logger,
-    branch,
-  );
-  if (!diffResult.success) {
-    logger.error("Failed to get diff between repos", diffResult.error);
-    return badRequest(diffResult.error.message);
+  // With an evaluation queue bound, re-evaluation re-enqueues (#412): the
+  // change moves to `evaluating` under a fresh run, which supersedes any run
+  // still in flight, and the verdict lands when the consumer records it.
+  if (c.env.EVALUATION_QUEUE) {
+    const runId = newEvaluationRunId();
+    const begun = await beginEvaluationRun(c.env.DB, logger, {
+      changeId: id,
+      runId,
+      requestedBy: userId,
+    });
+    if (!begun.success) return internalError(begun.error.message);
+    if (!begun.data.started) return badRequest("Change can no longer be re-evaluated");
+    const waitUntil = getWaitUntil(c);
+    const dispatched = await dispatchEvaluationRun(
+      c.env,
+      logger,
+      { changeId: id, runId },
+      waitUntil ? { waitUntil } : {},
+    );
+    logger.info("Change re-evaluation dispatched", { changeId: id, runId, mode: dispatched.mode });
+    return respondToDispatch(
+      c,
+      dispatched,
+      {
+        ...change,
+        status: "evaluating",
+        evalRunId: runId,
+        evalRequestedAt: begun.data.requestedAt,
+      },
+      { inlineStatus: 200 },
+    );
   }
-  // workspaceOid === workspaceSha (same evaluated tip): #133 pins evaluatedSha +
-  // tree oid for content-addressing, #115 pins workspaceHeadSha for the merge.
+
+  // The base this re-evaluation's diff is built against — not `change.baseSha`,
+  // which records the base at creation and is exactly the value that has gone
+  // stale by the time a change is re-evaluated (#274). This route is
+  // user-credentialed (agent tokens are rejected above), so the acting user is
+  // the caller — the subject PRD §4a checks a limit against.
+  const evaluation = await evaluateWorkspace(c.env, logger, {
+    project,
+    workspaceRemote: workspace.remote,
+    actorUserId: userId,
+    ...(getWaitUntil(c) ? { waitUntil: getWaitUntil(c) } : {}),
+  });
+  if (!evaluation.success) {
+    return evaluation.error.statusCode >= 500
+      ? internalError(evaluation.error.message)
+      : badRequest(evaluation.error.message);
+  }
   const {
     diff,
-    workspaceOid: evaluatedSha,
-    workspaceTreeOid: evaluatedTreeOid,
-    workspaceSha: workspaceHeadSha,
+    evaluatedSha,
+    evaluatedTreeOid,
+    workspaceHeadSha,
     baseOid,
-  } = diffResult.data;
-
-  const evaluators = await buildEvaluators(
-    c.env,
-    policy,
-    project,
-    logger,
-    {
-      remote: workspace.remote,
-      token: workspaceReadToken.data,
-      ref: evaluatedSha,
-    },
-    getWaitUntil(c),
-  );
-  // The base this re-evaluation's diff was built against — not `change.baseSha`,
-  // which records the base at creation and is exactly the value that has gone
-  // stale by the time a change is re-evaluated (#274).
-  // One resolution for both the meters and the ledger below (see
-  // `billingContextFor`): an agent-owned project's payer is a D1 walk, and
-  // resolving it twice would pay for it twice and could name two payers.
-  const evaluateSubject = await resolveBillingSubject(c.env.DB, logger, project);
-  const { evalRuns, evalResult } = await runEvaluation(evaluators, diff, policy, logger, {
-    baseSha: baseOid,
-    // This route is user-credentialed (agent tokens are rejected above), so the
-    // acting user is the caller — the subject PRD §4a checks a limit against.
-    billing: billingContextFor(evaluateSubject, project.id, userId),
-  });
+    evalRuns,
+    evalResult,
+    billingSubject: evaluateSubject,
+  } = evaluation.data;
 
   const recordResult = await recordEvalRuns(c.env.DB, logger, id, evalRuns);
   if (!recordResult.success) {
@@ -1505,6 +1656,10 @@ app.post("/changes/:id/evaluate", async (c) => {
     // acquire a policy edit, pass the staleness check, and merge without the
     // approval the flag exists to force.
     touchesProtectedConfig: diffTouchesProtectedConfig(diff),
+    // This IS the verdict, so it may replace `evaluating` — reachable when a
+    // change was queued on an instance whose evaluation queue has since been
+    // unbound, and re-evaluating inline is how it gets one.
+    allowFromEvaluating: true,
   };
 
   // Stale-approval dismissal (#193): a different evaluated sha means any prior
@@ -1932,6 +2087,16 @@ app.post("/changes/:id/github-pr", async (c) => {
       const headShaResult = await updateChangeStatus(c.env.DB, logger, id, "promoted", {
         githubHeadSha: publishedSha,
       });
+      if (!headShaResult.success && headShaResult.error.code === "EVALUATION_PENDING") {
+        return promotionHeldByEvaluation(c, logger, id, {
+          owner: repo.owner,
+          repo: repo.repo,
+          branch,
+          prNumber: storedPr.number,
+          prUrl: storedPr.html_url,
+          link: { githubHeadSha: publishedSha },
+        });
+      }
       if (!headShaResult.success) {
         // Not fatal: the branch is pushed and the PR exists, so the promotion
         // genuinely happened. Failing here would let a transient D1 error break
@@ -2066,10 +2231,7 @@ app.post("/changes/:id/github-pr", async (c) => {
 
   const promotedAt = new Date().toISOString();
 
-  const updateResult = await updateChangeStatus(c.env.DB, logger, id, "promoted", {
-    ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
-    ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
-    ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
+  const prLink: GithubPrLink = {
     githubOwner: repo.owner,
     githubRepo: repo.repo,
     githubBranch: branch,
@@ -2080,10 +2242,26 @@ app.post("/changes/:id/github-pr", async (c) => {
     // precisely when the evaluatedSha gate above ran (legacy changes with no
     // evaluatedSha have no pinned revision to record here).
     ...(publishedSha !== undefined ? { githubHeadSha: publishedSha } : {}),
+  };
+  const updateResult = await updateChangeStatus(c.env.DB, logger, id, "promoted", {
+    ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+    ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
+    ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
+    ...prLink,
     promotedAt,
     promotedBy: userId,
   });
   if (!updateResult.success) {
+    if (updateResult.error.code === "EVALUATION_PENDING") {
+      return promotionHeldByEvaluation(c, logger, id, {
+        owner: repo.owner,
+        repo: repo.repo,
+        branch,
+        prNumber: pr.number,
+        prUrl: pr.html_url,
+        link: prLink,
+      });
+    }
     logger.error("Failed to update change status to promoted", updateResult.error);
     return badRequest(updateResult.error.message);
   }

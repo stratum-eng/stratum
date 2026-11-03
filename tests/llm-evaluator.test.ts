@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  DEFAULT_LLM_TIMEOUT_MS,
+  MAX_LLM_TIMEOUT_MS,
+  MIN_LLM_TIMEOUT_MS,
+  llmTimeoutMs,
+} from "../src/evaluation/limits";
 import { LLMEvaluator } from "../src/evaluation/llm-evaluator";
-import { WorkersAiProvider } from "../src/evaluation/llm-provider";
+import { type LlmProvider, WorkersAiProvider } from "../src/evaluation/llm-provider";
 import type { EvalPolicy } from "../src/evaluation/types";
 import type { AiBinding } from "../src/types";
 import type { Logger } from "../src/utils/logger";
@@ -329,5 +335,71 @@ describe("LLMEvaluator — prompt", () => {
     const system = calledMessages.find((m) => m.role === "system");
     expect(system?.content).toContain("code reviewer");
     expect(system?.content).toContain("ONLY a JSON object");
+  });
+});
+
+describe("LLMEvaluator — timeout (#412)", () => {
+  it("fails closed when the model never answers within timeoutMs", async () => {
+    vi.useFakeTimers();
+    try {
+      const hanging: LlmProvider = { run: () => new Promise(() => {}) };
+      const evaluator = new LLMEvaluator(hanging);
+      const pending = evaluator.evaluate(
+        "diff content",
+        makePolicy({ evaluators: [{ type: "llm", timeoutMs: 5_000 }] }),
+        mockLogger,
+      );
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await pending;
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.passed).toBe(false);
+        expect(result.data.score).toBe(0);
+        expect(result.data.reason).toBe("LLM evaluator failed closed: no verdict within 5000ms");
+        // The call may still be billed, so the run records an estimated cost
+        // rather than none.
+        expect(result.data.costs?.[0]).toMatchObject({ kind: "llm_tokens", estimated: true });
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still returns the verdict when the model answers inside the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const slow: LlmProvider = {
+        run: () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () =>
+                resolve({
+                  success: true,
+                  data: { text: JSON.stringify({ score: 0.9, passed: true, reason: "fine" }) },
+                }),
+              1_000,
+            ),
+          ),
+      };
+      const pending = new LLMEvaluator(slow).evaluate(
+        "diff",
+        makePolicy({ evaluators: [{ type: "llm", timeoutMs: 5_000 }] }),
+        mockLogger,
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      const result = await pending;
+      expect(result.success && result.data.passed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clamps the configured timeout into its window", () => {
+    expect(llmTimeoutMs(undefined)).toBe(DEFAULT_LLM_TIMEOUT_MS);
+    expect(llmTimeoutMs({ timeoutMs: 1 })).toBe(MIN_LLM_TIMEOUT_MS);
+    expect(llmTimeoutMs({ timeoutMs: 10_000_000 })).toBe(MAX_LLM_TIMEOUT_MS);
+    expect(llmTimeoutMs({ timeoutMs: Number.NaN })).toBe(DEFAULT_LLM_TIMEOUT_MS);
   });
 });

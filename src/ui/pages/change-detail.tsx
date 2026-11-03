@@ -53,6 +53,8 @@ function statusBadgeClass(status: string): string {
   switch (status) {
     case "open":
       return "badge badge-open";
+    case "evaluating":
+      return "badge badge-warning";
     case "approved":
     case "accepted":
       return "badge badge-approved";
@@ -70,7 +72,7 @@ function statusBadgeClass(status: string): string {
   }
 }
 
-const REVIEWABLE_STATUSES = ["open", "needs_changes", "accepted", "approved"];
+const REVIEWABLE_STATUSES = ["open", "evaluating", "needs_changes", "accepted", "approved"];
 
 /** Mirrors MERGEABLE_STATUSES in routes/changes.ts — the API rejects other statuses. */
 const MERGEABLE_STATUSES = ["approved", "accepted", "promoted"];
@@ -115,13 +117,21 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   const canMerge = !hasGithubPr && canReview && MERGEABLE_STATUSES.includes(change.status);
   const canReject = !TERMINAL_STATUSES.includes(change.status);
   const hasActions = hasGithubPr || canMerge || canReject;
+  // The API refuses an approval while a run is pending (#412) — nothing pins
+  // the revision being looked at — so the button is not offered then.
+  const isEvaluating = change.status === "evaluating";
+  // A pending change refreshes itself only for a viewer with nothing to type
+  // into: a meta refresh reloads the page, and with it any comment or review
+  // draft in progress. Signed-in viewers get a link to reload when they choose.
+  const isPending = change.status === "open" || isEvaluating;
+  const autoRefresh = isPending && !user;
 
   return (
     <Layout
       title={`Change ${change.id}`}
       user={user}
       usageNotice={usageNotice}
-      {...(change.status === "open" ? { refreshSeconds: 10 } : {})}
+      {...(autoRefresh ? { refreshSeconds: 10 } : {})}
     >
       {projectRef && <ProjectHeader project={projectRef} active="changes" canWrite={canReview} />}
       <div class="page-header">
@@ -129,6 +139,12 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
           <span class="mono">{change.id}</span>{" "}
           <span class={statusBadgeClass(change.status)}>{change.status}</span>
         </h1>
+        {isPending && !autoRefresh && (
+          <p class="text-muted pending-refresh">
+            {isEvaluating ? "Evaluation is in progress." : "Waiting for evaluation."}{" "}
+            <a href={`/changes/${change.id}`}>Refresh</a> to see the verdict.
+          </p>
+        )}
         {!projectRef && (
           <a class="btn" href={`/p/${change.project}/changes`}>
             Back to changes
@@ -160,7 +176,9 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
                     </button>
                   </form>
                 )}
-                {(change.status === "open" || change.status === "needs_changes") && (
+                {(change.status === "open" ||
+                  change.status === "evaluating" ||
+                  change.status === "needs_changes") && (
                   <form method="post" action={`/api/changes/${change.id}/evaluate`}>
                     <button type="submit" class="btn">
                       Run evaluations again
@@ -201,6 +219,12 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
 
       <div class="card">
         <h2>Eval result</h2>
+        {change.status === "evaluating" && (
+          <p class="text-muted">
+            Evaluation in progress. This page refreshes every 10 seconds; the change cannot be
+            merged until the result is recorded.
+          </p>
+        )}
         <dl class="detail-list">
           <dt>Score</dt>
           <dd>{change.evalScore !== undefined ? `${Math.round(change.evalScore * 100)}%` : "—"}</dd>
@@ -348,12 +372,16 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
         )}
         {canReview && REVIEWABLE_STATUSES.includes(change.status) && (
           <div class="review-actions">
-            <form method="post" action={`/api/changes/${change.id}/reviews`}>
-              <input type="hidden" name="verdict" value="approve" />
-              <button type="submit" class="btn btn-primary">
-                Approve
-              </button>
-            </form>
+            {isEvaluating ? (
+              <p class="text-muted">Approval opens once evaluation has finished.</p>
+            ) : (
+              <form method="post" action={`/api/changes/${change.id}/reviews`}>
+                <input type="hidden" name="verdict" value="approve" />
+                <button type="submit" class="btn btn-primary">
+                  Approve
+                </button>
+              </form>
+            )}
             <form method="post" action={`/api/changes/${change.id}/reviews`}>
               <input type="hidden" name="verdict" value="request_changes" />
               <button type="submit" class="btn btn-danger">

@@ -1979,9 +1979,18 @@ paths:
       tags: [changes]
       summary: Create a change from a workspace and evaluate it
       description: |
-        Diffs the workspace against the project, runs the project's evaluator
-        policy (secret scan always; diff/webhook/llm/sandbox per policy), records
-        eval runs, and sets the change status to `accepted` or `needs_changes`.
+        Creates the change and evaluates it against the project's evaluator
+        policy (secret scan always; diff/webhook/llm/sandbox per policy).
+
+        On an instance with an evaluation queue (the hosted instance, and any
+        self-host that binds `EVALUATION_QUEUE`) the evaluators run off the
+        request: the response is `202` with the change in status `evaluating`
+        and no verdict. Poll `GET /api/changes/{id}` until the status becomes
+        `accepted` or `needs_changes`. A change cannot be merged while it is
+        `evaluating`.
+
+        Without the queue — or if enqueueing fails — evaluation runs inline and
+        the response is `201` with the verdict, as before.
       requestBody:
         required: true
         content:
@@ -1993,7 +2002,9 @@ paths:
                 workspace: { type: string }
       responses:
         "201":
-          description: Change created and evaluated
+          description: |
+            Change created and evaluated inline — no evaluation queue is bound, or
+            sending to it failed and the run executed on the request instead.
           content:
             application/json:
               schema:
@@ -2004,6 +2015,11 @@ paths:
                   evalRuns:
                     type: array
                     items: { $ref: "#/components/schemas/EvalRun" }
+        "202":
+          description: Change created; evaluation queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvaluationQueued" }
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2026,7 +2042,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [open, needs_changes, accepted, approved, promoted, merged, rejected]
+            enum: [open, evaluating, needs_changes, accepted, approved, promoted, merged, rejected]
         - name: limit
           in: query
           schema: { type: integer, default: 100, maximum: 500 }
@@ -2153,7 +2169,8 @@ paths:
         Users only. The change must be approved, accepted, or promoted (unless
         forcing, which the project policy must allow). Branch protection,
         stale-base (`requireFreshBase`), and stale-workspace (SEC-2) gates run
-        before the merge.
+        before the merge. A change still `evaluating` is refused with `409`
+        `EVALUATION_PENDING`, with or without force.
       parameters:
         - name: force
           in: query
@@ -2200,8 +2217,9 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description: |
-            Structured conflict responses; `code` is one of STALE_BASE,
-            STALE_WORKSPACE, WORKSPACE_UNVERIFIABLE, or MERGE_CONFLICT (which
+            Structured conflict responses; `code` is one of EVALUATION_PENDING,
+            EVALUATION_MISSING (the evaluation failed closed and pinned no
+            revision; refused even with force), STALE_BASE, STALE_WORKSPACE, WORKSPACE_UNVERIFIABLE, or MERGE_CONFLICT (which
             includes `conflictId` and `conflictingFiles` for
             `POST /api/projects/conflicts/{id}/resolve`).
           content:
@@ -2257,10 +2275,22 @@ paths:
       operationId: evaluateChange
       tags: [changes]
       summary: Re-run evaluation for a change
-      description: Users only. Merged, rejected, or promoted changes cannot be re-evaluated.
+      description: |
+        Users only. Merged, rejected, or promoted changes cannot be re-evaluated.
+
+        With an evaluation queue bound this re-enqueues: the change moves to
+        `evaluating` under a new run, which supersedes any run still in flight
+        (its verdict is discarded), and the response is `202`. Re-evaluating a
+        change stuck in `evaluating` is allowed and is the manual recovery.
+        Without the queue, evaluation runs inline and the response is `200`.
       responses:
+        "202":
+          description: Evaluation queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvaluationQueued" }
         "200":
-          description: Evaluation result
+          description: Evaluation result, run inline (no evaluation queue bound, or sending to it failed)
           content:
             application/json:
               schema:
@@ -2334,6 +2364,27 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            EVALUATION_PENDING — a re-evaluation began while the branch was being
+            pushed. The PR exists and its link is recorded (`github` carries it),
+            but the change is not marked promoted; promote again once the
+            evaluation finishes, which re-pushes to the same PR.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      github:
+                        type: object
+                        properties:
+                          owner: { type: string }
+                          repo: { type: string }
+                          branch: { type: string }
+                          pullRequestNumber: { type: integer }
+                          pullRequestUrl: { type: string }
 
   /api/changes/{id}/comments:
     parameters:
@@ -2496,8 +2547,15 @@ paths:
       description: |
         Users only — agent tokens cannot review. An `approve` verdict
         moves the change to `approved`; `request_changes` moves it to
-        `needs_changes`. Only open, needs_changes, accepted, or approved
-        changes can be reviewed.
+        `needs_changes`. Only open, evaluating, needs_changes, accepted, or
+        approved changes can be reviewed.
+
+        While the change is `evaluating`, `approve` is refused (409
+        EVALUATION_PENDING) and `request_changes` leaves the status to the
+        evaluation — which then lands on `needs_changes` even if it passed. An
+        approval is recorded only if the change is still exactly as the request
+        loaded it (status, evaluation run, evaluated revision, base); otherwise
+        409 and nothing is recorded.
 
         Approvals are made by a signed-in human: `approve` requires a browser
         session (or the legacy user key). A scoped API token or an OAuth grant
@@ -2536,7 +2594,8 @@ paths:
                     type: string
                     description: |
                       approved or needs_changes after an approve/request_changes
-                      verdict; the change's unchanged status after a comment
+                      verdict (evaluating for a request_changes on an evaluating
+                      change); the change's unchanged status after a comment
                       verdict.
         "400":
           $ref: "#/components/responses/BadRequest"
@@ -2558,7 +2617,14 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          $ref: "#/components/responses/TargetDeleting"
+          description: |
+            `code` is TARGET_DELETING (the project is being deleted),
+            EVALUATION_PENDING (an `approve` while the change is evaluating), or
+            REVIEW_STALE (the change moved on between loading it and recording
+            the approval; nothing was recorded — reload and review again).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500":
           $ref: "#/components/responses/InternalError"
     get:
@@ -5893,6 +5959,26 @@ components:
           type: string
           description: Workspace fork remote (returned on creation)
 
+    EvaluationQueued:
+      type: object
+      required: [change, evaluation]
+      properties:
+        change: { $ref: "#/components/schemas/Change" }
+        evaluation:
+          type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [evaluating, superseded]
+              description: |
+                `evaluating` — the run is queued; poll the change for its verdict.
+                `superseded` — the run executed inline (the queue send failed) but
+                found the change had already moved on (rejected, or waiting on a
+                newer run), so no verdict was recorded.
+            runId:
+              type: string
+              description: The queued run's id. Present only when `status` is `evaluating`.
     Change:
       type: object
       required: [id, project, workspace, status, createdAt]
@@ -5908,7 +5994,10 @@ components:
         workspace: { type: string }
         status:
           type: string
-          enum: [open, needs_changes, accepted, approved, promoted, merged, rejected, reverted]
+          enum: [open, evaluating, needs_changes, accepted, approved, promoted, merged, rejected, reverted]
+          description: |
+            `evaluating` means an evaluation run is queued or running and no
+            verdict exists yet; it is never mergeable.
         agentId: { type: string }
         evalScore: { type: number }
         evalPassed: { type: boolean }
@@ -5925,6 +6014,12 @@ components:
           description: Authoring agent's model, snapshotted at change creation
         agentPromptHash: { type: string }
         workspaceHeadSha: { type: string }
+        evalRunId:
+          type: string
+          description: |
+            The evaluation run the change is waiting on, or the last one
+            dispatched. Absent on changes evaluated inline.
+        evalRequestedAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
         mergedAt: { type: string, format: date-time }
         githubOwner: { type: string }
