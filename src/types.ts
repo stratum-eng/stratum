@@ -210,9 +210,10 @@ export interface Env {
   /**
    * Operator bindings from a GitHub owner to the Stratum owner allowed to act
    * on its repos without an installation link: comma-separated
-   * `githubOwner=@stratumNamespace` entries (e.g. `acme=@acme`). The only way
-   * a project can use the `GITHUB_TOKEN` PAT. An entry without `=@namespace`
-   * is ignored. See src/github/repo-authorization.ts.
+   * `githubOwner=org:<orgId>` / `githubOwner=user:<userId>` entries. Ids, not
+   * namespaces, which can be freed and reclaimed. The only way a project can
+   * use the `GITHUB_TOKEN` PAT. Any other entry is ignored. See
+   * src/github/repo-authorization.ts.
    */
   GITHUB_ALLOWED_OWNERS?: string;
   /** Former name of {@link GITHUB_ALLOWED_OWNERS}; still read, entries combine. */

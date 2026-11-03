@@ -32,6 +32,8 @@ export const SETUP_NOTICES = {
   linked_elsewhere:
     "This installation is already linked to an account you don't manage. Its owner (or an admin of that organization) must unlink it first.",
   bound_token: "This token is limited to one project or organization and cannot do that.",
+  second_factor_required:
+    "That organization requires a second factor. Add a passkey in Settings → Security, or sign in again with the one you have.",
   error: "Something went wrong. Nothing was changed — try again.",
 } as const;
 

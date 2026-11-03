@@ -372,3 +372,101 @@ describe("GET /github/app/setup", () => {
     expect(res.headers.get("location")).toBe("/auth/login");
   });
 });
+
+describe("org second-factor policy (#256)", () => {
+  // The policy governs interactive sign-in, so these go through real sessions.
+  async function sessionCookie(userId: string, withPasskey: boolean): Promise<string> {
+    const { createSession } = await import("../src/storage/sessions");
+    const created = await createSession(
+      env.DB,
+      userId,
+      logger,
+      true,
+      withPasskey ? { secondFactor: "passkey" } : {},
+    );
+    if (!created.success) throw new Error("session not created");
+    return `stratum_session=${created.data.id}`;
+  }
+
+  function asSession(cookie: string, method: string, path: string, body?: Record<string, string>) {
+    return app.fetch(
+      new Request(`http://localhost${path}`, {
+        method,
+        headers: {
+          Cookie: cookie,
+          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      }),
+      env,
+    );
+  }
+
+  beforeEach(() => {
+    raw.prepare("UPDATE org_members SET role = 'admin' WHERE user_id = 'usr_alice'").run();
+    raw.prepare("UPDATE orgs SET require_second_factor = 1 WHERE id = 'org_acme'").run();
+  });
+
+  it("refuses to link to the org, and leaves it out of the link targets, until the policy is met", async () => {
+    const weak = await sessionCookie("usr_alice", false);
+    const refused = await asSession(weak, "POST", "/api/github/installations/777/link", {
+      org: "acme",
+    });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ code: "SECOND_FACTOR_REQUIRED", org: "acme" });
+    expect(owner()).toEqual({ type: null, id: null });
+
+    const page = await asSession(weak, "GET", "/github/app/setup");
+    expect(await page.text()).not.toContain('value="acme"');
+
+    const strong = await sessionCookie("usr_alice", true);
+    const strongPage = await asSession(strong, "GET", "/github/app/setup");
+    expect(await strongPage.text()).toContain('value="acme"');
+    const linked = await asSession(strong, "POST", "/api/github/installations/777/link", {
+      org: "acme",
+    });
+    expect(linked.status).toBe(200);
+    expect(owner()).toEqual({ type: "org", id: "org_acme" });
+  });
+
+  it("refuses to unlink from, or move a link away from, the org until the policy is met", async () => {
+    raw
+      .prepare(
+        "UPDATE github_app_installations SET stratum_owner_type = 'org', stratum_owner_id = 'org_acme' WHERE installation_id = 777",
+      )
+      .run();
+    const weak = await sessionCookie("usr_alice", false);
+
+    const unlinkRes = await asSession(weak, "POST", "/api/github/installations/777/unlink", {});
+    expect(unlinkRes.status).toBe(403);
+    expect(await unlinkRes.json()).toMatchObject({ code: "SECOND_FACTOR_REQUIRED" });
+
+    const moveRes = await asSession(weak, "POST", "/api/github/installations/777/link", {});
+    expect(moveRes.status).toBe(403);
+    expect(await moveRes.json()).toMatchObject({ code: "SECOND_FACTOR_REQUIRED" });
+    expect(owner()).toEqual({ type: "org", id: "org_acme" });
+
+    const listed = await asSession(weak, "GET", "/api/github/installations");
+    const body = (await listed.json()) as { installations: Array<{ canUnlink: boolean }> };
+    expect(body.installations[0]?.canUnlink).toBe(false);
+
+    const strong = await sessionCookie("usr_alice", true);
+    const ok = await asSession(strong, "POST", "/api/github/installations/777/unlink", {});
+    expect(ok.status).toBe(200);
+    expect(owner()).toEqual({ type: null, id: null });
+  });
+
+  it("sends a browser form back to the setup page with the notice", async () => {
+    const weak = await sessionCookie("usr_alice", false);
+    const res = await app.fetch(
+      new Request("http://localhost/api/github/installations/777/link", {
+        method: "POST",
+        headers: { Cookie: weak, "Content-Type": "application/x-www-form-urlencoded" },
+        body: "org=acme",
+      }),
+      env,
+    );
+    expect(res.status).toBe(303);
+    expect(res.headers.get("Location")).toBe("/github/app/setup?notice=second_factor_required");
+  });
+});

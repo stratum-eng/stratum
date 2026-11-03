@@ -14,6 +14,8 @@
 
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { secondFactorRequired } from "../middleware/org-second-factor";
+import { orgBlockedFor } from "../services/org-second-factor";
 import { recordAudit } from "../storage/audit";
 import {
   type GitHubInstallation,
@@ -52,21 +54,47 @@ function parseInstallationId(raw: string | undefined): number | null {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
+/**
+ * Does `userId` administer org `orgId` for THIS session? Every org-role
+ * decision in this file goes through here. An admin whose session fails the
+ * org's second-factor policy (#256) does not administer it: `blocked`, which
+ * a mutating route answers with `SECOND_FACTOR_REQUIRED`.
+ *
+ * @param c - Request context, carrying the session's unmet org policies
+ * @param orgId - The org
+ * @param userId - The caller
+ * @param logger - Request logger
+ * @param record - Whether to record the denial for the response (mutations)
+ * @returns `admin`, `blocked` (admin, policy unmet), or `no`
+ */
+async function orgAuthority(
+  c: Ctx,
+  orgId: string,
+  userId: string,
+  logger: Logger,
+  record = false,
+): Promise<"admin" | "blocked" | "no"> {
+  const role = await getOrgMemberRole(c.env.DB, logger, orgId, userId);
+  if (!role.success || role.data !== "admin") return "no";
+  return orgBlockedFor(c, orgId, record) ? "blocked" : "admin";
+}
+
+/** Orgs the caller administers for this session: link targets. */
 async function adminOrgs(
-  db: D1Database,
+  c: Ctx,
   userId: string,
   logger: Logger,
 ): Promise<Array<{ id: string; slug: string }>> {
-  const orgs = await listOrgsForUser(db, logger, userId);
+  const orgs = await listOrgsForUser(c.env.DB, logger, userId);
   if (!orgs.success) return [];
-  const roles = await Promise.all(
+  const authority = await Promise.all(
     orgs.data.map(async (org) => ({
       org,
-      role: await getOrgMemberRole(db, logger, org.id, userId),
+      authority: await orgAuthority(c, org.id, userId, logger),
     })),
   );
-  return roles
-    .filter(({ role }) => role.success && role.data === "admin")
+  return authority
+    .filter(({ authority: level }) => level === "admin")
     .map(({ org }) => ({ id: org.id, slug: org.slug }));
 }
 
@@ -79,26 +107,34 @@ async function adminOrgs(
  * org's admins set away from that org.
  */
 async function holdsCurrentOwner(
-  db: D1Database,
+  c: Ctx,
   installation: GitHubInstallation,
   user: User,
   logger: Logger,
-): Promise<boolean> {
+  record = false,
+): Promise<"yes" | "blocked" | "no"> {
   const owner = installation.owner;
-  if (!owner) return false;
-  if (owner.type === "user") return owner.id === user.id;
-  const role = await getOrgMemberRole(db, logger, owner.id, user.id);
-  return role.success && role.data === "admin";
+  if (!owner) return "no";
+  if (owner.type === "user") return owner.id === user.id ? "yes" : "no";
+  const authority = await orgAuthority(c, owner.id, user.id, logger, record);
+  return authority === "admin" ? "yes" : authority;
+}
+
+/** The refusal for an org admin whose session fails the org's policy. */
+async function secondFactorRefusal(c: Ctx, orgId: string, logger: Logger): Promise<Response> {
+  if (!isJsonRequest(c)) return c.redirect(`${SETUP_PATH}?notice=second_factor_required`, 303);
+  const org = await getOrg(c.env.DB, logger, orgId);
+  return secondFactorRequired(c, org.success ? org.data.slug : orgId);
 }
 
 /** What `user` may do with an installation, for the listings. */
 async function permissionsFor(
-  db: D1Database,
+  c: Ctx,
   installation: GitHubInstallation,
   user: User,
   logger: Logger,
 ): Promise<{ canLink: boolean; canUnlink: boolean }> {
-  const holds = await holdsCurrentOwner(db, installation, user, logger);
+  const holds = (await holdsCurrentOwner(c, installation, user, logger)) === "yes";
   const controls = githubIdentityControls(installation, user.githubId);
   return { canLink: controls && (!installation.owner || holds), canUnlink: holds };
 }
@@ -162,13 +198,13 @@ app.get(SETUP_PATH, async (c) => {
       accountType: inst.accountType,
       suspended: inst.suspendedAt !== undefined,
       ...(inst.owner ? { linkedTo: await ownerLabel(c.env.DB, inst.owner, user, logger) } : {}),
-      ...(await permissionsFor(c.env.DB, inst, user, logger)),
+      ...(await permissionsFor(c, inst, user, logger)),
     })),
   );
 
   const linkTargets: LinkTarget[] = [
     { value: "", label: `@${user.username} (personal)` },
-    ...(await adminOrgs(c.env.DB, user.id, logger)).map((org) => ({
+    ...(await adminOrgs(c, user.id, logger)).map((org) => ({
       value: org.slug,
       label: `@${org.slug}`,
     })),
@@ -216,7 +252,7 @@ app.get("/api/github/installations", async (c) => {
       account: { login: inst.accountLogin, type: inst.accountType },
       suspended: inst.suspendedAt !== undefined,
       linkedTo: inst.owner ? await ownerLabel(c.env.DB, inst.owner, user, logger) : null,
-      ...(await permissionsFor(c.env.DB, inst, user, logger)),
+      ...(await permissionsFor(c, inst, user, logger)),
     })),
   );
   return c.json({ installations, githubLinked: user.githubId !== undefined });
@@ -252,26 +288,27 @@ app.post("/api/github/installations/:id/link", async (c) => {
   // The proof of control. Not distinguishable from "not found" for a caller
   // with no claim on it, so installation ids can't be probed for accounts.
   if (!githubIdentityControls(installation, user.githubId)) {
-    const visible = await holdsCurrentOwner(c.env.DB, installation, user, logger);
-    return visible
-      ? respond(c, { ok: false, notice: "not_authorized", status: 403 })
-      : respond(c, { ok: false, notice: "not_found", status: 404 });
+    const visible = await holdsCurrentOwner(c, installation, user, logger);
+    return visible === "no"
+      ? respond(c, { ok: false, notice: "not_found", status: 404 })
+      : respond(c, { ok: false, notice: "not_authorized", status: 403 });
   }
 
   // Already linked: moving it takes authority over the current owner too, so
   // a link is only ever changed with that owner's consent (see holdsCurrentOwner).
-  if (installation.owner && !(await holdsCurrentOwner(c.env.DB, installation, user, logger))) {
-    return respond(c, { ok: false, notice: "linked_elsewhere", status: 403 });
+  if (installation.owner) {
+    const holds = await holdsCurrentOwner(c, installation, user, logger, true);
+    if (holds === "blocked") return secondFactorRefusal(c, installation.owner.id, logger);
+    if (holds === "no") return respond(c, { ok: false, notice: "linked_elsewhere", status: 403 });
   }
 
   let target: StratumOwnerRef = { type: "user", id: user.id };
   if (orgSlug !== "") {
     const org = await getOrgBySlug(c.env.DB, logger, orgSlug);
     if (!org.success) return respond(c, { ok: false, notice: "bad_target", status: 400 });
-    const role = await getOrgMemberRole(c.env.DB, logger, org.data.id, user.id);
-    if (!role.success || role.data !== "admin") {
-      return respond(c, { ok: false, notice: "bad_target", status: 400 });
-    }
+    const authority = await orgAuthority(c, org.data.id, user.id, logger, true);
+    if (authority === "blocked") return secondFactorRefusal(c, org.data.id, logger);
+    if (authority === "no") return respond(c, { ok: false, notice: "bad_target", status: 400 });
     target = { type: "org", id: org.data.id };
   }
 
@@ -320,9 +357,12 @@ app.post("/api/github/installations/:id/unlink", async (c) => {
   const record = await getInstallation(c.env.DB, installationId, logger);
   if (!record.success) return respond(c, { ok: false, notice: "error", status: 500 });
   const installation = record.data;
-  if (!installation || !(await holdsCurrentOwner(c.env.DB, installation, user, logger))) {
-    return respond(c, { ok: false, notice: "not_found", status: 404 });
+  if (!installation) return respond(c, { ok: false, notice: "not_found", status: 404 });
+  const holds = await holdsCurrentOwner(c, installation, user, logger, true);
+  if (holds === "blocked" && installation.owner) {
+    return secondFactorRefusal(c, installation.owner.id, logger);
   }
+  if (holds !== "yes") return respond(c, { ok: false, notice: "not_found", status: 404 });
 
   const owner = installation.owner;
   if (owner && !bindingAllowsCreateIn(credentialBindingFrom(c), owner)) {

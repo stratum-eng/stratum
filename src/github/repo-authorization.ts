@@ -10,7 +10,10 @@
  *     (migration 059), or
  *   - is bound to the repo's GitHub owner by the operator, in
  *     `GITHUB_ALLOWED_OWNERS` (formerly `GITHUB_APP_ALLOWED_OWNERS`) as
- *     `githubOwner=@stratumNamespace` entries.
+ *     `githubOwner=org:<orgId>` or `githubOwner=user:<userId>` entries.
+ *     Bindings name stable ids, never a namespace: a namespace can be freed by
+ *     a rename or a deletion and claimed by someone else, who would then
+ *     inherit the binding.
  *
  * The instance PAT (`GITHUB_TOKEN`) is reachable only through the second
  * route. Inbound webhook events and outbound writes (PR promotion, evaluation
@@ -43,48 +46,46 @@ export type OwnerBindingsEnv = Pick<Env, "GITHUB_ALLOWED_OWNERS" | "GITHUB_APP_A
 export type RepoAuthorizationEnv = OwnerBindingsEnv & { DB: D1Database };
 
 const GITHUB_LOGIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38})$/;
-const STRATUM_NAMESPACE_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62})$/;
+const STRATUM_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+/** A bound Stratum owner, as `org:<id>` or `user:<id>`. */
+export type BoundOwnerKey = `org:${string}` | `user:${string}`;
 
 export interface OwnerBindings {
-  /** GitHub owner (lowercase) → Stratum namespaces (lowercase, no `@`) it is bound to. */
-  bindings: Map<string, Set<string>>;
-  /** Entries that bind nothing (no `=`, or a malformed side). Ignored. */
+  /** GitHub owner (lowercase) → Stratum owners (`org:<id>` / `user:<id>`) bound to it. */
+  bindings: Map<string, Set<BoundOwnerKey>>;
+  /** Entries that bind nothing: no `=`, an `@namespace` side, or a malformed one. Ignored. */
   unbound: string[];
 }
 
 /**
- * Parses `githubOwner=@stratumNamespace` entries, comma-separated. An entry
- * without a Stratum side is ignored rather than read as "any project": the
- * whole point of the binding is that naming a repo in a source URL is not
- * enough.
+ * Parses `githubOwner=org:<orgId>` / `githubOwner=user:<userId>` entries,
+ * comma-separated. Anything else is ignored rather than read as "any project":
+ * an entry with no Stratum side, and an `@namespace` side, because a
+ * namespace is reusable (renames, deletions) while an id is not.
  *
  * @param raw - The setting's value
  * @returns The bindings, and the entries that were ignored
  */
 export function parseOwnerBindings(raw: string | undefined): OwnerBindings {
-  const bindings = new Map<string, Set<string>>();
+  const bindings = new Map<string, Set<BoundOwnerKey>>();
   const unbound: string[] = [];
   for (const entry of (raw ?? "").split(",")) {
     const trimmed = entry.trim();
     if (!trimmed) continue;
     const separator = trimmed.indexOf("=");
-    if (separator < 0) {
+    const githubOwner = separator < 0 ? "" : trimmed.slice(0, separator).trim().toLowerCase();
+    const side = separator < 0 ? "" : trimmed.slice(separator + 1).trim();
+    const match = side.match(/^(org|user):(.+)$/);
+    const id = match?.[2]?.trim() ?? "";
+    if (!GITHUB_LOGIN_PATTERN.test(githubOwner) || !match || !STRATUM_ID_PATTERN.test(id)) {
       unbound.push(trimmed);
       continue;
     }
-    const githubOwner = trimmed.slice(0, separator).trim().toLowerCase();
-    const namespace = trimmed
-      .slice(separator + 1)
-      .trim()
-      .replace(/^@/, "")
-      .toLowerCase();
-    if (!GITHUB_LOGIN_PATTERN.test(githubOwner) || !STRATUM_NAMESPACE_PATTERN.test(namespace)) {
-      unbound.push(trimmed);
-      continue;
-    }
-    const namespaces = bindings.get(githubOwner) ?? new Set<string>();
-    namespaces.add(namespace);
-    bindings.set(githubOwner, namespaces);
+    const key = `${match[1] as "org" | "user"}:${id}` as BoundOwnerKey;
+    const owners = bindings.get(githubOwner) ?? new Set<BoundOwnerKey>();
+    owners.add(key);
+    bindings.set(githubOwner, owners);
   }
   return { bindings, unbound };
 }
@@ -94,14 +95,16 @@ const warnedUnboundEntries = new Set<string>();
 /**
  * The operator's owner bindings, from `GITHUB_ALLOWED_OWNERS` and the older
  * `GITHUB_APP_ALLOWED_OWNERS` (both are read; entries combine). Each ignored
- * entry is logged once per isolate, loudly enough to find, because an entry
- * that used to admit every project now admits none.
+ * entry is logged once per isolate, naming the form that works.
  *
  * @param env - Environment carrying the settings
  * @param logger - Logger for the one-time warning
- * @returns GitHub owner → bound Stratum namespaces
+ * @returns GitHub owner → bound Stratum owners
  */
-export function ownerBindings(env: OwnerBindingsEnv, logger: Logger): Map<string, Set<string>> {
+export function ownerBindings(
+  env: OwnerBindingsEnv,
+  logger: Logger,
+): Map<string, Set<BoundOwnerKey>> {
   const raw = [env.GITHUB_ALLOWED_OWNERS, env.GITHUB_APP_ALLOWED_OWNERS]
     .filter((value): value is string => typeof value === "string" && value.trim() !== "")
     .join(",");
@@ -110,7 +113,7 @@ export function ownerBindings(env: OwnerBindingsEnv, logger: Logger): Map<string
     if (warnedUnboundEntries.has(entry)) continue;
     warnedUnboundEntries.add(entry);
     logger.warn(
-      "Ignoring GitHub allowed-owner entry without a Stratum owner; use githubOwner=@namespace",
+      "Ignoring GitHub allowed-owner entry; bind a stable id: githubOwner=org:<orgId> or githubOwner=user:<userId>",
       { entry },
     );
   }
@@ -118,32 +121,30 @@ export function ownerBindings(env: OwnerBindingsEnv, logger: Logger): Map<string
 }
 
 /**
- * The Stratum namespace a principal acts as: a user's username, an org's
- * slug, or an agent's owner's username. Null when it cannot be resolved,
- * which every caller treats as "not admitted".
+ * The stable owner a principal acts as: an org or user by id, or, for an
+ * agent, the id of the user who owns it. Null when an agent's owner cannot be
+ * resolved, which every caller treats as "not admitted".
  *
  * @param db - D1 database
  * @param principal - The principal
  * @param logger - Request logger
- * @returns The namespace, lowercase and without `@`, or null
+ * @returns `org:<id>` / `user:<id>`, or null
  */
-export async function principalNamespace(
+export async function principalOwnerKey(
   db: D1Database,
   principal: GitHubPrincipal,
   logger: Logger,
-): Promise<string | null> {
-  const query =
-    principal.type === "org"
-      ? "SELECT slug AS ns FROM orgs WHERE id = ?"
-      : principal.type === "agent"
-        ? "SELECT u.username AS ns FROM agents a JOIN users u ON u.id = a.owner_id WHERE a.id = ?"
-        : "SELECT username AS ns FROM users WHERE id = ?";
+): Promise<BoundOwnerKey | null> {
+  if (principal.type === "org") return `org:${principal.id}`;
+  if (principal.type === "user") return `user:${principal.id}`;
   try {
-    const row = await db.prepare(query).bind(principal.id).first<{ ns: string | null }>();
-    return typeof row?.ns === "string" ? row.ns.toLowerCase() : null;
+    const row = await db
+      .prepare("SELECT owner_id FROM agents WHERE id = ?")
+      .bind(principal.id)
+      .first<{ owner_id: string | null }>();
+    return typeof row?.owner_id === "string" ? `user:${row.owner_id}` : null;
   } catch (error) {
-    logger.error("Failed to resolve principal namespace", undefined, {
-      principalType: principal.type,
+    logger.error("Failed to resolve agent owner for GitHub authorization", undefined, {
       error: error instanceof Error ? error.message : String(error),
     });
     return null;
@@ -158,7 +159,7 @@ export async function principalNamespace(
  * @param owner - The repo's GitHub owner
  * @param principal - Who the call or event is for
  * @param logger - Request logger
- * @returns Whether a binding names this principal's namespace for this owner
+ * @returns Whether a binding names this principal's owner id for this GitHub owner
  */
 export async function allowlistAdmits(
   env: RepoAuthorizationEnv,
@@ -167,10 +168,10 @@ export async function allowlistAdmits(
   logger: Logger,
 ): Promise<boolean> {
   if (!principal) return false;
-  const namespaces = ownerBindings(env, logger).get(owner.toLowerCase());
-  if (!namespaces || namespaces.size === 0) return false;
-  const namespace = await principalNamespace(env.DB, principal, logger);
-  return namespace !== null && namespaces.has(namespace);
+  const owners = ownerBindings(env, logger).get(owner.toLowerCase());
+  if (!owners || owners.size === 0) return false;
+  const key = await principalOwnerKey(env.DB, principal, logger);
+  return key !== null && owners.has(key);
 }
 
 export type RepoAuthorization =

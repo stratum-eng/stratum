@@ -424,8 +424,10 @@ or an import's target owner). The decisions live in
 - **App installed on the repo:** an installation token only when the
   installation is linked to the principal in `github_app_installations`
   (migration 059; an agent matches through its owner), or an operator binding
-  in `GITHUB_ALLOWED_OWNERS` (`githubOwner=@namespace`) names the principal's
-  namespace. A refusal, or a link check that errors, **ends there**: no PAT
+  in `GITHUB_ALLOWED_OWNERS` (`githubOwner=org:<orgId>` /
+  `githubOwner=user:<userId>`) names the principal's owner by id (an agent by
+  its owner's user id). Bindings name ids, not namespaces, so a renamed or
+  deleted name reclaimed by someone else inherits nothing. A refusal, or a link check that errors, **ends there**: no PAT
   fallback.
 - **App not configured, not installed, or failing to mint:** the
   `GITHUB_TOKEN` PAT, but only for a principal an operator binding names.

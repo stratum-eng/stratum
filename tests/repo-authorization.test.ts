@@ -79,28 +79,41 @@ const linkedProjectId = () =>
   )?.project_id;
 
 describe("parseOwnerBindings", () => {
-  it("binds GitHub owners to Stratum namespaces, case-insensitively", () => {
-    const { bindings, unbound } = parseOwnerBindings(" Stratum-Eng=@Stratum , acme=alice ,, ");
-    expect([...(bindings.get("stratum-eng") ?? [])]).toEqual(["stratum"]);
-    expect([...(bindings.get("acme") ?? [])]).toEqual(["alice"]);
+  it("binds GitHub owners to stable org and user ids", () => {
+    const { bindings, unbound } = parseOwnerBindings(
+      " Stratum-Eng=org:org_stratum , acme=user:usr_alice ,, ",
+    );
+    expect([...(bindings.get("stratum-eng") ?? [])]).toEqual(["org:org_stratum"]);
+    expect([...(bindings.get("acme") ?? [])]).toEqual(["user:usr_alice"]);
     expect(unbound).toEqual([]);
   });
 
-  it("ignores entries with no Stratum side or a malformed one", () => {
-    const { bindings, unbound } = parseOwnerBindings("acme,other=,=@x,bad owner=@y,ok=@bad_ns");
+  it("ignores namespace-bound, unbound and malformed entries", () => {
+    const { bindings, unbound } = parseOwnerBindings(
+      "acme,acme=@alice,acme=alice,other=,=org:x,bad owner=org:y,ok=team:z,ok=org:",
+    );
     expect(bindings.size).toBe(0);
-    expect(unbound).toEqual(["acme", "other=", "=@x", "bad owner=@y", "ok=@bad_ns"]);
+    expect(unbound).toEqual([
+      "acme",
+      "acme=@alice",
+      "acme=alice",
+      "other=",
+      "=org:x",
+      "bad owner=org:y",
+      "ok=team:z",
+      "ok=org:",
+    ]);
   });
 
-  it("allows several namespaces per owner", () => {
-    const { bindings } = parseOwnerBindings("acme=@alice,acme=@stratum");
-    expect([...(bindings.get("acme") ?? [])].sort()).toEqual(["alice", "stratum"]);
+  it("allows several owners per GitHub account", () => {
+    const { bindings } = parseOwnerBindings("acme=user:usr_alice,acme=org:org_stratum");
+    expect([...(bindings.get("acme") ?? [])].sort()).toEqual(["org:org_stratum", "user:usr_alice"]);
   });
 });
 
 describe("allowlistAdmits", () => {
-  it("admits only the bound owner, for users, orgs, and agents through their owner", async () => {
-    env.GITHUB_ALLOWED_OWNERS = "acme=@alice,acme=@stratum";
+  it("admits only the bound ids, with an agent matching through its owner's user id", async () => {
+    env.GITHUB_ALLOWED_OWNERS = "acme=user:usr_alice,acme=org:org_stratum";
     raw
       .prepare(
         "INSERT INTO agents (id, name, owner_id, token_hash) VALUES ('agt_1', 'a', 'usr_alice', 'h')",
@@ -123,17 +136,55 @@ describe("allowlistAdmits", () => {
       false,
     );
     expect(await allowlistAdmits(env, "acme", { type: "agent", id: "agt_2" }, logger)).toBe(false);
+    expect(await allowlistAdmits(env, "acme", { type: "agent", id: "agt_missing" }, logger)).toBe(
+      false,
+    );
     expect(await allowlistAdmits(env, "other", { type: "user", id: "usr_alice" }, logger)).toBe(
       false,
     );
     expect(await allowlistAdmits(env, "acme", null, logger)).toBe(false);
+    // A user id is not an org id, even when the strings match.
+    expect(await allowlistAdmits(env, "acme", { type: "org", id: "usr_alice" }, logger)).toBe(
+      false,
+    );
   });
 
-  it("treats an unbound entry as admitting nobody", async () => {
-    env.GITHUB_APP_ALLOWED_OWNERS = "acme";
+  it("treats an unbound or namespace-bound entry as admitting nobody", async () => {
+    env.GITHUB_APP_ALLOWED_OWNERS = "acme,acme=@alice";
     expect(await allowlistAdmits(env, "acme", { type: "user", id: "usr_alice" }, logger)).toBe(
       false,
     );
+  });
+
+  it("does not follow a name: after a rename, the newcomer to the old name is not admitted", async () => {
+    env.GITHUB_ALLOWED_OWNERS = "acme=org:org_stratum";
+    // @stratum renames to @stratum-old; mallory creates a new org called stratum.
+    raw.prepare("UPDATE orgs SET slug = 'stratum-old' WHERE id = 'org_stratum'").run();
+    raw
+      .prepare(
+        "INSERT INTO orgs (id, slug, name, owner_id) VALUES ('org_squat', 'stratum', 'S', 'usr_mallory')",
+      )
+      .run();
+
+    expect(await allowlistAdmits(env, "acme", { type: "org", id: "org_squat" }, logger)).toBe(
+      false,
+    );
+    expect(await allowlistAdmits(env, "acme", { type: "org", id: "org_stratum" }, logger)).toBe(
+      true,
+    );
+  });
+
+  it("does not follow a name: after a delete and reclaim, the newcomer is not admitted", async () => {
+    env.GITHUB_ALLOWED_OWNERS = "acme=user:usr_alice";
+    raw.prepare("DELETE FROM orgs WHERE owner_id = 'usr_alice'").run();
+    raw.prepare("DELETE FROM users WHERE id = 'usr_alice'").run();
+    raw
+      .prepare(
+        "INSERT INTO users (id, email, username, token_hash) VALUES ('usr_new', 'n@example.com', 'alice', 'hn')",
+      )
+      .run();
+
+    expect(await allowlistAdmits(env, "acme", { type: "user", id: "usr_new" }, logger)).toBe(false);
   });
 });
 
@@ -175,7 +226,7 @@ describe("resolveInboundProject", () => {
       data: null,
     });
 
-    env.GITHUB_ALLOWED_OWNERS = "acme=@alice";
+    env.GITHUB_ALLOWED_OWNERS = "acme=user:usr_alice";
     const routed = await resolveInboundProject(env, "acme", "api", undefined, logger);
     expect(routed.success && routed.data?.id).toBe("prj_a");
   });

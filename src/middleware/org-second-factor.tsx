@@ -58,7 +58,12 @@ function blockedOrgRoute(c: AppContext): string | undefined {
   return org;
 }
 
-async function secondFactorRequired(c: AppContext, org: string): Promise<Response> {
+/**
+ * The `SECOND_FACTOR_REQUIRED` refusal for `org`: JSON, or an HTML page for a
+ * browser GET. Exported so a route that decides org authority itself (rather
+ * than through the guarded paths above) answers in the same shape.
+ */
+export async function secondFactorRequired(c: AppContext, org: string): Promise<Response> {
   const message = `The organization '${org}' requires a second factor. Add a passkey at ${ENROLL_PATH} — or, if you already have one, sign out and sign in again with it.`;
   const wantsHtml =
     (c.req.method === "GET" || c.req.method === "HEAD") &&

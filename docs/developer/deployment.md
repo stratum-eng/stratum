@@ -324,12 +324,18 @@ npx wrangler secret put GOOGLE_CLIENT_SECRET
 # its owner below.
 npx wrangler secret put GITHUB_APP_ID
 npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app.pkcs8.pem
-# Optional operator bindings: comma-separated githubOwner=@stratumNamespace
-# entries. Each lets the named Stratum user/org (and its members' agents) act
-# on that GitHub owner's repos without an installation link, and is the ONLY
-# way any project can use GITHUB_TOKEN. An entry without "=@namespace" is
-# ignored. A plain var, not a secret: add it under [vars] / --var, e.g.
-#   GITHUB_ALLOWED_OWNERS = "stratum-eng=@stratum"
+# Optional operator bindings: comma-separated githubOwner=org:<orgId> or
+# githubOwner=user:<userId> entries. Each lets that Stratum org or user (and,
+# for a user, their agents) act on that GitHub owner's repos without an
+# installation link, and is the ONLY way any project can use GITHUB_TOKEN.
+# Bindings take stable ids, never @namespaces: a namespace can be renamed or
+# deleted and then claimed by someone else. Any other entry is ignored.
+# Find the id with
+#   npx wrangler d1 execute <db> --remote --command "SELECT id FROM orgs WHERE slug='stratum'"
+#   (or "SELECT id FROM users WHERE username='you'")
+# or, signed in as a member, GET /api/orgs/<slug> (org.id) / GET /api/users/me (id).
+# A plain var, not a secret: add it under [vars] / --var, e.g.
+#   GITHUB_ALLOWED_OWNERS = "stratum-eng=org:org_0123abcd..."
 # (GITHUB_APP_ALLOWED_OWNERS, the former name, is still read.)
 npx wrangler secret put GITHUB_WEBHOOK_SECRET
 # Optional PAT for repos the app isn't installed on (or every repo when no app

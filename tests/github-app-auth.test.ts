@@ -275,7 +275,7 @@ describe("getInstallationId", () => {
 
 describe("installation tokens (via a bound owner)", () => {
   const bound = (kv: KVNamespace, extra: Partial<GitHubAuthEnv> = {}) =>
-    appEnv(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice", ...extra });
+    appEnv(kv, { GITHUB_ALLOWED_OWNERS: "acme=user:usr_alice", ...extra });
   beforeEach(() => seedUser("usr_alice"));
 
   it("mints a token and caches it until five minutes before expiry", async () => {
@@ -341,11 +341,26 @@ describe("installation tokens (via a bound owner)", () => {
     const { kv } = makeKv();
     routeGitHub({});
     const result = await resolveGitHubToken(
-      appEnv(kv, { GITHUB_APP_ALLOWED_OWNERS: "acme=@alice" }),
+      appEnv(kv, { GITHUB_APP_ALLOWED_OWNERS: "acme=user:usr_alice" }),
       target(),
       logger,
     );
     expect(result.success && result.data.source).toBe("app");
+  });
+
+  it("ignores a namespace-bound entry: only ids bind", async () => {
+    const { kv } = makeKv();
+    routeGitHub({});
+    const result = await resolveGitHubToken(
+      appEnv(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice", GITHUB_TOKEN: "ghp_pat" }),
+      target(),
+      logger,
+    );
+    expect(!result.success && result.error.code).toBe("GITHUB_APP_NOT_AUTHORIZED");
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("githubOwner=org:<orgId> or githubOwner=user:<userId>"),
+      { entry: "acme=@alice" },
+    );
   });
 
   it("ignores an entry with no Stratum owner instead of admitting everyone", async () => {
@@ -413,7 +428,7 @@ describe("resolveGitHubToken authorization", () => {
     const { kv } = makeKv();
     routeGitHub({});
     // The operator bound acme to alice, not to whoever imports acme's repos.
-    const env = pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice" });
+    const env = pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=user:usr_alice" });
 
     const mallory = await resolveGitHubToken(
       env,
@@ -423,7 +438,7 @@ describe("resolveGitHubToken authorization", () => {
     expect(refusedByApp(mallory)).toBe(true);
 
     const patOnly = await resolveGitHubToken(
-      { STATE: kv, DB: db, GITHUB_TOKEN: "ghp_pat", GITHUB_ALLOWED_OWNERS: "acme=@alice" },
+      { STATE: kv, DB: db, GITHUB_TOKEN: "ghp_pat", GITHUB_ALLOWED_OWNERS: "acme=user:usr_alice" },
       target({ type: "user", id: "usr_mallory" }),
       logger,
     );
@@ -490,7 +505,7 @@ describe("resolveGitHubToken authorization", () => {
     const { kv } = makeKv();
     routeGitHub({});
     const result = await resolveGitHubToken(
-      pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice" }),
+      pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=user:usr_alice" }),
       target(null),
       logger,
     );
@@ -504,7 +519,7 @@ describe("resolveGitHubToken authorization", () => {
       .run("usr_alice");
     const { kv } = makeKv({ "github_installation:acme/api": "none" });
     const result = await resolveGitHubToken(
-      pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice" }),
+      pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=user:usr_alice" }),
       target({ type: "agent", id: "agt_1" }),
       logger,
     );
@@ -532,7 +547,7 @@ describe("resolveGitHubToken authorization", () => {
     expect(!unbound.success && unbound.error.code).toBe("GITHUB_NOT_AUTHORIZED");
 
     const result = await resolveGitHubToken(
-      pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice" }),
+      pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=user:usr_alice" }),
       target(),
       logger,
     );
@@ -546,7 +561,7 @@ describe("resolveGitHubToken authorization", () => {
     routeGitHub({ installation: jsonResponse(500, { message: "boom" }) });
 
     const result = await resolveGitHubToken(
-      pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice" }),
+      pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=user:usr_alice" }),
       target(),
       logger,
     );
@@ -562,7 +577,7 @@ describe("resolveGitHubToken authorization", () => {
     seedUser("usr_alice");
     const { kv } = makeKv();
     const result = await resolveGitHubToken(
-      { STATE: kv, DB: db, GITHUB_TOKEN: "ghp_pat", GITHUB_ALLOWED_OWNERS: "acme=@alice" },
+      { STATE: kv, DB: db, GITHUB_TOKEN: "ghp_pat", GITHUB_ALLOWED_OWNERS: "acme=user:usr_alice" },
       target(),
       logger,
     );

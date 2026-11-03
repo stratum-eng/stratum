@@ -898,6 +898,10 @@ installing, and the page lists your installations with a form to link each one.
 It needs no JavaScript.
 
 Users only. These endpoints are unreachable with a project- or org-bound token.
+Acting on an organization (linking to it, unlinking from it, moving a link
+away from it) takes an admin of that org whose session meets its
+second-factor policy. Otherwise the request is refused with `403`
+`SECOND_FACTOR_REQUIRED`, and the org is not offered as a link target.
 
 ### List installations
 `GET /api/github/installations`
@@ -953,15 +957,20 @@ binding covers them).
 
 `GITHUB_ALLOWED_OWNERS` binds a GitHub owner to the Stratum owner allowed to
 act on its repositories without an installation link. It is a comma-separated
-list of `githubOwner=@stratumNamespace` entries:
+list of entries naming the Stratum owner **by id**:
 
 ```
-GITHUB_ALLOWED_OWNERS = "acme=@acme,acme-labs=@acme"
+GITHUB_ALLOWED_OWNERS = "acme=org:org_0123abcd,acme-labs=user:usr_4567ef01"
 ```
 
-An entry admits only projects owned by that Stratum user or org, or by an
-agent whose owner it is. It covers the GitHub App on those repositories and is
-the **only** way a project can use the instance `GITHUB_TOKEN`. An entry with
-no `=@namespace` part is ignored, with a warning in the logs. It does not admit
-every project. The former name, `GITHUB_APP_ALLOWED_OWNERS`, is still read, and
-the two lists combine.
+An entry admits only projects owned by that org or user, or by an agent whose
+owner is that user. It covers the GitHub App on those repositories and is the
+**only** way a project can use the instance `GITHUB_TOKEN`.
+
+Ids are used rather than `@namespace` names because a namespace can be renamed
+or deleted and then claimed by someone else, who must not inherit the binding.
+Any other entry, including `githubOwner=@namespace`, is ignored, with a warning
+in the logs. It does not admit every project. Members can read an org's id
+from `GET /api/orgs/{slug}` (`org.id`), and their own from `GET /api/users/me`.
+The former name, `GITHUB_APP_ALLOWED_OWNERS`, is still read, and the two lists
+combine.
