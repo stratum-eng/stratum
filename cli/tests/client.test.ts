@@ -93,6 +93,48 @@ describe("StratumClient", () => {
     expect(lastCall().url).toBe("https://stratum.example.com/api/changes/chg_1/merge");
   });
 
+  it("reads an inline verdict and a queued evaluation alike from createChange", async () => {
+    fetchMock.mockImplementationOnce(async () =>
+      Response.json({ change: { id: "chg_1", status: "evaluating" } }, { status: 202 }),
+    );
+    const queued = await client.createChange("@user/repo", "ws-1");
+    expect(queued.change.status).toBe("evaluating");
+    expect(queued.eval).toBeUndefined();
+  });
+
+  it("waits for a queued evaluation to finish", async () => {
+    const statuses = ["evaluating", "evaluating", "accepted"];
+    fetchMock.mockImplementation(async () =>
+      Response.json({
+        change: { id: "chg_1", status: statuses.shift(), evalScore: 1, evalPassed: true },
+        evalRuns: [],
+        costs: [],
+      }),
+    );
+    const sleep = vi.fn(async () => undefined);
+    const result = await client.waitForEvaluation("chg_1", { sleep, intervalMs: 5 });
+    expect(result.change.status).toBe("accepted");
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(lastCall().url).toBe("https://stratum.example.com/api/changes/chg_1");
+  });
+
+  it("gives up waiting at the deadline instead of reporting a verdict", async () => {
+    fetchMock.mockImplementation(async () =>
+      Response.json({ change: { id: "chg_1", status: "evaluating" }, evalRuns: [], costs: [] }),
+    );
+    let clock = 0;
+    await expect(
+      client.waitForEvaluation("chg_1", {
+        timeoutMs: 10,
+        intervalMs: 5,
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      }),
+    ).rejects.toThrow(/still evaluating/);
+  });
+
   it("submits review verdicts", async () => {
     await client.reviewChange("chg_1", "approve", "lgtm");
     const { url, init } = lastCall();

@@ -35,6 +35,10 @@ interface ChangeRow {
   github_comment_id: number | null;
   promoted_at: string | null;
   promoted_by: string | null;
+  /** Added by migration 063; optional so a row from an older schema (or a
+   * test fixture) still maps. */
+  eval_run_id?: string | null;
+  eval_requested_at?: string | null;
 }
 
 function rowToChange(row: ChangeRow): Change {
@@ -70,6 +74,8 @@ function rowToChange(row: ChangeRow): Change {
   if (row.github_comment_id !== null) change.githubCommentId = row.github_comment_id;
   if (row.promoted_at !== null) change.promotedAt = row.promoted_at;
   if (row.promoted_by !== null) change.promotedBy = row.promoted_by;
+  if (typeof row.eval_run_id === "string") change.evalRunId = row.eval_run_id;
+  if (typeof row.eval_requested_at === "string") change.evalRequestedAt = row.eval_requested_at;
   return change;
 }
 
@@ -90,28 +96,39 @@ export async function createChange(
     /** Human author (acting user, or an agent's owner). Excluded from the
      * required-approval count so a change cannot be self-approved. */
     createdByUserId?: string;
+    /**
+     * Create the change already waiting on this evaluation run (#412), in
+     * status `evaluating`, rather than `open`. One INSERT rather than an
+     * INSERT and an UPDATE, so there is no window in which the row exists
+     * with neither a verdict nor a run that will produce one.
+     */
+    evaluation?: { runId: string; requestedBy?: string };
   },
 ): Promise<Result<Change, AppError>> {
   const id = newId("chg");
   const createdAt = new Date().toISOString();
+  const status: Change["status"] = opts.evaluation ? "evaluating" : "open";
 
   try {
     await db
       .prepare(
-        "INSERT INTO changes (id, project, project_id, workspace, status, agent_id, base_sha, agent_model, agent_prompt_hash, created_by_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO changes (id, project, project_id, workspace, status, agent_id, base_sha, agent_model, agent_prompt_hash, created_by_user_id, created_at, eval_run_id, eval_requested_at, eval_requested_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         id,
         opts.project,
         opts.projectId ?? null,
         opts.workspace,
-        "open",
+        status,
         opts.agentId ?? null,
         opts.baseSha ?? null,
         opts.agentModel ?? null,
         opts.agentPromptHash ?? null,
         opts.createdByUserId ?? null,
         createdAt,
+        opts.evaluation?.runId ?? null,
+        opts.evaluation ? createdAt : null,
+        opts.evaluation?.requestedBy ?? null,
       )
       .run();
 
@@ -119,9 +136,13 @@ export async function createChange(
       id,
       project: opts.project,
       workspace: opts.workspace,
-      status: "open",
+      status,
       createdAt,
     };
+    if (opts.evaluation) {
+      change.evalRunId = opts.evaluation.runId;
+      change.evalRequestedAt = createdAt;
+    }
     if (opts.projectId !== undefined) change.projectId = opts.projectId;
     if (opts.agentId !== undefined) change.agentId = opts.agentId;
     if (opts.baseSha !== undefined) change.baseSha = opts.baseSha;
@@ -315,7 +336,32 @@ export interface UpdateChangeStatusOpts {
   githubHeadSha?: string;
   promotedAt?: string;
   promotedBy?: string;
+  /**
+   * Not a column. Lets a non-terminal status overwrite `evaluating` — only the
+   * inline evaluation paths, which ARE the verdict, may set it. See
+   * {@link STATUSES_ALLOWED_FROM_EVALUATING}.
+   */
+  allowFromEvaluating?: boolean;
 }
+
+/**
+ * Statuses that may replace `evaluating` through an ordinary status write.
+ *
+ * Every other transition out of `evaluating` belongs to the run that is
+ * pending (#412): a review approving the change, a promotion, a GitHub review
+ * marking it needs_changes — each read the status before a re-evaluation moved
+ * it to `evaluating`, and landing after would both make the change mergeable
+ * with no verdict and orphan the run, whose write is conditional on the status
+ * still being `evaluating`. Those writes are therefore guarded to leave an
+ * evaluating row alone. Closing or merging a change is final and wins over a
+ * pending run, which then finds the row moved on and records nothing.
+ */
+const STATUSES_ALLOWED_FROM_EVALUATING: readonly Change["status"][] = [
+  "evaluating",
+  "rejected",
+  "merged",
+  "reverted",
+];
 
 /**
  * Build (without running) the `UPDATE changes` statement for a status/opts
@@ -365,7 +411,13 @@ function buildUpdateChangeStatusStatement(
 
   bindings.push(id);
 
-  return db.prepare(`UPDATE changes SET ${assignments.join(", ")} WHERE id = ?`).bind(...bindings);
+  const guard =
+    opts?.allowFromEvaluating === true || STATUSES_ALLOWED_FROM_EVALUATING.includes(status)
+      ? ""
+      : " AND status != 'evaluating'";
+  return db
+    .prepare(`UPDATE changes SET ${assignments.join(", ")} WHERE id = ?${guard}`)
+    .bind(...bindings);
 }
 
 /**

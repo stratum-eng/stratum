@@ -321,6 +321,22 @@ describe("sanitizeLlmConfig — the policy may select a provider, never describe
     expect(parsed.policy.configError).toBeUndefined();
   });
 
+  it("keeps a timeoutMs, clamped into the llm window (#412)", () => {
+    const inRange = parsePolicy({ evaluators: [{ type: "llm", timeoutMs: 45_000 }] });
+    expect(inRange.status === "ok" && inRange.policy.evaluators[0]).toEqual({
+      type: "llm",
+      timeoutMs: 45_000,
+    });
+    // An unbounded hold on the evaluation consumer is clamped, not honoured.
+    const huge = parsePolicy({ evaluators: [{ type: "llm", timeoutMs: 999_999_999 }] });
+    expect(huge.status === "ok" && huge.policy.evaluators[0]).toEqual({
+      type: "llm",
+      timeoutMs: 120_000,
+    });
+    const junk = parsePolicy({ evaluators: [{ type: "llm", timeoutMs: "soon" }] });
+    expect(junk.status === "ok" && junk.policy.evaluators[0]).toEqual({ type: "llm" });
+  });
+
   it("fails closed on a provider entry that names no model", () => {
     // The default model id is a Workers AI one (`@cf/meta/llama-3.1-8b-instruct`).
     // Posted to Anthropic it fails every call — a gate that never runs, found one

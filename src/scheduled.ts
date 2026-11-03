@@ -4,6 +4,7 @@ import { sweepStaleEvents } from "./queue/event-consumer";
 import { runImportSweep } from "./queue/import-sweep";
 import { runTtlSweep } from "./queue/ttl-sweep";
 import { syncAllProjects } from "./routes/sync";
+import { sweepStuckEvaluations } from "./services/evaluation-run";
 import { purgeExpiredAgentSignups } from "./storage/agent-signups";
 import { cleanupOldImports } from "./storage/imports";
 import { sweepExpiredAuthorizationCodes } from "./storage/oauth";
@@ -21,7 +22,8 @@ export type ScheduledJob =
   | "import-cleanup"
   | "oauth-code-sweep"
   | "oidc-state-purge"
-  | "agent-signup-purge";
+  | "agent-signup-purge"
+  | "evaluation-sweep";
 
 /** How long a finished import job is kept before `import-cleanup` prunes it. */
 const IMPORT_RETENTION_DAYS = 30;
@@ -41,11 +43,21 @@ const IMPORT_RETENTION_DAYS = 30;
  * SELECT plus a chunked DELETE, and its warning — authorization codes that
  * expired without being redeemed — is a signal about a connection someone is
  * trying to make right now.
+ *
+ * `evaluation-sweep` (#412) is the same shape — one indexed query, a bounded
+ * batch of conditional writes and queue sends — and the change it recovers is
+ * one whose author is waiting on a verdict.
  */
 export function jobsForCron(cron: string): ScheduledJob[] {
   switch (cron) {
     case "*/5 * * * *":
-      return ["event-sweep", "deletion-sweep", "import-sweep", "oauth-code-sweep"];
+      return [
+        "event-sweep",
+        "deletion-sweep",
+        "import-sweep",
+        "oauth-code-sweep",
+        "evaluation-sweep",
+      ];
     case "0 4 * * *":
       return ["backup"];
     case "0 6 * * *":
@@ -74,6 +86,7 @@ const JOB_RUNNERS: JobRunners = {
   "agent-signup-purge": (env, logger) => purgeExpiredAgentSignups(env.DB, logger),
   "import-cleanup": (env, logger) => cleanupOldImports(env.DB, IMPORT_RETENTION_DAYS, logger),
   "oauth-code-sweep": (env, logger) => sweepExpiredAuthorizationCodes(env.DB, logger),
+  "evaluation-sweep": (env, logger) => sweepStuckEvaluations(env, logger),
 };
 
 /**

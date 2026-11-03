@@ -144,6 +144,15 @@ queue = "stratum-imports"
 binding = "DEPLOY_QUEUE"
 queue = "stratum-deploys"
 
+# Evaluation runs (#412, ADR 009). Change creation and re-evaluation enqueue a
+# run here instead of evaluating on the request. Create before the first deploy:
+#   wrangler queues create stratum-evaluations
+#   wrangler queues create stratum-evaluations-dlq
+# Unbound, evaluation falls back to running inline on the request.
+[[queues.producers]]
+binding = "EVALUATION_QUEUE"
+queue = "stratum-evaluations"
+
 [[queues.consumers]]
 queue = "stratum-events"
 
@@ -177,6 +186,20 @@ max_retries = 2
 retry_delay = 60
 visibility_timeout_ms = 900000  # 15 min; see src/deploy/limits.ts
 dead_letter_queue = "stratum-deploys-dlq"
+
+# One run per invocation: a sandbox evaluation and an LLM call share the
+# invocation's subrequest budget and wall clock, and a batch would split both.
+# max_retries = 2 is MAX_EVALUATION_DELIVERIES - 1 in
+# `src/services/evaluation-run.ts`: the consumer fails the run closed on its
+# last delivery rather than leaving the change `evaluating`, so the DLQ only
+# ever holds a message whose consumer crashed outright. The five-minute
+# evaluation-sweep recovers those runs from D1 whatever the queue did.
+[[queues.consumers]]
+queue = "stratum-evaluations"
+max_batch_size = 1
+max_retries = 2
+retry_delay = 30
+dead_letter_queue = "stratum-evaluations-dlq"
 
 # "0 4 * * *"   — daily backup, on its OWN trigger so the ~15-min invocation
 #                 budget is never shared with (and starved by) the sync/TTL work
@@ -407,6 +430,10 @@ queue = "stratum-imports"
 binding = "DEPLOY_QUEUE"
 queue = "stratum-deploys"
 
+[[env.production.queues.producers]]
+binding = "EVALUATION_QUEUE"
+queue = "stratum-evaluations"
+
 [[env.production.queues.consumers]]
 queue = "stratum-events"
 
@@ -427,6 +454,14 @@ max_retries = 2
 retry_delay = 60
 visibility_timeout_ms = 900000  # 15 min; see src/deploy/limits.ts
 dead_letter_queue = "stratum-deploys-dlq"
+
+# See the top-level stratum-evaluations consumer for the knobs.
+[[env.production.queues.consumers]]
+queue = "stratum-evaluations"
+max_batch_size = 1
+max_retries = 2
+retry_delay = 30
+dead_letter_queue = "stratum-evaluations-dlq"
 
 [env.production.triggers]
 crons = ["0 4 * * *", "0 6 * * *", "*/5 * * * *"]
@@ -612,6 +647,10 @@ queue = "stratum-imports-staging"
 binding = "DEPLOY_QUEUE"
 queue = "stratum-deploys-staging"
 
+[[env.staging.queues.producers]]
+binding = "EVALUATION_QUEUE"
+queue = "stratum-evaluations-staging"
+
 [[env.staging.queues.consumers]]
 queue = "stratum-events-staging"
 
@@ -635,6 +674,15 @@ max_retries = 2
 retry_delay = 60
 visibility_timeout_ms = 900000  # 15 min; see src/deploy/limits.ts
 dead_letter_queue = "stratum-deploys-dlq-staging"
+
+# Suffixed for the same reason as every staging queue above. See the top-level
+# stratum-evaluations consumer for the knobs.
+[[env.staging.queues.consumers]]
+queue = "stratum-evaluations-staging"
+max_batch_size = 1
+max_retries = 2
+retry_delay = 30
+dead_letter_queue = "stratum-evaluations-dlq-staging"
 
 [[env.staging.send_email]]
 name = "EMAIL"

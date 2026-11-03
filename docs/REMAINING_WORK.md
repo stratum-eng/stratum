@@ -124,18 +124,16 @@ Project and workspace identity records live in KV, which has no listing or
 transactional guarantees. Migrating to D1 unblocks `workspace.deleted` events
 and removes the scan fallback in `getProject`.
 
-### Async evaluation worker
+### Gated `git push` still evaluates inline
 
-Evaluation currently runs synchronously at change creation, so change creation
-latency includes the full evaluator suite (LLM, sandbox). Moving evaluation to
-a queue-backed worker keeps change creation fast and allows retries; fine at
-current scale.
-
-The sandbox evaluator's share is now bounded by a total budget (`totalBudgetMs`,
-default 150s — see ADR 007), so it can no longer run for the unbounded sum of
-its per-phase timeouts. The `llm` evaluator still has no timeout at all, so
-overall evaluation latency remains unbounded; that, and moving the whole suite
-off the request path, are what this item still covers.
+Change creation and re-evaluation now run off the request path on the
+`stratum-evaluations` queue, and every evaluator — including `llm` — has its
+own deadline (#412, ADR 009). The one front door that still evaluates on the
+request is the gated `git push` receive-pack handler: its report-status line is
+how the pusher learns the verdict, and its submodule refusal tears down the
+fork it created. Making it asynchronous means replying "evaluation queued" in
+the push output and moving that cleanup into the consumer. Bounded today by the
+per-evaluator deadlines, so a push can no longer hang indefinitely.
 
 ### Per-project team permission grants
 

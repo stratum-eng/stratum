@@ -28,6 +28,8 @@ function statusBadgeClass(status: string): string {
   switch (status) {
     case "open":
       return "badge badge-open";
+    case "evaluating":
+      return "badge badge-warning";
     case "approved":
     case "accepted":
       return "badge badge-approved";

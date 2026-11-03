@@ -82,8 +82,9 @@ export interface ActivityEvent {
   createdAt: string;
 }
 
-// Change creation runs the full evaluation suite synchronously server-side, so
-// the deadline must comfortably exceed a slow LLM + sandbox run.
+// Change creation can still run the full evaluation suite synchronously on a
+// server with no evaluation queue bound, so the deadline must comfortably
+// exceed a slow LLM + sandbox run.
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 /**
@@ -291,12 +292,50 @@ export class StratumClient {
 
   // ── Changes ─────────────────────────────────────────────────────────────
 
+  /**
+   * Open a change. On a server with an evaluation queue the response carries
+   * the change in status `evaluating` and no `eval`: the verdict arrives later,
+   * and {@link waitForEvaluation} is how a caller gets it. An older server, or
+   * one with no queue bound, still returns the verdict inline.
+   */
   async createChange(projectName: string, workspace: string) {
     return this.request<{
       change: Change;
-      eval: { score: number; passed: boolean; reason: string };
-      evalRuns: EvalRun[];
+      eval?: { score: number; passed: boolean; reason: string };
+      evalRuns?: EvalRun[];
     }>("POST", `/api/projects/${encodeURIComponent(projectName)}/changes`, { workspace });
+  }
+
+  /**
+   * Poll a change until it leaves `evaluating`, then return it with its
+   * evaluator evidence. Throws when `timeoutMs` passes first — the change is
+   * still evaluating, which is not the same as failing, so it is never
+   * reported as a verdict.
+   */
+  async waitForEvaluation(
+    id: string,
+    opts: {
+      timeoutMs?: number;
+      intervalMs?: number;
+      sleep?: (ms: number) => Promise<void>;
+      now?: () => number;
+    } = {},
+  ) {
+    const timeoutMs = opts.timeoutMs ?? 10 * 60_000;
+    const intervalMs = opts.intervalMs ?? 3_000;
+    const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    const now = opts.now ?? Date.now;
+    const deadline = now() + timeoutMs;
+    for (;;) {
+      const result = await this.getChange(id);
+      if (result.change.status !== "evaluating") return result;
+      if (now() >= deadline) {
+        throw new Error(
+          `Change ${id} is still evaluating after ${Math.round(timeoutMs / 1000)}s; check it later with \`stratum change show ${id}\``,
+        );
+      }
+      await sleep(intervalMs);
+    }
   }
 
   async listChanges(projectName: string, status?: string) {

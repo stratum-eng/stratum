@@ -17,6 +17,7 @@
 import { DEPLOY_SECRET_KEY_MISSING, loadSecretValues } from "../storage/project-secrets";
 import type { Env, ProjectEntry } from "../types";
 import type { Logger } from "../utils/logger";
+import { llmTimeoutMs } from "./limits";
 import { AnthropicProvider, type LlmProvider, OpenAiCompatibleProvider } from "./llm-provider";
 import { llmProviderCatalog, providerSecretName } from "./llm-providers";
 import type { EvalPolicy, LlmEvaluatorConfig } from "./types";
@@ -157,10 +158,13 @@ export async function resolveLlmProvider(
     };
   }
 
+  // The transport gets the policy's deadline too, so the request is aborted
+  // when the evaluator gives up on it rather than at the provider's default.
+  const options = { timeoutMs: llmTimeoutMs(configs[0]) };
   const provider =
     configured.kind === "anthropic"
-      ? new AnthropicProvider(configured.baseUrl, apiKey)
-      : new OpenAiCompatibleProvider(configured.baseUrl, apiKey);
+      ? new AnthropicProvider(configured.baseUrl, apiKey, options)
+      : new OpenAiCompatibleProvider(configured.baseUrl, apiKey, options);
 
   return { status: "byok", provider, providerName };
 }

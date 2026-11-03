@@ -247,7 +247,7 @@ export type EvaluatorConfig =
  * provider resolution), and an inline re-declaration in either would drift.
  *
  * Produced only by `sanitizeLlmConfig` (`policy-loader.ts`), which is a
- * whitelist: these four fields are the whole surface a repository's policy file
+ * whitelist: these five fields are the whole surface a repository's policy file
  * may set. There is deliberately **no `baseUrl`** — see `llm-providers.ts`.
  */
 export interface LlmEvaluatorConfig {
@@ -264,4 +264,10 @@ export interface LlmEvaluatorConfig {
   threshold?: number;
   /** Diff characters sent to the model; clamped again by the evaluator. */
   maxDiffChars?: number;
+  /**
+   * How long the evaluator waits for the model's verdict before failing closed
+   * (score 0). Clamped by `sanitizeLlmConfig` to
+   * [`MIN_LLM_TIMEOUT_MS`, `MAX_LLM_TIMEOUT_MS`]; default `DEFAULT_LLM_TIMEOUT_MS`.
+   */
+  timeoutMs?: number;
 }

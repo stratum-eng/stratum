@@ -53,6 +53,8 @@ function statusBadgeClass(status: string): string {
   switch (status) {
     case "open":
       return "badge badge-open";
+    case "evaluating":
+      return "badge badge-warning";
     case "approved":
     case "accepted":
       return "badge badge-approved";
@@ -70,7 +72,7 @@ function statusBadgeClass(status: string): string {
   }
 }
 
-const REVIEWABLE_STATUSES = ["open", "needs_changes", "accepted", "approved"];
+const REVIEWABLE_STATUSES = ["open", "evaluating", "needs_changes", "accepted", "approved"];
 
 /** Mirrors MERGEABLE_STATUSES in routes/changes.ts — the API rejects other statuses. */
 const MERGEABLE_STATUSES = ["approved", "accepted", "promoted"];
@@ -121,7 +123,9 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
       title={`Change ${change.id}`}
       user={user}
       usageNotice={usageNotice}
-      {...(change.status === "open" ? { refreshSeconds: 10 } : {})}
+      {...(change.status === "open" || change.status === "evaluating"
+        ? { refreshSeconds: 10 }
+        : {})}
     >
       {projectRef && <ProjectHeader project={projectRef} active="changes" canWrite={canReview} />}
       <div class="page-header">
@@ -160,7 +164,9 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
                     </button>
                   </form>
                 )}
-                {(change.status === "open" || change.status === "needs_changes") && (
+                {(change.status === "open" ||
+                  change.status === "evaluating" ||
+                  change.status === "needs_changes") && (
                   <form method="post" action={`/api/changes/${change.id}/evaluate`}>
                     <button type="submit" class="btn">
                       Run evaluations again
@@ -201,6 +207,12 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
 
       <div class="card">
         <h2>Eval result</h2>
+        {change.status === "evaluating" && (
+          <p class="text-muted">
+            Evaluation in progress. This page refreshes every 10 seconds; the change cannot be
+            merged until the result is recorded.
+          </p>
+        )}
         <dl class="detail-list">
           <dt>Score</dt>
           <dd>{change.evalScore !== undefined ? `${Math.round(change.evalScore * 100)}%` : "—"}</dd>

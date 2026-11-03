@@ -55,3 +55,33 @@ export const MAX_TOTAL_BUDGET_MS = 150_000;
 
 /** Longest `command` string a policy may supply, to bound what gets executed and logged. */
 export const MAX_COMMAND_LENGTH = 500;
+
+/**
+ * How long the `llm` evaluator waits for a verdict when a policy does not set
+ * `timeoutMs`. Matches the providers' own transport timeout, so an unconfigured
+ * project behaves exactly as it did before the evaluator had a deadline of its
+ * own — the difference is that expiry is now a failing verdict the evaluator
+ * names, not a transport error from whichever layer happened to give up first.
+ */
+export const DEFAULT_LLM_TIMEOUT_MS = 30_000;
+
+/**
+ * Bounds for a policy-supplied `llm.timeoutMs`. The same window the other
+ * per-evaluator timeouts are clamped to: a policy file is repository content,
+ * and an unbounded number there is an unbounded hold on a queue consumer.
+ */
+export const MIN_LLM_TIMEOUT_MS = MIN_PHASE_TIMEOUT_MS;
+export const MAX_LLM_TIMEOUT_MS = MAX_PHASE_TIMEOUT_MS;
+
+/**
+ * The deadline an `llm` config asks for, clamped again at the point of use.
+ * `sanitizeLlmConfig` already clamps a policy-supplied value, but a config can
+ * reach an evaluator by other routes (a test, a future caller), and a
+ * non-finite or huge number there would be an unbounded hold on the evaluation
+ * consumer.
+ */
+export function llmTimeoutMs(config: { timeoutMs?: number } | undefined): number {
+  const raw = config?.timeoutMs;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_LLM_TIMEOUT_MS;
+  return Math.min(MAX_LLM_TIMEOUT_MS, Math.max(MIN_LLM_TIMEOUT_MS, Math.floor(raw)));
+}

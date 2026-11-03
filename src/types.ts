@@ -336,6 +336,20 @@ export interface Env {
   DEPLOY_QUEUE?: Queue<DeployQueueMessage>;
   EVENTS_QUEUE?: Queue;
   IMPORT_QUEUE?: Queue<ImportJobMessage | SyncJobMessage>;
+  /** Evaluation runs (#412, ADR 009). Its own queue for the reason
+   * `DEPLOY_QUEUE` is: a sandbox or LLM evaluation runs for minutes, and must
+   * not stall webhook delivery on the shared events consumer. Optional: with
+   * it unbound, evaluation runs inline on the request, as it did before. */
+  EVALUATION_QUEUE?: Queue<EvaluationQueueMessage>;
+}
+
+/** One evaluation run. Keyed to the change AND the run, never the change
+ * alone: the consumer drops a message whose run is no longer the one the
+ * change is waiting on. */
+export interface EvaluationQueueMessage {
+  type: "change.evaluate";
+  changeId: string;
+  runId: string;
 }
 
 // Import queue message types
@@ -680,6 +694,9 @@ export interface Change {
   workspace: string;
   status:
     | "open"
+    /** An evaluation run is queued or running; no verdict yet (#412). Never
+     * mergeable, even by force — the change has no evaluated revision to pin. */
+    | "evaluating"
     | "needs_changes"
     | "accepted"
     | "approved"
@@ -719,6 +736,16 @@ export interface Change {
    * `evaluatedSha` (same value): #115 selects this commit, SEC-2 asserts it.
    */
   workspaceHeadSha?: string;
+  /**
+   * The evaluation run this change is waiting on, or the last one that was
+   * dispatched. A queue consumer only records its verdict while this still
+   * names its run, so a superseded run cannot overwrite a newer one (#412).
+   * Absent on changes evaluated inline (no evaluation queue bound) and on rows
+   * written before migration 063.
+   */
+  evalRunId?: string;
+  /** When `evalRunId` was dispatched. The stuck-run sweep keys on it. */
+  evalRequestedAt?: string;
   createdAt: string;
   mergedAt?: string;
   githubOwner?: string;

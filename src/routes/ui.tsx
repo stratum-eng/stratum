@@ -1556,7 +1556,7 @@ app.get("/changes/:id", async (c) => {
   // The diff is only renderable while the workspace still exists and the
   // change is still in review; failures degrade to "no diff section".
   let diffFiles: ReturnType<typeof parseUnifiedDiff> | null = null;
-  const DIFFABLE_STATUSES = ["open", "needs_changes", "accepted", "approved"];
+  const DIFFABLE_STATUSES = ["open", "evaluating", "needs_changes", "accepted", "approved"];
   if (DIFFABLE_STATUSES.includes(change.status)) {
     const workspaceResult = await getWorkspace(
       c.env.STATE,

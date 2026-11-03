@@ -240,7 +240,7 @@ anyway.
 
 | Tool | What it does |
 |---|---|
-| `stratum_create_change` | Open a change; **synchronously** runs every gate in `.stratum/policy.yaml` and returns the verdicts. |
+| `stratum_create_change` | Open a change and run every gate in `.stratum/policy.yaml`. With an evaluation queue (the hosted instance) the change comes back `evaluating` with no verdict yet — poll `stratum_get_change` until its status leaves `evaluating`. Without one, the verdicts are returned directly. |
 | `stratum_list_changes` | List changes, optionally by status. |
 | `stratum_get_change` | One change with per-gate evidence and metered costs. |
 | `stratum_merge_change` | Merge a change that passed its gates and approvals. |
@@ -315,12 +315,14 @@ agent token.
   violation, so a calling agent knows whether to fix its input or its
   expectations. Argument errors list **every** problem at once rather than the
   first.
-- Evaluation runs inside `stratum_create_change`, so on a project with a slow
-  sandbox evaluator that call legitimately runs long. There is no client-side
-  deadline cutting it short any more — the bound is the request's own budget.
-  If a call does fail mid-evaluation, the evaluation continues server-side:
-  follow up with `stratum_list_changes` / `stratum_get_change` rather than
-  re-submitting.
+- With an evaluation queue, `stratum_create_change` returns as soon as the
+  change exists, in status `evaluating`; the gates run afterwards. Poll
+  `stratum_get_change` until the status is `accepted` or `needs_changes` before
+  acting on it — `stratum_merge_change` refuses an evaluating change with
+  `EVALUATION_PENDING`. On an instance without the queue, evaluation runs inside
+  the call, so a slow sandbox evaluator makes it legitimately run long; if such
+  a call fails mid-evaluation, follow up with `stratum_list_changes` /
+  `stratum_get_change` rather than re-submitting.
 - The credential is re-resolved on **every** tool call, not once per
   connection. A token you revoke stops working on the next call.
 

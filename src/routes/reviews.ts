@@ -36,7 +36,13 @@ const MAX_COMMENT_BODY_BYTES = 1024 * 1024;
 const MAX_REVIEW_BODY_BYTES = 1024 * 1024;
 
 /** Statuses on which a human verdict can still move the change. */
-const REVIEWABLE_STATUSES: Change["status"][] = ["open", "needs_changes", "accepted", "approved"];
+const REVIEWABLE_STATUSES: Change["status"][] = [
+  "open",
+  "evaluating",
+  "needs_changes",
+  "accepted",
+  "approved",
+];
 
 async function loadChangeAndProject(
   c: { env: Env; req: { param(key: string): string } },
@@ -465,7 +471,12 @@ app.post("/changes/:id/reviews", async (c) => {
   // A human verdict moves the change state machine — except a comment-only
   // review, which neither approves nor blocks.
   let newStatus: Change["status"] = change.status;
-  if (verdict !== "comment") {
+  // While a run is pending the verdict is recorded but the status is the
+  // run's to set (#412): approving now would make the change mergeable before
+  // any gate had judged it. The approval still counts toward
+  // requiredApprovals once the run lands — unless the run's revision differs
+  // from what the reviewer saw, which dismisses it as on any re-evaluation.
+  if (verdict !== "comment" && change.status !== "evaluating") {
     newStatus = verdict === "approve" ? "approved" : "needs_changes";
     if (newStatus !== change.status) {
       const updateResult = await updateChangeStatus(c.env.DB, logger, change.id, newStatus);

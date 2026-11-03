@@ -12,8 +12,10 @@
  * isolate, so there is no socket to hang: the bound is
  * the Worker's own wall-clock limit, and an AbortController racing it would
  * only turn a clean platform error into a confusing one. `stratum_create_change`
- * is the long pole — it runs the whole evaluation suite synchronously — and it
- * is precisely the call we do NOT want to cut short at an arbitrary deadline.
+ * is the long pole where no evaluation queue is bound — it then runs the whole
+ * evaluation suite synchronously — and it is precisely the call we do NOT want
+ * to cut short at an arbitrary deadline. With the queue bound it returns as
+ * soon as the run is enqueued (#412).
  */
 
 interface ApiErrorBody {

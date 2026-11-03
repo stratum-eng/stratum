@@ -10,9 +10,24 @@ branch. See the [OpenAPI specification](../openapi.yml) for exact schemas, and
 ## Create Change
 `POST /api/projects/{name}/changes`
 
-Evaluation runs **synchronously** at creation, so a slow evaluator stretches the
-request. A workspace containing git submodules is refused here with a `400`
-carrying the explanatory message.
+Evaluation runs **off the request** where the instance has an evaluation queue
+(the hosted instance does): the response is `202` with the change in status
+`evaluating` and no verdict. Poll `GET /api/changes/{id}` until the status leaves
+`evaluating` — it becomes `accepted` or `needs_changes`, with the evaluation runs
+recorded exactly as an inline evaluation records them. A change cannot be merged
+while it is `evaluating`, even with `force`.
+
+Each evaluator runs under its own deadline, so one that hangs fails closed in
+place (score 0, a reason naming the deadline) without holding up the others. A
+run that cannot finish at all — retries exhausted, or a consumer that never
+reported back, which the five-minute sweep detects — leaves the change
+`needs_changes` with `evalReason` starting `Evaluation did not complete`.
+Re-evaluate to try again.
+
+On an instance with no evaluation queue bound, or when enqueueing fails,
+evaluation runs inline and the response is `201` with the verdict, as it always
+was. A workspace containing git submodules is refused with the explanatory
+message — inline as a `400`, queued as a `needs_changes` verdict.
 
 ## Get Change
 `GET /api/changes/{id}`
@@ -21,6 +36,13 @@ carrying the explanatory message.
 `POST /api/changes/{id}/evaluate`
 
 Users only. Merged, rejected, and promoted changes cannot be re-evaluated.
+
+With an evaluation queue this **re-enqueues** and answers `202`: the change
+moves to `evaluating` under a new run, and any run still in flight is
+superseded — its verdict is discarded when it finishes, so an older run can
+never overwrite a newer revision's result. Re-evaluating a change that is stuck
+in `evaluating` is allowed, and is the manual way to recover it. Without the
+queue the evaluation runs inline and answers `200` with the verdict.
 
 Re-evaluation runs under the **current** evaluator defaults, so a change that
 passed under older limits may fail. Approvals are dismissed when the evaluated
@@ -39,6 +61,7 @@ the full list and the response shapes):
 
 | Code | Meaning |
 |---|---|
+| `EVALUATION_PENDING` | The change is still `evaluating`; refused even with `force` |
 | `STALE_BASE` | The recorded base is behind project HEAD (`merge.requireFreshBase`) |
 | `STALE_WORKSPACE` | The workspace advanced after evaluation |
 | `WORKSPACE_UNVERIFIABLE` | Workspace state could not be verified against what was evaluated |

@@ -81,6 +81,9 @@ codes are in the [OpenAPI specification](openapi.yml).
 - `PINNED_SHA_UNREACHABLE` — the pinned commit is not reachable in the clone
 - `PUSH_TIMEOUT` — `504` during restore. The push **may still land** — do not
   assume it failed
+- `EVALUATION_PENDING` — `409`; the change is still `evaluating`, so there is no
+  verdict to merge on. Refused even with `force`: force bypasses a failing
+  verdict, never a missing one. Poll the change and merge once it has one
 - `STALE_BASE` — the change's recorded base is behind the project HEAD
   (`merge.requireFreshBase`); re-evaluate on the new base
 - `STALE_WORKSPACE` — the workspace advanced after evaluation; the merge is

@@ -182,12 +182,20 @@ applies either way.
 
 ```bash
 stratum change create --project acme/billing --workspace fix-retries
-# Created change chg_abc123 (open)
-# Evaluation: score 0.92, passed — all gates passed
+# Created change chg_abc123 (evaluating)
+# Evaluation queued — check it with `stratum change show chg_abc123`, or pass --wait
+
+stratum change create --project acme/billing --workspace fix-retries --wait
+# Created change chg_abc123 (evaluating)
+# Evaluation: score 0.92, passed (accepted) — All evaluators passed.
 ```
 
-Creating a change runs the project's evaluation gates **synchronously** and
-prints the verdict. Then:
+On an instance with an evaluation queue (the hosted one has one), the gates run
+**after** the change is created, so `change create` returns straight away with
+the change `evaluating`. `--wait` polls until the verdict lands (up to ten
+minutes) and prints it; a change still evaluating at that point is reported as
+such, never as a failure. On an instance without the queue the verdict is
+printed immediately, as before. Then:
 
 ```bash
 stratum change list acme/billing --status open
