@@ -3,6 +3,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Change, ProjectEntry } from "../src/types";
 import type { Logger } from "../src/utils/logger";
 
+// Repo authorization has its own suites (tests/repo-authorization.test.ts);
+// here the route's caller is bound to the repo owner and the project is the
+// repo's canonical target unless a test says otherwise.
+vi.mock("../src/github/repo-authorization", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/github/repo-authorization")>()),
+  allowlistAdmits: vi.fn(async () => true),
+  ensureCanonicalProject: vi.fn(async () => ({ success: true, data: true })),
+}));
+
 vi.mock("../src/github/client", () => ({
   GitHubClient: vi.fn(),
 }));

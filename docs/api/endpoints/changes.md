@@ -96,9 +96,11 @@ a branch of its choosing.
 
 The credential is the GitHub App's installation token when the app is installed
 on the repository **and** that installation is linked to the project's owner
-(see [GitHub App installations](github-app.md)), or the operator has
-allowlisted the repository's GitHub owner. Otherwise it is the instance-wide
-`GITHUB_TOKEN`.
+(see [GitHub App installations](github-app.md)), or an operator binding names
+the project's owner for the repository's GitHub owner. The instance-wide
+`GITHUB_TOKEN` is used only for such a binding. A project with neither gets
+`403`, and a project that is not the repository's canonical project gets
+`409`.
 
 If a re-evaluation begins while the branch is being pushed, the response is
 `409 EVALUATION_PENDING`: the PR exists and its link is recorded (`github` in

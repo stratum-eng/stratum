@@ -7,7 +7,6 @@ import {
   createAppJwt,
   getInstallationId,
   invalidateInstallationCache,
-  parseAllowedOwners,
   resolveGitHubToken,
 } from "../src/github/app-auth";
 import { handleInstallationChange } from "../src/github/webhooks";
@@ -144,10 +143,11 @@ function routeGitHub(opts: { installation?: Response; token?: Response }) {
 const tokenCalls = () =>
   fetchMock.mock.calls.filter(([url]) => String(url).includes("/access_tokens"));
 
+/** `usr_alice` gets username `alice`: real usernames carry no underscore. */
 function seedUser(id: string): void {
   raw
     .prepare("INSERT INTO users (id, email, username, token_hash) VALUES (?, ?, ?, ?)")
-    .run(id, `${id}@example.com`, id, `hash_${id}`);
+    .run(id, `${id}@example.com`, id.replace(/^usr_/, ""), `hash_${id}`);
 }
 
 function seedInstallation(
@@ -232,7 +232,7 @@ describe("getInstallationId", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("looks the installation up with the app JWT and caches it with no TTL", async () => {
+  it("looks the installation up with the app JWT and caches it for a day", async () => {
     const { kv, store, ttls } = makeKv();
     routeGitHub({});
 
@@ -243,7 +243,7 @@ describe("getInstallationId", () => {
     expect(url).toBe("https://api.github.com/repos/acme/api/installation");
     expect(init.headers.Authorization).toMatch(/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/);
     expect(store.get("github_installation:acme/api")).toBe("777");
-    expect(ttls.get("github_installation:acme/api")).toBeUndefined();
+    expect(ttls.get("github_installation:acme/api")).toBe(86_400);
   });
 
   it("treats 404 as not installed and caches that briefly", async () => {
@@ -273,15 +273,16 @@ describe("getInstallationId", () => {
   });
 });
 
-describe("installation tokens (via an allowlisted owner)", () => {
-  const allowlisted = (kv: KVNamespace, extra: Partial<GitHubAuthEnv> = {}) =>
-    appEnv(kv, { GITHUB_APP_ALLOWED_OWNERS: "acme", ...extra });
+describe("installation tokens (via a bound owner)", () => {
+  const bound = (kv: KVNamespace, extra: Partial<GitHubAuthEnv> = {}) =>
+    appEnv(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice", ...extra });
+  beforeEach(() => seedUser("usr_alice"));
 
   it("mints a token and caches it until five minutes before expiry", async () => {
     const { kv, store, ttls } = makeKv();
     routeGitHub({});
 
-    const result = await resolveGitHubToken(allowlisted(kv), target(null), logger);
+    const result = await resolveGitHubToken(bound(kv), target(), logger);
 
     expect(result).toEqual({
       success: true,
@@ -303,7 +304,7 @@ describe("installation tokens (via an allowlisted owner)", () => {
       "github_inst_token:777": JSON.stringify({ token: "ghs_cached", expiresAt: IN_ONE_HOUR }),
     });
 
-    const result = await resolveGitHubToken(allowlisted(kv), target(null), logger);
+    const result = await resolveGitHubToken(bound(kv), target(), logger);
 
     expect(result.success && result.data.token).toBe("ghs_cached");
     expect(fetchMock).not.toHaveBeenCalled();
@@ -317,7 +318,7 @@ describe("installation tokens (via an allowlisted owner)", () => {
     });
     routeGitHub({});
 
-    const result = await resolveGitHubToken(allowlisted(kv), target(null), logger);
+    const result = await resolveGitHubToken(bound(kv), target(), logger);
 
     expect(result.success && result.data.token).toBe("ghs_installation");
   });
@@ -327,19 +328,48 @@ describe("installation tokens (via an allowlisted owner)", () => {
     routeGitHub({ token: jsonResponse(404, { message: "Not Found" }) });
 
     const result = await resolveGitHubToken(
-      allowlisted(kv, { GITHUB_TOKEN: "ghp_pat" }),
-      target(null),
+      bound(kv, { GITHUB_TOKEN: "ghp_pat" }),
+      target(),
       logger,
     );
 
     expect(result.success && result.data.source).toBe("pat");
     expect(store.has("github_installation:acme/api")).toBe(false);
   });
+
+  it("reads the former GITHUB_APP_ALLOWED_OWNERS name too", async () => {
+    const { kv } = makeKv();
+    routeGitHub({});
+    const result = await resolveGitHubToken(
+      appEnv(kv, { GITHUB_APP_ALLOWED_OWNERS: "acme=@alice" }),
+      target(),
+      logger,
+    );
+    expect(result.success && result.data.source).toBe("app");
+  });
+
+  it("ignores an entry with no Stratum owner instead of admitting everyone", async () => {
+    const { kv } = makeKv();
+    routeGitHub({});
+    const result = await resolveGitHubToken(
+      appEnv(kv, { GITHUB_ALLOWED_OWNERS: "acme", GITHUB_TOKEN: "ghp_pat" }),
+      target(),
+      logger,
+    );
+    expect(!result.success && result.error.code).toBe("GITHUB_APP_NOT_AUTHORIZED");
+    expect(tokenCalls()).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Ignoring GitHub allowed-owner entry"),
+      expect.anything(),
+    );
+  });
 });
 
 describe("resolveGitHubToken authorization", () => {
   const pat = (kv: KVNamespace, extra: Partial<GitHubAuthEnv> = {}) =>
     appEnv(kv, { GITHUB_TOKEN: "ghp_pat", ...extra });
+  const refusedByApp = (result: Awaited<ReturnType<typeof resolveGitHubToken>>) =>
+    !result.success && result.error.code === "GITHUB_APP_NOT_AUTHORIZED";
 
   it("uses the installation token when it is linked to the calling project's owner", async () => {
     seedUser("usr_alice");
@@ -355,7 +385,7 @@ describe("resolveGitHubToken authorization", () => {
     });
   });
 
-  it("never mints a token for an installation linked to someone else", async () => {
+  it("refuses a caller the installation isn't linked to, and does not hand them the PAT", async () => {
     seedUser("usr_alice");
     seedUser("usr_mallory");
     seedInstallation(777, ALICE);
@@ -368,7 +398,7 @@ describe("resolveGitHubToken authorization", () => {
       logger,
     );
 
-    expect(result).toEqual({ success: true, data: { token: "ghp_pat", source: "pat" } });
+    expect(refusedByApp(result)).toBe(true);
     expect(tokenCalls()).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
       "GitHub App installation not authorized for this caller",
@@ -376,12 +406,37 @@ describe("resolveGitHubToken authorization", () => {
     );
   });
 
+  it("another user's import of the same repo gets neither the app token nor the PAT", async () => {
+    seedUser("usr_alice");
+    seedUser("usr_mallory");
+    seedInstallation(777, ALICE);
+    const { kv } = makeKv();
+    routeGitHub({});
+    // The operator bound acme to alice, not to whoever imports acme's repos.
+    const env = pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice" });
+
+    const mallory = await resolveGitHubToken(
+      env,
+      target({ type: "user", id: "usr_mallory" }),
+      logger,
+    );
+    expect(refusedByApp(mallory)).toBe(true);
+
+    const patOnly = await resolveGitHubToken(
+      { STATE: kv, DB: db, GITHUB_TOKEN: "ghp_pat", GITHUB_ALLOWED_OWNERS: "acme=@alice" },
+      target({ type: "user", id: "usr_mallory" }),
+      logger,
+    );
+    expect(!patOnly.success && patOnly.error.code).toBe("GITHUB_NOT_AUTHORIZED");
+    expect(tokenCalls()).toHaveLength(0);
+  });
+
   it("does not use an installation that is recorded but linked to nobody", async () => {
     seedInstallation(777);
     const { kv } = makeKv();
     routeGitHub({});
     const result = await resolveGitHubToken(pat(kv), target(), logger);
-    expect(result.success && result.data.source).toBe("pat");
+    expect(refusedByApp(result)).toBe(true);
     expect(tokenCalls()).toHaveLength(0);
   });
 
@@ -390,7 +445,7 @@ describe("resolveGitHubToken authorization", () => {
     const { kv } = makeKv();
     routeGitHub({});
     const result = await resolveGitHubToken(pat(kv), target(), logger);
-    expect(result.success && result.data.source).toBe("pat");
+    expect(refusedByApp(result)).toBe(true);
   });
 
   it("uses an org-linked installation for that org's projects", async () => {
@@ -426,25 +481,37 @@ describe("resolveGitHubToken authorization", () => {
     const { kv } = makeKv();
     routeGitHub({});
     const result = await resolveGitHubToken(pat(kv), target(), logger);
-    expect(result.success && result.data.source).toBe("pat");
+    expect(refusedByApp(result)).toBe(true);
     expect(tokenCalls()).toHaveLength(0);
   });
 
-  it("refuses the app without a principal unless the owner is allowlisted", async () => {
+  it("refuses a call with no principal, even for a bound owner", async () => {
+    seedUser("usr_alice");
     const { kv } = makeKv();
     routeGitHub({});
-    const refused = await resolveGitHubToken(pat(kv), target(null), logger);
-    expect(refused.success && refused.data.source).toBe("pat");
-
-    const allowed = await resolveGitHubToken(
-      pat(kv, { GITHUB_APP_ALLOWED_OWNERS: " other , ACME " }),
+    const result = await resolveGitHubToken(
+      pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice" }),
       target(null),
       logger,
     );
-    expect(allowed.success && allowed.data.source).toBe("app");
+    expect(refusedByApp(result)).toBe(true);
   });
 
-  it("fails closed to the PAT when the link check errors", async () => {
+  it("admits an agent through its owner's binding", async () => {
+    seedUser("usr_alice");
+    raw
+      .prepare("INSERT INTO agents (id, name, owner_id, token_hash) VALUES ('agt_1', 'a', ?, 'h')")
+      .run("usr_alice");
+    const { kv } = makeKv({ "github_installation:acme/api": "none" });
+    const result = await resolveGitHubToken(
+      pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice" }),
+      target({ type: "agent", id: "agt_1" }),
+      logger,
+    );
+    expect(result.success && result.data.source).toBe("pat");
+  });
+
+  it("fails closed when the link check errors: no app token and no PAT", async () => {
     const { kv } = makeKv();
     routeGitHub({});
     const brokenDb = {
@@ -453,34 +520,49 @@ describe("resolveGitHubToken authorization", () => {
       },
     } as unknown as D1Database;
     const result = await resolveGitHubToken(pat(kv, { DB: brokenDb }), target(), logger);
-    expect(result.success && result.data.source).toBe("pat");
+    expect(refusedByApp(result)).toBe(true);
     expect(tokenCalls()).toHaveLength(0);
   });
 
-  it("falls back to GITHUB_TOKEN when the app isn't installed on the repo", async () => {
+  it("uses GITHUB_TOKEN when the app isn't installed, only for a bound owner", async () => {
+    seedUser("usr_alice");
     const { kv } = makeKv({ "github_installation:acme/api": "none" });
-    const result = await resolveGitHubToken(pat(kv), target(), logger);
+
+    const unbound = await resolveGitHubToken(pat(kv), target(), logger);
+    expect(!unbound.success && unbound.error.code).toBe("GITHUB_NOT_AUTHORIZED");
+
+    const result = await resolveGitHubToken(
+      pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice" }),
+      target(),
+      logger,
+    );
     expect(result).toEqual({ success: true, data: { token: "ghp_pat", source: "pat" } });
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it("falls back to GITHUB_TOKEN, with a warning, when the app path errors", async () => {
+  it("uses GITHUB_TOKEN, with a warning, when the app path errors, for a bound owner", async () => {
+    seedUser("usr_alice");
     const { kv } = makeKv();
     routeGitHub({ installation: jsonResponse(500, { message: "boom" }) });
 
-    const result = await resolveGitHubToken(pat(kv), target(), logger);
+    const result = await resolveGitHubToken(
+      pat(kv, { GITHUB_ALLOWED_OWNERS: "acme=@alice" }),
+      target(),
+      logger,
+    );
 
     expect(result).toEqual({ success: true, data: { token: "ghp_pat", source: "pat" } });
     expect(logger.warn).toHaveBeenCalledWith(
-      "GitHub App token unavailable; falling back to GITHUB_TOKEN",
+      "GitHub App token unavailable",
       expect.objectContaining({ owner: "acme", repo: "api" }),
     );
   });
 
   it("uses GITHUB_TOKEN without touching GitHub or KV when the app isn't configured", async () => {
+    seedUser("usr_alice");
     const { kv } = makeKv();
     const result = await resolveGitHubToken(
-      { STATE: kv, DB: db, GITHUB_TOKEN: "ghp_pat" },
+      { STATE: kv, DB: db, GITHUB_TOKEN: "ghp_pat", GITHUB_ALLOWED_OWNERS: "acme=@alice" },
       target(),
       logger,
     );
@@ -511,10 +593,59 @@ describe("resolveGitHubToken authorization", () => {
   });
 });
 
-describe("parseAllowedOwners", () => {
-  it("normalises case and whitespace and drops empties", () => {
-    expect([...parseAllowedOwners(" Stratum-Eng, ,acme ")]).toEqual(["stratum-eng", "acme"]);
-    expect(parseAllowedOwners(undefined).size).toBe(0);
+describe("canonical target for writes", () => {
+  const PROJECT_A = { id: "prj_a", namespace: "@alice", slug: "api" };
+  const PROJECT_B = { id: "prj_b", namespace: "@alice", slug: "api-copy" };
+
+  it("lets the first authorized project claim the repo and refuses a second", async () => {
+    seedUser("usr_alice");
+    seedInstallation(777, ALICE);
+    const { kv } = makeKv();
+    kv.put(
+      "project:@alice:api",
+      JSON.stringify({
+        ...PROJECT_A,
+        name: "api",
+        ownerId: "usr_alice",
+        ownerType: "user",
+        createdAt: "2026-01-01",
+        sourceUrl: "https://github.com/acme/api",
+      }),
+    );
+    routeGitHub({});
+    const env = appEnv(kv);
+
+    const first = await resolveGitHubToken(env, { ...target(), project: PROJECT_A }, logger);
+    expect(first.success && first.data.source).toBe("app");
+
+    const second = await resolveGitHubToken(env, { ...target(), project: PROJECT_B }, logger);
+    expect(!second.success && second.error.code).toBe("GITHUB_REPO_NOT_CANONICAL");
+
+    const row = raw.prepare("SELECT project_id FROM github_repo_links").get() as {
+      project_id: string;
+    };
+    expect(row.project_id).toBe("prj_a");
+  });
+
+  it("never lets an unauthorized project claim the repo", async () => {
+    seedUser("usr_alice");
+    seedUser("usr_mallory");
+    seedInstallation(777, ALICE);
+    const { kv } = makeKv();
+    routeGitHub({});
+    const result = await resolveGitHubToken(
+      appEnv(kv),
+      {
+        ...target({ type: "user", id: "usr_mallory" }),
+        project: { id: "prj_m", namespace: "@mallory", slug: "api" },
+      },
+      logger,
+    );
+    expect(!result.success && result.error.code).toBe("GITHUB_APP_NOT_AUTHORIZED");
+    const count = raw.prepare("SELECT COUNT(*) AS n FROM github_repo_links").get() as {
+      n: number;
+    };
+    expect(count.n).toBe(0);
   });
 });
 
@@ -634,6 +765,26 @@ describe("installation webhooks", () => {
     );
 
     expect([...store.keys()]).toEqual(["github_installation:other/keep"]);
+  });
+
+  it("still invalidates the caches when the D1 write fails", async () => {
+    const { kv, store } = makeKv({ "github_installation:acme/removed": "777" });
+    const brokenDb = {
+      prepare: () => {
+        throw new Error("d1 down");
+      },
+    } as unknown as D1Database;
+
+    await expect(
+      handleInstallationChange(
+        { STATE: kv, DB: brokenDb },
+        "installation_repositories",
+        event("removed", { repositories_removed: [{ full_name: "acme/removed" }] }),
+        logger,
+      ),
+    ).rejects.toBeDefined();
+
+    expect(store.has("github_installation:acme/removed")).toBe(false);
   });
 
   it("invalidateInstallationCache is a no-op for malformed names", async () => {

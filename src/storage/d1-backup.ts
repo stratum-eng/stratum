@@ -96,6 +96,10 @@ export const BACKUP_TABLES: readonly string[] = [
   // not send again, so a restore without it leaves every installation
   // unlinkable short of reinstalling the app. No foreign keys, so order is free.
   "github_app_installations",
+  // Which project is the canonical target of each GitHub repo (migration
+  // 060). Re-derivable by re-claiming, but which project wins a repo after a
+  // restore should not depend on the order events happen to arrive in.
+  "github_repo_links",
 ];
 
 /**

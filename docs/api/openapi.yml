@@ -2361,15 +2361,23 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          description: |
+            No project access, or no GitHub credential may act on the repository
+            for the project's owner (`GITHUB_APP_NOT_AUTHORIZED`,
+            `GITHUB_NOT_AUTHORIZED`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           description: |
-            EVALUATION_PENDING — a re-evaluation began while the branch was being
+            `EVALUATION_PENDING` — a re-evaluation began while the branch was being
             pushed. The PR exists and its link is recorded (`github` carries it),
             but the change is not marked promoted; promote again once the
             evaluation finishes, which re-pushes to the same PR.
+            Or `GITHUB_REPO_NOT_CANONICAL` — the repository is already connected
+            to another Stratum project (no `github` field).
           content:
             application/json:
               schema:

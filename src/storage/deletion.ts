@@ -79,8 +79,11 @@ const PROJECT_SCOPED_TABLES = [
  * `project_secrets` holds encrypted production credentials. Omitting it would
  * leave a deleted project's provider tokens in D1 permanently, reachable by no
  * UI and cleaned up by nothing.
+ *
+ * `github_repo_links` (migration 060) names the project as a repo's canonical
+ * target; left behind, it would keep the repo from being claimed by anyone.
  */
-const PROJECT_ID_ONLY_TABLES = ["project_secrets"] as const;
+const PROJECT_ID_ONLY_TABLES = ["project_secrets", "github_repo_links"] as const;
 
 /** Tables keyed by the globally-unique (namespace, slug) tuple. */
 const NS_SLUG_TABLES = ["sync_history", "import_jobs", "import_metrics", "failed_imports"] as const;

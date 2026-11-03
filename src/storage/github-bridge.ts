@@ -3,63 +3,46 @@
  * Storage functions for GitHub integration
  */
 
-import type { D1Database, KVNamespace } from "@cloudflare/workers-types";
-import type { ProjectEntry } from "../types";
+import type { D1Database } from "@cloudflare/workers-types";
+import { resolveInboundProject } from "../github/repo-authorization";
+import type { Env, ProjectEntry } from "../types";
 import { decryptToken, encryptToken } from "../utils/crypto";
 import { AppError, NotFoundError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
-import { listProjects } from "./state";
 
 /**
- * Get project by GitHub owner/repo
- * Scans all projects to find matching GitHub repo
+ * The Stratum project an inbound GitHub event for `owner/repo` belongs to.
+ *
+ * Only a project authorized for the repo can receive its events — its owner
+ * linked to the event's GitHub App installation, or bound to the repo's owner
+ * by the operator — and only the repo's canonical project (migration 060). A
+ * project merely naming the repo in its source URL gets nothing. See
+ * `resolveInboundProject` in src/github/repo-authorization.ts.
+ *
+ * @param env - Environment with KV, DB and the owner bindings
+ * @param owner - GitHub owner from the event
+ * @param repo - GitHub repo from the event
+ * @param installationId - The event's `installation.id`, if it came through the app
+ * @param logger - Request logger
+ * @returns The project, or NOT_FOUND when no authorized project exists
  */
 export async function getProjectByGitHubRepo(
-  kv: KVNamespace,
+  env: Pick<Env, "STATE" | "DB" | "GITHUB_ALLOWED_OWNERS" | "GITHUB_APP_ALLOWED_OWNERS">,
   owner: string,
   repo: string,
+  installationId: number | undefined,
   logger: Logger,
 ): Promise<Result<ProjectEntry, AppError>> {
-  logger.debug("Looking up project by GitHub repo", { owner, repo });
-
+  logger.debug("Routing GitHub event to a project", { owner, repo, installationId });
   try {
-    // List all projects and find matching GitHub repo
-    // This is not efficient for large numbers of projects, but works for now
-    // TODO: Add index by GitHub repo for better performance
-    const projectsResult = await listProjects(kv, logger);
-
-    if (!projectsResult.success) {
-      return err(projectsResult.error);
-    }
-
-    const projects = projectsResult.data;
-
-    // Find project matching the GitHub owner/repo
-    const project = projects.find((p) => {
-      const sourceUrl = p.sourceUrl || p.githubUrl;
-      if (!sourceUrl) return false;
-
-      // Parse source URL to extract owner/repo
-      // Allow dots inside repo names; handle various URL formats
-      const match = sourceUrl.match(/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?(?:\/|$)/i);
-      if (!match) return false;
-
-      const [, projectOwner, projectRepo] = match;
-      return (
-        projectOwner?.toLowerCase() === owner.toLowerCase() &&
-        projectRepo?.toLowerCase() === repo.toLowerCase()
-      );
-    });
-
-    if (!project) {
-      return err(new NotFoundError("Project", `${owner}/${repo}`));
-    }
-
-    return ok(project);
+    const resolved = await resolveInboundProject(env, owner, repo, installationId, logger);
+    if (!resolved.success) return err(resolved.error);
+    if (!resolved.data) return err(new NotFoundError("Project", `${owner}/${repo}`));
+    return ok(resolved.data);
   } catch (error) {
     logger.error(
-      "Failed to get project by GitHub repo",
+      "Failed to route GitHub event to a project",
       error instanceof Error ? error : undefined,
       { owner, repo },
     );

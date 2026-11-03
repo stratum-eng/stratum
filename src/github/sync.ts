@@ -265,7 +265,8 @@ export async function reportEvaluationToGitHub(
   try {
     const tokenResult = await resolveGitHubToken(
       env,
-      { owner, repo, principal: projectPrincipal(project) },
+      // A write (comment + status), so the project must be the canonical target.
+      { owner, repo, principal: projectPrincipal(project), project },
       logger,
     );
     if (!tokenResult.success) {

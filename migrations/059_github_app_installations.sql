@@ -5,8 +5,9 @@
 -- repo could make Stratum push, open PRs, and post statuses there with the
 -- app's credentials — the app would be a confused deputy across tenants. So a
 -- project may use an installation only when the installation is linked to the
--- project's owner here (or its GitHub owner is on the operator's
--- GITHUB_APP_ALLOWED_OWNERS list; see src/github/app-auth.ts).
+-- project's owner here (or an operator binding in GITHUB_ALLOWED_OWNERS names
+-- the project's owner for the repo's GitHub owner; see
+-- src/github/repo-authorization.ts).
 --
 -- Rows are written by the signed `installation` / `installation_repositories`
 -- webhooks, never from a URL parameter: `installer_github_id` is the GitHub

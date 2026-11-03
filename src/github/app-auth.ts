@@ -4,29 +4,33 @@
  * Every outbound GitHub call (REST and git push/fetch) resolves its credential
  * through {@link resolveGitHubToken}: an installation token for the repo when
  * the GitHub App is configured and installed there, otherwise the instance-wide
- * `GITHUB_TOKEN` PAT. The PAT stays as a fallback so a self-hoster without an
- * app — or a repo the app isn't installed on — keeps working unchanged.
+ * `GITHUB_TOKEN` PAT.
  *
- * An installation token is only handed out for a call made on behalf of a
- * Stratum principal the installation belongs to ({@link authorizeInstallationUse}).
- * The repo coordinates come from a project's source URL, which its owner sets
- * freely; without that check, any user could aim another tenant's installation
- * at that tenant's repos just by importing them.
+ * Neither credential is handed out on the strength of a source URL, which a
+ * project's owner sets freely. An installation token requires the call's
+ * principal to be linked to that installation or bound to the repo's GitHub
+ * owner by the operator; the PAT requires the binding. A principal the app
+ * refused never falls through to the PAT. Writes additionally require the
+ * project to be the repo's canonical target. All of it lives in
+ * `./repo-authorization.ts`, shared with inbound webhook routing.
  *
  * KV layout (STATE namespace):
  *   - `github_installation:{owner}/{repo}` → installation id, or
- *     {@link NOT_INSTALLED_MARKER}. Positive entries have no TTL; installation
- *     webhooks invalidate them ({@link invalidateInstallationCache}).
+ *     {@link NOT_INSTALLED_MARKER}. Installation webhooks invalidate both
+ *     ({@link invalidateInstallationCache}); positive entries also expire after
+ *     {@link INSTALLED_TTL_S}, so a missed webhook heals within a day.
  *   - `github_inst_token:{installationId}` → `{ token, expiresAt }`, expiring
  *     {@link TOKEN_EXPIRY_MARGIN_S} before GitHub does.
  */
 
 import type { KVNamespace } from "@cloudflare/workers-types";
-import { type GitHubPrincipal, isInstallationLinkedTo } from "../storage/github-installations";
+import type { GitHubPrincipal } from "../storage/github-installations";
+import type { RepoLinkProject } from "../storage/github-repo-links";
 import type { Env } from "../types";
 import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+import { allowlistAdmits, authorizeForRepo, ensureCanonicalProject } from "./repo-authorization";
 
 const GITHUB_API_BASE = "https://api.github.com";
 const GITHUB_API_TIMEOUT_MS = 10_000;
@@ -49,6 +53,14 @@ const KV_MIN_TTL_S = 60;
  * noticed if the installation webhook were missed.
  */
 const NOT_INSTALLED_TTL_S = 600;
+/**
+ * A positive installation id is re-checked daily. A repo can leave an
+ * installation's scope (deselected, transferred) while the installation lives
+ * on, so the token mint keeps succeeding; without an expiry, a missed
+ * `installation_repositories` webhook would pin the repo to a token that can't
+ * reach it.
+ */
+const INSTALLED_TTL_S = 24 * 60 * 60;
 const NOT_INSTALLED_MARKER = "none";
 
 const installationKey = (owner: string, repo: string) =>
@@ -57,7 +69,7 @@ const tokenKey = (installationId: number) => `github_inst_token:${installationId
 
 export type GitHubAppEnv = Pick<Env, "STATE" | "GITHUB_APP_ID" | "GITHUB_APP_PRIVATE_KEY">;
 export type GitHubAuthEnv = GitHubAppEnv &
-  Pick<Env, "DB" | "GITHUB_TOKEN" | "GITHUB_APP_ALLOWED_OWNERS">;
+  Pick<Env, "DB" | "GITHUB_TOKEN" | "GITHUB_ALLOWED_OWNERS" | "GITHUB_APP_ALLOWED_OWNERS">;
 
 /** What an outbound GitHub call targets, and on whose behalf. */
 export interface GitHubCallTarget {
@@ -65,10 +77,15 @@ export interface GitHubCallTarget {
   repo: string;
   /**
    * The Stratum owner the call acts for — the project's owner, or the import's
-   * target owner. `null` when there is none, which limits the call to
-   * installations on {@link parseAllowedOwners allowlisted} GitHub owners.
+   * target owner. `null` authorizes nothing.
    */
   principal: GitHubPrincipal | null;
+  /**
+   * The project a write acts for. When set, the call also requires that
+   * project to be the repo's canonical target (migration 060), so two projects
+   * naming the same repo cannot both push to it or report on it.
+   */
+  project?: RepoLinkProject;
 }
 
 export type InstallationLookup = { installed: true; installationId: number } | { installed: false };
@@ -283,7 +300,7 @@ export async function getInstallationId(
     );
   }
 
-  await env.STATE.put(key, String(installationId));
+  await env.STATE.put(key, String(installationId), { expirationTtl: INSTALLED_TTL_S });
   return ok({ installed: true, installationId });
 }
 
@@ -368,56 +385,18 @@ async function mintInstallationToken(
 }
 
 /**
- * GitHub owners named in `GITHUB_APP_ALLOWED_OWNERS` (comma-separated,
- * case-insensitive). Any project may use the app's installation on these
- * owners without a link — the same reach the instance PAT has always had, so
- * list only GitHub accounts the operator controls.
- */
-export function parseAllowedOwners(raw: string | undefined): Set<string> {
-  return new Set(
-    (raw ?? "")
-      .split(",")
-      .map((owner) => owner.trim().toLowerCase())
-      .filter((owner) => owner.length > 0),
-  );
-}
-
-export type InstallationUseDecision =
-  | { allowed: true; reason: "allowlisted_owner" | "linked" }
-  | { allowed: false; reason: "no_principal" | "not_linked" | "link_check_failed" };
-
-/**
- * May a call on behalf of `target.principal` use `installationId`? Yes when the
- * repo's GitHub owner is allowlisted by the operator, or the installation is
- * linked to the principal (migration 059). Anything else — including a failed
- * lookup — is no.
- */
-export async function authorizeInstallationUse(
-  env: Pick<Env, "DB" | "GITHUB_APP_ALLOWED_OWNERS">,
-  installationId: number,
-  target: GitHubCallTarget,
-  logger: Logger,
-): Promise<InstallationUseDecision> {
-  if (parseAllowedOwners(env.GITHUB_APP_ALLOWED_OWNERS).has(target.owner.toLowerCase())) {
-    return { allowed: true, reason: "allowlisted_owner" };
-  }
-  if (!target.principal) return { allowed: false, reason: "no_principal" };
-
-  const linked = await isInstallationLinkedTo(env.DB, installationId, target.principal, logger);
-  if (!linked.success) return { allowed: false, reason: "link_check_failed" };
-  return linked.data
-    ? { allowed: true, reason: "linked" }
-    : { allowed: false, reason: "not_linked" };
-}
-
-/**
- * The credential for an outbound GitHub call against `target.owner/repo`: an
- * installation token when the app is configured, installed on the repo, and
- * the installation may be used for `target.principal`
- * ({@link authorizeInstallationUse}); otherwise the `GITHUB_TOKEN` PAT. An app
- * failure (not merely "not installed") also falls back to the PAT when one
- * exists, so a GitHub-side hiccup in token minting degrades to the pre-app
- * behaviour instead of an outage. Logs the source used — never the token.
+ * The credential for an outbound GitHub call against `target.owner/repo`.
+ *
+ * - App installed on the repo: an installation token, if the principal is
+ *   linked to that installation or bound by the operator. A refusal, or a link
+ *   lookup that failed, ends here: it never falls through to the PAT, which
+ *   would hand the broader credential to exactly the caller just refused.
+ * - App not configured, not installed, or failing to mint: the `GITHUB_TOKEN`
+ *   PAT, but only for a principal the operator bound to the repo's owner.
+ * - Either way, a call carrying `target.project` (a write) also needs that
+ *   project to be the repo's canonical target.
+ *
+ * Logs the source used — never the token.
  */
 export async function resolveGitHubToken(
   env: GitHubAuthEnv,
@@ -434,10 +413,13 @@ export async function resolveGitHubToken(
       return ok({ ...appToken.data, source: "app" });
     }
     const { code } = appToken.error;
-    if (code === "GITHUB_APP_NOT_INSTALLED" || code === "GITHUB_APP_NOT_AUTHORIZED") {
-      logger.debug("GitHub App token not used for repo", { owner, repo, code });
+    if (code === "GITHUB_APP_NOT_AUTHORIZED" || code === "GITHUB_REPO_NOT_CANONICAL") {
+      return appToken;
+    }
+    if (code === "GITHUB_APP_NOT_INSTALLED") {
+      logger.debug("GitHub App not installed on repo", { owner, repo });
     } else {
-      logger.warn("GitHub App token unavailable; falling back to GITHUB_TOKEN", {
+      logger.warn("GitHub App token unavailable", {
         owner,
         repo,
         error: appToken.error.message,
@@ -446,17 +428,62 @@ export async function resolveGitHubToken(
     }
   }
 
-  if (env.GITHUB_TOKEN) {
-    logger.debug("Using GITHUB_TOKEN for GitHub call", { owner, repo, source: "pat" });
-    return ok({ token: env.GITHUB_TOKEN, source: "pat" });
+  if (!env.GITHUB_TOKEN) {
+    return err(
+      new AppError("GitHub integration is not configured", "GITHUB_NOT_CONFIGURED", 400, {
+        owner,
+        repo,
+        appConfigured,
+      }),
+    );
   }
-
-  return err(
-    new AppError("GitHub integration is not configured", "GITHUB_NOT_CONFIGURED", 400, {
+  if (!(await allowlistAdmits(env, owner, target.principal, logger))) {
+    logger.info("GITHUB_TOKEN not used: repo owner is not bound to this project's owner", {
       owner,
       repo,
-      appConfigured,
-    }),
+      principalType: target.principal?.type,
+    });
+    return err(
+      new AppError(
+        `No GitHub credential may act on ${owner}/${repo} for this project's owner`,
+        "GITHUB_NOT_AUTHORIZED",
+        403,
+      ),
+    );
+  }
+  const canonical = await requireCanonical(env, target, logger);
+  if (!canonical.success) return canonical;
+  logger.debug("Using GITHUB_TOKEN for GitHub call", { owner, repo, source: "pat" });
+  return ok({ token: env.GITHUB_TOKEN, source: "pat" });
+}
+
+/** For a write, require the project to be (or become) the repo's canonical target. */
+async function requireCanonical(
+  env: GitHubAuthEnv,
+  target: GitHubCallTarget,
+  logger: Logger,
+): Promise<Result<void, AppError>> {
+  if (!target.project) return ok(undefined);
+  const canonical = await ensureCanonicalProject(
+    env,
+    target.owner,
+    target.repo,
+    target.project,
+    logger,
+  );
+  if (!canonical.success) return canonical;
+  if (canonical.data) return ok(undefined);
+  logger.info("GitHub write refused: another project is this repo's canonical target", {
+    owner: target.owner,
+    repo: target.repo,
+    projectId: target.project.id,
+  });
+  return err(
+    new AppError(
+      `${target.owner}/${target.repo} is already connected to another Stratum project`,
+      "GITHUB_REPO_NOT_CANONICAL",
+      409,
+    ),
   );
 }
 
@@ -479,7 +506,7 @@ async function resolveAppToken(
   }
   const { installationId } = installation.data;
 
-  const decision = await authorizeInstallationUse(env, installationId, target, logger);
+  const decision = await authorizeForRepo(env, owner, target.principal, installationId, logger);
   if (!decision.allowed) {
     // Info, not debug: this is the line an operator needs when a repo they
     // expected to use the app is quietly on the PAT.
@@ -498,6 +525,8 @@ async function resolveAppToken(
       ),
     );
   }
+  const canonical = await requireCanonical(env, target, logger);
+  if (!canonical.success) return canonical;
   return mintInstallationToken(env, installationId, owner, repo);
 }
 

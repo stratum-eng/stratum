@@ -133,6 +133,7 @@ export interface ProviderAuthEnv {
   DB?: D1Database;
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
+  GITHUB_ALLOWED_OWNERS?: string;
   GITHUB_APP_ALLOWED_OWNERS?: string;
 }
 

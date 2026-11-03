@@ -73,6 +73,16 @@ function hexToBytes(hex: string): ArrayBuffer {
 }
 
 /**
+ * The GitHub App installation a signed event came through, if any. Events
+ * from a plain repository webhook carry none; then only the operator's owner
+ * binding can route them.
+ */
+function eventInstallationId(payload: { installation?: { id?: unknown } }): number | undefined {
+  const id = payload.installation?.id;
+  return typeof id === "number" && Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+
+/**
  * Handle push event from GitHub.
  * Enqueues a sync job when a push lands on the project's default branch.
  * Follows the same pattern as projects.ts sync endpoint for queue usage.
@@ -84,6 +94,7 @@ async function handlePush(
     ref: string;
     after: string;
     pusher: { email: string };
+    installation?: { id?: unknown };
   },
   logger: Logger,
 ): Promise<void> {
@@ -94,9 +105,15 @@ async function handlePush(
 
   logger.info("Processing GitHub push event", { owner, repo, branch, commitSha });
 
-  const projectResult = await getProjectByGitHubRepo(env.STATE, owner, repo, logger);
+  const projectResult = await getProjectByGitHubRepo(
+    env,
+    owner,
+    repo,
+    eventInstallationId(payload),
+    logger,
+  );
   if (!projectResult.success) {
-    logger.debug("No Stratum project found for repo", { owner, repo });
+    logger.debug("No authorized Stratum project for repo", { owner, repo });
     return;
   }
 
@@ -208,6 +225,7 @@ export async function handlePullRequest(
       user: { login: string };
     };
     repository: { owner: { login: string }; name: string };
+    installation?: { id?: unknown };
   },
   logger: Logger,
 ): Promise<void> {
@@ -219,9 +237,15 @@ export async function handlePullRequest(
 
   logger.info("Processing GitHub PR event", { owner, repo, prNumber, action });
 
-  const projectResult = await getProjectByGitHubRepo(env.STATE, owner, repo, logger);
+  const projectResult = await getProjectByGitHubRepo(
+    env,
+    owner,
+    repo,
+    eventInstallationId(payload),
+    logger,
+  );
   if (!projectResult.success) {
-    logger.debug("No Stratum project found for repo", { owner, repo });
+    logger.debug("No authorized Stratum project for repo", { owner, repo });
     return;
   }
 
@@ -321,6 +345,7 @@ export async function handlePullRequestReview(
     pull_request: { number: number; head: { ref: string } };
     review: { state: string; user: { login: string } };
     repository: { owner: { login: string }; name: string };
+    installation?: { id?: unknown };
   },
   logger: Logger,
 ): Promise<void> {
@@ -338,9 +363,15 @@ export async function handlePullRequestReview(
     return;
   }
 
-  const projectResult = await getProjectByGitHubRepo(env.STATE, owner, repo, logger);
+  const projectResult = await getProjectByGitHubRepo(
+    env,
+    owner,
+    repo,
+    eventInstallationId(payload),
+    logger,
+  );
   if (!projectResult.success) {
-    logger.debug("No Stratum project found for repo", { owner, repo });
+    logger.debug("No authorized Stratum project for repo", { owner, repo });
     return;
   }
 
@@ -477,6 +508,19 @@ export async function handleInstallationChange(
   const facts = installationFacts(eventType, data);
   const action = data.action;
 
+  // Invalidate the KV caches FIRST, independent of the D1 write below: a
+  // failed write must not leave a removed repo's cached installation id in
+  // place, still steering calls to an installation that lost access to it.
+  const repos = [
+    ...repoFullNames(data.repositories),
+    ...repoFullNames(data.repositories_added),
+    ...repoFullNames(data.repositories_removed),
+  ];
+  await invalidateInstallationCache(env.STATE, {
+    repoFullNames: repos,
+    ...(facts ? { installationId: facts.installationId } : {}),
+  });
+
   if (facts) {
     const write =
       eventType === "installation" && action === "deleted"
@@ -500,15 +544,6 @@ export async function handleInstallationChange(
     });
   }
 
-  const repos = [
-    ...repoFullNames(data.repositories),
-    ...repoFullNames(data.repositories_added),
-    ...repoFullNames(data.repositories_removed),
-  ];
-  await invalidateInstallationCache(env.STATE, {
-    repoFullNames: repos,
-    ...(facts ? { installationId: facts.installationId } : {}),
-  });
   logger.info("Processed GitHub App installation event", {
     eventType,
     action,
@@ -630,7 +665,7 @@ app.post("/", async (c) => {
         break;
 
       // Sent to every GitHub App without subscribing. The installation-id cache
-      // in app-auth has no TTL, so these are what keep it honest when the app is
+      // in app-auth lives a day, so these are what keep it honest when the app is
       // installed, removed, suspended, or has its repository selection changed.
       case "installation":
       case "installation_repositories":

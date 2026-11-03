@@ -224,6 +224,31 @@ describe("handlePullRequest", () => {
     expect(updateChangeStatus).toHaveBeenCalled();
   });
 
+  it("routes through the event's GitHub App installation, and drops events with no authorized project", async () => {
+    const env = makeEnv();
+    await handlePullRequest(
+      env,
+      { ...makePRPayload("closed", "ws-1234", true), installation: { id: 777 } },
+      logger,
+    );
+    expect(getProjectByGitHubRepo).toHaveBeenCalledWith(env, "owner", "repo", 777, logger);
+
+    vi.mocked(getProjectByGitHubRepo).mockResolvedValueOnce({
+      success: false,
+      error: new Error("not found"),
+    } as unknown as Awaited<ReturnType<typeof getProjectByGitHubRepo>>);
+    vi.mocked(updateChangeStatus).mockClear();
+    await handlePullRequest(env, makePRPayload("closed", "ws-1234", true), logger);
+    expect(getProjectByGitHubRepo).toHaveBeenLastCalledWith(
+      env,
+      "owner",
+      "repo",
+      undefined,
+      logger,
+    );
+    expect(updateChangeStatus).not.toHaveBeenCalled();
+  });
+
   // SA-2: the merge gate excludes the change author's own approval, which only
   // works if an author was recorded. The webhook payload names the GitHub PR
   // author, who need not be a Stratum user — but the workspace the PR tracks

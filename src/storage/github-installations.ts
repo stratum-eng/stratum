@@ -333,3 +333,45 @@ export async function isInstallationLinkedTo(
     return err(storageError("Failed to check GitHub App installation link", error));
   }
 }
+
+/**
+ * Is any live installation on GitHub account `accountLogin` linked to
+ * `principal`? Used where the event or call carries no installation id, e.g.
+ * re-validating the holder of a repo link.
+ *
+ * @param db - D1 database
+ * @param accountLogin - GitHub account (user or org) login, any case
+ * @param principal - The Stratum principal
+ * @param logger - Request logger
+ * @returns Whether such a link exists; an error is the caller's "no"
+ */
+export async function isAccountLinkedTo(
+  db: D1Database,
+  accountLogin: string,
+  principal: GitHubPrincipal,
+  logger: Logger,
+): Promise<Result<boolean, AppError>> {
+  const ownerClause =
+    principal.type === "agent"
+      ? "stratum_owner_type = 'user' AND stratum_owner_id = (SELECT owner_id FROM agents WHERE id = ?)"
+      : "stratum_owner_type = ? AND stratum_owner_id = ?";
+  const ownerBinds: unknown[] =
+    principal.type === "agent" ? [principal.id] : [principal.type, principal.id];
+  try {
+    const row = await db
+      .prepare(
+        `SELECT 1 AS linked FROM github_app_installations
+          WHERE lower(account_login) = ? AND suspended_at IS NULL AND ${ownerClause}
+          LIMIT 1`,
+      )
+      .bind(accountLogin.toLowerCase(), ...ownerBinds)
+      .first<{ linked: number }>();
+    return ok(row !== null);
+  } catch (error) {
+    logger.error("Failed to check GitHub account link", undefined, {
+      accountLogin,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return err(storageError("Failed to check GitHub account link", error));
+  }
+}

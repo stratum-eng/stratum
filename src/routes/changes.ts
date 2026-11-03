@@ -1945,12 +1945,19 @@ app.post("/changes/:id/github-pr", async (c) => {
   // token drives both the push and the PR API call below.
   // On behalf of the project's owner: the installation must be linked to them,
   // since anyone can point a project's source URL at any repository.
+  // A write, so the project must also be the repo's canonical target.
   const tokenResult = await resolveGitHubToken(
     c.env,
-    { ...repo, principal: projectPrincipal(project) },
+    { ...repo, principal: projectPrincipal(project), project },
     logger,
   );
-  if (!tokenResult.success) return badRequest(tokenResult.error.message);
+  if (!tokenResult.success) {
+    const { statusCode, message, code } = tokenResult.error;
+    return c.json(
+      { error: message, code },
+      statusCode === 403 || statusCode === 409 ? statusCode : 400,
+    );
+  }
   const githubToken = tokenResult.data.token;
 
   // The PR's head ref must exist on GitHub before the PR is opened — a missing

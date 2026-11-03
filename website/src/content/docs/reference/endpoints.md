@@ -213,9 +213,11 @@ a branch of its choosing.
 
 The credential is the GitHub App's installation token when the app is installed
 on the repository **and** that installation is linked to the project's owner
-(see [GitHub App installations](#github-app-installations)), or the operator has
-allowlisted the repository's GitHub owner. Otherwise it is the instance-wide
-`GITHUB_TOKEN`.
+(see [GitHub App installations](#github-app-installations)), or an operator binding names
+the project's owner for the repository's GitHub owner. The instance-wide
+`GITHUB_TOKEN` is used only for such a binding. A project with neither gets
+`403`, and a project that is not the repository's canonical project gets
+`409`.
 
 If a re-evaluation begins while the branch is being pushed, the response is
 `409 EVALUATION_PENDING`: the PR exists and its link is recorded (`github` in
@@ -874,8 +876,17 @@ installation token for the repository **only if that installation is linked to
 the project's owner**. A project's source URL is whatever its owner typed, so
 without the link anyone could import another organization's repository and have
 Stratum push to it with that organization's installation. Unlinked
-installations grant nothing; those calls use the instance-wide `GITHUB_TOKEN`
-instead.
+installations grant nothing, and a caller the installation refuses is **not**
+handed the instance-wide `GITHUB_TOKEN` instead: that credential is reserved
+for owners the operator binds explicitly (see [Operator bindings](#operator-bindings)).
+
+The same rule decides which project receives a repository's webhook events
+(push, pull request, review), and every repository has **one canonical
+project**. The first authorized project to act on a repository, or to receive
+an event for it, claims it. Another project naming the same repository can
+neither receive its events nor push or report to it, until the holder is
+deleted or loses its authorization. A promotion from a non-canonical project
+answers `409`.
 
 Linking proves control on GitHub, not just in Stratum: only the GitHub user who
 installed the app (or, for an installation on a personal GitHub account, that
@@ -935,11 +946,22 @@ installer cannot link it elsewhere.
 `POST /api/github/installations/{installationId}/unlink`
 
 Allowed for the linked user, or an admin of the linked org. The installation's
-repositories go back to the instance token.
+repositories then serve no project until it is linked again (or an operator
+binding covers them).
 
-### Operator allowlist
+### Operator bindings
 
-`GITHUB_APP_ALLOWED_OWNERS` (comma-separated GitHub owners) lets **any**
-project use the app on those owners' repositories without a link. That is the
-same reach the instance `GITHUB_TOKEN` has always had, so list only GitHub
-accounts the operator controls.
+`GITHUB_ALLOWED_OWNERS` binds a GitHub owner to the Stratum owner allowed to
+act on its repositories without an installation link. It is a comma-separated
+list of `githubOwner=@stratumNamespace` entries:
+
+```
+GITHUB_ALLOWED_OWNERS = "acme=@acme,acme-labs=@acme"
+```
+
+An entry admits only projects owned by that Stratum user or org, or by an
+agent whose owner it is. It covers the GitHub App on those repositories and is
+the **only** way a project can use the instance `GITHUB_TOKEN`. An entry with
+no `=@namespace` part is ignored, with a warning in the logs. It does not admit
+every project. The former name, `GITHUB_APP_ALLOWED_OWNERS`, is still read, and
+the two lists combine.

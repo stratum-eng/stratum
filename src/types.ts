@@ -208,11 +208,14 @@ export interface Env {
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   /**
-   * Comma-separated GitHub owners whose app installation ANY project may use,
-   * without the installation being linked to the project's owner. That is the
-   * PAT's reach, so list only GitHub accounts the operator controls; everyone
-   * else links their installation at /github/app/setup.
+   * Operator bindings from a GitHub owner to the Stratum owner allowed to act
+   * on its repos without an installation link: comma-separated
+   * `githubOwner=@stratumNamespace` entries (e.g. `acme=@acme`). The only way
+   * a project can use the `GITHUB_TOKEN` PAT. An entry without `=@namespace`
+   * is ignored. See src/github/repo-authorization.ts.
    */
+  GITHUB_ALLOWED_OWNERS?: string;
+  /** Former name of {@link GITHUB_ALLOWED_OWNERS}; still read, entries combine. */
   GITHUB_APP_ALLOWED_OWNERS?: string;
   // Git provider API tokens for sync
   GITHUB_TOKEN?: string;

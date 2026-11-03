@@ -307,8 +307,9 @@ npx wrangler secret put GOOGLE_CLIENT_SECRET
 # App above. Permissions: Contents RW, Pull requests RW, Commit statuses RW,
 # Metadata R; webhook events push, pull_request, pull_request_review (the
 # installation events arrive without subscribing). For a repo the app is
-# installed on, Stratum mints a 1h installation token and caches it in KV;
-# anywhere else it falls back to GITHUB_TOKEN. The private key MUST be PKCS#8
+# installed on, Stratum mints a 1h installation token and caches it in KV.
+# Elsewhere it uses GITHUB_TOKEN, but only for owners bound in
+# GITHUB_ALLOWED_OWNERS below. The private key MUST be PKCS#8
 # (`-----BEGIN PRIVATE KEY-----`): WebCrypto can't import the PKCS#1 key GitHub
 # downloads, so convert it first:
 #   openssl pkcs8 -topk8 -nocrypt -in app.private-key.pem -out app.pkcs8.pem
@@ -319,16 +320,21 @@ npx wrangler secret put GOOGLE_CLIENT_SECRET
 # org's repo and act on it with that org's installation. Only the GitHub user
 # who installed the app can link it, proven by the installation.created
 # webhook's sender, so an installation made before this webhook handling
-# existed has no recorded installer: reinstall the app, or allowlist it below.
+# existed has no recorded installer: reinstall the app (preferred), or bind
+# its owner below.
 npx wrangler secret put GITHUB_APP_ID
 npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app.pkcs8.pem
-# Optional, comma-separated GitHub owners whose installation ANY project may
-# use without a link — the PAT's reach, so only accounts the operator controls.
-# A plain var, not a secret: add it under [vars] / --var, e.g. "stratum-eng".
-#   GITHUB_APP_ALLOWED_OWNERS = "stratum-eng"
+# Optional operator bindings: comma-separated githubOwner=@stratumNamespace
+# entries. Each lets the named Stratum user/org (and its members' agents) act
+# on that GitHub owner's repos without an installation link, and is the ONLY
+# way any project can use GITHUB_TOKEN. An entry without "=@namespace" is
+# ignored. A plain var, not a secret: add it under [vars] / --var, e.g.
+#   GITHUB_ALLOWED_OWNERS = "stratum-eng=@stratum"
+# (GITHUB_APP_ALLOWED_OWNERS, the former name, is still read.)
 npx wrangler secret put GITHUB_WEBHOOK_SECRET
-# Optional fallback PAT for repos the app isn't installed on (or every repo,
-# when no app is configured).
+# Optional PAT for repos the app isn't installed on (or every repo when no app
+# is configured), usable only by owners bound in GITHUB_ALLOWED_OWNERS. A
+# PAT-only instance MUST set the bindings, or GitHub sync/promotion stops.
 npx wrangler secret put GITHUB_TOKEN
 
 # Email

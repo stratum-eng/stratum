@@ -416,15 +416,29 @@ app.post('/api/webhooks/github', async (c) => {
 ### Outbound Sync (Stratum → GitHub)
 
 **Credentials** (`src/github/app-auth.ts`): every outbound call resolves its
-token through `resolveGitHubToken(env, { owner, repo, principal })`, where
-`principal` is the Stratum owner the call acts for (the project's owner, or an
-import's target owner). It returns a GitHub App installation token only when
-`GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` are set, the app is installed on that
-repo, **and** the installation may serve that principal: its GitHub owner is in
-`GITHUB_APP_ALLOWED_OWNERS`, or the installation is linked to the principal in
-`github_app_installations` (migration 059; an agent matches through its owner).
-Otherwise it falls back to the instance-wide `GITHUB_TOKEN` PAT, which is also
-the fallback if minting fails. A link check that errors counts as "not linked".
+token through `resolveGitHubToken(env, { owner, repo, principal, project? })`,
+where `principal` is the Stratum owner the call acts for (the project's owner,
+or an import's target owner). The decisions live in
+`src/github/repo-authorization.ts`:
+
+- **App installed on the repo:** an installation token only when the
+  installation is linked to the principal in `github_app_installations`
+  (migration 059; an agent matches through its owner), or an operator binding
+  in `GITHUB_ALLOWED_OWNERS` (`githubOwner=@namespace`) names the principal's
+  namespace. A refusal, or a link check that errors, **ends there**: no PAT
+  fallback.
+- **App not configured, not installed, or failing to mint:** the
+  `GITHUB_TOKEN` PAT, but only for a principal an operator binding names.
+- **Writes** (promotion, evaluation comments and statuses) pass `project` and
+  additionally require it to be the repo's canonical project in
+  `github_repo_links` (migration 060). The first authorized project claims a
+  free repo. A holder is displaced only once it is gone or no longer
+  authorized.
+
+**Inbound** events go through `getProjectByGitHubRepo` →
+`resolveInboundProject`, which applies the same rule using the event's
+`installation.id` (or the bindings alone, for a plain repository webhook) and
+routes only to the canonical project.
 
 The link is the guard against a confused deputy. A project's source URL is
 caller-controlled, so without it any user could import another tenant's repo
