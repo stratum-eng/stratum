@@ -259,6 +259,15 @@ export interface Env {
    * is type-only, so the cycle with magic-link-limiter.ts (which imports `Env`
    * from here) is erased. */
   MAGIC_LINK_LIMITER?: DurableObjectNamespace<MagicLinkRateLimiter>;
+  /**
+   * Native request rate limiters (wrangler.toml `[[ratelimits]]`), one per
+   * standard per-minute limit. Optional: without one, that limit is counted in
+   * KV instead (see src/middleware/rate-limit.ts).
+   */
+  RATE_LIMIT_ANON?: RateLimit;
+  RATE_LIMIT_AUTH?: RateLimit;
+  RATE_LIMIT_ANALYTICS?: RateLimit;
+  RATE_LIMIT_STRICT?: RateLimit;
   /** Serialized usage counters, one instance per ENFORCEMENT subject (PRD §4a:
    * the acting user, or an org positively known to be paid — NOT the recorded
    * billing subject, which is resettable by creating an org). Optional only so
