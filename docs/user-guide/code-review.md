@@ -122,6 +122,13 @@ human-approval invariant described in
 [Getting Started](getting-started.md#the-human-approval-invariant), and it is
 enforced in the route, not in the UI.
 
+**Approvals are made by a signed-in human.** The same goes for credentials
+that act *for* a human: an `approve` verdict sent with a scoped API token or
+an OAuth grant (an MCP client, `stratum login` in the CLI) is refused with
+`403 SESSION_REQUIRED`, because those are exactly the credentials an agent
+ends up holding. Approve on the change page in the browser. Those credentials
+can still request changes and comment, which can only block a merge.
+
 Separately, the **change author's own approval never counts** toward
 `requiredApprovals` — otherwise a lone writer could open a change, approve it,
 and self-merge. For a change an agent created, the excluded author is the

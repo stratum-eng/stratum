@@ -100,6 +100,33 @@ describe("StratumClient", () => {
     expect(JSON.parse(init.body as string)).toEqual({ verdict: "approve", comment: "lgtm" });
   });
 
+  it("turns a refused approval into a pointer to the browser", async () => {
+    fetchMock.mockImplementationOnce(async () =>
+      Response.json(
+        {
+          error: "Approving a change requires a signed-in browser session",
+          code: "SESSION_REQUIRED",
+        },
+        { status: 403 },
+      ),
+    );
+    await expect(client.reviewChange("chg_1", "approve")).rejects.toMatchObject({
+      status: 403,
+      code: "SESSION_REQUIRED",
+      message: expect.stringContaining("https://stratum.example.com/changes/chg_1"),
+    });
+  });
+
+  it("passes other review errors through unchanged", async () => {
+    fetchMock.mockImplementationOnce(async () =>
+      Response.json({ error: "Cannot review a merged change" }, { status: 400 }),
+    );
+    await expect(client.reviewChange("chg_1", "request_changes")).rejects.toMatchObject({
+      status: 400,
+      message: "Cannot review a merged change",
+    });
+  });
+
   it("manages issues through the namespaced endpoints", async () => {
     const ref = parseProjectRef("@user/repo");
     await client.createIssue(ref, "Bug", "details", "chg_1");

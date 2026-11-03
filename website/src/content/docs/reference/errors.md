@@ -68,7 +68,9 @@ codes are in the [OpenAPI specification](/reference/openapi/).
   Revoked tokens do not count toward the limit
 - `SESSION_REQUIRED` — `403`; the endpoint accepts the browser session cookie
   only. Applies to token management (`/api/users/me/tokens`,
-  `legacy-token/disable`) and to `rotate-token` when called with a scoped token
+  `legacy-token/disable`), to `rotate-token` when called with a scoped token,
+  and to an `approve` review verdict sent with a scoped token or OAuth grant
+  (the body carries `approveUrl`, the change page to approve on)
 - `SESSION_EXPIRED` — `401`; the browser session is no longer valid
 - `ADMIN_REQUIRES_DIRECT_CREDENTIAL` — `403`; an MCP/CLI OAuth grant was used on
   `/api/admin/*`. Refused before routing, even when the account behind the grant

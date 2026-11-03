@@ -184,6 +184,9 @@ describe("the published tool surface", () => {
     const review = tools.find((t) => t.name === "stratum_review_change");
     expect(review?.description).toContain("human gate");
     expect(review?.description).toContain("agent token");
+    // ...and that an approval over MCP is refused, so it hands the decision to
+    // the human instead of retrying.
+    expect(review?.description).toContain("approve in the browser");
     for (const name of ["stratum_merge_change", "stratum_reject_change"]) {
       expect(tools.find((t) => t.name === name)?.description, name).toContain(
         "agent tokens cannot",

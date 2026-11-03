@@ -402,8 +402,13 @@ change
 
 change
   .command("review <id>")
-  .description("Submit a review verdict")
-  .requiredOption("--verdict <verdict>", "approve | request_changes")
+  .description(
+    "Submit a review verdict. Only request_changes works from the CLI: approve in the browser.",
+  )
+  .requiredOption(
+    "--verdict <verdict>",
+    "request_changes (approve requires a signed-in browser session and is refused here)",
+  )
   .option("--comment <text>", "Review comment")
   .action(async (id: string, opts: { verdict: string; comment?: string }) =>
     withClient(async (client) => {

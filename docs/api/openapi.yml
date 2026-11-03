@@ -2490,10 +2490,16 @@ paths:
       tags: [reviews]
       summary: Submit a human review verdict
       description: |
-        Users only — agent tokens cannot approve work. An `approve` verdict
+        Users only — agent tokens cannot review. An `approve` verdict
         moves the change to `approved`; `request_changes` moves it to
         `needs_changes`. Only open, needs_changes, accepted, or approved
         changes can be reviewed.
+
+        Approvals are made by a signed-in human: `approve` requires a browser
+        session (or the legacy user key). A scoped API token or an OAuth grant
+        (MCP clients, the CLI) gets `403 SESSION_REQUIRED` with an
+        `approveUrl` to open instead. Those credentials can still submit
+        `request_changes` and `comment`, which can only block.
 
         A `comment` verdict is a comment-only review: `comment` (the text) is
         required, the body is recorded in the change's discussion, the change
@@ -2533,7 +2539,18 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          description: |
+            No write access, or `SESSION_REQUIRED`: an `approve` verdict from a
+            scoped API token or OAuth grant. The body then carries
+            `approveUrl`, the change page where a signed-in human approves.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      approveUrl: { type: string, example: /changes/chg_abc123 }
         "404":
           $ref: "#/components/responses/NotFound"
         "409":

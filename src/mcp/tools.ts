@@ -261,7 +261,7 @@ export function buildTools(client: StratumClient): ToolDef[] {
     ),
     tool(
       "stratum_review_change",
-      "Submit a review verdict on a change. Reviews are a human gate — the server refuses every verdict from an agent token, request_changes as much as approve — so this needs user credentials with write access. An agent's feedback channel is change comments over the REST API.",
+      "Submit a review verdict on a change. Reviews are a human gate. Over MCP only `request_changes` is accepted: `approve` is refused with SESSION_REQUIRED, because an approval must come from the user, who has to approve in the browser (a signed-in session) — ask them to. Every verdict from an agent token is refused. Needs write access. An agent's feedback channel is change comments over the REST API.",
       {
         change_id: { type: "string", description: "Change id" },
         verdict: {

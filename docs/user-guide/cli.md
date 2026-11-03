@@ -188,16 +188,19 @@ prints the verdict. Then:
 ```bash
 stratum change list acme/billing --status open
 stratum change show chg_abc123        # per-evaluator evidence + metered costs
-stratum change review chg_abc123 --verdict approve --comment "LGTM"
+stratum change review chg_abc123 --verdict request_changes --comment "Needs a test"
 stratum change merge chg_abc123       # runs the full merge gate
 stratum change merge chg_abc123 --squash
 stratum change merge chg_abc123 --force   # denied unless policy allows force
 stratum change reject chg_abc123
 ```
 
-`review` accepts `approve` or `request_changes` (the comment-only verdict from
-the [code review guide](code-review.md) is not exposed here), and the change
-author's own approval never counts toward required approvals. A refused merge
+`review` sends `request_changes` (the comment-only verdict from the
+[code review guide](code-review.md) is not exposed here). **Approvals are made
+in the browser**: the CLI authenticates with an OAuth grant or an API token,
+and an `approve` verdict from either is refused, so `--verdict approve` prints
+the change's URL to open instead. The change author's own approval never
+counts toward required approvals. A refused merge
 prints the blocking reasons — the codes are in the
 [error reference](../api/errors.md).
 
