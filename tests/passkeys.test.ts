@@ -386,7 +386,15 @@ describe("passkeys as a second factor", () => {
 
       const page = await req("/auth/2fa", { cookie: pending });
       expect(page.status).toBe(200);
-      expect(await page.text()).toContain("Use passkey");
+      const pageHtml = await page.text();
+      expect(pageHtml).toContain("Use passkey");
+      // The ceremony script runs only if it carries this response's CSP nonce.
+      const nonce = /script-src 'nonce-([^']+)'/.exec(
+        page.headers.get("Content-Security-Policy") ?? "",
+      )?.[1];
+      expect(nonce).toBeTruthy();
+      expect(pageHtml).toContain(`<script nonce="${nonce}">`);
+      expect(pageHtml).toContain("/ui.css?v=");
 
       const options = await assertionOptions(pending);
       const res = await verify(pending, await authn.authenticate(options, BASE));
@@ -705,6 +713,11 @@ describe("passkeys as a second factor", () => {
       const html = await res.text();
       expect(html).toContain("Laptop");
       expect(html).toContain("StratumPasskey");
+      const nonce = /script-src 'nonce-([^']+)'/.exec(
+        res.headers.get("Content-Security-Policy") ?? "",
+      )?.[1];
+      expect(nonce).toBeTruthy();
+      expect(html).toContain(`<script nonce="${nonce}">`);
     });
   });
 

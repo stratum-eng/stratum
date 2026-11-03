@@ -346,6 +346,26 @@ jobs:
           
           cat >> wrangler.preview.toml << EOF
 
+          [[ratelimits]]
+          name = "RATE_LIMIT_ANON"  # signed-out requests
+          namespace_id = "3021"
+          simple = { limit = 60, period = 60 }
+
+          [[ratelimits]]
+          name = "RATE_LIMIT_AUTH"  # signed-in users and agents
+          namespace_id = "3022"
+          simple = { limit = 1000, period = 60 }
+
+          [[ratelimits]]
+          name = "RATE_LIMIT_ANALYTICS"  # analytics ingest
+          namespace_id = "3023"
+          simple = { limit = 600, period = 60 }
+
+          [[ratelimits]]
+          name = "RATE_LIMIT_STRICT"  # routes that pass requestsPerMinute: 20 (POST /projects)
+          namespace_id = "3024"
+          simple = { limit = 20, period = 60 }
+
           [[artifacts]]
           binding = "ARTIFACTS"
           namespace = "stratum-staging"

@@ -25,6 +25,7 @@ import {
 } from "../storage/webauthn";
 import type { Env } from "../types";
 import { SourceFooter } from "../ui/components/source-footer";
+import { StylesheetLinks } from "../ui/stylesheet";
 import { WEBAUTHN_CLIENT_SCRIPT } from "../ui/webauthn-client";
 import { type Logger, createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
@@ -94,7 +95,7 @@ function TwoFactorPage(props: { nonce: string; error?: string }) {
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Verify it's you — Stratum</title>
-        <link rel="stylesheet" href="/ui.css" />
+        <StylesheetLinks />
         <style>{`
           .tf-page { min-height: 100vh; display: flex; flex-direction: column; background: var(--bg-primary); }
           .tf-main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 2rem 1rem; }

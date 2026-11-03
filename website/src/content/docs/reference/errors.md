@@ -44,7 +44,11 @@ codes are in the [OpenAPI specification](/reference/openapi/).
   appear on a 404 it is the generic `NOT_FOUND`.
 - Rate limiting carries **no machine-readable code**: a `429` has
   `{"error": "Too many requests"}` plus `Retry-After`, `X-RateLimit-Limit`,
-  and `X-RateLimit-Remaining` headers
+  and `X-RateLimit-Remaining` headers. Limits are per minute and approximate: on
+  Stratum's hosted service each Cloudflare location counts separately, and a
+  successful response reports only `X-RateLimit-Limit`, not how much of it is
+  left. Back off on `429` and honour `Retry-After` rather than pacing against
+  a remaining count
 - `TOKEN_SCOPE_INSUFFICIENT` — a `read` token was used for a write. Returned
   `403`, checked before routing on the HTTP method, on API routes. The git
   smart-HTTP router enforces the same rule on the resolved operation (so
