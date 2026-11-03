@@ -264,6 +264,12 @@ describe("the consent screen", () => {
     expect(html).toContain("no agent provenance");
     // Server-rendered: the choice needs no script.
     expect(html).not.toMatch(/<script(?![^>]*nonce)[^>]*>[^<]*act_as/);
+    // A label wrapping a radio plus another control would let the select or
+    // text box change without moving the radio, submitting the wrong choice.
+    const fieldset = html.slice(html.indexOf('class="consent-actas"'));
+    for (const label of fieldset.match(/<label>[\s\S]*?<\/label>/g) ?? []) {
+      expect(label.match(/<(input|select)\b/g)?.length).toBe(1);
+    }
   });
 
   it("refuses to bind an agent the user does not own, and issues no code", async () => {

@@ -517,7 +517,8 @@ const CONSENT_CSS = `
   .consent-more .consent-client { margin: 0.35rem 0 0; }
   .consent-actas { border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 1rem; margin: 0 0 1.25rem; }
   .consent-actas legend { font-size: 0.9rem; padding: 0 0.35rem; }
-  .consent-actas label { display: block; font-size: 0.9rem; margin: 0.45rem 0; }
+  .consent-actas-option { margin: 0.45rem 0; }
+  .consent-actas label { display: block; font-size: 0.9rem; }
   .consent-actas input[type="text"], .consent-actas select { margin-top: 0.3rem; width: 100%; max-width: 100%; box-sizing: border-box; padding: 0.35rem 0.5rem; }
   .consent-actas .consent-hint { display: block; font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.2rem; }
   .consent-actions { display: flex; gap: 0.75rem; }
@@ -598,8 +599,13 @@ function ActAsFieldset(props: { clientName: string; username: string; agents: Ag
   return (
     <fieldset class="consent-actas">
       <legend>Connect as</legend>
-      <label>
-        <input type="radio" name="act_as" value={ACT_AS_NEW} checked /> A new agent named
+      {/* Each radio has its own label and the text box / select sit outside it:
+          a label wrapping two controls does not select its radio when the
+          other control is used, and with no script nothing else would. */}
+      <div class="consent-actas-option">
+        <label>
+          <input type="radio" name="act_as" value={ACT_AS_NEW} checked /> A new agent
+        </label>
         <input
           type="text"
           name="agent_name"
@@ -611,11 +617,12 @@ function ActAsFieldset(props: { clientName: string; username: string; agents: Ag
           For example &ldquo;{defaultName} on my-laptop&rdquo;. Its work is recorded as this agent,
           and it stops working when you disconnect.
         </span>
-      </label>
+      </div>
       {props.agents.length > 0 && (
-        <label>
-          <input type="radio" name="act_as" value={ACT_AS_AGENT} />
-          An existing agent
+        <div class="consent-actas-option">
+          <label>
+            <input type="radio" name="act_as" value={ACT_AS_AGENT} /> An existing agent
+          </label>
           <select name="agent_id" aria-label="Existing agent">
             {props.agents.map((agent) => (
               <option key={agent.id} value={agent.id}>
@@ -623,13 +630,16 @@ function ActAsFieldset(props: { clientName: string; username: string; agents: Ag
               </option>
             ))}
           </select>
-        </label>
+          <span class="consent-hint">Select &ldquo;An existing agent&rdquo; above to use it.</span>
+        </div>
       )}
-      <label>
-        <input type="radio" name="act_as" value={ACT_AS_USER} />
-        Me (<strong>{props.username}</strong>)
+      <div class="consent-actas-option">
+        <label>
+          <input type="radio" name="act_as" value={ACT_AS_USER} /> Me (
+          <strong>{props.username}</strong>)
+        </label>
         <span class="consent-hint">Work is recorded as yours, with no agent provenance.</span>
-      </label>
+      </div>
     </fieldset>
   );
 }

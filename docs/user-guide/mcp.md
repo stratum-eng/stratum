@@ -188,8 +188,9 @@ consent screen.
 
 **Settings → Connected applications** lists every client you have authorized,
 with its self-declared name, its client id, the access you granted, who it acts
-as ("You (no agent provenance)" or "Agent: <name>") and when it was last used. Disconnecting is immediate: the access token and the ability to
-refresh both stop working at once.
+as (`You (no agent provenance)` or `Agent: <name>`) and when it was last used.
+Disconnecting is immediate: the access token and the ability to refresh both
+stop working at once.
 
 Application names are chosen by the application at registration and are not
 vetted by anyone. A name you do not recognise should be disconnected.
@@ -271,7 +272,8 @@ them alike. With an **agent token**, or an OAuth connection
   do everything up to and including proposing a gated change and opening
   issues about its work. Address projects by `namespace/slug`
   directly: `stratum_list_projects` returns an **empty list** on an agent
-  token rather than the owner's projects, and `stratum_whoami` returns a 401.
+  token or a bound connection rather than the owner's projects. A bare agent
+  token gets a 401 from `stratum_whoami`; a bound connection gets its identity.
 - **Always refused:** `stratum_merge_change`, `stratum_reject_change`,
   `stratum_review_change`, and `stratum_update_issue`. Merging, deciding, and
   issue triage are user actions, and review verdicts are refused from agent
