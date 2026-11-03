@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authMiddleware } from "../src/middleware/auth";
 import { handleEvaluationQueue } from "../src/queue/evaluation-queue";
 import { changesRouter } from "../src/routes/changes";
+import { reviewsRouter } from "../src/routes/reviews";
 import { getChange } from "../src/storage/changes";
 import type { Env, EvaluationQueueMessage, MessageBatch } from "../src/types";
 import type { Logger } from "../src/utils/logger";
@@ -104,6 +105,7 @@ function makeApp() {
   const app = new Hono<{ Bindings: Env }>();
   app.use("*", authMiddleware);
   app.route("/api", changesRouter);
+  app.route("/api", reviewsRouter);
   return app;
 }
 
@@ -331,6 +333,56 @@ describe("asynchronous evaluation (#412)", () => {
     if (!failed.success) throw failed.error;
     expect(failed.data.status).toBe("needs_changes");
     expect(failed.data.evalReason).toMatch(/Evaluation did not complete: clone failed/);
+  });
+
+  it("refuses to merge, even with force, a change whose run failed closed with no verdict", async () => {
+    vi.mocked(getDiffBetweenRepos).mockResolvedValue({
+      success: false,
+      error: Object.assign(new Error("clone failed"), { code: "GIT_ERROR", statusCode: 502 }),
+    } as unknown as Awaited<ReturnType<typeof getDiffBetweenRepos>>);
+    const { id, runId } = await createQueued();
+    const last = batchOf({ type: "change.evaluate", changeId: id, runId });
+    last.message.attempts = 3;
+    await handleEvaluationQueue(last.batch, env);
+    const failed = await getChange(db, logger, id);
+    expect(failed.success && failed.data.status).toBe("needs_changes");
+    expect(failed.success && failed.data.evaluatedSha).toBeUndefined();
+
+    // allowForce is on in this policy: force would otherwise merge the live tip.
+    const res = await makeApp().fetch(json("POST", `/api/changes/${id}/merge?force=true`), env);
+
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe("EVALUATION_MISSING");
+  });
+
+  it("keeps a request for changes made while evaluating when the run then passes", async () => {
+    const { id, runId } = await createQueued();
+
+    const review = await makeApp().fetch(
+      json("POST", `/api/changes/${id}/reviews`, { verdict: "request_changes", comment: "no" }),
+      env,
+    );
+    expect(review.status).toBe(201);
+    expect(((await review.json()) as { changeStatus: string }).changeStatus).toBe("evaluating");
+
+    const { batch } = batchOf({ type: "change.evaluate", changeId: id, runId });
+    await handleEvaluationQueue(batch, env);
+
+    const stored = await getChange(db, logger, id);
+    expect(stored.success && stored.data.evalPassed).toBe(true);
+    expect(stored.success && stored.data.status).toBe("needs_changes");
+  });
+
+  it("refuses an approval while evaluating", async () => {
+    const { id } = await createQueued();
+
+    const res = await makeApp().fetch(
+      json("POST", `/api/changes/${id}/reviews`, { verdict: "approve" }),
+      env,
+    );
+
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe("EVALUATION_PENDING");
   });
 
   it("runs inline when the queue send fails, rather than stranding the change", async () => {

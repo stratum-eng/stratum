@@ -62,6 +62,7 @@ the full list and the response shapes):
 | Code | Meaning |
 |---|---|
 | `EVALUATION_PENDING` | The change is still `evaluating`; refused even with `force` |
+| `EVALUATION_MISSING` | The evaluation failed closed and pinned no revision; refused even with `force` — re-evaluate first |
 | `STALE_BASE` | The recorded base is behind project HEAD (`merge.requireFreshBase`) |
 | `STALE_WORKSPACE` | The workspace advanced after evaluation |
 | `WORKSPACE_UNVERIFIABLE` | Workspace state could not be verified against what was evaluated |
@@ -92,6 +93,11 @@ The PR base is **always the project's own recorded default branch** and is not
 accepted from the request body: this endpoint acts with the instance-wide GitHub
 token, so honouring a caller-supplied base would let any caller aim that shared
 credential at a branch of its choosing.
+
+If a re-evaluation begins while the branch is being pushed, the response is
+`409 EVALUATION_PENDING`: the PR exists and its link is recorded (`github` in
+the body), but the change is not marked `promoted`. Promote again once the
+evaluation finishes; that re-pushes to the same PR.
 
 Once a change has a linked PR, each evaluation posts the verdict to the PR as a
 comment (edited in place on re-evaluation) and as a `stratum/evaluation` commit

@@ -117,15 +117,21 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   const canMerge = !hasGithubPr && canReview && MERGEABLE_STATUSES.includes(change.status);
   const canReject = !TERMINAL_STATUSES.includes(change.status);
   const hasActions = hasGithubPr || canMerge || canReject;
+  // The API refuses an approval while a run is pending (#412) — nothing pins
+  // the revision being looked at — so the button is not offered then.
+  const isEvaluating = change.status === "evaluating";
+  // A pending change refreshes itself only for a viewer with nothing to type
+  // into: a meta refresh reloads the page, and with it any comment or review
+  // draft in progress. Signed-in viewers get a link to reload when they choose.
+  const isPending = change.status === "open" || isEvaluating;
+  const autoRefresh = isPending && !user;
 
   return (
     <Layout
       title={`Change ${change.id}`}
       user={user}
       usageNotice={usageNotice}
-      {...(change.status === "open" || change.status === "evaluating"
-        ? { refreshSeconds: 10 }
-        : {})}
+      {...(autoRefresh ? { refreshSeconds: 10 } : {})}
     >
       {projectRef && <ProjectHeader project={projectRef} active="changes" canWrite={canReview} />}
       <div class="page-header">
@@ -133,6 +139,12 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
           <span class="mono">{change.id}</span>{" "}
           <span class={statusBadgeClass(change.status)}>{change.status}</span>
         </h1>
+        {isPending && !autoRefresh && (
+          <p class="text-muted pending-refresh">
+            {isEvaluating ? "Evaluation is in progress." : "Waiting for evaluation."}{" "}
+            <a href={`/changes/${change.id}`}>Refresh</a> to see the verdict.
+          </p>
+        )}
         {!projectRef && (
           <a class="btn" href={`/p/${change.project}/changes`}>
             Back to changes
@@ -360,12 +372,16 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
         )}
         {canReview && REVIEWABLE_STATUSES.includes(change.status) && (
           <div class="review-actions">
-            <form method="post" action={`/api/changes/${change.id}/reviews`}>
-              <input type="hidden" name="verdict" value="approve" />
-              <button type="submit" class="btn btn-primary">
-                Approve
-              </button>
-            </form>
+            {isEvaluating ? (
+              <p class="text-muted">Approval opens once evaluation has finished.</p>
+            ) : (
+              <form method="post" action={`/api/changes/${change.id}/reviews`}>
+                <input type="hidden" name="verdict" value="approve" />
+                <button type="submit" class="btn btn-primary">
+                  Approve
+                </button>
+              </form>
+            )}
             <form method="post" action={`/api/changes/${change.id}/reviews`}>
               <input type="hidden" name="verdict" value="request_changes" />
               <button type="submit" class="btn btn-danger">

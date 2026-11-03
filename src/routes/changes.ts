@@ -19,12 +19,14 @@ import { getCommitLogPreferNative } from "../storage/artifacts-reads";
 import { recordAudit } from "../storage/audit";
 import { beginEvaluationRun, newEvaluationRunId } from "../storage/change-evaluation";
 import {
+  type GithubPrLink,
   dismissApprovalsAndUpdateStatus,
   getChange,
   getChangesByIds,
   listChanges,
   markChangeMerged,
   mergeTransitionOpts,
+  recordGithubPrLink,
   updateChangeStatus,
 } from "../storage/changes";
 import {
@@ -244,6 +246,60 @@ async function resolveWorkspaceTip(
     branch,
   );
   return logResult.success ? (logResult.data[0]?.sha ?? null) : null;
+}
+
+/**
+ * A change evaluated under asynchronous evaluation (#412) whose run ended
+ * without pinning a revision — it failed closed. There is nothing to merge
+ * against: force bypasses a failing verdict, not a missing one.
+ */
+function lacksEvaluatedRevision(change: Change): boolean {
+  return change.evaluatedSha === undefined && change.evalRunId !== undefined;
+}
+
+/**
+ * A promotion whose `promoted` write a pending run held back (#412): a
+ * re-evaluation began while the branch was being pushed. The PR exists on
+ * GitHub regardless, so its link is kept — otherwise the next promotion opens
+ * a duplicate — but the change is not promoted: the run owns its status, and
+ * the pushed head may not be the revision it judges. Promoting again once it
+ * finishes re-pushes to this PR.
+ */
+async function promotionHeldByEvaluation(
+  c: Context<{ Bindings: Env }>,
+  logger: Logger,
+  changeId: string,
+  pr: {
+    owner: string;
+    repo: string;
+    branch: string;
+    prNumber: number;
+    prUrl: string;
+    link: GithubPrLink;
+  },
+): Promise<Response> {
+  const linkResult = await recordGithubPrLink(c.env.DB, logger, changeId, pr.link);
+  if (!linkResult.success) {
+    logger.error("Pushed to the PR but did not record its link", linkResult.error, {
+      changeId,
+      prNumber: pr.prNumber,
+    });
+  }
+  return c.json(
+    {
+      error:
+        "Evaluation started while the change was being promoted; promote again once it has finished",
+      code: "EVALUATION_PENDING",
+      github: {
+        owner: pr.owner,
+        repo: pr.repo,
+        branch: pr.branch,
+        pullRequestNumber: pr.prNumber,
+        pullRequestUrl: pr.prUrl,
+      },
+    },
+    409,
+  );
 }
 
 /**
@@ -585,6 +641,22 @@ app.post("/changes/:id/merge", async (c) => {
       {
         error: "Evaluation is still pending; merge once it has finished",
         code: "EVALUATION_PENDING",
+      },
+      409,
+    );
+  }
+
+  // The same rule once a run has ended without a verdict: one that failed
+  // closed (retries exhausted, the sweep gave up, the workspace vanished)
+  // leaves the change needs_changes with nothing pinned, and a merge — forced,
+  // or after a human approved it anyway — would land the live workspace tip.
+  // Changes from before asynchronous evaluation carry no run id and keep their
+  // old behaviour; every change since has one.
+  if (lacksEvaluatedRevision(change)) {
+    return c.json(
+      {
+        error: "This change has no evaluated revision; re-evaluate it before force-merging",
+        code: "EVALUATION_MISSING",
       },
       409,
     );
@@ -1072,6 +1144,7 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
       if (change.project !== projectName && change.project !== project.id)
         return { id, skip: "wrong project" };
       if (change.status === "evaluating") return { id, skip: "evaluation pending" };
+      if (lacksEvaluatedRevision(change)) return { id, skip: "no evaluated revision" };
       if (!MERGEABLE_STATUSES.includes(change.status)) return { id, skip: "not mergeable" };
       if (!change.baseSha) return { id, skip: "no base" };
       if (!force) {
@@ -2014,6 +2087,16 @@ app.post("/changes/:id/github-pr", async (c) => {
       const headShaResult = await updateChangeStatus(c.env.DB, logger, id, "promoted", {
         githubHeadSha: publishedSha,
       });
+      if (!headShaResult.success && headShaResult.error.code === "EVALUATION_PENDING") {
+        return promotionHeldByEvaluation(c, logger, id, {
+          owner: repo.owner,
+          repo: repo.repo,
+          branch,
+          prNumber: storedPr.number,
+          prUrl: storedPr.html_url,
+          link: { githubHeadSha: publishedSha },
+        });
+      }
       if (!headShaResult.success) {
         // Not fatal: the branch is pushed and the PR exists, so the promotion
         // genuinely happened. Failing here would let a transient D1 error break
@@ -2148,10 +2231,7 @@ app.post("/changes/:id/github-pr", async (c) => {
 
   const promotedAt = new Date().toISOString();
 
-  const updateResult = await updateChangeStatus(c.env.DB, logger, id, "promoted", {
-    ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
-    ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
-    ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
+  const prLink: GithubPrLink = {
     githubOwner: repo.owner,
     githubRepo: repo.repo,
     githubBranch: branch,
@@ -2162,10 +2242,26 @@ app.post("/changes/:id/github-pr", async (c) => {
     // precisely when the evaluatedSha gate above ran (legacy changes with no
     // evaluatedSha have no pinned revision to record here).
     ...(publishedSha !== undefined ? { githubHeadSha: publishedSha } : {}),
+  };
+  const updateResult = await updateChangeStatus(c.env.DB, logger, id, "promoted", {
+    ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
+    ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
+    ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
+    ...prLink,
     promotedAt,
     promotedBy: userId,
   });
   if (!updateResult.success) {
+    if (updateResult.error.code === "EVALUATION_PENDING") {
+      return promotionHeldByEvaluation(c, logger, id, {
+        owner: repo.owner,
+        repo: repo.repo,
+        branch,
+        prNumber: pr.number,
+        prUrl: pr.html_url,
+        link: prLink,
+      });
+    }
     logger.error("Failed to update change status to promoted", updateResult.error);
     return badRequest(updateResult.error.message);
   }

@@ -83,7 +83,17 @@ codes are in the [OpenAPI specification](openapi.yml).
   assume it failed
 - `EVALUATION_PENDING` — `409`; the change is still `evaluating`, so there is no
   verdict to merge on. Refused even with `force`: force bypasses a failing
-  verdict, never a missing one. Poll the change and merge once it has one
+  verdict, never a missing one. Poll the change and merge once it has one.
+  Also returned by `approve` while the change is evaluating, and by
+  `POST /api/changes/{id}/github-pr` when a re-evaluation began while the PR
+  was being opened — the PR exists (the response carries `github`) but the
+  change is not promoted; promote again once the evaluation finishes
+- `EVALUATION_MISSING` — `409`; the change's evaluation ended without a verdict
+  (it failed closed), so there is no evaluated revision to merge. Refused even
+  with `force`. Re-evaluate the change first
+- `REVIEW_STALE` — `409`; the change moved on (its evaluation finished or was
+  re-run, or its status changed) between loading it and recording the
+  approval. Nothing was recorded: reload the change and review it again
 - `STALE_BASE` — the change's recorded base is behind the project HEAD
   (`merge.requireFreshBase`); re-evaluate on the new base
 - `STALE_WORKSPACE` — the workspace advanced after evaluation; the merge is

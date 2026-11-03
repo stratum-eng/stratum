@@ -420,6 +420,70 @@ function buildUpdateChangeStatusStatement(
     .bind(...bindings);
 }
 
+/** The error a status write held back by a pending run reports (#412). */
+export function evaluationPendingError(changeId: string): AppError {
+  return new AppError("Evaluation is still pending", "EVALUATION_PENDING", 409, { changeId });
+}
+
+/** A change's GitHub PR link: written without touching its status. */
+export type GithubPrLink = Pick<
+  UpdateChangeStatusOpts,
+  | "githubOwner"
+  | "githubRepo"
+  | "githubBranch"
+  | "githubPrNumber"
+  | "githubPrUrl"
+  | "githubPrState"
+  | "githubHeadSha"
+>;
+
+/**
+ * Record a change's GitHub PR link and nothing else.
+ *
+ * The link describes a PR that exists on GitHub whatever state the change is
+ * in, so it is never subject to the evaluating guard a status write is. A
+ * promotion whose status write a pending run held back records the link
+ * through here, so the next promotion re-pushes to that PR instead of opening
+ * a second one.
+ */
+export async function recordGithubPrLink(
+  db: D1Database,
+  logger: Logger,
+  id: string,
+  link: GithubPrLink,
+): Promise<Result<void, AppError>> {
+  const columns: Array<[string, unknown]> = [
+    ["github_owner", link.githubOwner],
+    ["github_repo", link.githubRepo],
+    ["github_branch", link.githubBranch],
+    ["github_pr_number", link.githubPrNumber],
+    ["github_pr_url", link.githubPrUrl],
+    ["github_pr_state", link.githubPrState],
+    ["github_head_sha", link.githubHeadSha],
+  ];
+  const set = columns.filter(([, value]) => value !== undefined);
+  if (set.length === 0) return ok(undefined);
+  try {
+    await db
+      .prepare(
+        `UPDATE changes SET ${set.map(([column]) => `${column} = ?`).join(", ")} WHERE id = ?`,
+      )
+      .bind(...set.map(([, value]) => value), id)
+      .run();
+    logger.debug("GitHub PR link recorded", { changeId: id });
+    return ok(undefined);
+  } catch (error) {
+    const appError = new AppError(
+      error instanceof Error ? error.message : "Failed to record GitHub PR link",
+      "DATABASE_ERROR",
+      500,
+      { operation: "recordGithubPrLink", changeId: id },
+    );
+    logger.error("Failed to record GitHub PR link", appError, { changeId: id });
+    return err(appError);
+  }
+}
+
 /**
  * Update a change's status (and any optional pinned fields) as a single,
  * non-batched write. Callers that also need stale approvals dismissed in the
@@ -444,7 +508,15 @@ export async function updateChangeStatus(
       return err(notFoundError);
     }
 
-    await buildUpdateChangeStatusStatement(db, id, status, opts).run();
+    const result = await buildUpdateChangeStatusStatement(db, id, status, opts).run();
+    // The row exists, so a zero-row write means the evaluating guard held it:
+    // a run began between the caller's read and this write. Report it rather
+    // than answer success for a write that never landed — a caller carrying
+    // data alongside the status (a promotion's PR link) must not lose it.
+    if (result?.meta?.changes === 0) {
+      logger.info("Change status write held: evaluation pending", { changeId: id, status });
+      return err(evaluationPendingError(id));
+    }
 
     logger.debug("Change status updated", { changeId: id, status, opts });
     return ok(undefined);

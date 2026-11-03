@@ -7,11 +7,12 @@ vi.mock("../src/storage/change-reviews", () => ({
   listComments: vi.fn(),
   listReviews: vi.fn(),
   setCommentResolved: vi.fn(),
+  submitApproval: vi.fn(),
+  submitChangesRequested: vi.fn(),
   submitReview: vi.fn(),
 }));
 vi.mock("../src/storage/changes", () => ({
   getChange: vi.fn(),
-  updateChangeStatus: vi.fn(),
 }));
 vi.mock("../src/storage/deletion", () => ({ isTargetDeleting: vi.fn() }));
 vi.mock("../src/storage/state", () => ({ getProject: vi.fn() }));
@@ -31,9 +32,10 @@ import {
   listComments,
   listReviews,
   setCommentResolved,
+  submitApproval,
   submitReview,
 } from "../src/storage/change-reviews";
-import { getChange, updateChangeStatus } from "../src/storage/changes";
+import { getChange } from "../src/storage/changes";
 import { isTargetDeleting } from "../src/storage/deletion";
 import { getProject } from "../src/storage/state";
 import type { Change, Env, ProjectEntry } from "../src/types";
@@ -126,8 +128,19 @@ beforeEach(() => {
     },
   }));
   vi.mocked(setCommentResolved).mockResolvedValue({ success: true, data: undefined });
-  // updateChangeStatus resolves Result<void, ...>, so the payload is undefined.
-  vi.mocked(updateChangeStatus).mockResolvedValue({ success: true, data: undefined });
+  vi.mocked(submitApproval).mockImplementation(async (_db, _logger, opts) => ({
+    success: true,
+    data: {
+      applied: true,
+      review: {
+        id: "rev_new",
+        changeId: opts.changeId,
+        reviewerId: opts.reviewerId,
+        verdict: "approve",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      },
+    },
+  }));
 });
 
 describe("POST /api/changes/:id/comments (anchors)", () => {
@@ -409,7 +422,7 @@ describe("POST /api/changes/:id/reviews (comment verdict)", () => {
     expect(res.status).toBe(201);
     const body = (await res.json()) as { changeStatus: string };
     expect(body.changeStatus).toBe("open");
-    expect(vi.mocked(updateChangeStatus)).not.toHaveBeenCalled();
+    expect(vi.mocked(submitApproval)).not.toHaveBeenCalled();
     expect(vi.mocked(addComment)).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -459,12 +472,12 @@ describe("POST /api/changes/:id/reviews (comment verdict)", () => {
   it("still moves the state machine for approve", async () => {
     const res = await jsonPost("/api/changes/chg_1/reviews", { verdict: "approve" });
     expect(res.status).toBe(201);
-    expect(vi.mocked(updateChangeStatus)).toHaveBeenCalledWith(
+    expect(vi.mocked(submitApproval)).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
-      "chg_1",
-      "approved",
+      expect.objectContaining({ changeId: "chg_1", seen: expect.anything() }),
     );
+    expect(((await res.json()) as { changeStatus: string }).changeStatus).toBe("approved");
     expect(vi.mocked(addComment)).not.toHaveBeenCalled();
   });
 });
@@ -541,8 +554,8 @@ describe("error paths", () => {
     expect(await res.text()).toContain("parentCommentId must be a non-empty string");
   });
 
-  it("500s when persisting the change status after an approve fails", async () => {
-    vi.mocked(updateChangeStatus).mockResolvedValue({
+  it("500s when persisting an approval fails", async () => {
+    vi.mocked(submitApproval).mockResolvedValue({
       success: false,
       error: new AppError("db down", "DATABASE_ERROR", 500),
     });
@@ -625,7 +638,7 @@ describe("error paths", () => {
     );
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("/changes/chg_1");
-    expect(vi.mocked(updateChangeStatus)).not.toHaveBeenCalled();
+    expect(vi.mocked(submitApproval)).not.toHaveBeenCalled();
   });
 });
 

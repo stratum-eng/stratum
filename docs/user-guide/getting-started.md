@@ -253,9 +253,10 @@ requiring a human approval and refusing force-merge.
 
 Evaluators run **off the request** on an instance with an evaluation queue
 (the hosted instance has one): opening a change returns at once with the change
-`evaluating`, and the verdict lands a few seconds to a few minutes later — the
-change page refreshes itself until it does. A change cannot merge while it is
-`evaluating`. Every evaluator runs under its own deadline (its configured
+`evaluating`, and the verdict lands a few seconds to a few minutes later — use
+the change page's **Refresh** link to see it. A change cannot merge, and cannot
+be approved, while it is `evaluating`; you can still request changes, and that
+request stands even if the evaluation then passes. Every evaluator runs under its own deadline (its configured
 timeout plus a short grace), so one that hangs fails closed on its own and the
 rest still report. See [ADR 009](../adr/009-asynchronous-evaluation.md).
 

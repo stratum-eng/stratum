@@ -7,11 +7,20 @@
   `needs_changes`. API clients that read `eval` from the creation response must
   handle its absence. Without the queue, or if enqueueing fails, evaluation runs
   inline and the responses are unchanged (`201` / `200` with the verdict). The UI
-  shows `evaluating` and refreshes until the verdict lands; the MCP tools and the
-  CLI and reference agent understand it too (`stratum change create --wait`).
+  shows `evaluating` with a Refresh link (it reloads itself only for signed-out
+  viewers, so a draft comment is never lost); the MCP tools and the CLI and
+  reference agent understand it too (`stratum change create --wait`).
 - **A change still `evaluating` cannot be merged**, even with `force` — the merge
-  answers `409 EVALUATION_PENDING`. Once the verdict is recorded, merge protection
-  behaves exactly as before.
+  answers `409 EVALUATION_PENDING`. Nor can one whose evaluation ended without a
+  verdict (`409 EVALUATION_MISSING`); re-evaluate it first. Once the verdict is
+  recorded, merge protection behaves exactly as before.
+- **Approvals wait for the verdict.** `approve` on an `evaluating` change answers
+  `409 EVALUATION_PENDING`, and an approval is recorded only if the change is
+  still as the reviewer loaded it — otherwise `409 REVIEW_STALE`. A
+  `request_changes` made while evaluation is pending is kept: the change lands on
+  `needs_changes` even if the evaluation passes.
+- **Promoting during a re-evaluation** answers `409 EVALUATION_PENDING`; the
+  GitHub PR is still opened and linked, and promoting again re-pushes to it.
 
 ### Added
 - **`timeoutMs` for the `llm` evaluator** (default 30s, clamped to 1s–120s). A model

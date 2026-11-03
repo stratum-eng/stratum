@@ -63,7 +63,7 @@ export async function beginEvaluationRun(
     const placeholders = TERMINAL_CHANGE_STATUSES.map(() => "?").join(", ");
     const result = await db
       .prepare(
-        `UPDATE changes SET status = 'evaluating', eval_run_id = ?, eval_requested_at = ?, eval_requested_by = ?, eval_attempts = 0 WHERE id = ? AND status NOT IN (${placeholders})`,
+        `UPDATE changes SET status = 'evaluating', eval_run_id = ?, eval_requested_at = ?, eval_requested_by = ?, eval_attempts = 0, changes_requested_during_eval = 0 WHERE id = ? AND status NOT IN (${placeholders})`,
       )
       .bind(
         args.runId,
@@ -115,6 +115,11 @@ export interface FinalizeEvaluationRunArgs {
 export interface FinalizeEvaluationRunResult {
   /** False when the run was superseded: nothing was written. */
   applied: boolean;
+  /**
+   * The status the change landed on, when applied. `needs_changes` for a
+   * passing run if a reviewer requested changes while it was pending.
+   */
+  status?: "accepted" | "needs_changes";
   runs: EvalRun[];
   dismissedReviewerIds: string[];
 }
@@ -190,8 +195,15 @@ export async function finalizeEvaluationRun(
       );
     }
 
-    const assignments = ["status = ?"];
-    const bindings: unknown[] = [args.status];
+    // A request for changes made while this run was pending outranks a pass:
+    // the review would have moved an accepted change to needs_changes had it
+    // landed after the verdict, so it must not be erased by landing before.
+    // The flag is consumed here; the next run starts with it clear.
+    const assignments = [
+      "status = CASE WHEN ? = 'accepted' AND changes_requested_during_eval = 1 THEN 'needs_changes' ELSE ? END",
+      "changes_requested_during_eval = 0",
+    ];
+    const bindings: unknown[] = [args.status, args.status];
     const set = (column: string, value: unknown) => {
       if (value === undefined) return;
       assignments.push(`${column} = ?`);
@@ -212,23 +224,38 @@ export async function finalizeEvaluationRun(
     const updateIndex = statements.length;
     statements.push(
       db
-        .prepare(`UPDATE changes SET ${assignments.join(", ")} WHERE ${SAME_RUN}`)
+        .prepare(`UPDATE changes SET ${assignments.join(", ")} WHERE ${SAME_RUN} RETURNING status`)
         .bind(...bindings, changeId, runId),
     );
 
-    const results = await db.batch<{ reviewer_id: string }>(statements);
+    const results = await db.batch<{ reviewer_id?: string; status?: string }>(statements);
     const applied = (results[updateIndex]?.meta?.changes ?? 0) > 0;
+    const landed = results[updateIndex]?.results?.[0]?.status;
+    const status: FinalizeEvaluationRunResult["status"] = !applied
+      ? undefined
+      : landed === "needs_changes" || landed === "accepted"
+        ? landed
+        : args.status;
     const dismissedReviewerIds =
-      dismissIndex >= 0 ? (results[dismissIndex]?.results ?? []).map((r) => r.reviewer_id) : [];
+      dismissIndex >= 0
+        ? (results[dismissIndex]?.results ?? []).flatMap((r) =>
+            r.reviewer_id !== undefined ? [r.reviewer_id] : [],
+          )
+        : [];
 
     logger.info("Evaluation run finalized", {
       changeId,
       runId,
       applied,
-      status: args.status,
+      status,
       dismissed: dismissedReviewerIds.length,
     });
-    return ok({ applied, runs: applied ? runs : [], dismissedReviewerIds });
+    return ok({
+      applied,
+      ...(status !== undefined ? { status } : {}),
+      runs: applied ? runs : [],
+      dismissedReviewerIds,
+    });
   } catch (error) {
     const appError = dbError(error, "finalizeEvaluationRun", changeId);
     logger.error("Failed to finalize evaluation run", appError, { changeId, runId });
@@ -257,7 +284,7 @@ export async function failEvaluationRun(
     const runBind = args.runId === null ? [] : [args.runId];
     const result = await db
       .prepare(
-        `UPDATE changes SET status = 'needs_changes', eval_score = 0, eval_passed = 0, eval_reason = ? WHERE id = ? AND ${runClause} AND status = 'evaluating'`,
+        `UPDATE changes SET status = 'needs_changes', eval_score = 0, eval_passed = 0, eval_reason = ?, changes_requested_during_eval = 0 WHERE id = ? AND ${runClause} AND status = 'evaluating'`,
       )
       .bind(args.reason, args.changeId, ...runBind)
       .run();

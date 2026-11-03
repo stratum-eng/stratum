@@ -3,6 +3,7 @@ import { cannotMintLegacyCredential } from "../middleware/auth";
 import { type EventActor, emitEvent } from "../queue/events";
 import {
   type ChangeComment,
+  type ChangeReview,
   type CommentAnchor,
   type ReviewVerdict,
   addComment,
@@ -10,9 +11,11 @@ import {
   listComments,
   listReviews,
   setCommentResolved,
+  submitApproval,
+  submitChangesRequested,
   submitReview,
 } from "../storage/change-reviews";
-import { getChange, updateChangeStatus } from "../storage/changes";
+import { getChange } from "../storage/changes";
 import { isTargetDeleting } from "../storage/deletion";
 import { getProject } from "../storage/state";
 import type { Change, Env, ProjectEntry } from "../types";
@@ -474,30 +477,69 @@ app.post("/changes/:id/reviews", async (c) => {
     );
   }
 
-  const reviewResult = await submitReview(c.env.DB, logger, {
-    changeId: change.id,
-    reviewerId: userId,
-    verdict,
-    ...(verdict !== "comment" && comment !== undefined ? { comment } : {}),
-  });
-  if (!reviewResult.success) {
-    return internalError(reviewResult.error.message);
-  }
-
-  // A human verdict moves the change state machine — except a comment-only
-  // review, which neither approves nor blocks.
+  // Each verdict is written together with its effect on the change, in one
+  // transaction keyed on the row as it is then — not on the status read above,
+  // which a run starting or finishing meanwhile can make stale (#412).
+  const reviewComment = verdict !== "comment" && comment !== undefined ? { comment } : {};
+  let review: ChangeReview;
   let newStatus: Change["status"] = change.status;
-  // While a run is pending a request_changes verdict is recorded but the
-  // status is the run's to set (#412); approvals were refused above.
-  if (verdict !== "comment" && change.status !== "evaluating") {
-    newStatus = verdict === "approve" ? "approved" : "needs_changes";
-    if (newStatus !== change.status) {
-      const updateResult = await updateChangeStatus(c.env.DB, logger, change.id, newStatus);
-      if (!updateResult.success) {
-        logger.error("Failed to update change status after review", updateResult.error);
-        return internalError(updateResult.error.message);
-      }
+  if (verdict === "approve") {
+    const approved = await submitApproval(c.env.DB, logger, {
+      changeId: change.id,
+      reviewerId: userId,
+      ...reviewComment,
+      seen: {
+        status: change.status,
+        ...(change.evalRunId !== undefined ? { evalRunId: change.evalRunId } : {}),
+        ...(change.evaluatedSha !== undefined ? { evaluatedSha: change.evaluatedSha } : {}),
+        ...(change.baseSha !== undefined ? { baseSha: change.baseSha } : {}),
+      },
+    });
+    if (!approved.success) return internalError(approved.error.message);
+    if (!approved.data.applied) {
+      // The change moved between the read and the write: an evaluation began
+      // or finished, or its state changed. Approving what is there now would
+      // approve something this reviewer did not look at.
+      const current = await getChange(c.env.DB, logger, change.id);
+      const evaluating = current.success && current.data.status === "evaluating";
+      return c.json(
+        evaluating
+          ? {
+              error: "Evaluation is still pending; approve once it has finished",
+              code: "EVALUATION_PENDING",
+            }
+          : {
+              error: "The change was updated while you were reviewing it; reload and review again",
+              code: "REVIEW_STALE",
+            },
+        409,
+      );
     }
+    review = approved.data.review;
+    newStatus = "approved";
+  } else if (verdict === "request_changes") {
+    const requested = await submitChangesRequested(c.env.DB, logger, {
+      changeId: change.id,
+      reviewerId: userId,
+      ...reviewComment,
+    });
+    if (!requested.success) return internalError(requested.error.message);
+    if (!requested.data.applied) {
+      return badRequest("This change can no longer be reviewed");
+    }
+    review = requested.data.review;
+    // `evaluating` when a run is pending: the run lands on needs_changes.
+    newStatus = requested.data.status ?? "needs_changes";
+  } else {
+    const reviewResult = await submitReview(c.env.DB, logger, {
+      changeId: change.id,
+      reviewerId: userId,
+      verdict,
+    });
+    if (!reviewResult.success) {
+      return internalError(reviewResult.error.message);
+    }
+    review = reviewResult.data;
   }
 
   await emitEvent(
@@ -512,7 +554,7 @@ app.post("/changes/:id/reviews", async (c) => {
   if (!contentType.includes("application/json")) {
     return c.redirect(`/changes/${change.id}`, 302);
   }
-  return created({ review: reviewResult.data, changeStatus: newStatus });
+  return created({ review, changeStatus: newStatus });
 });
 
 // GET /api/changes/:id/reviews — List reviews

@@ -247,7 +247,9 @@ export async function runEvaluationJob(
 
   const updatedChange: Change = {
     ...change,
-    status: newStatus,
+    // What the row landed on: a request for changes made while the run was
+    // pending turns a pass into needs_changes.
+    status: finalized.data.status ?? newStatus,
     evalScore: evalResult.score,
     evalPassed: evalResult.passed,
     evalReason: evalResult.reason,
@@ -269,7 +271,10 @@ export async function runEvaluationJob(
   if (waitUntil) waitUntil(report);
   else await report;
 
-  log.info("Evaluation run recorded", { status: newStatus, evalScore: evalResult.score });
+  log.info("Evaluation run recorded", {
+    status: updatedChange.status,
+    evalScore: evalResult.score,
+  });
   return ok({
     status: "applied",
     change: updatedChange,

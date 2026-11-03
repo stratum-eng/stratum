@@ -4,7 +4,12 @@
  */
 
 import { Hono } from "hono";
-import { createChange, getChangeByGitHubBranch, updateChangeStatus } from "../storage/changes";
+import {
+  createChange,
+  getChangeByGitHubBranch,
+  recordGithubPrLink,
+  updateChangeStatus,
+} from "../storage/changes";
 import { getProjectByGitHubRepo } from "../storage/github-bridge";
 import { createImportJob, getLatestImportDepth } from "../storage/imports";
 import { getWorkspace } from "../storage/state";
@@ -218,8 +223,9 @@ export async function handlePullRequest(
     const existing = await getChangeByGitHubBranch(env.DB, logger, project.id, pr.head.ref);
 
     if (existing) {
-      // Idempotent update of head SHA
-      await updateChangeStatus(env.DB, logger, existing.id, existing.status, {
+      // Idempotent update of head SHA. Link-only: re-writing the status read
+      // above would be held back if a run began since, dropping the link.
+      await recordGithubPrLink(env.DB, logger, existing.id, {
         githubHeadSha: pr.head.sha,
         githubPrNumber: prNumber,
         githubPrUrl: pr.html_url,
@@ -349,7 +355,16 @@ export async function handlePullRequestReview(
     return;
   }
 
-  await updateChangeStatus(env.DB, logger, existing.id, "needs_changes");
+  const marked = await updateChangeStatus(env.DB, logger, existing.id, "needs_changes");
+  if (!marked.success) {
+    // EVALUATION_PENDING included: a pending run owns the status, and this
+    // signal has no reviewer row for the run to honour when it finishes.
+    logger.warn("GitHub changes-requested review not applied", {
+      changeId: existing.id,
+      code: marked.error.code,
+    });
+    return;
+  }
   logger.info("Marked Change needs_changes from GitHub changes-requested review", {
     changeId: existing.id,
     reviewState,

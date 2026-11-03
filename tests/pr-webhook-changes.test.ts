@@ -15,6 +15,7 @@ vi.mock("../src/storage/changes", () => ({
   getChangeByGitHubBranch: vi.fn(),
   createChange: vi.fn(),
   updateChangeStatus: vi.fn().mockResolvedValue({ success: true, data: undefined }),
+  recordGithubPrLink: vi.fn().mockResolvedValue({ success: true, data: undefined }),
   markChangeMerged: vi.fn().mockResolvedValue({ success: true, data: { transitioned: true } }),
   mergeTransitionOpts: (
     change: { evalScore?: number; evalPassed?: boolean; evalReason?: string },
@@ -32,7 +33,12 @@ vi.mock("../src/storage/state", () => ({
 }));
 
 import { handlePullRequest, handlePullRequestReview } from "../src/github/webhooks";
-import { createChange, getChangeByGitHubBranch, updateChangeStatus } from "../src/storage/changes";
+import {
+  createChange,
+  getChangeByGitHubBranch,
+  recordGithubPrLink,
+  updateChangeStatus,
+} from "../src/storage/changes";
 import { getProjectByGitHubRepo } from "../src/storage/github-bridge";
 import { getWorkspace } from "../src/storage/state";
 
@@ -267,11 +273,12 @@ describe("handlePullRequest", () => {
     await handlePullRequest(env, makePRPayload("opened", "ws-1234"), logger);
 
     expect(createChange).not.toHaveBeenCalled();
-    expect(updateChangeStatus).toHaveBeenCalledWith(
+    // Link-only: re-writing the status would be held back by a pending run.
+    expect(updateChangeStatus).not.toHaveBeenCalled();
+    expect(recordGithubPrLink).toHaveBeenCalledWith(
       env.DB,
       logger,
       CHANGE.id,
-      CHANGE.status,
       expect.objectContaining({ githubHeadSha: "abc1234" }),
     );
   });

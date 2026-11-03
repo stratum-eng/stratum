@@ -124,3 +124,51 @@ describe("ChangeDetailPage actions", () => {
     expect(html).not.toContain("<h2>Actions</h2>");
   });
 });
+
+describe("ChangeDetailPage while evaluation is pending (#412)", () => {
+  const signedIn = { id: "user_test", email: "t@x.io", username: "test" };
+
+  function renderAs(status: string, user: typeof signedIn | null): string {
+    return renderToString(
+      <ChangeDetailPage
+        change={{ ...baseChange, status }}
+        evalRuns={[]}
+        provenance={null}
+        canReview={user !== null}
+        user={user}
+      />,
+    );
+  }
+
+  it("does not offer Approve while evaluating, but keeps request-changes and comment", () => {
+    const html = renderAs("evaluating", signedIn);
+    expect(html).not.toContain('value="approve"');
+    expect(html).toContain('value="request_changes"');
+    expect(html).toContain('value="comment"');
+    expect(html).toContain("Approval opens once evaluation has finished");
+  });
+
+  it("offers Approve once the verdict is in", () => {
+    expect(renderAs("accepted", signedIn)).toContain('value="approve"');
+  });
+
+  it("never auto-refreshes a page a signed-in viewer can type into, and links a refresh instead", () => {
+    for (const status of ["evaluating", "open"]) {
+      const html = renderAs(status, signedIn);
+      expect(html).not.toContain('http-equiv="refresh"');
+      expect(html).toContain(`href="/changes/${baseChange.id}">Refresh</a>`);
+    }
+  });
+
+  it("auto-refreshes for a signed-out viewer, who has no form to lose", () => {
+    const html = renderAs("evaluating", null);
+    expect(html).toContain('http-equiv="refresh"');
+    expect(html).not.toContain(">Refresh</a>");
+  });
+
+  it("neither refreshes nor links a refresh once the verdict is in", () => {
+    const html = renderAs("accepted", signedIn);
+    expect(html).not.toContain('http-equiv="refresh"');
+    expect(html).not.toContain(">Refresh</a>");
+  });
+});

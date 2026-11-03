@@ -1,3 +1,4 @@
+import type { Change } from "../types";
 import { AppError } from "../utils/errors";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
@@ -312,6 +313,179 @@ export async function submitReview(
   } catch (error) {
     const appError = toAppError(error, "submitReview", { changeId: opts.changeId });
     logger.error("Failed to submit review", appError, { changeId: opts.changeId });
+    return err(appError);
+  }
+}
+
+/**
+ * The state of a change a reviewer approved, as the route read it. An approval
+ * is only recorded while the row still matches it.
+ */
+export interface ReviewedChangeState {
+  status: Change["status"];
+  evalRunId?: string;
+  evaluatedSha?: string;
+  baseSha?: string;
+}
+
+/** Statuses a request for changes can move a change from (#412). */
+const CHANGES_REQUESTABLE_STATUSES: readonly Change["status"][] = [
+  "open",
+  "evaluating",
+  "needs_changes",
+  "accepted",
+  "approved",
+];
+
+const UPSERT_VERDICT = `INSERT INTO change_reviews (id, change_id, reviewer_id, verdict, comment, created_at)
+  SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM changes WHERE %GUARD%)
+  ON CONFLICT(change_id, reviewer_id)
+  DO UPDATE SET verdict = excluded.verdict, comment = excluded.comment, created_at = excluded.created_at`;
+
+/**
+ * Record an approval and move the change to `approved` as ONE D1 batch, both
+ * statements conditional on the change still being exactly what the reviewer
+ * saw: the same status, evaluation run, evaluated revision and base (#412).
+ *
+ * Checking the status in the route and writing afterwards leaves a window: a
+ * re-evaluation starting in between would let an approval land on a change
+ * whose revision is not yet judged, and a run finishing in between would let
+ * one count toward a revision the reviewer never saw. Here the predicate is
+ * evaluated in the same transaction as the write, so either the change is
+ * unchanged and both land, or it moved and neither does.
+ *
+ * @returns `applied: false` when the change moved on; nothing was written.
+ */
+export async function submitApproval(
+  db: D1Database,
+  logger: Logger,
+  opts: { changeId: string; reviewerId: string; comment?: string; seen: ReviewedChangeState },
+): Promise<Result<{ applied: boolean; review: ChangeReview }, AppError>> {
+  const id = newId("rev");
+  const createdAt = new Date().toISOString();
+  // `IS` rather than `=`: an absent pin (a legacy row, a first run) is NULL,
+  // and must match only NULL.
+  const guard =
+    "id = ? AND status = ? AND eval_run_id IS ? AND evaluated_sha IS ? AND base_sha IS ?";
+  const guardBinds = [
+    opts.changeId,
+    opts.seen.status,
+    opts.seen.evalRunId ?? null,
+    opts.seen.evaluatedSha ?? null,
+    opts.seen.baseSha ?? null,
+  ];
+  try {
+    const [inserted] = await db.batch([
+      db
+        .prepare(UPSERT_VERDICT.replace("%GUARD%", guard))
+        .bind(
+          id,
+          opts.changeId,
+          opts.reviewerId,
+          "approve",
+          opts.comment ?? null,
+          createdAt,
+          ...guardBinds,
+        ),
+      db.prepare(`UPDATE changes SET status = 'approved' WHERE ${guard}`).bind(...guardBinds),
+    ]);
+    const applied = (inserted?.meta?.changes ?? 0) > 0;
+    logger.info("Approval submitted", {
+      changeId: opts.changeId,
+      reviewerId: opts.reviewerId,
+      applied,
+    });
+    return ok({
+      applied,
+      review: {
+        id,
+        changeId: opts.changeId,
+        reviewerId: opts.reviewerId,
+        verdict: "approve",
+        ...(opts.comment !== undefined ? { comment: opts.comment } : {}),
+        createdAt,
+      },
+    });
+  } catch (error) {
+    const appError = toAppError(error, "submitApproval", { changeId: opts.changeId });
+    logger.error("Failed to submit approval", appError, { changeId: opts.changeId });
+    return err(appError);
+  }
+}
+
+/**
+ * Record a request for changes and its effect on the change as ONE D1 batch.
+ *
+ * Outside a run the change moves to `needs_changes`, as it always has. While a
+ * run is pending the status is the run's to set (#412), so the change is
+ * flagged instead and the run, when it finalizes, lands on `needs_changes`
+ * rather than `accepted` — a passing verdict must not silently erase a request
+ * made while it was being computed. Which of the two applies is decided by the
+ * row inside the batch, not by the status the route read, so a run starting
+ * or finishing meanwhile cannot slip between them.
+ *
+ * @returns the change's status after the write, or `applied: false` when it
+ *   was no longer reviewable (merged, rejected, …) and nothing was written.
+ */
+export async function submitChangesRequested(
+  db: D1Database,
+  logger: Logger,
+  opts: { changeId: string; reviewerId: string; comment?: string },
+): Promise<
+  Result<{ applied: boolean; status?: Change["status"]; review: ChangeReview }, AppError>
+> {
+  const id = newId("rev");
+  const createdAt = new Date().toISOString();
+  const placeholders = CHANGES_REQUESTABLE_STATUSES.map(() => "?").join(", ");
+  const guard = `id = ? AND status IN (${placeholders})`;
+  const guardBinds = [opts.changeId, ...CHANGES_REQUESTABLE_STATUSES];
+  try {
+    const [inserted, updated] = await db.batch<{ status: Change["status"] }>([
+      db
+        .prepare(UPSERT_VERDICT.replace("%GUARD%", guard))
+        .bind(
+          id,
+          opts.changeId,
+          opts.reviewerId,
+          "request_changes",
+          opts.comment ?? null,
+          createdAt,
+          ...guardBinds,
+        ),
+      // SET expressions all read the pre-update row, so both CASEs see the
+      // same status.
+      db
+        .prepare(
+          `UPDATE changes SET
+             changes_requested_during_eval = CASE WHEN status = 'evaluating' THEN 1 ELSE changes_requested_during_eval END,
+             status = CASE WHEN status = 'evaluating' THEN status ELSE 'needs_changes' END
+           WHERE ${guard} RETURNING status`,
+        )
+        .bind(...guardBinds),
+    ]);
+    const applied = (inserted?.meta?.changes ?? 0) > 0;
+    const status = updated?.results?.[0]?.status;
+    logger.info("Changes requested", {
+      changeId: opts.changeId,
+      reviewerId: opts.reviewerId,
+      applied,
+      status,
+    });
+    return ok({
+      applied,
+      ...(status !== undefined ? { status } : {}),
+      review: {
+        id,
+        changeId: opts.changeId,
+        reviewerId: opts.reviewerId,
+        verdict: "request_changes",
+        ...(opts.comment !== undefined ? { comment: opts.comment } : {}),
+        createdAt,
+      },
+    });
+  } catch (error) {
+    const appError = toAppError(error, "submitChangesRequested", { changeId: opts.changeId });
+    logger.error("Failed to submit request for changes", appError, { changeId: opts.changeId });
     return err(appError);
   }
 }

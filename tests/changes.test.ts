@@ -10,6 +10,7 @@ vi.mock("../src/storage/changes", () => ({
   getChangesByIds: vi.fn(),
   listChanges: vi.fn(),
   updateChangeStatus: vi.fn(async () => ({ success: true, data: undefined })),
+  recordGithubPrLink: vi.fn(async () => ({ success: true, data: undefined })),
   dismissApprovalsAndUpdateStatus: vi.fn(async () => ({
     success: true,
     data: { dismissedReviewerIds: [] },
@@ -195,6 +196,7 @@ import {
   getChangesByIds,
   listChanges,
   markChangeMerged,
+  recordGithubPrLink,
   updateChangeStatus,
 } from "../src/storage/changes";
 import { isTargetDeleting } from "../src/storage/deletion";
@@ -2365,6 +2367,31 @@ describe("POST /api/changes/:id/github-pr", () => {
         githubBranch: "stratum/chg_abc123",
         githubPrNumber: 42,
         promotedBy: "user_test",
+      }),
+    );
+  });
+
+  // #412: a re-evaluation began while the branch was being pushed, so the
+  // `promoted` write is held back. The PR exists on GitHub either way.
+  it("keeps the PR link and answers 409 when a pending run holds the promotion back", async () => {
+    vi.mocked(updateChangeStatus).mockResolvedValueOnce({
+      success: false,
+      error: new AppError("Evaluation is still pending", "EVALUATION_PENDING", 409),
+    });
+
+    const res = await promote();
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code: string; github: Record<string, unknown> };
+    expect(body.code).toBe("EVALUATION_PENDING");
+    expect(body.github).toMatchObject({ pullRequestNumber: 42 });
+    expect(recordGithubPrLink).toHaveBeenCalledWith(
+      env.DB,
+      expect.anything(),
+      "chg_abc123",
+      expect.objectContaining({
+        githubPrNumber: 42,
+        githubPrUrl: "https://github.com/acme/widgets/pull/42",
       }),
     );
   });

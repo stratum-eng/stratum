@@ -47,7 +47,14 @@ While a change is `evaluating`, `approve` is refused with `409
 EVALUATION_PENDING`. Until the evaluation pins the revision it judged, an
 approval cannot be tied to the code the reviewer actually saw. `request_changes`
 and `comment` are accepted but do not change the status; the evaluation's
-verdict sets it.
+verdict sets it — except that a `request_changes` made while it was pending
+outranks a pass: the change lands on `needs_changes`, not `accepted`.
+
+An approval is recorded only if the change is still exactly as it was loaded —
+same status, evaluation run, evaluated revision and base. If it moved in
+between, nothing is recorded and the response is `409 EVALUATION_PENDING` (an
+evaluation started) or `409 REVIEW_STALE` (anything else); reload and review
+again.
 
 **Approvals are made by a signed-in human.** `approve` requires a browser
 session (or the legacy user key). A scoped API token or an OAuth grant — what

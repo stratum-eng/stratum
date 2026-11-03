@@ -6,7 +6,13 @@ import {
   failEvaluationRun,
   finalizeEvaluationRun,
 } from "../src/storage/change-evaluation";
-import { createChange, getChange, updateChangeStatus } from "../src/storage/changes";
+import { listReviews, submitApproval, submitChangesRequested } from "../src/storage/change-reviews";
+import {
+  createChange,
+  getChange,
+  recordGithubPrLink,
+  updateChangeStatus,
+} from "../src/storage/changes";
 import type { Env } from "../src/types";
 import type { Logger } from "../src/utils/logger";
 import { makeSqliteD1 } from "./helpers/sqlite-d1";
@@ -196,6 +202,191 @@ describe("run-keyed evaluation writes (#412)", () => {
 
     const read = await getChange(db, logger, change.id);
     expect(read.success && read.data.status).toBe("evaluating");
+  });
+
+  it("reports a status write the pending run held back instead of answering success", async () => {
+    const { db } = makeSqliteD1();
+    const change = await queuedChange(db);
+
+    const held = await updateChangeStatus(db, logger, change.id, "promoted", {
+      githubPrNumber: 7,
+    });
+
+    expect(held.success).toBe(false);
+    expect(!held.success && held.error.code).toBe("EVALUATION_PENDING");
+    expect(!held.success && held.error.statusCode).toBe(409);
+  });
+
+  it("records a PR link on an evaluating change without touching its status", async () => {
+    const { db } = makeSqliteD1();
+    const change = await queuedChange(db);
+
+    const linked = await recordGithubPrLink(db, logger, change.id, {
+      githubPrNumber: 7,
+      githubPrUrl: "https://github.com/o/r/pull/7",
+      githubHeadSha: "sha-pushed",
+    });
+
+    expect(linked.success).toBe(true);
+    const read = await getChange(db, logger, change.id);
+    expect(read.success && read.data.status).toBe("evaluating");
+    expect(read.success && read.data.githubPrNumber).toBe(7);
+    expect(read.success && read.data.githubHeadSha).toBe("sha-pushed");
+  });
+});
+
+describe("review verdicts against a pending run (#412)", () => {
+  async function acceptedChange(db: D1Database) {
+    const change = await queuedChange(db);
+    const done = await finalizeEvaluationRun(db, logger, {
+      changeId: change.id,
+      runId: "erun_first",
+      ...passing,
+    });
+    if (!done.success) throw done.error;
+    const read = await getChange(db, logger, change.id);
+    if (!read.success) throw read.error;
+    return read.data;
+  }
+
+  function seenFrom(change: Awaited<ReturnType<typeof acceptedChange>>) {
+    return {
+      status: change.status,
+      ...(change.evalRunId !== undefined ? { evalRunId: change.evalRunId } : {}),
+      ...(change.evaluatedSha !== undefined ? { evaluatedSha: change.evaluatedSha } : {}),
+      ...(change.baseSha !== undefined ? { baseSha: change.baseSha } : {}),
+    };
+  }
+
+  it("records an approval of the state the reviewer saw, and approves the change", async () => {
+    const { db } = makeSqliteD1();
+    const change = await acceptedChange(db);
+
+    const approved = await submitApproval(db, logger, {
+      changeId: change.id,
+      reviewerId: "usr_reviewer",
+      seen: seenFrom(change),
+    });
+
+    expect(approved.success && approved.data.applied).toBe(true);
+    const read = await getChange(db, logger, change.id);
+    expect(read.success && read.data.status).toBe("approved");
+  });
+
+  it("refuses an approval when a re-evaluation began after the reviewer loaded the change", async () => {
+    const { db } = makeSqliteD1();
+    const change = await acceptedChange(db);
+    // The route read `accepted`; a re-evaluation starts before the write.
+    await beginEvaluationRun(db, logger, { changeId: change.id, runId: "erun_second" });
+
+    const approved = await submitApproval(db, logger, {
+      changeId: change.id,
+      reviewerId: "usr_reviewer",
+      seen: seenFrom(change),
+    });
+
+    expect(approved.success && approved.data.applied).toBe(false);
+    const reviews = await listReviews(db, logger, change.id);
+    expect(reviews.success && reviews.data).toEqual([]);
+    const read = await getChange(db, logger, change.id);
+    expect(read.success && read.data.status).toBe("evaluating");
+  });
+
+  it("refuses an approval of a revision the reviewer never saw", async () => {
+    const { db } = makeSqliteD1();
+    const change = await acceptedChange(db);
+    // A whole re-evaluation runs and pins a new revision between read and write.
+    await beginEvaluationRun(db, logger, { changeId: change.id, runId: "erun_second" });
+    await finalizeEvaluationRun(db, logger, {
+      changeId: change.id,
+      runId: "erun_second",
+      ...passing,
+      opts: { ...passing.opts, evaluatedSha: "sha-newer" },
+    });
+
+    const approved = await submitApproval(db, logger, {
+      changeId: change.id,
+      reviewerId: "usr_reviewer",
+      seen: seenFrom(change),
+    });
+
+    expect(approved.success && approved.data.applied).toBe(false);
+    const read = await getChange(db, logger, change.id);
+    expect(read.success && read.data.status).toBe("accepted");
+  });
+
+  it("keeps a request for changes made while the run was pending over a passing verdict", async () => {
+    const { db } = makeSqliteD1();
+    const change = await queuedChange(db);
+
+    const requested = await submitChangesRequested(db, logger, {
+      changeId: change.id,
+      reviewerId: "usr_reviewer",
+      comment: "rename this",
+    });
+    expect(requested.success && requested.data.status).toBe("evaluating");
+
+    const done = await finalizeEvaluationRun(db, logger, {
+      changeId: change.id,
+      runId: "erun_first",
+      ...passing,
+    });
+
+    expect(done.success && done.data.status).toBe("needs_changes");
+    const read = await getChange(db, logger, change.id);
+    expect(read.success && read.data.status).toBe("needs_changes");
+    // The verdict itself is still recorded.
+    expect(read.success && read.data.evalPassed).toBe(true);
+  });
+
+  it("lets a later re-evaluation pass, as a re-evaluation after a request always has", async () => {
+    const { db } = makeSqliteD1();
+    const change = await queuedChange(db);
+    await submitChangesRequested(db, logger, { changeId: change.id, reviewerId: "usr_reviewer" });
+    await finalizeEvaluationRun(db, logger, {
+      changeId: change.id,
+      runId: "erun_first",
+      ...passing,
+    });
+
+    // The author addresses it and re-evaluates.
+    await beginEvaluationRun(db, logger, { changeId: change.id, runId: "erun_second" });
+    const done = await finalizeEvaluationRun(db, logger, {
+      changeId: change.id,
+      runId: "erun_second",
+      ...passing,
+    });
+
+    expect(done.success && done.data.status).toBe("accepted");
+  });
+
+  it("moves a change that is not evaluating straight to needs_changes", async () => {
+    const { db } = makeSqliteD1();
+    const change = await acceptedChange(db);
+
+    const requested = await submitChangesRequested(db, logger, {
+      changeId: change.id,
+      reviewerId: "usr_reviewer",
+    });
+
+    expect(requested.success && requested.data.status).toBe("needs_changes");
+    const read = await getChange(db, logger, change.id);
+    expect(read.success && read.data.status).toBe("needs_changes");
+  });
+
+  it("records nothing on a change that is no longer reviewable", async () => {
+    const { db } = makeSqliteD1();
+    const change = await acceptedChange(db);
+    await updateChangeStatus(db, logger, change.id, "rejected");
+
+    const requested = await submitChangesRequested(db, logger, {
+      changeId: change.id,
+      reviewerId: "usr_reviewer",
+    });
+
+    expect(requested.success && requested.data.applied).toBe(false);
+    const read = await getChange(db, logger, change.id);
+    expect(read.success && read.data.status).toBe("rejected");
   });
 });
 
