@@ -309,8 +309,10 @@ cannot read the receiver's environment, a fresh filesystem per evaluation so one
 change cannot observe or poison another, resource and time bounds, no ambient
 credentials, no reachable cloud metadata — and it is not something a copyable
 snippet can be trusted to get right. Run it on disposable, least-privileged
-infrastructure you already trust for untrusted builds. Issue #281 tracks writing
-that guidance up properly.
+infrastructure you already trust for untrusted builds.
+[Running a Webhook Evaluator Executor Safely](/guides/webhook-executor/) covers the
+isolation, bounds, credential, Git, and network requirements, with reference
+setups.
 
 Two constraints worth knowing before you build it: the response must arrive
 inside the timeout window described above, and the receiver should sit behind
@@ -358,6 +360,7 @@ evaluator (for gating) or via GitHub sync in layer mode (for everything else).
 
 ## See also
 
+- [Running a Webhook Evaluator Executor Safely](/guides/webhook-executor/) — isolating the code a receiver runs
 - [Deployments](/guides/deployments/) — the `deploys:` policy block, targets, secrets, and limits
 - [FAQ: Does Stratum replace GitHub Actions?](/guides/faq/#does-stratum-replace-github-actions)
 - `docs/CURRENT_CAPABILITIES.md` — the authoritative current state

@@ -9,6 +9,7 @@
 - [Code review](https://docs.usestratum.dev/guides/code-review/)
 - [Issues](https://docs.usestratum.dev/guides/issues/)
 - [CI integration](https://docs.usestratum.dev/guides/ci-integration/)
+- [Webhook executor safety](https://docs.usestratum.dev/guides/webhook-executor/)
 - [Deployments](https://docs.usestratum.dev/guides/deployments/)
 - [CLI](https://docs.usestratum.dev/guides/cli/)
 - [MCP server](https://docs.usestratum.dev/guides/mcp/)
