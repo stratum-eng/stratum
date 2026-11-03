@@ -1,5 +1,6 @@
 import type { FC } from "hono/jsx";
 import type { ProjectSecretSummary } from "../../storage/project-secrets";
+import { FieldError, fieldAttrs } from "../components/field-error";
 import { ProjectHeader } from "../components/project-header";
 import { Layout } from "../layout";
 
@@ -35,6 +36,11 @@ interface ProjectSettingsProps {
   canManageSecrets?: boolean;
   /** Set after a failed add, so the reason survives the redirect back here. */
   secretError?: string;
+  /**
+   * The field `secretError` is about, when it is about one: the message then
+   * renders under that field instead of above the form.
+   */
+  secretErrorField?: "name" | "value" | undefined;
   user?: { id: string; email: string; username: string } | null;
 }
 
@@ -45,8 +51,11 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
   secretsUnavailable,
   canManageSecrets,
   secretError,
+  secretErrorField,
   user,
 }) => {
+  const nameError = secretErrorField === "name" ? secretError : undefined;
+  const valueError = secretErrorField === "value" ? secretError : undefined;
   const base = `/${project.namespace}/${project.slug}`;
   // The secret forms post to the API router: it holds the one copy of the
   // admin-and-not-an-agent gate, and answers a form submission with a redirect
@@ -123,28 +132,42 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
             <code>secrets:</code> list. Values are encrypted at rest and are never shown again — not
             here, not through the API. Replace one by adding it under the same name.
           </p>
-          {secretError !== undefined && (
+          {secretError !== undefined && secretErrorField === undefined && (
             <p class="settings-help settings-help-error">{secretError}</p>
           )}
-          <form method="post" action={secretsApi} class="secret-form">
-            <label>
-              Name
-              <input
-                type="text"
-                name="name"
-                placeholder="VERCEL_TOKEN"
-                pattern="[A-Z][A-Z0-9_]{0,63}"
-                title="Uppercase letters, digits and underscores; must start with a letter"
-                required
-                autocomplete="off"
-              />
-            </label>
-            <label>
-              Value
-              {/* type=password so the value is not shoulder-surfed while typing;
-                  it is never re-rendered, so nothing is ever masked back. */}
-              <input type="password" name="value" required autocomplete="off" />
-            </label>
+          {/* `novalidate`: the secrets route checks the name and value and
+              sends the form back here with the reason under the field. */}
+          <form method="post" action={secretsApi} class="secret-form" novalidate>
+            <div class="secret-field">
+              <label>
+                Name
+                <input
+                  {...fieldAttrs("secret-name", nameError)}
+                  type="text"
+                  name="name"
+                  placeholder="VERCEL_TOKEN"
+                  pattern="[A-Z][A-Z0-9_]{0,63}"
+                  required
+                  autocomplete="off"
+                />
+              </label>
+              <FieldError for="secret-name" message={nameError} />
+            </div>
+            <div class="secret-field">
+              <label>
+                Value
+                {/* type=password so the value is not shoulder-surfed while typing;
+                    it is never re-rendered, so nothing is ever masked back. */}
+                <input
+                  {...fieldAttrs("secret-value", valueError)}
+                  type="password"
+                  name="value"
+                  required
+                  autocomplete="off"
+                />
+              </label>
+              <FieldError for="secret-value" message={valueError} />
+            </div>
             <button type="submit" class="btn btn-primary">
               Save secret
             </button>

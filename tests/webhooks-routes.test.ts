@@ -25,7 +25,7 @@ vi.mock("../src/storage/users", () => ({ getUserByToken: vi.fn(), getUser: vi.fn
 
 import { recordAudit } from "../src/storage/audit";
 import { getProjectByPath } from "../src/storage/state";
-import { getUserByToken } from "../src/storage/users";
+import { getUser, getUserByToken } from "../src/storage/users";
 import {
   type Webhook,
   createWebhook,
@@ -217,6 +217,57 @@ describe("webhook management routes — project-id scoping (SA-1)", () => {
     // The only response that ever carries the secret must not be storable —
     // `no-store`, not merely `no-cache`, which still permits storage.
     expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("re-renders a refused form submission with the user's own values, not a redirect", async () => {
+    vi.mocked(listWebhooks).mockResolvedValue({ success: true, data: [webhook()] });
+    vi.mocked(listDeliveries).mockResolvedValue({ success: true, data: [] });
+    vi.mocked(getUser).mockResolvedValue({
+      success: true,
+      data: {
+        id: "user_test",
+        email: "t@x.io",
+        username: "test",
+        tokenHash: "h",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    const submit = (fields: Record<string, string | string[]>, contentType: string) => {
+      const form = new URLSearchParams();
+      for (const [key, value] of Object.entries(fields)) {
+        for (const v of [value].flat()) form.append(key, v);
+      }
+      return makeApp().fetch(
+        new Request("http://localhost/@alice/api/webhooks", {
+          method: "POST",
+          headers: { ...AUTH, "Content-Type": contentType },
+          body: contentType === "application/json" ? JSON.stringify(fields) : form.toString(),
+        }),
+        env,
+      );
+    };
+
+    const form = await submit(
+      { url: "http://127.0.0.1/hook", events: ["change.merged"] },
+      "application/x-www-form-urlencoded",
+    );
+    // Rendered from this POST: nothing about the refusal travels in a URL, so
+    // no link can reproduce a prefilled form.
+    expect(form.status).toBe(400);
+    expect(form.headers.get("location")).toBeNull();
+    const html = await form.text();
+    expect(html).toMatch(/<input[^>]*id="webhook-url"[^>]*value="http:\/\/127\.0\.0\.1\/hook"/);
+    expect(html).toMatch(/<input[^>]*id="webhook-url"[^>]*aria-invalid="true"/);
+    expect(html).toMatch(/value="change\.merged" checked/);
+    expect(html).not.toMatch(/value="\*" checked/);
+    // The management page's other content still renders, secret-free.
+    expect(html).toContain("https://alice.example.com/hook");
+    expect(html).not.toContain("stm_whsec_abcdef");
+
+    const json = await submit({ url: "http://127.0.0.1/hook" }, "application/json");
+    expect(json.status).toBe(400);
+    expect(json.headers.get("content-type")).toContain("application/json");
+    expect(createWebhook).not.toHaveBeenCalled();
   });
 
   it("marks the JSON creation response no-store too — it also returns the secret", async () => {

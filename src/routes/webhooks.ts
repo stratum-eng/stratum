@@ -14,6 +14,7 @@ import {
 } from "../storage/webhooks";
 import type { Env, ProjectEntry } from "../types";
 import { SOURCE_FOOTER_HTML } from "../ui/components/source-footer";
+import { type WebhookFormField, webhookFormError } from "../ui/pages/webhooks";
 import { STYLESHEET_LINKS_HTML } from "../ui/stylesheet";
 import {
   type BindingContext,
@@ -27,6 +28,7 @@ import type { Logger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 import { badRequest, created, forbidden, internalError, notFound, ok } from "../utils/response";
 import { validateWebhookUrl } from "../utils/validation";
+import { renderWebhooksPage } from "./form-pages";
 
 // Webhook config body is small (a URL string + an events list).
 const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
@@ -220,13 +222,41 @@ app.post("/:namespace/:slug/webhooks", async (c) => {
     body = { url: form.url, events: form.events };
   }
 
+  // The management page's form gets the page back with the reason under the
+  // field and its own values refilled, not a raw JSON 400. Rendered here from
+  // this request's body rather than redirected with the values in the query:
+  // a URL that prefilled the form would let anyone hand an admin a webhook to
+  // their own endpoint, one click from saved (see routes/form-pages.tsx).
+  const isForm = !contentType.includes("application/json");
+  const backToForm = async (field: WebhookFormField) => {
+    const page = await renderWebhooksPage(
+      c,
+      logger,
+      project,
+      SUBSCRIBABLE_EVENTS,
+      {
+        error: webhookFormError(field),
+        values: {
+          url: typeof body.url === "string" ? body.url : undefined,
+          events: (Array.isArray(body.events) ? body.events : [body.events]).filter(
+            (event): event is string => typeof event === "string",
+          ),
+        },
+      },
+      400,
+    );
+    return "error" in page ? internalError("Failed to load webhooks") : page;
+  };
+
   const urlResult = validateWebhookUrl(body.url, logger);
   if (!urlResult.success) {
+    if (isForm) return backToForm("url");
     return badRequest(urlResult.error[0]?.message ?? "Invalid webhook URL");
   }
 
   const events = sanitizeEvents(body.events);
   if (events === null) {
+    if (isForm) return backToForm("events");
     return badRequest(
       `events must be "*" or a comma-separated subset of: ${SUBSCRIBABLE_EVENTS.join(", ")}`,
     );
