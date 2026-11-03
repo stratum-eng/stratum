@@ -77,6 +77,44 @@ beforeAll(async () => {
   await addOrgMember(env.DB, logger, other.data.id, "usr_alice", "member");
   raw.prepare("UPDATE orgs SET require_second_factor = 1 WHERE slug = 'acme'").run();
 
+  // Projects a token can be bound to: the policy org's (public and private)
+  // and one of Alice's own.
+  const projects: Array<Record<string, unknown>> = [
+    {
+      id: "proj_acme_public",
+      slug: "site",
+      namespace: "@acme",
+      ownerId: acme.data.id,
+      ownerType: "org",
+      visibility: "public",
+    },
+    {
+      id: "proj_acme_private",
+      slug: "app",
+      namespace: "@acme",
+      ownerId: acme.data.id,
+      ownerType: "org",
+      visibility: "private",
+    },
+    {
+      id: "proj_alice",
+      slug: "notes",
+      namespace: "@alice",
+      ownerId: "usr_alice",
+      ownerType: "user",
+      visibility: "private",
+    },
+  ];
+  for (const p of projects) {
+    const entry = {
+      name: p.slug,
+      remote: `https://acct.artifacts.cloudflare.net/git/x/${p.id}.git`,
+      createdAt: new Date().toISOString(),
+      ...p,
+    };
+    await env.STATE.put(`project:${p.namespace}:${p.slug}`, JSON.stringify(entry));
+  }
+
   cookies.unmet = await session("usr_alice");
   cookies.passkey = await session("usr_alice", "passkey");
   cookies.noPolicy = await session("usr_carol");
@@ -176,6 +214,54 @@ describe("API tokens (POST /api/users/me/tokens)", () => {
       });
       expect(res.status).toBe(201);
     }
+  });
+});
+
+describe("project-bound tokens decide on the project's owning org", () => {
+  async function mintBound(cookie: string, project: string): Promise<Response> {
+    return call("/api/users/me/tokens", {
+      method: "POST",
+      cookie,
+      json: { name: `bound-${Math.random()}`, project },
+    });
+  }
+
+  it("refuses a token bound to a PUBLIC project of the policy org", async () => {
+    // Public means anyone can read it, but the token would still carry the
+    // member's write access there, which the policy withholds.
+    const before = count("api_tokens");
+    const res = await mintBound(cookies.unmet, "@acme/site");
+    expect(res.status).toBe(403);
+    expect((await res.json()) as Record<string, unknown>).toMatchObject({
+      code: "SECOND_FACTOR_REQUIRED",
+      org: "acme",
+    });
+    expect(count("api_tokens")).toBe(before);
+  });
+
+  it("refuses a token bound to a private project of the policy org", async () => {
+    const res = await mintBound(cookies.unmet, "@acme/app");
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as Record<string, unknown>).code).toBe("SECOND_FACTOR_REQUIRED");
+  });
+
+  it("allows a token bound to the member's own project", async () => {
+    expect((await mintBound(cookies.unmet, "@alice/notes")).status).toBe(201);
+  });
+
+  it("allows the policy org's projects once the policy is met", async () => {
+    expect((await mintBound(cookies.passkey, "@acme/site")).status).toBe(201);
+    expect((await mintBound(cookies.passkey, "@acme/app")).status).toBe(201);
+  });
+
+  it("refuses the public-project binding on the settings form too", async () => {
+    const res = await call("/settings/tokens", {
+      method: "POST",
+      cookie: cookies.unmet,
+      form: { name: "ci", project: "@acme/site" },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("requires a second factor");
   });
 });
 

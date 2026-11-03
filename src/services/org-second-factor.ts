@@ -62,8 +62,8 @@ export function unmetOrgBySlug(c: Context<{ Bindings: Env }>, slug: string): str
 export const SECOND_FACTOR_ENROLL_PATH = "/settings/security";
 
 /**
- * The org whose second-factor policy refuses minting a credential that could
- * reach it, from this request — or undefined when nothing does.
+ * The org whose second-factor policy refuses minting this credential from the
+ * current request, or undefined when nothing does.
  *
  * The org-resource checks above run per request, against the session's own
  * factors. A credential minted by that session is not a session: tokens,
@@ -73,14 +73,15 @@ export const SECOND_FACTOR_ENROLL_PATH = "/settings/security";
  * not met some org's policy may not mint a credential that could reach that
  * org.
  *
- * What "could reach" means depends on the credential:
- * - **Unbound credentials** (unbound API tokens, agent tokens, OAuth grants,
- *   the legacy key) can reach every org the user belongs to. Any unmet org
- *   refuses them.
- * - **A token bound to one project or org** reaches only that target. The
- *   binding check (`resolveBindingRequest`) refuses a target the policy
- *   blocks, so pass `bound: true` once that check has passed, and this
- *   function admits it.
+ * This is the single decision point, and it decides on what the credential
+ * can reach:
+ * - `binding` null or omitted: the credential is unbound. Unbound API tokens,
+ *   agent tokens, OAuth grants and the legacy key reach every org the user
+ *   belongs to, so any unmet org refuses them.
+ * - A resolved binding: the credential reaches only `reachesOrgId` (the bound
+ *   org, or the org that owns the bound project), or no org at all for a
+ *   personal project. It is refused exactly when that org is unmet, whatever
+ *   the project's visibility.
  *
  * This keeps the policy scoped to what the org grants. A member added to a
  * policy org without their consent can still mint a token bound to their own
@@ -90,15 +91,18 @@ export const SECOND_FACTOR_ENROLL_PATH = "/settings/security";
  * Scoped tokens and OAuth grants cannot mint at all (`cannotMintLegacyCredential`).
  *
  * @param c - Request context
- * @param opts - `bound` when the credential is limited to a target the binding check admitted
+ * @param binding - The resolved binding, or null/omitted for an unbound credential
  * @returns The blocking org, or undefined
  */
 export function orgBlockingCredentialMint(
   c: Context<{ Bindings: Env }>,
-  opts: { bound?: boolean } = {},
+  binding: { reachesOrgId?: string } | null = null,
 ): { id: string; slug: string } | undefined {
-  if (opts.bound) return undefined;
-  return c.get("secondFactorUnmetOrgs")?.[0];
+  const unmet = c.get("secondFactorUnmetOrgs");
+  if (!unmet || unmet.length === 0) return undefined;
+  if (binding === null) return unmet[0];
+  if (binding.reachesOrgId === undefined) return undefined;
+  return unmet.find((org) => org.id === binding.reachesOrgId);
 }
 
 /**

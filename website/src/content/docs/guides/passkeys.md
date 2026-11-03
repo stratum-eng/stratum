@@ -140,7 +140,8 @@ your session has not met an org's policy, you cannot create anything that could
 reach that org:
 
 - an API token that is not limited to one project or organization
-- a token limited to that org, or to one of its projects
+- a token limited to that org, or to one of its projects, public or private (a
+  token for a public project still carries your write access there)
 - an agent token
 - a rotated legacy API key
 - a connection for an MCP client or the CLI (the consent screen explains why

@@ -286,8 +286,9 @@ app.post("/me/tokens", async (c) => {
 
   // Org second-factor policy (#256): an unbound token reaches every org the
   // user belongs to, so a session short of any org's policy may only mint one
-  // bound to a target the binding check above admitted.
-  const blockingOrg = orgBlockingCredentialMint(c, { bound: resolvedBinding.data !== null });
+  // bound to a target that reaches no unmet org (decided on the target's
+  // owning org, not its visibility).
+  const blockingOrg = orgBlockingCredentialMint(c, resolvedBinding.data);
   if (blockingOrg) return credentialMintRefused(c, blockingOrg, { bindable: true });
 
   const result = await createApiToken(c.env.DB, logger, {

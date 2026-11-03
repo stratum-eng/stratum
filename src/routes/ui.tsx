@@ -937,8 +937,8 @@ app.post("/settings/tokens", async (c) => {
   }
 
   // Same rule as `POST /api/users/me/tokens`: under an unmet org second-factor
-  // policy (#256) only a bound token may be minted.
-  const blockingOrg = orgBlockingCredentialMint(c, { bound: resolvedBinding.data !== null });
+  // policy (#256) only a token bound to a target outside that org may be minted.
+  const blockingOrg = orgBlockingCredentialMint(c, resolvedBinding.data);
   if (blockingOrg) {
     const page = await renderSettings(c, user, access.telemetryOptOut, logger, {
       notice: {
