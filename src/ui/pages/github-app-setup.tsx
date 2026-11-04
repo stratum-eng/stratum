@@ -35,6 +35,8 @@ export const SETUP_NOTICES = {
   bound_token: "This token is limited to one project or organization and cannot do that.",
   second_factor_required:
     "That organization requires a second factor. Add a passkey in Settings → Security, or sign in again with the one you have.",
+  ip_not_allowed:
+    "That organization only allows access from its configured networks. Connect from an allowed network, or ask an org admin to update its IP allowlist.",
   error: "Something went wrong. Nothing was changed — try again.",
 } as const;
 

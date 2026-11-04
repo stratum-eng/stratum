@@ -3,7 +3,8 @@
   `PUT /api/orgs/{slug}/security` `{"ipAllowlist": ["203.0.113.0/24", "2001:db8::/32"]}`
   (IPv4 and IPv6, up to 100 ranges). Requests from outside those ranges then get
   `403 IP_NOT_ALLOWED` on **that org's** projects (including git clone and push,
-  and MCP tool calls) and on its `/api/orgs/{slug}/` endpoints. This applies to
+  and MCP tool calls), on its `/api/orgs/{slug}/` endpoints, and on linking,
+  unlinking or moving a GitHub App installation for the org. This applies to
   every credential: sessions, API tokens, agent tokens, and OAuth grants.
   Members' personal projects, other organizations, anonymous reads of public
   projects, the SSO sign-in flow, and SCIM are not affected. An empty list,
