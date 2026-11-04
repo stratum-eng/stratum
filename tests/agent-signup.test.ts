@@ -222,7 +222,7 @@ describe("approve and collect", () => {
 
     const res = await approve(approvalTokenFromEmail());
     expect(res.status).toBe(302);
-    expect(res.headers.get("Location")).toBe("/settings?notice=agent-connected");
+    expect(res.headers.get("Location")).toBe("/settings?notice=agent-approved");
     expect(res.headers.get("Set-Cookie")).toContain("session");
 
     const user = raw
@@ -338,7 +338,7 @@ describe("user code (device-flow binding)", () => {
     expect(users.n).toBe(0);
 
     const ok = await approve(token, env, String(json.userCode));
-    expect(ok.headers.get("Location")).toBe("/settings?notice=agent-connected");
+    expect(ok.headers.get("Location")).toBe("/settings?notice=agent-approved");
   });
 
   it("a wrong code creates nothing; the right one, typed loosely, still works", async () => {
@@ -351,7 +351,7 @@ describe("user code (device-flow binding)", () => {
 
     const loose = String(json.userCode).toLowerCase().replace("-", " ");
     const ok = await approve(token, env, loose);
-    expect(ok.headers.get("Location")).toBe("/settings?notice=agent-connected");
+    expect(ok.headers.get("Location")).toBe("/settings?notice=agent-approved");
     expect((await poll(json.pollToken)).json.status).toBe("complete");
   });
 

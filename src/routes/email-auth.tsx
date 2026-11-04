@@ -1008,10 +1008,11 @@ async function completeAgentSignup(
 
   const approved = await approveAgentSignup(c.env.DB, agentSignupId, userId, logger);
   // The account exists and the human is signed in below either way; only the
-  // agent's hand-off can miss. Send them to Settings, where they can connect an
-  // agent, rather than telling them one is connected, and say which miss it
-  // was: an expired request needs a new one, a failed write may not.
-  let outcome = "agent-connected";
+  // agent's hand-off can miss. Send them to Settings, where they can make an
+  // agent token. A new agent signup is no way back: the address now has an
+  // account, so it answers EMAIL_EXISTS. Approval is all we can report on
+  // success, since the agent has yet to collect its token.
+  let outcome = "agent-approved";
   if (!approved.success) {
     outcome = "agent-connect-failed";
     logger.error("Agent signup approval could not be saved", approved.error);
