@@ -121,6 +121,30 @@ export function setPackageVersion(raw: string, version: string): Result<string> 
   return { success: true, data: updated };
 }
 
+/** The line in `src/version.ts` that names the running server's version. */
+const SERVER_VERSION_LINE = /^(export const STRATUM_VERSION = )"([^"]*)";$/m;
+
+/**
+ * Set `STRATUM_VERSION` in the raw text of `src/version.ts`. The constant is a
+ * deliberate copy of the manifest's version (see that file), so a release that
+ * bumps one has to bump the other or the release PR cannot pass CI.
+ */
+export function setServerVersion(raw: string, version: string): Result<string> {
+  if (!SERVER_VERSION_LINE.test(raw)) {
+    return { success: false, error: "src/version.ts has no `STRATUM_VERSION` constant" };
+  }
+  return { success: true, data: raw.replace(SERVER_VERSION_LINE, `$1"${version}";`) };
+}
+
+/** Every way `src/version.ts` disagrees with the manifest. Empty means in sync. */
+export function serverVersionProblems(raw: string, packageVersion: string): string[] {
+  const found = SERVER_VERSION_LINE.exec(raw);
+  if (!found) return ["src/version.ts has no `STRATUM_VERSION` constant"];
+  return found[2] === packageVersion
+    ? []
+    : [`src/version.ts STRATUM_VERSION is ${found[2]} but package.json is ${packageVersion}`];
+}
+
 /** The two places a v2/v3 `package-lock.json` records the root package's version. */
 interface LockfileShape {
   version?: unknown;

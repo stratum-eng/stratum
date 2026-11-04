@@ -21,12 +21,15 @@ import {
   previousRelease,
   releaseNotes,
   resolveBump,
+  serverVersionProblems,
   setLockfileVersion,
   setPackageVersion,
+  setServerVersion,
   validateChangelog,
   validateFragments,
   withUnreleasedBody,
 } from "../scripts/changelog";
+import REAL_SERVER_VERSION from "../src/version.ts?raw";
 
 // The repository's own changelog.d/ fragments — same reasoning as REAL_CHANGELOG
 // above: exercised against the real files, imported raw to keep this file
@@ -768,6 +771,35 @@ describe("the repository's own package-lock.json", () => {
     const { version } = JSON.parse(REAL_MANIFEST) as { version: string };
     const result = setLockfileVersion(REAL_LOCKFILE, version);
     expect(result).toEqual({ success: true, data: REAL_LOCKFILE });
+  });
+});
+
+describe("setServerVersion / serverVersionProblems", () => {
+  const SOURCE =
+    '/** Docs. */\nexport const STRATUM_VERSION = "0.2.0";\nexport const OTHER = "0.2.0";\n';
+
+  it("rewrites only the version constant", () => {
+    expect(setServerVersion(SOURCE, "0.3.0")).toEqual({
+      success: true,
+      data: '/** Docs. */\nexport const STRATUM_VERSION = "0.3.0";\nexport const OTHER = "0.2.0";\n',
+    });
+  });
+
+  it("fails rather than reporting success when the constant has gone", () => {
+    expect(setServerVersion("export const OTHER = 1;\n", "0.3.0").success).toBe(false);
+  });
+
+  it("reports drift from the manifest, and nothing when in sync", () => {
+    expect(serverVersionProblems(SOURCE, "0.2.0")).toEqual([]);
+    expect(serverVersionProblems(SOURCE, "0.3.0")).toEqual([
+      "src/version.ts STRATUM_VERSION is 0.2.0 but package.json is 0.3.0",
+    ]);
+    expect(serverVersionProblems("nothing here", "0.3.0")).toHaveLength(1);
+  });
+
+  it("can edit the repository's real src/version.ts", () => {
+    const edited = setServerVersion(REAL_SERVER_VERSION, "9.9.9");
+    expect(edited.success && serverVersionProblems(edited.data, "9.9.9")).toEqual([]);
   });
 });
 

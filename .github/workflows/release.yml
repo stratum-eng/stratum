@@ -1,53 +1,177 @@
 name: Release
 
-# Two ways in, one outcome — a `vX.Y.Z` tag and a GitHub release whose notes are
-# that version's CHANGELOG section:
+# Publishes a `vX.Y.Z` tag and a GitHub release whose notes are that version's
+# CHANGELOG section.
 #
-#   workflow_dispatch  Tag whatever is on the default branch right now. The
-#                      version comes from CHANGELOG.md, so the release PR from
-#                      `npm run release:prepare` must be merged first.
-#   push: tags         Publish (or refresh) the release for a tag pushed by hand,
-#                      including tags backfilled onto commits that predate this
-#                      workflow.
+#   push to main       The normal path. Merging the PR from `npm run release:pr`
+#                      changes package.json, and a newest changelog version with
+#                      no tag or no release gets published. Every other change to
+#                      package.json finds both present and stops at `resolve`.
+#   workflow_dispatch  Retry a failed publish, republish corrected notes, backfill
+#                      an older version, or dry-run. Runs from the default branch.
 #
-# Both paths read CHANGELOG.md and the release tooling from the default branch,
-# never from the tagged tree: the changelog on the default branch is the record
-# of every version, and a backfilled tag points at a commit that has neither.
+# A pushed tag is deliberately not a trigger. GitHub reads a tag push's workflow
+# from the tagged commit, so it silently never fired for a commit older than this
+# file, which is why v0.1.0 had a tag and no release for months.
+#
+# The tag goes on the commit that introduced the version, never the branch tip:
+# anything merged after the release PR is not in that version's notes.
 #
 # See docs/developer/releasing.md.
+
+run-name: ${{ inputs.dry_run && 'Release (DRY RUN - publishes nothing)' || 'Release' }}
 
 on:
   workflow_dispatch:
     inputs:
+      version:
+        description: "Version to publish or republish, e.g. 0.2.0. Default: newest in CHANGELOG.md"
+        type: string
+        default: ""
       dry_run:
         description: "Run the checks and print the notes without tagging or publishing"
         type: boolean
         default: false
   push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+    branches: [main]
+    paths:
+      - package.json
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Tag & Publish
+  resolve:
+    name: Resolve the version
     runs-on: ubuntu-latest
+    # Repo guard: a fork's main must not publish releases of its own changelog.
+    if: github.repository == 'stratum-eng/stratum'
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      tag_exists: ${{ steps.resolve.outputs.tag_exists }}
+      is_latest: ${{ steps.resolve.outputs.is_latest }}
+      publish: ${{ steps.resolve.outputs.publish }}
     steps:
+      # Reads the changelog and tooling from the default branch, not the release
+      # commit: the changelog there is the record of every version, and an old
+      # commit being backfilled has neither.
       - name: Checkout the default branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.repository.default_branch }}
-          # This job holds `contents: write`, and the `npm ci` below runs
-          # dependency lifecycle scripts. Persisting the token in .git/config
-          # would leave a repository-write credential within reach of any
-          # postinstall script, so git never gets it: the tag is created through
-          # the API, which needs no local credential.
+          # `release:commit` walks the history, and existing tags decide whether
+          # there is anything to do.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The release scripts import nothing but node: builtins, so nothing is
+      # installed here. Most pushes that reach this job end in it.
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Resolve
+        id: resolve
+        env:
+          REQUESTED: ${{ inputs.version }}
+          EVENT: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LATEST="$(npm run --silent release:latest)"
+          VERSION="${REQUESTED#v}"
+          VERSION="${VERSION:-$LATEST}"
+          if ! npm run --silent release:notes -- "$VERSION" > release-notes.md; then
+            echo "::error::$VERSION is not a release in CHANGELOG.md"
+            exit 1
+          fi
+          TAG="v$VERSION"
+
+          TAG_EXISTS=false
+          if git rev-parse --quiet --verify "refs/tags/$TAG^{commit}" > /dev/null; then
+            TAG_EXISTS=true
+            SHA="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          else
+            SHA="$(npm run --silent release:commit -- "$VERSION")"
+          fi
+
+          RELEASE_EXISTS=false
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            RELEASE_EXISTS=true
+          fi
+
+          # A dispatch means someone asked for this, so it always proceeds and
+          # refreshes the notes. A push only proceeds if something is missing.
+          PUBLISH=true
+          if [ "$EVENT" = "push" ] && [ "$TAG_EXISTS" = true ] && [ "$RELEASE_EXISTS" = true ]; then
+            PUBLISH=false
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            PUBLISH=false
+          fi
+
+          # This version's changelog link is `compare/v<previous>...v<version>`,
+          # so publishing before the predecessor is tagged would ship a release
+          # whose history link 404s.
+          PREVIOUS="$(npm run --silent release:previous -- "$VERSION")"
+          if [ "$PUBLISH" = true ] && [ -n "$PREVIOUS" ] && \
+            ! git rev-parse --quiet --verify "refs/tags/v$PREVIOUS^{commit}" > /dev/null; then
+            echo "::error::v$PREVIOUS is not tagged yet, and this release links to it. Run this workflow with version=$PREVIOUS first."
+            exit 1
+          fi
+
+          IS_LATEST=false
+          if [ "$VERSION" = "$LATEST" ]; then IS_LATEST=true; fi
+
+          {
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "sha=$SHA"
+            echo "tag_exists=$TAG_EXISTS"
+            echo "is_latest=$IS_LATEST"
+            echo "publish=$PUBLISH"
+          } >> "$GITHUB_OUTPUT"
+          echo "$TAG at $SHA: tag exists=$TAG_EXISTS, release exists=$RELEASE_EXISTS, publish=$PUBLISH"
+
+      # This run being green and publishing nothing is how v0.2.0 was believed
+      # shipped for two months, so a dry run says so everywhere it can.
+      - name: Dry-run summary
+        if: inputs.dry_run
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          echo "::warning::DRY RUN: $TAG was NOT tagged or published."
+          {
+            echo "### Dry run: nothing tagged or published"
+            echo
+            echo "Would release \`$TAG\` at \`$SHA\` with these notes:"
+            echo
+            cat release-notes.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Separate from `publish` so that `npm ci` and its dependency lifecycle scripts
+  # never run in a job holding `contents: write`.
+  verify:
+    name: Verify the release commit
+    needs: resolve
+    # A tag is permanent, so gate the exact tree it will name rather than trust
+    # that the last push was green. An existing tag has nothing left to gate.
+    if: needs.resolve.outputs.tag_exists == 'false' && (needs.resolve.outputs.publish == 'true' || inputs.dry_run)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
           persist-credentials: false
 
       - name: Setup Node
@@ -58,103 +182,59 @@ jobs:
 
       - run: npm ci
 
-      - name: Resolve the version
-        id: version
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "push" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION="$(npm run --silent release:latest)"
-          fi
-          {
-            echo "version=$VERSION"
-            echo "tag=v$VERSION"
-            echo "previous=$(npm run --silent release:previous -- "$VERSION")"
-            echo "sha=$(git rev-parse HEAD)"
-          } >> "$GITHUB_OUTPUT"
-          echo "Releasing v$VERSION from $(git rev-parse --short HEAD)"
-
-      - name: Check the changelog
+      # Covers the changelog, package.json, the lockfile and src/version.ts.
+      - name: Check the release files agree
         run: npm run --silent release:check
 
-      - name: Extract the release notes
-        run: |
-          set -euo pipefail
-          npm run --silent release:notes -- "${{ steps.version.outputs.version }}" > release-notes.md
-          echo "--- release notes ---"
-          cat release-notes.md
-
-      # Only on the dispatch path: we are about to tag this exact tree, and a tag
-      # is permanent, so re-run the gates rather than trust that the last push to
-      # the default branch was green.
-      - name: Verify the tree matches the version
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
-          PKG="$(node -p "require('./package.json').version")"
-          if [ "$PKG" != "$VERSION" ]; then
-            echo "::error::package.json is $PKG but CHANGELOG.md's newest release is $VERSION. Run 'npm run release:prepare' and merge that PR first."
-            exit 1
-          fi
-
       - name: Lint
-        if: github.event_name == 'workflow_dispatch'
         run: npm run lint
 
       - name: Typecheck
-        if: github.event_name == 'workflow_dispatch'
         run: npm run typecheck
 
       - name: Test
-        if: github.event_name == 'workflow_dispatch'
         run: npm run test:coverage
 
-      # This version's changelog link is `compare/v<previous>...v<version>`, so
-      # publishing before the predecessor is tagged would ship a release whose
-      # history link 404s — exactly the breakage this whole process exists to
-      # prevent. Fail loudly instead, naming the tag to backfill.
-      - name: Verify the predecessor tag exists
-        if: steps.version.outputs.previous != ''
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
-        env:
-          PREVIOUS_TAG: v${{ steps.version.outputs.previous }}
+  publish:
+    name: Tag & Publish
+    needs: [resolve, verify]
+    # `verify` is skipped when the tag already exists, which must not skip this.
+    if: >
+      always() &&
+      needs.resolve.result == 'success' &&
+      needs.resolve.outputs.publish == 'true' &&
+      (needs.verify.result == 'success' || needs.verify.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the default branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          script: |
-            const tag = process.env.PREVIOUS_TAG;
-            const { owner, repo } = context.repo;
-            try {
-              await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
-            } catch (error) {
-              if (error.status !== 404) throw error;
-              core.setFailed(
-                `${tag} is not tagged yet, and this release's changelog compare link points at it. ` +
-                  `Backfill it first: git tag -a ${tag} <commit> -m "${tag}" && git push origin ${tag}`,
-              );
-            }
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Extract the release notes
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: npm run --silent release:notes -- "$VERSION" > release-notes.md
 
       - name: Create the tag
-        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+        if: needs.resolve.outputs.tag_exists == 'false'
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         env:
-          TAG: ${{ steps.version.outputs.tag }}
-          SHA: ${{ steps.version.outputs.sha }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha }}
         with:
           script: |
             const tag = process.env.TAG;
             const sha = process.env.SHA;
             const { owner, repo } = context.repo;
-
-            try {
-              const { data: existing } = await github.rest.git.getRef({
-                owner, repo, ref: `tags/${tag}`,
-              });
-              core.notice(`${tag} already exists at ${existing.object.sha}; publishing its notes only.`);
-              return;
-            } catch (error) {
-              if (error.status !== 404) throw error;
-            }
 
             const { data: object } = await github.rest.git.createTag({
               owner, repo, tag, message: tag, object: sha, type: "commit",
@@ -163,15 +243,17 @@ jobs:
             core.notice(`Tagged ${tag} at ${sha}`);
 
       - name: Publish the GitHub release
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         env:
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          IS_LATEST: ${{ needs.resolve.outputs.is_latest }}
         with:
           script: |
             const fs = require("node:fs");
             const body = fs.readFileSync("release-notes.md", "utf8").trim();
             const tag = process.env.TAG;
+            // GitHub would otherwise mark a backfilled older version as Latest.
+            const make_latest = process.env.IS_LATEST;
             const { owner, repo } = context.repo;
 
             // Idempotent: re-running for a tag that already has a release
@@ -186,21 +268,14 @@ jobs:
 
             const release = existing
               ? (await github.rest.repos.updateRelease({
-                  owner, repo, release_id: existing.id, name: tag, body,
+                  owner, repo, release_id: existing.id, name: tag, body, make_latest,
                 })).data
               : (await github.rest.repos.createRelease({
-                  owner, repo, tag_name: tag, name: tag, body,
+                  owner, repo, tag_name: tag, name: tag, body, make_latest,
                 })).data;
 
             core.notice(`${existing ? "Updated" : "Published"} ${release.html_url}`);
-
-      - name: Dry-run summary
-        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
-        run: |
-          {
-            echo "### Dry run — nothing tagged or published"
-            echo
-            echo "Would release \`${{ steps.version.outputs.tag }}\` at \`${{ steps.version.outputs.sha }}\` with these notes:"
-            echo
-            cat release-notes.md
-          } >> "$GITHUB_STEP_SUMMARY"
+            await core.summary
+              .addHeading(`${existing ? "Updated" : "Published"} ${tag}`, 3)
+              .addLink(release.html_url, release.html_url)
+              .write();
