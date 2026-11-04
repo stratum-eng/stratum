@@ -3,8 +3,11 @@
  * Provides a unified interface for working with multiple git providers
  */
 
+import type { D1Database, KVNamespace } from "@cloudflare/workers-types";
+import { resolveGitHubToken } from "../../github/app-auth";
 import type { GitProvider } from "../../types";
 import type { Logger } from "../../utils/logger";
+import type { GitHubPrincipal } from "../github-installations";
 import { bitbucketProvider } from "./bitbucket";
 import { githubProvider } from "./github";
 import { gitlabProvider } from "./gitlab";
@@ -118,6 +121,52 @@ export function buildAuthConfig(
   return undefined;
 }
 
+/** Static provider credentials, plus what the GitHub App path needs. */
+export interface ProviderAuthEnv {
+  GITHUB_TOKEN?: string;
+  GITLAB_TOKEN?: string;
+  BITBUCKET_TOKEN?: string;
+  BITBUCKET_USERNAME?: string;
+  BITBUCKET_APP_PASSWORD?: string;
+  /** Without STATE and DB the GitHub App path is skipped and GITHUB_TOKEN is used. */
+  STATE?: KVNamespace;
+  DB?: D1Database;
+  GITHUB_APP_ID?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
+  GITHUB_ALLOWED_OWNERS?: string;
+  GITHUB_APP_ALLOWED_OWNERS?: string;
+}
+
+/**
+ * Like {@link buildAuthConfig}, but resolves GitHub credentials per repo: a
+ * GitHub App installation token when the app is installed on `owner/repo` and
+ * that installation serves `principal`, else the GITHUB_TOKEN PAT (see
+ * `resolveGitHubToken`). Other providers are
+ * unchanged. Returns undefined — an unauthenticated call — when no credential
+ * is available, matching buildAuthConfig.
+ */
+export async function resolveAuthConfig(
+  provider: GitProvider,
+  repo: { owner: string; repo: string },
+  principal: GitHubPrincipal | null,
+  env: ProviderAuthEnv,
+  logger: Logger,
+): Promise<ProviderAuthConfig | undefined> {
+  if (provider !== "github" || !env.STATE || !env.DB) return buildAuthConfig(provider, env);
+
+  const resolved = await resolveGitHubToken(
+    { ...env, STATE: env.STATE, DB: env.DB },
+    { owner: repo.owner, repo: repo.repo, principal },
+    logger,
+  );
+  if (resolved.success) return { token: resolved.data.token };
+  logger.debug("No GitHub credential available; calling GitHub unauthenticated", {
+    owner: repo.owner,
+    repo: repo.repo,
+  });
+  return undefined;
+}
+
 /** Branch used when the provider's real default branch cannot be resolved. */
 export const FALLBACK_DEFAULT_BRANCH = "main";
 
@@ -145,14 +194,10 @@ const PROVIDER_METADATA_TIMEOUT_MS = 5_000;
 
 export async function resolveDefaultBranch(
   url: string,
-  env: {
-    GITHUB_TOKEN?: string;
-    GITLAB_TOKEN?: string;
-    BITBUCKET_TOKEN?: string;
-    BITBUCKET_USERNAME?: string;
-    BITBUCKET_APP_PASSWORD?: string;
-  },
+  env: ProviderAuthEnv,
   logger: Logger,
+  /** Who the import is for — the owner the new project will have. */
+  principal: GitHubPrincipal | null = null,
 ): Promise<string> {
   const parsed = parseRepoUrl(url);
   if (!parsed) {
@@ -163,9 +208,9 @@ export async function resolveDefaultBranch(
   }
 
   const client = getProvider(parsed.provider);
-  const auth = buildAuthConfig(parsed.provider, env);
 
   try {
+    const auth = await resolveAuthConfig(parsed.provider, parsed.info, principal, env, logger);
     const result = await client.getDefaultBranch(
       parsed.info.owner,
       parsed.info.repo,

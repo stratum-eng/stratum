@@ -2,6 +2,7 @@ import { type Context, Hono } from "hono";
 import { diffTouchesProtectedConfig, loadPolicy } from "../evaluation";
 import { llmProviderCatalog } from "../evaluation/llm-providers";
 import type { EvalPolicy } from "../evaluation/types";
+import { resolveGitHubToken } from "../github/app-auth";
 import { GitHubClient } from "../github/client";
 import { buildEvaluationReport, reportEvaluationToGitHub } from "../github/sync";
 import { runPostMergeCheck } from "../merge/post-merge";
@@ -52,6 +53,7 @@ import {
   stagedTreeShaKey,
 } from "../storage/git-ops";
 import { parseRepoUrl } from "../storage/git-providers";
+import { projectPrincipal } from "../storage/github-installations";
 import { recordProvenance } from "../storage/provenance";
 import { getProject, getWorkspace } from "../storage/state";
 import { getProjectSourceUrl } from "../storage/sync";
@@ -1938,9 +1940,25 @@ app.post("/changes/:id/github-pr", async (c) => {
   const base = defaultBranch;
 
   // GitHub PR creation needs a GitHub credential — the Artifacts repo token (now
-  // never persisted) was never valid here. Use the app's configured GitHub token.
-  const githubToken = c.env.GITHUB_TOKEN;
-  if (!githubToken) return badRequest("GitHub integration is not configured");
+  // never persisted) was never valid here. The GitHub App's installation token
+  // for this repo when installed, else the instance GITHUB_TOKEN; the same
+  // token drives both the push and the PR API call below.
+  // On behalf of the project's owner: the installation must be linked to them,
+  // since anyone can point a project's source URL at any repository.
+  // A write, so the project must also be the repo's canonical target.
+  const tokenResult = await resolveGitHubToken(
+    c.env,
+    { ...repo, principal: projectPrincipal(project), project },
+    logger,
+  );
+  if (!tokenResult.success) {
+    const { statusCode, message, code } = tokenResult.error;
+    return c.json(
+      { error: message, code },
+      statusCode === 403 || statusCode === 409 ? statusCode : 400,
+    );
+  }
+  const githubToken = tokenResult.data.token;
 
   // The PR's head ref must exist on GitHub before the PR is opened — a missing
   // head is a guaranteed 422 (#189). Clone the change's workspace fork and

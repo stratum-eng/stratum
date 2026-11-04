@@ -4,6 +4,15 @@ import { authMiddleware } from "../src/middleware/auth";
 import { changesRouter } from "../src/routes/changes";
 import type { Change, Env } from "../src/types";
 
+// Repo authorization has its own suites (tests/repo-authorization.test.ts);
+// here the route's caller is bound to the repo owner and the project is the
+// repo's canonical target unless a test says otherwise.
+vi.mock("../src/github/repo-authorization", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/github/repo-authorization")>()),
+  allowlistAdmits: vi.fn(async () => true),
+  ensureCanonicalProject: vi.fn(async () => ({ success: true, data: true })),
+}));
+
 vi.mock("../src/storage/changes", () => ({
   createChange: vi.fn(),
   getChange: vi.fn(),

@@ -302,6 +302,52 @@ npx wrangler secret put GITHUB_CLIENT_SECRET
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 
+# GitHub App — outbound GitHub calls (sync, PR promotion push + create, eval
+# verdict comments/statuses). A GitHub App this time, separate from the OAuth
+# App above. Permissions: Contents RW, Pull requests RW, Commit statuses RW,
+# Metadata R. Without Workflows RW, GitHub rejects a promotion push whose
+# history touches .github/workflows/. Grant it only if agents' promoted
+# changes may edit CI: it lets a pushed branch change what your workflows run.
+# Webhook events: push, pull_request, pull_request_review (the
+# installation events arrive without subscribing). For a repo the app is
+# installed on, Stratum mints a 1h installation token and caches it in KV.
+# Elsewhere it uses GITHUB_TOKEN, but only for owners bound in
+# GITHUB_ALLOWED_OWNERS below. The private key MUST be PKCS#8
+# (`-----BEGIN PRIVATE KEY-----`): WebCrypto can't import the PKCS#1 key GitHub
+# downloads, so convert it first:
+#   openssl pkcs8 -topk8 -nocrypt -in app.private-key.pem -out app.pkcs8.pem
+#
+# Set the app's "Setup URL" to https://<host>/github/app/setup (tick "Redirect
+# on update"). An installation token is only used for projects whose owner the
+# installation is LINKED to there, or whom an operator binding below names.
+# Without one of the two, any user could import another org's repo and act on
+# it with that org's installation. Only the GitHub user who installed the app
+# can link it (the installation.created webhook's sender), or, for an
+# installation on a personal GitHub account, that account's owner. An
+# installation on an ORGANIZATION made before this webhook handling existed
+# has no recorded installer: reinstall the app (preferred), or bind its owner
+# below. A personal-account installation can be linked as is.
+npx wrangler secret put GITHUB_APP_ID
+npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app.pkcs8.pem
+# Optional operator bindings: comma-separated githubOwner=org:<orgId> or
+# githubOwner=user:<userId> entries. Each lets that Stratum org or user (and,
+# for a user, their agents) act on that GitHub owner's repos without an
+# installation link, and is the ONLY way any project can use GITHUB_TOKEN.
+# Bindings take stable ids, never @namespaces: a namespace can be renamed or
+# deleted and then claimed by someone else. Any other entry is ignored.
+# Find the id with
+#   npx wrangler d1 execute <db> --remote --command "SELECT id FROM orgs WHERE slug='stratum'"
+#   (or "SELECT id FROM users WHERE username='you'")
+# or, signed in as a member, GET /api/orgs/<slug> (org.id) / GET /api/users/me (id).
+# A plain var, not a secret: add it under [vars] / --var, e.g.
+#   GITHUB_ALLOWED_OWNERS = "stratum-eng=org:org_0123abcd..."
+# (GITHUB_APP_ALLOWED_OWNERS, the former name, is still read.)
+npx wrangler secret put GITHUB_WEBHOOK_SECRET
+# Optional PAT for repos the app isn't installed on (or every repo when no app
+# is configured), usable only by owners bound in GITHUB_ALLOWED_OWNERS. A
+# PAT-only instance MUST set the bindings, or GitHub sync/promotion stops.
+npx wrangler secret put GITHUB_TOKEN
+
 # Email
 npx wrangler secret put EMAIL_FROM_ADDRESS
 

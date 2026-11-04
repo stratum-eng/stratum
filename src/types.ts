@@ -199,6 +199,25 @@ export interface Env {
   GOOGLE_REDIRECT_URI?: string;
   GITHUB_WEBHOOK_SECRET?: string;
   OAUTH_REDIRECT_URI?: string;
+  /**
+   * GitHub App credentials. When both are set, outbound GitHub calls for a
+   * repo the app is installed on use an installation token; GITHUB_TOKEN is
+   * the fallback (see src/github/app-auth.ts). The key must be PKCS#8
+   * (`-----BEGIN PRIVATE KEY-----`) — WebCrypto cannot import PKCS#1.
+   */
+  GITHUB_APP_ID?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
+  /**
+   * Operator bindings from a GitHub owner to the Stratum owner allowed to act
+   * on its repos without an installation link: comma-separated
+   * `githubOwner=org:<orgId>` / `githubOwner=user:<userId>` entries. Ids, not
+   * namespaces, which can be freed and reclaimed. The only way a project can
+   * use the `GITHUB_TOKEN` PAT. Any other entry is ignored. See
+   * src/github/repo-authorization.ts.
+   */
+  GITHUB_ALLOWED_OWNERS?: string;
+  /** Former name of {@link GITHUB_ALLOWED_OWNERS}; still read, entries combine. */
+  GITHUB_APP_ALLOWED_OWNERS?: string;
   // Git provider API tokens for sync
   GITHUB_TOKEN?: string;
   GITLAB_TOKEN?: string;

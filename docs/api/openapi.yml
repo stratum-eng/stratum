@@ -109,7 +109,7 @@ tags:
   - name: bulk-import
     description: Importing many repositories at once
   - name: github
-    description: Inbound GitHub webhook receiver
+    description: Inbound GitHub webhook receiver, and linking GitHub App installations to Stratum owners
   - name: mcp
     description: The remote MCP server and its OAuth 2.1 authorization server
   - name: admin
@@ -2320,15 +2320,26 @@ paths:
       tags: [changes]
       summary: Promote an accepted change to a GitHub pull request
       description: |
-        Users only. The change must be accepted (or already promoted) and the
-        project connected to GitHub with a configured GitHub token. Creates a
-        (draft by default) PR from branch `stratum/{changeId}` and marks the
-        change `promoted`.
+        Users only. The change must be accepted (or already promoted), and the
+        project must be authorized for its GitHub repository and be that
+        repository's canonical project. Creates a (draft by default) PR from
+        branch `stratum/{changeId}` and marks the change `promoted`.
+
+        The credential is the GitHub App's installation token when the project's
+        owner is linked to the installation covering the repository (or an
+        operator binding names that owner). Otherwise it is the instance
+        `GITHUB_TOKEN`, and only under an operator binding. A refused
+        credential means `403`. No App credential obtained (App not configured,
+        not installed on the repository, or its installation lookup or token
+        minting failed, which the server logs as a "GitHub App token
+        unavailable" warning) and no `GITHUB_TOKEN` configured means
+        `400 GITHUB_NOT_CONFIGURED`. A project
+        that is not the repository's canonical project gets `409`.
 
         The PR base is always the project's own recorded default branch and is
-        not accepted from the request body: this endpoint acts with the
-        instance-wide GitHub token, so honouring a caller-supplied base would
-        let any caller aim that shared credential at a branch of its choosing.
+        not accepted from the request body: the endpoint acts with a credential
+        the instance holds, so honouring a caller-supplied base would let a
+        caller aim it at a branch of its choosing.
       requestBody:
         required: false
         content:
@@ -2361,15 +2372,23 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          description: |
+            No project access, or no GitHub credential may act on the repository
+            for the project's owner (`GITHUB_APP_NOT_AUTHORIZED`,
+            `GITHUB_NOT_AUTHORIZED`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           description: |
-            EVALUATION_PENDING — a re-evaluation began while the branch was being
+            `EVALUATION_PENDING` — a re-evaluation began while the branch was being
             pushed. The PR exists and its link is recorded (`github` carries it),
             but the change is not marked promoted; promote again once the
             evaluation finishes, which re-pushes to the same PR.
+            Or `GITHUB_REPO_NOT_CANONICAL` — the repository is already connected
+            to another Stratum project (no `github` field).
           content:
             application/json:
               schema:
@@ -4634,6 +4653,134 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /api/github/installations:
+    get:
+      operationId: listGitHubAppInstallations
+      tags: [github]
+      summary: List GitHub App installations the caller can manage
+      description: |
+        Installations the caller controls on GitHub (they installed the app, or
+        it is on their personal GitHub account), plus installations linked to
+        them or to an org they administer. Users only; unreachable with a
+        project- or org-bound token.
+      responses:
+        "200":
+          description: Installations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  githubLinked:
+                    type: boolean
+                    description: Whether the caller's Stratum account has a GitHub account linked
+                  installations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        installationId: { type: integer }
+                        account:
+                          type: object
+                          properties:
+                            login: { type: string }
+                            type: { type: string, description: "`User` or `Organization`" }
+                        suspended: { type: boolean }
+                        linkedTo: { type: [string, "null"] }
+                        canLink: { type: boolean }
+                        canUnlink: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/github/installations/{installationId}/link:
+    post:
+      operationId: linkGitHubAppInstallation
+      tags: [github]
+      summary: Link a GitHub App installation to a Stratum owner
+      description: |
+        Lets projects owned by the target use the installation's token for
+        outbound GitHub calls on its repositories. Only the GitHub user who
+        installed the app (or, for a personal-account installation, that
+        account) may link it, proven by the caller's GitHub-verified identity;
+        anyone else gets 404. The target is the caller's personal account, or
+        an org they administer. An installation already linked elsewhere is a
+        403 (`LINKED_ELSEWHERE`) unless the caller is that owner or an admin
+        of its org. Accepts JSON or a form post (which redirects back to
+        `/github/app/setup`).
+      parameters:
+        - name: installationId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                org:
+                  type: string
+                  description: Org slug; omit or empty for the caller's personal account
+      responses:
+        "200":
+          description: Linked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  installationId: { type: integer }
+                  owner:
+                    type: object
+                    properties:
+                      type: { type: string, enum: [user, org] }
+                      id: { type: string }
+        "303":
+          description: Form submission; redirects to the setup page
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/github/installations/{installationId}/unlink:
+    post:
+      operationId: unlinkGitHubAppInstallation
+      tags: [github]
+      summary: Unlink a GitHub App installation
+      description: |
+        Allowed for the linked user, or an admin of the linked org (whose
+        session meets that org's second-factor policy). Afterwards no project
+        uses the app on its repositories, unless an operator binding in
+        `GITHUB_ALLOWED_OWNERS` covers them.
+      parameters:
+        - name: installationId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Unlinked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  installationId: { type: integer }
+        "303":
+          description: Form submission; redirects to the setup page
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/admin/metrics:
     get:

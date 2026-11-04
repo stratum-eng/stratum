@@ -415,8 +415,48 @@ app.post('/api/webhooks/github', async (c) => {
 
 ### Outbound Sync (Stratum → GitHub)
 
+**Credentials** (`src/github/app-auth.ts`): every outbound call resolves its
+token through `resolveGitHubToken(env, { owner, repo, principal, project? })`,
+where `principal` is the Stratum owner the call acts for (the project's owner,
+or an import's target owner). The decisions live in
+`src/github/repo-authorization.ts`:
+
+- **App installed on the repo:** an installation token only when the
+  installation is linked to the principal in `github_app_installations`
+  (migration 059; an agent matches through its owner), or an operator binding
+  in `GITHUB_ALLOWED_OWNERS` (`githubOwner=org:<orgId>` /
+  `githubOwner=user:<userId>`) names the principal's owner by id (an agent by
+  its owner's user id). Bindings name ids, not namespaces, so a renamed or
+  deleted name reclaimed by someone else inherits nothing. A refusal, or a link check that errors, **ends there**: no PAT
+  fallback.
+- **App not configured, not installed, or failing to mint:** the
+  `GITHUB_TOKEN` PAT, but only for a principal an operator binding names.
+- **Writes** (promotion, evaluation comments and statuses) pass `project` and
+  additionally require it to be the repo's canonical project in
+  `github_repo_links` (migration 060). The first authorized project claims a
+  free repo. A holder is displaced only once it is gone or no longer
+  authorized.
+
+**Inbound** events go through `getProjectByGitHubRepo` →
+`resolveInboundProject`, which applies the same rule using the event's
+`installation.id` (or the bindings alone, for a plain repository webhook) and
+routes only to the canonical project.
+
+The link is the guard against a confused deputy. A project's source URL is
+caller-controlled, so without it any user could import another tenant's repo
+and push to it through that tenant's installation. Links are made at
+`/github/app/setup` (the app's Setup URL) or `POST /api/github/installations/:id/link`.
+Proof of control is the installer recorded from the HMAC-verified
+`installation.created` webhook (`sender.id`), or the account itself for
+personal installations, matched against the caller's OAuth-verified
+`users.github_id`. Installation ids are cached in KV at
+`github_installation:{owner}/{repo}` (24 h TTL; "not installed" for 10 min) and
+invalidated by `installation` / `installation_repositories` webhooks; tokens at
+`github_inst_token:{installationId}` until 5 min before GitHub expires them.
+Per-user OAuth tokens (`users.github_access_token`) are a separate path.
+
 **Promote Change to PR** (`POST /changes/:id/github-pr`): pushes the change's
-branch and creates the GitHub PR using the instance-wide `GITHUB_TOKEN`.
+branch and creates the GitHub PR with the resolved credential above.
 
 **Evaluation verdict reporting** (`src/github/sync.ts`): after every evaluation
 of a change whose project has a GitHub source and which has a linked PR, the

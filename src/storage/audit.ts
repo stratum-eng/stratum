@@ -88,7 +88,11 @@ export type AuditAction =
   | "second_factor.succeeded"
   | "recovery_code.used"
   | "recovery_codes.regenerated"
-  | "org.second_factor_policy_changed";
+  | "org.second_factor_policy_changed"
+  // GitHub App installation ↔ Stratum owner links (migration 059). A link is
+  // what lets an owner's projects act on that installation's repositories.
+  | "github_app.installation_linked"
+  | "github_app.installation_unlinked";
 
 export interface AuditEntry {
   id: string;

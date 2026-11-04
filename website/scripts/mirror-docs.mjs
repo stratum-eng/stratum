@@ -56,10 +56,11 @@ const ENDPOINT_ORDER = [
   "agents",
   "users",
   "organizations",
+  "github-app",
 ];
 
 const ENDPOINTS_DESCRIPTION =
-  "The Stratum REST API surface — projects, branches, workspaces, changes, reviews, issues, deployments, agents, users, and organizations.";
+  "The Stratum REST API surface — projects, branches, workspaces, changes, reviews, issues, deployments, agents, users, organizations, and GitHub App installations.";
 
 /**
  * Published pages that are deliberately authored here rather than mirrored,
