@@ -566,6 +566,21 @@ const SETTINGS_NOTICES: Record<string, SettingsNotice> = {
     kind: "success",
     message: "That application has been disconnected. Its access stopped immediately.",
   },
+  "agent-approved": {
+    kind: "success",
+    message:
+      "You're signed up, and your agent's request is approved. It can now collect its token and carry on from where it asked for the account.",
+  },
+  "agent-not-connected": {
+    kind: "error",
+    message:
+      "You're signed up, but the agent's request expired before it could be approved. Create an agent token below, or connect the agent over OAuth.",
+  },
+  "agent-connect-failed": {
+    kind: "error",
+    message:
+      "You're signed up, but approving the agent's request failed on our side. Create an agent token below, or connect the agent over OAuth.",
+  },
   "legacy-disabled": {
     kind: "success",
     message:

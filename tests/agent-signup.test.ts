@@ -222,7 +222,7 @@ describe("approve and collect", () => {
 
     const res = await approve(approvalTokenFromEmail());
     expect(res.status).toBe(302);
-    expect(res.headers.get("Location")).toBe("/welcome?agent=connected");
+    expect(res.headers.get("Location")).toBe("/settings?notice=agent-approved");
     expect(res.headers.get("Set-Cookie")).toContain("session");
 
     const user = raw
@@ -338,7 +338,7 @@ describe("user code (device-flow binding)", () => {
     expect(users.n).toBe(0);
 
     const ok = await approve(token, env, String(json.userCode));
-    expect(ok.headers.get("Location")).toBe("/welcome?agent=connected");
+    expect(ok.headers.get("Location")).toBe("/settings?notice=agent-approved");
   });
 
   it("a wrong code creates nothing; the right one, typed loosely, still works", async () => {
@@ -351,7 +351,7 @@ describe("user code (device-flow binding)", () => {
 
     const loose = String(json.userCode).toLowerCase().replace("-", " ");
     const ok = await approve(token, env, loose);
-    expect(ok.headers.get("Location")).toBe("/welcome?agent=connected");
+    expect(ok.headers.get("Location")).toBe("/settings?notice=agent-approved");
     expect((await poll(json.pollToken)).json.status).toBe("complete");
   });
 
@@ -408,9 +408,20 @@ describe("review follow-ups", () => {
       "CREATE TRIGGER expire_on_user AFTER INSERT ON users BEGIN UPDATE agent_signups SET expires_at = 1; END;",
     );
     const res = await approve(approvalTokenFromEmail());
-    expect(res.headers.get("Location")).toBe("/settings?agent=not_connected");
+    expect(res.headers.get("Location")).toBe("/settings?notice=agent-not-connected");
     expect(res.headers.get("Set-Cookie")).toContain("session");
     expect((await poll(json.pollToken)).status).toBe(410);
+  });
+
+  it("tells a storage failure apart from an expired request", async () => {
+    const { json } = await requestSignup();
+    raw.exec(
+      "CREATE TRIGGER fail_approve BEFORE UPDATE OF status ON agent_signups WHEN NEW.status = 'approved' BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+    );
+    const res = await approve(approvalTokenFromEmail());
+    expect(res.headers.get("Location")).toBe("/settings?notice=agent-connect-failed");
+    expect(res.headers.get("Set-Cookie")).toContain("session");
+    expect((await poll(json.pollToken)).json.status).not.toBe("complete");
   });
 
   it("the daily purge deletes requests a day past expiry, and nothing newer", async () => {

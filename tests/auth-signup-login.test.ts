@@ -1088,7 +1088,7 @@ describe("Auth Signup/Login Integration Tests", () => {
 
   describe("Magic Link Verification", () => {
     describe("GET /auth/email/verify", () => {
-      it("signup intent creates user and redirects to welcome", async () => {
+      it("signup intent creates user and redirects to the dashboard", async () => {
         const token = "valid-signup-token-123";
         const tokenData = {
           email: "signupuser@example.com",
@@ -1103,7 +1103,7 @@ describe("Auth Signup/Login Integration Tests", () => {
         const res = await app.fetch(verifyReq(token), env);
 
         expect(res.status).toBe(302);
-        expect(res.headers.get("location")).toBe("/welcome");
+        expect(res.headers.get("location")).toBe("/");
 
         // Verify user was created
         const { getUserByEmail } = await import("../src/storage/users");

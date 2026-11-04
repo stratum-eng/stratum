@@ -719,14 +719,15 @@ app.post("/verify", async (c) => {
       if (!account.ok) return emailAuthRedirect(c, "error", account.code, account.path);
       const userId = account.userId;
 
-      // Create session and redirect to welcome/onboarding
+      // The dashboard is the onboarding page: with no projects it shows how to
+      // create or import one.
       return await createSessionAndRedirect(
         c,
         userId,
         emailHash,
         rememberMe,
         logger,
-        "/welcome",
+        "/",
         "signup",
       );
     }
@@ -1006,13 +1007,18 @@ async function completeAgentSignup(
   const userId = account.userId;
 
   const approved = await approveAgentSignup(c.env.DB, agentSignupId, userId, logger);
-  const handedOff = approved.success && approved.data;
-  if (!handedOff) {
-    // The account exists and the human is signed in below; only the agent's
-    // hand-off missed (the request expired in the moments since the check
-    // above, or the write failed). Send them to Settings, where they can
-    // connect an agent, rather than telling them one is connected.
-    logger.warn("Agent signup could not be marked approved", { agentSignupId, userId });
+  // The account exists and the human is signed in below either way; only the
+  // agent's hand-off can miss. Send them to Settings, where they can make an
+  // agent token. A new agent signup is no way back: the address now has an
+  // account, so it answers EMAIL_EXISTS. Approval is all we can report on
+  // success, since the agent has yet to collect its token.
+  let outcome = "agent-approved";
+  if (!approved.success) {
+    outcome = "agent-connect-failed";
+    logger.error("Agent signup approval could not be saved", approved.error);
+  } else if (!approved.data) {
+    outcome = "agent-not-connected";
+    logger.warn("Agent signup expired before it could be approved", { agentSignupId, userId });
   } else {
     await recordAudit(c.env.DB, logger, {
       action: "agent_signup.approved",
@@ -1029,7 +1035,7 @@ async function completeAgentSignup(
     emailHash,
     rememberMe,
     logger,
-    handedOff ? "/welcome?agent=connected" : "/settings?agent=not_connected",
+    `/settings?notice=${outcome}`,
     "signup",
   );
 }
