@@ -54,7 +54,7 @@ The allowlist applies **only to that organization's own resources**:
   workspaces, and git clone and push
 - its org endpoints under `/api/orgs/{slug}/`: details, members, teams, SSO
   configuration, the security policy, and the audit log
-- creating a project in the org
+- creating a project in the org, or importing one into it
 
 It applies to every credential: browser sessions, API tokens (scoped and
 legacy), agent tokens, MCP/CLI OAuth grants, and git over HTTPS. For an MCP tool

@@ -235,6 +235,18 @@ describe("every credential kind is held to the allowlist", () => {
   });
 });
 
+describe("importing into the org", () => {
+  it("refuses an org admin outside the range", async () => {
+    const res = await call("/api/projects/@acme/imported/import", {
+      as: "session",
+      ip: OUTSIDE,
+      method: "POST",
+      json: { url: "https://github.com/acme/imported" },
+    });
+    await expectIpRefusal(res);
+  });
+});
+
 describe("client address", () => {
   it("fails closed when CF-Connecting-IP is missing", async () => {
     await expectIpRefusal(await call("/api/projects/@acme/app", { as: "session", ip: null }));

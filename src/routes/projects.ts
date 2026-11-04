@@ -1599,10 +1599,9 @@ async function resolveImportTargetOwner(
   if (!orgResult.success) return refusal;
   const org = orgResult.data;
   // An org requiring a second factor this session lacks grants nothing (#256),
-  // exactly as on project creation.
-  const accessLevel = orgBlockedFor(c, org.id)
-    ? "none"
-    : await getOrgAccessLevel(c.env.DB, logger, org.id, userId);
+  // nor does one whose IP allowlist excludes this request (#399), exactly as
+  // on project creation.
+  const accessLevel = await effectiveOrgAccessLevel(c.env.DB, org.id, userId);
   if (accessLevel !== "write" && accessLevel !== "admin") return refusal;
   return { owner: { id: org.id, type: "org" } };
 }
