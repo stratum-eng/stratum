@@ -11,4 +11,4 @@
   can catch a project up right before switching over. Public repositories only
   for now. It needs a GitHub credential that may act for the project's owner,
   the same as every other GitHub call: a linked GitHub App installation or an
-  operator binding. Requires D1 migration `064_github_issue_import.sql`.
+  operator binding. Requires D1 migration `071_github_issue_import.sql`.
