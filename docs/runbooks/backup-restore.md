@@ -180,6 +180,15 @@ A `restorable: false` (or a top-level decode error — usually a wrong
 complete run. This endpoint never mutates anything; the write/apply steps below
 are the deliberate, separately-run operation.
 
+**No deployed route or script runs those steps yet.** `restoreTable`,
+`restoreKvIdentity` and `restoreProjectRepo` are library functions with no caller
+in the Worker, so calling one today means building a temporary entry point: a
+route behind the same admin check as the plan endpoint (`requireAdmin` in
+`src/routes/restore.ts`) that loads the run from `BACKUPS` and calls the function
+with the Worker's bindings. Deploy it to the environment being restored, which
+takes deploy access to that environment and the admin credential, then remove it
+when the restore is done.
+
 ### D1
 
 For each `<runTs>/d1/<table>.ndjson`, use `restoreTable` (in `src/storage/d1-backup.ts`).
@@ -240,7 +249,8 @@ in CI** — there is no local Artifacts emulator. Validate it on staging:
 
 1. Snapshot a known staging repo (trigger a backup, confirm the pack exists).
 2. Delete or rename the staging repo.
-3. Run `restoreProjectRepo` against the snapshot.
+3. Run `restoreProjectRepo` against the snapshot, through a temporary entry point
+   (see the note under the restore plan above).
 4. Clone the restored repo and confirm `HEAD` equals the manifest tip sha and the
    working tree matches the original.
 
@@ -271,8 +281,9 @@ least one tag.
 4. **Restore into staging.** Rename the live staging repo first:
    `restoreProjectRepo` takes the repo name from the snapshot manifest's project
    remote and has no name override, so the restore always targets the original
-   name. Then run it for the drill repo from `<runTs>`. Use `force` only if you
-   mean to overwrite.
+   name. Then run it for the drill repo from `<runTs>`, through a temporary entry
+   point deployed to staging (see the note under the restore plan above: no route
+   or script calls it yet). Use `force` only if you mean to overwrite.
 5. **Clone the restored repo and compare.**
    ```bash
    git clone <restored-clone-url> restored && git -C restored show-ref --head > restored-refs.txt
