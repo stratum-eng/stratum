@@ -616,10 +616,12 @@ credential — in [Authentication](/reference/authentication/).
 ### Get Current User
 `GET /api/users/me`
 
-Returns the authenticated user's profile, with `"actingAs": "user"`:
+Returns the authenticated user's profile, with `"actingAs": "user"`: `id`,
+`email`, `username` (the caller's personal namespace is `@username`) and
+`createdAt`.
 
 ```json
-{ "id": "usr_…", "email": "alice@example.com", "createdAt": "…", "actingAs": "user" }
+{ "id": "usr_…", "email": "alice@example.com", "username": "alice", "createdAt": "…", "actingAs": "user" }
 ```
 
 An MCP OAuth grant [bound to an agent](/reference/authentication/#oauth-grants) gets

@@ -599,6 +599,8 @@ app.post(
   "/:namespace/:slug/import",
   // Before the rate limiter: see `refuseBoundImport`.
   refuseBoundImport(),
+  // Also before the rate limiter, for the same reason.
+  requireImportTargetOwner("import projects"),
   importRateLimitMiddleware({
     importsPerWindow: 3,
     windowSeconds: 60,
@@ -658,17 +660,13 @@ app.post(
           return badRequest("Slug too long (max 100 characters)");
         }
 
-        const userNamespace = getUserNamespace(username);
-
-        // Validate user namespace format
-        if (!isValidNamespace(userNamespace)) {
-          return badRequest("Invalid namespace format");
-        }
-
-        // For now, users can only import into their own namespace
-        if (namespace !== userNamespace) {
-          return forbidden("You can only import projects into your own namespace");
-        }
+        // The caller's own namespace, or an org they can write to (#406).
+        // `requireImportTargetOwner` already refused anything else before the
+        // rate limiter; resolved again here because the owner decides how the
+        // project is recorded and charged below.
+        const target = await resolveImportTargetOwner(c, namespace, "import projects", logger);
+        if ("response" in target) return target.response;
+        const owner = target.owner;
 
         // Check if project already exists
         const existingProjectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
@@ -833,7 +831,7 @@ app.post(
           const gauge = await checkPrivateProjectGauge(c.env, logger, {
             actorUserId: userId,
             username,
-            owner: { id: userId, type: "user" },
+            owner,
             targetNamespace: namespace,
             paths: [gaugePath(namespace, slug)],
             holdTtlMs: SINGLE_CREATION_HOLD_TTL_MS,
@@ -905,8 +903,8 @@ app.post(
           name: slug,
           slug,
           namespace,
-          ownerId: userId,
-          ownerType: "user",
+          ownerId: owner.id,
+          ownerType: owner.type,
           remote: repo.remote,
           createdAt: new Date().toISOString(),
           // Legacy fields for backward compatibility
@@ -927,25 +925,48 @@ app.post(
           ...(gaugeSubjectId !== undefined ? { gaugeSubjectId } : {}),
         };
 
-        // Claim before the KV write, as project creation does.
-        const claimed = await claimNamespace(
-          c.env.DB,
-          { ownerId: userId, namespace, slug },
-          logger,
-        );
-        if (!claimed.success) return appError(claimed.error);
+        // Claim before the KV write, as project creation does. Only a personal
+        // namespace is claimed: the claim exists to order a project write
+        // against a USERNAME change, and an org slug is not renamed that way.
+        if (owner.type === "user") {
+          const claimed = await claimNamespace(
+            c.env.DB,
+            { ownerId: owner.id, namespace, slug },
+            logger,
+          );
+          if (!claimed.success) return appError(claimed.error);
+        }
+
+        // Charged to the actor but stored under an org: index it under the
+        // actor, written before the project entry and fatal on failure, exactly
+        // as project creation does (see POST /).
+        if (owner.type === "org" && gaugeSubjectId !== undefined && gaugeSubjectId !== owner.id) {
+          const indexed = await recordGaugeCharge(c.env.STATE, logger, {
+            subjectId: gaugeSubjectId,
+            namespace,
+            slug,
+            projectId,
+          });
+          if (!indexed.success) {
+            return internalError("Failed to record the private project charge");
+          }
+        }
 
         const setResult = await setProject(c.env.STATE, project, logger);
         if (!setResult.success) {
           logger.error("Failed to set project after import", setResult.error);
-          await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
+          if (owner.type === "user") {
+            await releaseNamespaceClaim(c.env.DB, namespace, slug, logger);
+          }
           return internalError(setResult.error.message);
         }
 
         // Same guard as project creation. The import job row created above is
         // never queued in this case; it ages out with cleanupOldImports.
-        const confirmed = await confirmOwnerNamespace(c.env, userId, project, logger);
-        if (!confirmed.success) return appError(confirmed.error);
+        if (owner.type === "user") {
+          const confirmed = await confirmOwnerNamespace(c.env, owner.id, project, logger);
+          if (!confirmed.success) return appError(confirmed.error);
+        }
 
         // Queue the actual import job for background processing using the queue if available
         if (c.env.IMPORT_QUEUE) {
@@ -1540,6 +1561,69 @@ function refuseBoundImport(): MiddlewareHandler<{ Bindings: Env }> {
         "This token is limited to one project or organization and cannot import projects",
       );
     }
+    await next();
+  };
+}
+
+/**
+ * Who would own a project imported at `namespace`, if the caller may import
+ * there at all (#406).
+ *
+ * The caller's own `@username` namespace, or an org namespace where the caller
+ * has write access — the same rule `POST /api/projects` applies to `org`,
+ * including the second-factor block. Usernames and org slugs share one `@name`
+ * namespace space (`usernameNamespaceTaken`), so the two branches can never
+ * both match a namespace. A missing org and an org the caller cannot write to
+ * get the SAME 403, so the refusal does not reveal which org slugs exist.
+ */
+async function resolveImportTargetOwner(
+  c: Context<{ Bindings: Env }>,
+  namespace: string,
+  verb: string,
+  logger: Logger,
+): Promise<{ owner: { id: string; type: "user" | "org" } } | { response: Response }> {
+  const userId = c.get("userId");
+  const username = c.get("username");
+  if (!userId || !username) return { response: unauthorized("Authentication required") };
+
+  if (namespace === getUserNamespace(username)) {
+    return { owner: { id: userId, type: "user" } };
+  }
+
+  const refusal = {
+    response: forbidden(
+      `You can only ${verb} in your own namespace or in an organization you have write access to`,
+    ),
+  };
+  if (!namespace.startsWith("@") || namespace.length < 2) return refusal;
+  const orgResult = await getOrgBySlug(c.env.DB, logger, namespace.slice(1));
+  if (!orgResult.success) return refusal;
+  const org = orgResult.data;
+  // An org requiring a second factor this session lacks grants nothing (#256),
+  // exactly as on project creation.
+  const accessLevel = orgBlockedFor(c, org.id)
+    ? "none"
+    : await getOrgAccessLevel(c.env.DB, logger, org.id, userId);
+  if (accessLevel !== "write" && accessLevel !== "admin") return refusal;
+  return { owner: { id: org.id, type: "org" } };
+}
+
+/**
+ * {@link resolveImportTargetOwner} as a middleware, ordered BEFORE the import
+ * rate limiter for the reason given on {@link refuseBoundImport}: the limiter
+ * takes the target project's import lock, so a refusal returned after it would
+ * let anyone block an org's import of a slug for the lock's full duration.
+ */
+function requireImportTargetOwner(verb: string): MiddlewareHandler<{ Bindings: Env }> {
+  return async (c, next) => {
+    const logger = createLogger({ path: c.req.path, method: c.req.method });
+    const resolved = await resolveImportTargetOwner(
+      c,
+      c.req.param("namespace") ?? "",
+      verb,
+      logger,
+    );
+    if ("response" in resolved) return resolved.response;
     await next();
   };
 }
@@ -2198,6 +2282,7 @@ app.post(
   "/:namespace/:slug/import/retry",
   // Before any limiter: see `requireImportTargetInBinding`.
   requireImportTargetInBinding(),
+  requireImportTargetOwner("retry imports"),
   importRateLimitMiddleware({
     importsPerWindow: 3,
     windowSeconds: 60,
@@ -2217,11 +2302,11 @@ app.post(
     if (!userId || !username) return unauthorized("Authentication required");
 
     const { namespace, slug } = c.req.param();
-    const userNamespace = getUserNamespace(username);
-
-    if (namespace !== userNamespace) {
-      return forbidden("You can only retry imports in your own namespace");
-    }
+    // Own namespace or a writable org (#406); `requireImportTargetOwner`
+    // already refused anything else before the limiter. Kept here too so the
+    // handler stays safe if its middleware list is ever reordered.
+    const target = await resolveImportTargetOwner(c, namespace, "retry imports", logger);
+    if ("response" in target) return target.response;
 
     // Get existing import progress
     const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
@@ -2340,6 +2425,7 @@ app.post(
   "/:namespace/:slug/import/delete",
   // Before any limiter: see `requireImportTargetInBinding`.
   requireImportTargetInBinding(),
+  requireImportTargetOwner("delete imports"),
   // A plain per-user limiter, NOT importRateLimitMiddleware: that one takes the
   // per-project import lock and only the import paths release it, so deleting a
   // dead job would 429 the user's next import for the lock's full duration —
@@ -2359,11 +2445,11 @@ app.post(
     if (!userId || !username) return unauthorized("Authentication required");
 
     const { namespace, slug } = c.req.param();
-    const userNamespace = getUserNamespace(username);
-
-    if (namespace !== userNamespace) {
-      return forbidden("You can only delete imports in your own namespace");
-    }
+    // Own namespace or a writable org (#406); `requireImportTargetOwner`
+    // already refused anything else before the limiter. Kept here too so the
+    // handler stays safe if its middleware list is ever reordered.
+    const target = await resolveImportTargetOwner(c, namespace, "delete imports", logger);
+    if ("response" in target) return target.response;
 
     const progressResult = await getImportProgress(c.env.DB, namespace, slug, logger);
     if (!progressResult.success) {
@@ -2427,11 +2513,10 @@ app.post("/:namespace/:slug/sync", async (c) => {
 
   const { namespace, slug } = c.req.param();
   const isJson = c.req.header("content-type")?.includes("application/json") ?? false;
-  const userNamespace = getUserNamespace(username);
-
-  if (namespace !== userNamespace) {
-    return forbidden("You can only sync projects in your own namespace");
-  }
+  // Own namespace or a writable org (#406): an org-owned import is kept in
+  // sync by the same people who could import it.
+  const target = await resolveImportTargetOwner(c, namespace, "sync projects", logger);
+  if ("response" in target) return target.response;
 
   const bindingRefusal = await refuseOutsideBinding(c, namespace, slug, logger);
   if (bindingRefusal) return bindingRefusal;
@@ -2859,6 +2944,7 @@ app.post(
   "/:namespace/:slug/import/cancel",
   // Before any limiter: see `requireImportTargetInBinding`.
   requireImportTargetInBinding(),
+  requireImportTargetOwner("cancel imports"),
   importRateLimitMiddleware({
     importsPerWindow: 5,
     windowSeconds: 60,
@@ -2878,11 +2964,11 @@ app.post(
     if (!userId || !username) return unauthorized("Authentication required");
 
     const { namespace, slug } = c.req.param();
-    const userNamespace = getUserNamespace(username);
-
-    if (namespace !== userNamespace) {
-      return forbidden("You can only cancel imports in your own namespace");
-    }
+    // Own namespace or a writable org (#406); `requireImportTargetOwner`
+    // already refused anything else before the limiter. Kept here too so the
+    // handler stays safe if its middleware list is ever reordered.
+    const target = await resolveImportTargetOwner(c, namespace, "cancel imports", logger);
+    if ("response" in target) return target.response;
 
     const cancelResult = await cancelImportJob(c.env.DB, namespace, slug, logger);
 

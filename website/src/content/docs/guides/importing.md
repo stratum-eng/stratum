@@ -28,9 +28,32 @@ curl -X POST "$STRATUM_HOST/api/projects/@username/repo/import" \
 
 A successful
 request returns `201` with an `importId` and `status: "queued"`. Imports are
-rate limited (3 per minute per user, 1 concurrent import per project) and only
-allowed into your own namespace. If the project already exists with an
-incomplete import, the import is re-triggered and `200` is returned.
+rate limited (3 per minute per user, 1 concurrent import per project). If the
+project already exists with an incomplete import, the import is re-triggered
+and `200` is returned.
+
+### Importing into an organization
+
+Put the organization's namespace in the path to import straight into it:
+
+```bash
+curl -X POST "$STRATUM_HOST/api/projects/@acme/repo/import" \
+  -H "Authorization: Bearer $STRATUM_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://github.com/owner/repo"}'
+```
+
+The target is either your own namespace or an organization where you have
+**write** access: you are an org owner or admin, or a member of a team with
+`write` or `admin` permission (a `read` team does not count). The project is owned
+by the organization, exactly as if it had been created with
+`POST /api/projects` and `"org": "acme"`. Anything else — an organization you
+are not a member of, one where you are read-only, one that does not exist — is
+refused with `403`. The same rule covers retrying, cancelling and deleting the
+import; the status and progress endpoints only need read access to the project.
+A private import counts toward the private-project limit exactly as creating a
+private project there does. A token bound to one project or organization cannot
+import.
 
 ### Options
 

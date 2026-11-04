@@ -24,6 +24,7 @@ import { Hono } from "hono";
 import { authMiddleware } from "../middleware/auth";
 import { changesRouter } from "../routes/changes";
 import { issuesRouter } from "../routes/issues";
+import { orgsRouter } from "../routes/orgs";
 import { projectsRouter } from "../routes/projects";
 import { reviewsRouter } from "../routes/reviews";
 import { usersRouter } from "../routes/users";
@@ -43,6 +44,10 @@ api.route("/api/workspaces", workspacesRouter);
 api.route("/api/users", usersRouter);
 api.route("/api", changesRouter);
 api.route("/api", reviewsRouter);
+// Only the org/member/team router. SSO, security policy and audit export stay
+// off the MCP surface: they are administrative settings with no tool, and a
+// route that is not mounted here cannot be reached by any tool call.
+api.route("/api/orgs", orgsRouter);
 
 // JSON, not the HTML error pages the outer app serves: the only consumer is
 // `StratumClient`, which reads `{error}` out of the body to build the tool's

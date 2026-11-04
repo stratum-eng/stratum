@@ -228,7 +228,8 @@ into an editor's config, and **Settings → Connected applications** revokes acc
 immediately. Headless callers can present a `stratum_user_` or `stratum_agent_` token
 directly instead.
 
-That exposes the whole eval-gated change flow as nineteen MCP tools, so Claude Code,
+That exposes the whole eval-gated change flow — plus project import and org
+management — as thirty-seven MCP tools, so Claude Code,
 Cursor, Zed, Copilot, or a custom agent can drive Stratum without a bespoke integration.
 See the [MCP guide](docs/user-guide/mcp.md).
 

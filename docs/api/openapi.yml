@@ -356,10 +356,12 @@ paths:
       summary: Import a repository from GitHub/GitLab/Bitbucket
       description: |
         Creates the project and queues a background import. Rate limited
-        (3 imports/minute per user, 1 concurrent import per project). Imports
-        are only allowed into the caller's own namespace. If the project
-        already exists with an incomplete import, the import is re-triggered
-        and a 200 is returned.
+        (3 imports/minute per user, 1 concurrent import per project). The
+        target namespace is the caller's own, or an organization's where the
+        caller has write access (the project is then owned by the
+        organization); anything else is a 403. If the project already exists
+        with an incomplete import, the import is re-triggered and a 200 is
+        returned.
       requestBody:
         required: true
         content:
@@ -3731,6 +3733,9 @@ paths:
                   actingAs: { type: string, enum: [user, agent] }
                   id: { type: string, description: "Present when actingAs is user" }
                   email: { type: string, format: email, description: "Present when actingAs is user" }
+                  username:
+                    type: string
+                    description: Present when actingAs is user. The caller's personal namespace is `@username`.
                   createdAt: { type: string, format: date-time, description: "Present when actingAs is user" }
                   agent:
                     type: object

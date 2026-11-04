@@ -67,6 +67,16 @@ export function parseProjectRef(ref: string): ProjectRef {
  */
 export type ApiDispatch = (request: Request) => Promise<Response>;
 
+/** `/api/projects/{namespace}/{slug}`, each segment encoded. */
+function projectPath(ref: ProjectRef): string {
+  return `/api/projects/${encodeURIComponent(ref.namespace)}/${encodeURIComponent(ref.slug)}`;
+}
+
+/** `/api/orgs/{slug}`, encoded. Accepts the slug with or without its `@`. */
+function orgPath(org: string): string {
+  return `/api/orgs/${encodeURIComponent(org.startsWith("@") ? org.slice(1) : org)}`;
+}
+
 export class StratumClient {
   /**
    * @param origin  Absolute origin the sub-request URLs are built on. Taken
@@ -150,6 +160,105 @@ export class StratumClient {
     );
   }
 
+  async listBranches(ref: ProjectRef) {
+    return this.request<unknown>("GET", `${projectPath(ref)}/branches`);
+  }
+
+  /**
+   * Create a project in the caller's namespace, or in `org`'s when given.
+   * `POST /api/projects` decides who may create where; nothing is checked here.
+   */
+  async createProject(opts: {
+    name: string;
+    org?: string;
+    visibility?: "private" | "public";
+    seed?: boolean;
+  }) {
+    return this.request<unknown>("POST", "/api/projects", {
+      name: opts.name,
+      ...(opts.org !== undefined ? { org: opts.org } : {}),
+      ...(opts.visibility !== undefined ? { visibility: opts.visibility } : {}),
+      ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
+    });
+  }
+
+  async importProject(
+    ref: ProjectRef,
+    opts: { url: string; branch?: string; depth?: number; visibility?: "private" | "public" },
+  ) {
+    return this.request<unknown>("POST", `${projectPath(ref)}/import`, {
+      url: opts.url,
+      ...(opts.branch !== undefined ? { branch: opts.branch } : {}),
+      ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
+      ...(opts.visibility !== undefined ? { visibility: opts.visibility } : {}),
+    });
+  }
+
+  async getImportStatus(ref: ProjectRef) {
+    return this.request<unknown>("GET", `${projectPath(ref)}/import/status`);
+  }
+
+  async getSyncStatus(ref: ProjectRef) {
+    return this.request<unknown>("GET", `${projectPath(ref)}/sync/status`);
+  }
+
+  /**
+   * Sent with an empty JSON body on purpose: the sync route answers a request
+   * WITHOUT a JSON content type as a browser form, with a redirect, which the
+   * dispatcher would surface as an opaque non-2xx.
+   */
+  async syncProject(ref: ProjectRef) {
+    return this.request<unknown>("POST", `${projectPath(ref)}/sync`, {});
+  }
+
+  // ── Organizations ───────────────────────────────────────────────────────
+
+  async createOrg(name: string, slug: string) {
+    return this.request<unknown>("POST", "/api/orgs", { name, slug });
+  }
+
+  async listOrgs() {
+    return this.request<{ orgs: unknown[] }>("GET", "/api/orgs");
+  }
+
+  async getOrg(org: string) {
+    return this.request<unknown>("GET", orgPath(org));
+  }
+
+  async addOrgMember(org: string, userId: string, role?: "member" | "admin") {
+    return this.request<unknown>("POST", `${orgPath(org)}/members`, {
+      userId,
+      ...(role !== undefined ? { role } : {}),
+    });
+  }
+
+  async removeOrgMember(org: string, userId: string) {
+    return this.request<unknown>("DELETE", `${orgPath(org)}/members/${encodeURIComponent(userId)}`);
+  }
+
+  async createTeam(
+    org: string,
+    team: { name: string; slug: string; permissions?: "read" | "write" | "admin" },
+  ) {
+    return this.request<unknown>("POST", `${orgPath(org)}/teams`, {
+      name: team.name,
+      slug: team.slug,
+      ...(team.permissions !== undefined ? { permissions: team.permissions } : {}),
+    });
+  }
+
+  async listTeams(org: string) {
+    return this.request<{ teams: unknown[] }>("GET", `${orgPath(org)}/teams`);
+  }
+
+  async addTeamMember(org: string, teamId: string, userId: string) {
+    return this.request<unknown>(
+      "POST",
+      `${orgPath(org)}/teams/${encodeURIComponent(teamId)}/members`,
+      { userId },
+    );
+  }
+
   // ── Workspaces ──────────────────────────────────────────────────────────
 
   async createWorkspace(ref: ProjectRef, name?: string) {
@@ -227,6 +336,45 @@ export class StratumClient {
     });
   }
 
+  /** Sent with an empty JSON body so the route answers in JSON, never with
+   * the redirect it gives a browser form. */
+  async evaluateChange(id: string) {
+    return this.request<unknown>("POST", `/api/changes/${encodeURIComponent(id)}/evaluate`, {});
+  }
+
+  async promoteChange(id: string, opts: { title?: string; body?: string; draft?: boolean }) {
+    return this.request<unknown>("POST", `/api/changes/${encodeURIComponent(id)}/github-pr`, {
+      ...(opts.title !== undefined ? { title: opts.title } : {}),
+      ...(opts.body !== undefined ? { body: opts.body } : {}),
+      ...(opts.draft !== undefined ? { draft: opts.draft } : {}),
+    });
+  }
+
+  async commentOnChange(
+    id: string,
+    comment: {
+      body: string;
+      file?: string;
+      line?: number;
+      side?: "old" | "new";
+      commitSha?: string;
+      parentCommentId?: string;
+    },
+  ) {
+    return this.request<unknown>(
+      "POST",
+      `/api/changes/${encodeURIComponent(id)}/comments`,
+      comment,
+    );
+  }
+
+  async listChangeComments(id: string) {
+    return this.request<{ comments: unknown[] }>(
+      "GET",
+      `/api/changes/${encodeURIComponent(id)}/comments`,
+    );
+  }
+
   // ── Issues ──────────────────────────────────────────────────────────────
 
   async createIssue(ref: ProjectRef, title: string, body?: string, linkedChangeId?: string) {
@@ -263,7 +411,7 @@ export class StratumClient {
    * grant bound to an agent (#409) gets the agent and the owner it acts for. */
   async me() {
     return this.request<
-      | { actingAs: "user"; id: string; email: string; createdAt: string }
+      | { actingAs: "user"; id: string; email: string; username?: string; createdAt: string }
       | {
           actingAs: "agent";
           agent: { id: string; name: string };

@@ -697,7 +697,7 @@ src/
 │   ├── dispatch.ts          # Runs tool calls against the real routers, in-process
 │   ├── protocol.ts          # JSON-RPC 2.0 / MCP message layer
 │   ├── schema.ts            # Tool arg schemas: JSON Schema + validator
-│   └── tools.ts             # The nineteen tools
+│   └── tools.ts             # The thirty-seven tools
 ├── merge/
 │   ├── post-merge.ts        # Post-merge actions
 │   └── protection.ts        # Merge protection rules
