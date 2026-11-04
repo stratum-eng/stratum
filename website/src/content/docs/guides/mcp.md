@@ -204,20 +204,12 @@ vetted by anyone. A name you do not recognise should be disconnected.
 
 ## The tools
 
-<<<<<<< HEAD
-Thirty-seven tools cover the full contribution loop, from creating or importing
+Thirty-eight tools cover the full contribution loop, from creating or importing
 a project to promoting a change to GitHub, plus organization management. Project
 arguments take a `namespace/slug` reference (`@acme/api` and `acme/api` both
 work); organization arguments take the org's slug (`acme` or `@acme`). Every
 tool's description states the access it needs, and the API behind it enforces
 exactly what it enforces over REST.
-||||||| parent of 3343896 (Add stratum_workspace_remote: a short-lived git credential for one workspace)
-Nineteen tools cover the full contribution loop. Project arguments take a
-`namespace/slug` reference (`@acme/api` and `acme/api` both work).
-=======
-Twenty tools cover the full contribution loop. Project arguments take a
-`namespace/slug` reference (`@acme/api` and `acme/api` both work).
->>>>>>> 3343896 (Add stratum_workspace_remote: a short-lived git credential for one workspace)
 
 **Identity and reading**
 
@@ -399,24 +391,12 @@ them alike. With an **agent token**, or an OAuth connection
 
 - **Works:** the project reading tools (`get_project`, `list_files`,
   `get_file`, `get_activity`), `stratum_create_workspace`, `stratum_commit`,
-<<<<<<< HEAD
+  `stratum_workspace_remote` (the credential then pushes as the agent),
   `stratum_create_change`, `stratum_comment_change`,
   `stratum_list_change_comments`, `stratum_create_issue`, `stratum_list_issues`,
   and `stratum_get_usage` (which reports the **owner's** allowance) — an agent
   can do everything up to and including proposing a gated change, discussing it,
   and opening issues about its work. Address projects by `namespace/slug`
-||||||| parent of 3343896 (Add stratum_workspace_remote: a short-lived git credential for one workspace)
-  `stratum_create_change`, `stratum_create_issue`, `stratum_list_issues`, and
-  `stratum_get_usage` (which reports the **owner's** allowance) — an agent can
-  do everything up to and including proposing a gated change and opening
-  issues about its work. Address projects by `namespace/slug`
-=======
-  `stratum_workspace_remote` (the credential then pushes as the agent),
-  `stratum_create_change`, `stratum_create_issue`, `stratum_list_issues`, and
-  `stratum_get_usage` (which reports the **owner's** allowance) — an agent can
-  do everything up to and including proposing a gated change and opening
-  issues about its work. Address projects by `namespace/slug`
->>>>>>> 3343896 (Add stratum_workspace_remote: a short-lived git credential for one workspace)
   directly: `stratum_list_projects` returns an **empty list** on an agent
   token or a bound connection rather than the owner's projects. A bare agent
   token gets a 401 from `stratum_whoami`; a bound connection gets its identity.
