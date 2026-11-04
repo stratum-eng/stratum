@@ -2329,8 +2329,11 @@ paths:
         owner is linked to the installation covering the repository (or an
         operator binding names that owner). Otherwise it is the instance
         `GITHUB_TOKEN`, and only under an operator binding. A refused
-        credential means `403`. No App credential available and no
-        `GITHUB_TOKEN` configured means `400 GITHUB_NOT_CONFIGURED`. A project
+        credential means `403`. No App credential obtained (App not configured,
+        not installed on the repository, or its installation lookup or token
+        minting failed, which the server logs as a "GitHub App token
+        unavailable" warning) and no `GITHUB_TOKEN` configured means
+        `400 GITHUB_NOT_CONFIGURED`. A project
         that is not the repository's canonical project gets `409`.
 
         The PR base is always the project's own recorded default branch and is
