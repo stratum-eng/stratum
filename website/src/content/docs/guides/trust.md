@@ -191,18 +191,19 @@ the `BACKUPS` R2 bucket:
   manifest. To confirm one repository, look for its pack in a retained run.
 
 **Retention has to cover the rotation, or some repositories have no backup.**
-Each run stores packs only for the projects in that run's slice. With `P`
-projects, a project's most recent pack is up to `ceil(P / MAX_REPOS_PER_RUN)`
-runs old, and only the last `BACKUP_RETENTION` runs survive pruning. With the
-defaults (25 per run, 14 runs), the retained runs hold at most 14 × 25 = **350**
-distinct projects:
+Each run stores packs only for the pinned projects and the projects in that
+run's slice. Pinned projects use no rotation slots, so this calculation counts
+only the rest. With `P` unpinned projects, a project's most recent pack is up to
+`ceil(P / MAX_REPOS_PER_RUN)` runs old, and only the last `BACKUP_RETENTION` runs
+survive pruning. With the defaults (25 per run, 14 runs), the retained runs hold
+at most 14 × 25 = **350** distinct unpinned projects, plus any pinned ones:
 
-- **Up to 350 projects:** every project that snapshotted successfully has at
+- **Up to 350 unpinned projects:** every one that snapshotted successfully has at
   least one retained pack. That pack can be up to `ceil(P / 25)` daily runs old,
   so a repository restore can lose up to that many days of merged history.
-  Example: 300 projects give a 12-run rotation, so the worst case is about 12
+  Example: 300 unpinned projects give a 12-run rotation, so the worst case is about 12
   days.
-- **Over 350 projects:** some projects have no Git pack in any retained run at
+- **Over 350 unpinned projects:** some of them have no Git pack in any retained run at
   any given time. Their pack was pruned before the rotation came back around to
   them.
 
@@ -212,8 +213,11 @@ pack. Two settings can change: raise `MAX_REPOS_PER_RUN`, which shortens the
 rotation and the restore-point age but is bounded by the backup invocation's
 roughly 15-minute budget, or raise `BACKUP_RETENTION`, which costs R2 storage.
 The code does not check this inequality or warn when it fails. A pinned project
-is not subject to it: it has a pack in every retained run where its snapshot
-succeeded, so its restore point is at most one run old.
+is not subject to it, because every run attempts it. It has a pack in each
+retained run where its snapshot succeeded, so its restore point is one run old
+only while its snapshots keep succeeding. Consecutive failures or skips leave a
+gap as long as the streak, and a project over `MAX_BACKUP_BYTES` has no pack at
+all.
 - **Not in any backup:** `DEPLOY_SECRET_KEY` and the other Wrangler secrets. The
   `project_secrets` rows are backed up as ciphertext only.
 - **Restore** has a documented, tested path in the runbook.

@@ -268,9 +268,11 @@ least one tag.
    ```bash
    git clone <live-clone-url> live && git -C live show-ref --head > live-refs.txt
    ```
-4. **Restore into staging.** Run `restoreProjectRepo` for the drill repo from
-   `<runTs>`. Restore it under a scratch repo name, or rename the live staging
-   repo first. Use `force` only if you mean to overwrite.
+4. **Restore into staging.** Rename the live staging repo first:
+   `restoreProjectRepo` takes the repo name from the snapshot manifest's project
+   remote and has no name override, so the restore always targets the original
+   name. Then run it for the drill repo from `<runTs>`. Use `force` only if you
+   mean to overwrite.
 5. **Clone the restored repo and compare.**
    ```bash
    git clone <restored-clone-url> restored && git -C restored show-ref --head > restored-refs.txt
