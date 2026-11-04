@@ -516,10 +516,18 @@ export async function handleInstallationChange(
     ...repoFullNames(data.repositories_added),
     ...repoFullNames(data.repositories_removed),
   ];
-  await invalidateInstallationCache(env.STATE, {
-    repoFullNames: repos,
-    ...(facts ? { installationId: facts.installationId } : {}),
-  });
+  // A failed invalidation must not skip the D1 write either: the installer
+  // record is what the link flow reads, and GitHub does not redeliver after
+  // our 200. Apply the write, then rethrow so the router records the failure.
+  let invalidationFailure: { error: unknown } | undefined;
+  try {
+    await invalidateInstallationCache(env.STATE, {
+      repoFullNames: repos,
+      ...(facts ? { installationId: facts.installationId } : {}),
+    });
+  } catch (error) {
+    invalidationFailure = { error };
+  }
 
   if (facts) {
     const write =
@@ -543,6 +551,7 @@ export async function handleInstallationChange(
       action,
     });
   }
+  if (invalidationFailure) throw invalidationFailure.error;
 
   logger.info("Processed GitHub App installation event", {
     eventType,

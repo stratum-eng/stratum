@@ -802,6 +802,25 @@ describe("installation webhooks", () => {
     expect(store.has("github_installation:acme/removed")).toBe(false);
   });
 
+  it("still writes the installation row when the cache invalidation fails", async () => {
+    const { kv } = makeKv();
+    const failingKv = {
+      ...kv,
+      delete: () => Promise.reject(new Error("kv down")),
+    } as unknown as KVNamespace;
+
+    await expect(
+      handleInstallationChange(
+        { STATE: failingKv, DB: db },
+        "installation",
+        event("created"),
+        logger,
+      ),
+    ).rejects.toThrow("kv down");
+
+    expect(installationRow(777)?.installer_github_id).toBe("4242");
+  });
+
   it("invalidateInstallationCache is a no-op for malformed names", async () => {
     const { kv, store } = makeKv({ "github_installation:a/b": "1" });
     await invalidateInstallationCache(kv, { repoFullNames: ["nonsense"] });

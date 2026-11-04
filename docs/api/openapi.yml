@@ -2328,9 +2328,10 @@ paths:
         The credential is the GitHub App's installation token when the project's
         owner is linked to the installation covering the repository (or an
         operator binding names that owner). Otherwise it is the instance
-        `GITHUB_TOKEN`, and only under an operator binding. No credential means
-        `403`. A project that is not the repository's canonical project gets
-        `409`.
+        `GITHUB_TOKEN`, and only under an operator binding. A refused
+        credential means `403`. No App credential available and no
+        `GITHUB_TOKEN` configured means `400 GITHUB_NOT_CONFIGURED`. A project
+        that is not the repository's canonical project gets `409`.
 
         The PR base is always the project's own recorded default branch and is
         not accepted from the request body: the endpoint acts with a credential

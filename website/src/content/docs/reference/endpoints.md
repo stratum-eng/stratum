@@ -217,7 +217,9 @@ on the repository **and** that installation is linked to the project's owner
 the project's owner for the repository's GitHub owner. The instance-wide
 `GITHUB_TOKEN` is used only for such a binding. A project with neither gets
 `403`, and a project that is not the repository's canonical project gets
-`409 GITHUB_REPO_NOT_CANONICAL`.
+`409 GITHUB_REPO_NOT_CANONICAL`. An instance where no App credential is
+available and `GITHUB_TOKEN` is unset answers `400 GITHUB_NOT_CONFIGURED`
+instead: that is missing configuration, not a refusal.
 
 If a re-evaluation begins while the branch is being pushed, the response is
 `409 EVALUATION_PENDING`: the PR exists and its link is recorded (`github` in
@@ -873,12 +875,14 @@ with `deleted-user` and changes nothing else.
 When the instance runs a GitHub App, outbound GitHub calls for a project — PR
 promotion, sync, and evaluation comments and statuses — use the app's
 installation token for the repository **only if that installation is linked to
-the project's owner**. A project's source URL is whatever its owner typed, so
-without the link anyone could import another organization's repository and have
-Stratum push to it with that organization's installation. Unlinked
-installations grant nothing, and a caller the installation refuses is **not**
-handed the instance-wide `GITHUB_TOKEN` instead: that credential is reserved
-for owners the operator binds explicitly (see [Operator bindings](#operator-bindings)).
+the project's owner, or an [operator binding](#operator-bindings) names that
+owner** for the repository's GitHub owner. A project's source URL is whatever
+its owner typed, so without one of the two anyone could import another
+organization's repository and have Stratum push to it with that organization's
+installation. An installation that is neither linked nor covered by a binding
+grants nothing, and a caller the installation refuses is **not** handed the
+instance-wide `GITHUB_TOKEN` instead: that credential is reserved for owners the
+operator binds explicitly.
 
 The same rule decides which project receives a repository's webhook events
 (push, pull request, review), and every repository has **one canonical

@@ -100,7 +100,9 @@ on the repository **and** that installation is linked to the project's owner
 the project's owner for the repository's GitHub owner. The instance-wide
 `GITHUB_TOKEN` is used only for such a binding. A project with neither gets
 `403`, and a project that is not the repository's canonical project gets
-`409 GITHUB_REPO_NOT_CANONICAL`.
+`409 GITHUB_REPO_NOT_CANONICAL`. An instance where no App credential is
+available and `GITHUB_TOKEN` is unset answers `400 GITHUB_NOT_CONFIGURED`
+instead: that is missing configuration, not a refusal.
 
 If a re-evaluation begins while the branch is being pushed, the response is
 `409 EVALUATION_PENDING`: the PR exists and its link is recorded (`github` in
