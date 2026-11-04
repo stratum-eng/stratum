@@ -413,6 +413,17 @@ describe("review follow-ups", () => {
     expect((await poll(json.pollToken)).status).toBe(410);
   });
 
+  it("tells a storage failure apart from an expired request", async () => {
+    const { json } = await requestSignup();
+    raw.exec(
+      "CREATE TRIGGER fail_approve BEFORE UPDATE OF status ON agent_signups WHEN NEW.status = 'approved' BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+    );
+    const res = await approve(approvalTokenFromEmail());
+    expect(res.headers.get("Location")).toBe("/settings?notice=agent-connect-failed");
+    expect(res.headers.get("Set-Cookie")).toContain("session");
+    expect((await poll(json.pollToken)).json.status).not.toBe("complete");
+  });
+
   it("the daily purge deletes requests a day past expiry, and nothing newer", async () => {
     const { purgeExpiredAgentSignups } = await import("../src/storage/agent-signups");
     await requestSignup();

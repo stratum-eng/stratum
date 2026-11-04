@@ -1007,13 +1007,17 @@ async function completeAgentSignup(
   const userId = account.userId;
 
   const approved = await approveAgentSignup(c.env.DB, agentSignupId, userId, logger);
-  const handedOff = approved.success && approved.data;
-  if (!handedOff) {
-    // The account exists and the human is signed in below; only the agent's
-    // hand-off missed (the request expired in the moments since the check
-    // above, or the write failed). Send them to Settings, where they can
-    // connect an agent, rather than telling them one is connected.
-    logger.warn("Agent signup could not be marked approved", { agentSignupId, userId });
+  // The account exists and the human is signed in below either way; only the
+  // agent's hand-off can miss. Send them to Settings, where they can connect an
+  // agent, rather than telling them one is connected, and say which miss it
+  // was: an expired request needs a new one, a failed write may not.
+  let outcome = "agent-connected";
+  if (!approved.success) {
+    outcome = "agent-connect-failed";
+    logger.error("Agent signup approval could not be saved", approved.error);
+  } else if (!approved.data) {
+    outcome = "agent-not-connected";
+    logger.warn("Agent signup expired before it could be approved", { agentSignupId, userId });
   } else {
     await recordAudit(c.env.DB, logger, {
       action: "agent_signup.approved",
@@ -1030,7 +1034,7 @@ async function completeAgentSignup(
     emailHash,
     rememberMe,
     logger,
-    handedOff ? "/settings?notice=agent-connected" : "/settings?notice=agent-not-connected",
+    `/settings?notice=${outcome}`,
     "signup",
   );
 }

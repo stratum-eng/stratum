@@ -576,6 +576,11 @@ const SETTINGS_NOTICES: Record<string, SettingsNotice> = {
     message:
       "You're signed up, but the agent's request expired before it could be connected. Ask the agent to start its signup again.",
   },
+  "agent-connect-failed": {
+    kind: "error",
+    message:
+      "You're signed up, but connecting the agent failed on our side. Ask the agent to start its signup again.",
+  },
   "legacy-disabled": {
     kind: "success",
     message:

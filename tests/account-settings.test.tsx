@@ -346,6 +346,10 @@ describe("POST /settings/account (display name)", () => {
       await makeApp().fetch(get("/settings?notice=agent-not-connected"), makeEnv())
     ).text();
     expect(missed).toContain("request expired before it could be connected");
+    const failed = await (
+      await makeApp().fetch(get("/settings?notice=agent-connect-failed"), makeEnv())
+    ).text();
+    expect(failed).toContain("connecting the agent failed on our side");
   });
 });
 
