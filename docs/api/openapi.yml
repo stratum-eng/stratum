@@ -2005,7 +2005,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: Not an admin, or the repository is private (`code` = `private`)
+          description: Not an admin, the repository is private (`code` = `private`), or no GitHub credential may act for the project's owner (`not-authorized`)
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -2013,7 +2013,7 @@ paths:
         "502":
           description: GitHub could not be reached (`code` = `github`)
         "503":
-          description: GitHub is not configured on this instance (`not-configured`), or the job could not be queued (`failed`)
+          description: No GitHub credential is available on this instance (`not-configured`), or the job could not be queued (`failed`)
     get:
       operationId: getGitHubIssueImport
       tags: [issues]

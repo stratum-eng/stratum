@@ -9,4 +9,6 @@
   import runs in the background, waits out GitHub rate limits, and is safe to
   re-run: it updates what it already imported instead of duplicating it, so it
   can catch a project up right before switching over. Public repositories only
-  for now. Requires D1 migration `064_github_issue_import.sql`.
+  for now. It needs a GitHub credential that may act for the project's owner,
+  the same as every other GitHub call: a linked GitHub App installation or an
+  operator binding. Requires D1 migration `064_github_issue_import.sql`.

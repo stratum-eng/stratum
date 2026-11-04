@@ -199,6 +199,8 @@ async function makeEnv(projectOverrides: Partial<ProjectEntry> = {}) {
     STATE: kv,
     IMPORT_QUEUE: queue,
     GITHUB_TOKEN: "ghp_instance",
+    // The instance token acts only for an owner the operator binds.
+    GITHUB_ALLOWED_OWNERS: "acme=user:user_owner",
   } as unknown as Env;
   return { db, raw, env, kv, project, sent };
 }
@@ -496,6 +498,16 @@ describe("GitHub issue import job", () => {
     const run = await getIssueImportRun(ctx.db, logger, runId);
     expect(run.success && run.data?.status).toBe("failed");
   });
+
+  it("fails the run when no credential may act for the project's owner", async () => {
+    seedRepo();
+    const ctx = await makeEnv();
+    (ctx.env as { GITHUB_ALLOWED_OWNERS?: string }).GITHUB_ALLOWED_OWNERS = undefined;
+    const { runId } = await runImport(ctx);
+    const run = await getIssueImportRun(ctx.db, logger, runId);
+    expect(run.success && run.data?.status).toBe("failed");
+    expect(gh.requests).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -616,6 +628,16 @@ describe("POST /api/projects/:ns/:slug/issues/import/github", () => {
     const { call, sent } = await makeApp();
     const res = await call("POST", OWNER_AUTH);
     expect(res.status).toBe(403);
+    expect(((await res.json()) as { code: string }).code).toBe("private");
+    expect(sent).toHaveLength(0);
+  });
+
+  it("refuses when no GitHub credential may act for the project's owner", async () => {
+    const { call, sent, env } = await makeApp();
+    (env as { GITHUB_ALLOWED_OWNERS?: string }).GITHUB_ALLOWED_OWNERS = undefined;
+    const res = await call("POST", OWNER_AUTH);
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { code: string }).code).toBe("not-authorized");
     expect(sent).toHaveLength(0);
   });
 

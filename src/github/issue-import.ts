@@ -390,7 +390,7 @@ export async function processIssueImportMessage(
       await failRun(env, logger, run.id, "The project's GitHub source changed during the import"),
     );
   }
-  const token = await resolveIssueImportToken(env, project);
+  const token = await resolveIssueImportToken(env, project, repo, logger);
   if (!token.success) return ok(await failRun(env, logger, run.id, token.error.message));
 
   const client = new GitHubClient(token.data, logger);

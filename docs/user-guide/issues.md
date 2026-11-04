@@ -166,9 +166,14 @@ not deleted here.
 
 - Project **admin** (the owner, or an org owner/admin), signed in as a user.
 - The project has a GitHub source and its code import has completed.
-- **Public repositories only**, for now: the import reads GitHub with the
-  instance's GitHub credential, and a private repository is refused with `403`.
-- The instance must have GitHub configured (`GITHUB_TOKEN`); otherwise `503`.
+- **Public repositories only**, for now: the import reads GitHub with an
+  instance GitHub credential, and a private repository is refused with `403`.
+- A GitHub credential must be allowed to act for the project's owner, by the
+  same rule as every other GitHub call (see
+  [GitHub App installations](../api/endpoints/github-app.md)). That means the
+  GitHub App installation for the repository is linked to the owner, or an
+  operator binding names the owner. Otherwise the request gets `403`
+  (`not-authorized`). If no credential is available at all, it gets `503`.
 - One import per project at a time — a second request answers `409`.
 - Imported issues do not emit `issue.opened` events, so webhooks are not fired
   for every historical issue.

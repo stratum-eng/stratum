@@ -447,11 +447,12 @@ comments instead of duplicating them. Form posts redirect to the settings page.
 |---|---|---|
 | `400` | `no-source` | The project has no GitHub source |
 | `403` | `private` | The GitHub repository is private |
+| `403` | `not-authorized` | No GitHub credential may act for the project's owner (no linked App installation and no operator binding) |
 | `409` | `active` | An import is already queued or running |
 | `409` | `incomplete` | The project's code import has not completed |
 | `409` | `deleting` | The project is being deleted |
 | `502` | `github` | GitHub could not be reached to check the repository |
-| `503` | `not-configured` | The instance has no GitHub credential |
+| `503` | `not-configured` | No GitHub credential is available on the instance |
 
 `GET` on the same path returns `{ "run": … }` for the latest run, or
 `{ "run": null }`. Imported issues and comments carry `externalUrl` (the GitHub

@@ -18,7 +18,7 @@
 import { Hono } from "hono";
 import { GitHubClient } from "../github/client";
 import { enqueueIssueImportPage, githubRepoKey } from "../github/issue-import";
-import { resolveIssueImportToken } from "../github/issue-import-credential";
+import { isIssueImportRefusal, resolveIssueImportToken } from "../github/issue-import-credential";
 import { recordAudit } from "../storage/audit";
 import { isTargetDeleting } from "../storage/deletion";
 import {
@@ -53,6 +53,8 @@ export const ISSUE_IMPORT_NOTICES = {
   incomplete: "The repository import has not finished yet; import issues after it completes.",
   private: "Issues can only be imported from public GitHub repositories for now.",
   "not-configured": "GitHub integration is not configured on this instance.",
+  "not-authorized":
+    "No GitHub credential on this instance may read this repository for this project's owner. Link the GitHub App installation to the owner, or ask the operator for a binding.",
   github: "GitHub could not be reached to check the repository. Try again shortly.",
   deleting: "This project is being deleted.",
   failed: "The import could not be queued. Try again shortly.",
@@ -146,8 +148,12 @@ app.post("/:namespace/:slug/issues/import/github", async (c) => {
   if (repoKey === null) return refuse("no-source", 400);
   const [owner, repo] = repoKey.split("/") as [string, string];
 
-  const token = await resolveIssueImportToken(c.env, project);
-  if (!token.success) return refuse("not-configured", 503);
+  const token = await resolveIssueImportToken(c.env, project, { owner, repo }, logger);
+  if (!token.success) {
+    return isIssueImportRefusal(token.error)
+      ? refuse("not-authorized", 403)
+      : refuse("not-configured", 503);
+  }
 
   const visibility = await new GitHubClient(token.data, logger).getRepoVisibility(owner, repo);
   if (!visibility.success) {
