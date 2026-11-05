@@ -81,7 +81,7 @@ describe("anonymizeUserContributions", () => {
     expect(result.success).toBe(true);
 
     const updates = executed.filter((s) => s.sql.startsWith("UPDATE"));
-    expect(updates.length).toBe(12);
+    expect(updates.length).toBe(13);
     for (const stmt of updates) {
       expect(stmt.sql).toMatch(/^UPDATE \w+ SET \w+ = \? WHERE \w+ = \?$/);
       expect(stmt.bindings).toEqual([DELETED_USER_SENTINEL, "usr_1"]);
@@ -98,6 +98,9 @@ describe("anonymizeUserContributions", () => {
     // agent-owned, and the agent it named is deleted outright — so without this
     // the row keeps a bare account id that nothing can resolve or erase.
     expect(cols).toContain("UPDATE cost_records SET owner_id = ? WHERE owner_id = ?");
+    expect(cols).toContain(
+      "UPDATE github_issue_imports SET initiated_by = ? WHERE initiated_by = ?",
+    );
   });
 });
 
