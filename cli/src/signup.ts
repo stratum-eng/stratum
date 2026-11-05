@@ -67,12 +67,15 @@ function str(body: JsonObject, key: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+const REQUEST_TIMEOUT_STATUS = 408;
+
 function fail(error: string): SignupResult {
   return { ok: false, error };
 }
 
-function isClientError(status: number): boolean {
-  return status >= 400 && status < 500 && status !== 429;
+/** 4xx is final, or asks for backoff (429), except 408: a timeout, worth retrying. */
+function statusSurvivesUnreadableBody(status: number): boolean {
+  return status >= 400 && status < 500 && status !== REQUEST_TIMEOUT_STATUS;
 }
 
 interface HttpReply {
@@ -82,9 +85,10 @@ interface HttpReply {
 
 /**
  * One JSON POST. A network failure or an unreadable body becomes a string rather
- * than a throw, so the poll loop can retry it. The exception is a 4xx other than
- * 429: a WAF, access proxy, or wrong path answers with an HTML page that retrying
- * cannot fix, so it comes back as a reply and fails on its status.
+ * than a throw, so the poll loop can retry it. The exception is most 4xx: a WAF,
+ * access proxy, or wrong path answers with an HTML page that retrying cannot fix,
+ * and a rate limiter's HTML 429 must still reach the backoff, so those come back
+ * as a reply carrying their status.
  */
 async function postJson(url: string, payload: JsonObject): Promise<HttpReply | string> {
   let response: Response;
@@ -103,11 +107,11 @@ async function postJson(url: string, payload: JsonObject): Promise<HttpReply | s
   try {
     parsed = JSON.parse(text);
   } catch {
-    if (isClientError(response.status)) return { status: response.status, body: {} };
+    if (statusSurvivesUnreadableBody(response.status)) return { status: response.status, body: {} };
     return `${url} returned a non-JSON response (HTTP ${response.status})`;
   }
   if (!isObject(parsed)) {
-    if (isClientError(response.status)) return { status: response.status, body: {} };
+    if (statusSurvivesUnreadableBody(response.status)) return { status: response.status, body: {} };
     return `${url} returned an unexpected response (HTTP ${response.status})`;
   }
   return { status: response.status, body: parsed };
@@ -253,8 +257,9 @@ export async function runSignup(req: SignupRequest, deps: SignupDeps): Promise<S
       intervalSeconds = Math.min(MAX_INTERVAL_SECONDS, intervalSeconds * 2);
       continue;
     }
-    if (reply.status >= 500) {
-      // POLL_FAILED is explicitly retryable: the server releases its claim.
+    if (reply.status >= 500 || reply.status === REQUEST_TIMEOUT_STATUS) {
+      // POLL_FAILED is explicitly retryable: the server releases its claim. A
+      // 408 is a timeout, and exiting would discard the poll token for good.
       deps.notify(`Warning: ${str(reply.body, "error") ?? `HTTP ${reply.status}`}; retrying.`);
       continue;
     }

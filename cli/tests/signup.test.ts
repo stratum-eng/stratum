@@ -296,6 +296,30 @@ describe("stratum signup: transient poll failures", () => {
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
+  it("retries a 408 poll reply, JSON or not", async () => {
+    const spy = mockFetch(
+      jsonResponse(accepted, 202),
+      new Response("<html>", { status: 408 }),
+      jsonResponse({ error: "timeout" }, 408),
+      jsonResponse({ status: "expired", code: "EXPIRED", error: "expired" }, 410),
+    );
+    const result = await runSignup(request, harness().deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/expired/);
+    expect(spy).toHaveBeenCalledTimes(4);
+  });
+
+  it("backs off on a non-JSON 429 poll reply", async () => {
+    mockFetch(
+      jsonResponse(accepted, 202),
+      new Response("<html>", { status: 429 }),
+      jsonResponse({ status: "expired", code: "EXPIRED", error: "expired" }, 410),
+    );
+    const h = harness();
+    await runSignup(request, h.deps);
+    expect(h.sleeps).toEqual([5000, 10000]);
+  });
+
   it("still retries a non-JSON 5xx poll reply", async () => {
     const spy = mockFetch(
       jsonResponse(accepted, 202),
