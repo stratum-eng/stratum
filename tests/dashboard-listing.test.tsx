@@ -6,11 +6,13 @@ vi.mock("../src/storage/users", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/storage/users")>()),
   getUser: vi.fn(),
 }));
-vi.mock("../src/storage/orgs", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/storage/orgs")>()),
-  listOrgsForUser: vi.fn(),
-  getOrgAccessLevel: vi.fn(async () => "read"),
-}));
+vi.mock("../src/storage/orgs", async (importOriginal) =>
+  (await import("./helpers/org-access-mock")).withOrgAccess({
+    ...(await importOriginal<typeof import("../src/storage/orgs")>()),
+    listOrgsForUser: vi.fn(),
+    getOrgAccessLevel: vi.fn(async () => "read" as const),
+  }),
+);
 vi.mock("../src/storage/state", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/storage/state")>()),
   listProjects: vi.fn(),

@@ -22,7 +22,8 @@ shapes, and [Authentication](../authentication.md) for the SCIM token class.
 ## Security policy
 
 - `GET /api/orgs/:slug/security` — read the policy (any member)
-- `PUT /api/orgs/:slug/security` — `{ "requireSecondFactor": true }` (admins/owner)
+- `PUT /api/orgs/:slug/security` — `{ "requireSecondFactor": true }` (admins/owner).
+  Either field (`requireSecondFactor`, `ipAllowlist`) may be sent alone.
 
 With `requireSecondFactor` on, a member's browser session reaches this org's
 projects and `/api/orgs/:slug/` endpoints only if it passed a passkey check or
@@ -39,10 +40,31 @@ Those requests return `403 SECOND_FACTOR_REQUIRED`. Tokens bound to other
 targets are unaffected. See
 [Creating credentials](../../user-guide/passkeys.md#creating-credentials).
 
+### IP allowlist
+
+- `PUT /api/orgs/:slug/security` — `{ "ipAllowlist": ["203.0.113.0/24", "2001:db8::/32"] }`
+  (admins/owner). `[]` removes the restriction.
+
+When the list is non-empty, requests from outside it cannot use the access the
+org grants. This covers its projects (including git clone and push), its
+`/api/orgs/:slug/` endpoints, and creating projects in it. Every credential is
+covered: sessions, API tokens, agent tokens, and OAuth grants. Those requests
+return `403 IP_NOT_ALLOWED`, with `org` and the `ip` Stratum saw. A caller who is
+not a member gets the usual `404` instead. Anonymous reads of public projects,
+the SSO sign-in flow, SCIM, and leaving the org are not restricted. The client
+address comes from `CF-Connecting-IP` only, and a request without it is refused.
+
+Entries are IPv4 or IPv6 addresses or CIDR ranges, at most 100. They are returned
+in canonical form. Saving a list that excludes your own current address returns
+`409 IP_ALLOWLIST_SELF_LOCKOUT`; add `"allowSelfLockout": true` to save it
+anyway. Changes are audited as `org.ip_allowlist_changed`. Refusals are audited
+as `org.ip_access_denied`, at most once per member per org every 10 minutes. See
+[Organization IP allowlists](../../user-guide/org-ip-allowlist.md).
+
 ## Members and teams
 
 Any member can leave with `DELETE /api/orgs/:slug/members/<own user id>`, even
-when the org's second-factor policy blocks them. The owner cannot leave
+when the org's second-factor policy or IP allowlist blocks them. The owner cannot leave
 (`409 OWNER_CANNOT_LEAVE`). Removing anyone else requires an org admin.
 
 Members and teams are managed under `/api/orgs/{slug}/members` and

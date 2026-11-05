@@ -28,6 +28,7 @@ import {
   rpcError,
 } from "../mcp/protocol";
 import { buildTools } from "../mcp/tools";
+import { clientIpOf } from "../services/org-ip-allowlist";
 import type { Env } from "../types";
 import { getExecutionCtx } from "../utils/execution-ctx";
 import type { Logger } from "../utils/logger";
@@ -187,7 +188,7 @@ app.post("/mcp", async (c) => {
   // The credential is replayed verbatim rather than re-minted, so every tool
   // call is authorized as the caller by the real middleware. See dispatch.ts.
   const client = new StratumClient(new URL(c.req.url).origin, authorization, (request) =>
-    dispatchApiRequest(request, c.env, getExecutionCtx(c)),
+    dispatchApiRequest(request, c.env, getExecutionCtx(c), clientIpOf(c)),
   );
   const ctx = { tools: buildTools(client), serverVersion: SERVER_VERSION };
   // The tool names this build actually defines, so an unrecognised name in a

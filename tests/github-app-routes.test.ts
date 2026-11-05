@@ -501,3 +501,105 @@ describe("org second-factor policy (#256)", () => {
     expect(res.headers.get("Location")).toBe("/github/app/setup?notice=second_factor_required");
   });
 });
+
+describe("org IP allowlist (#399)", () => {
+  const OFFICE = "203.0.113.7";
+
+  function from(ip: string | null, method: string, path: string, body?: Record<string, string>) {
+    const headers: Record<string, string> = { Authorization: `Bearer ${tokenOf("alice")}` };
+    if (ip !== null) headers["CF-Connecting-IP"] = ip;
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    return app.fetch(
+      new Request(`http://localhost${path}`, {
+        method,
+        headers,
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      }),
+      env,
+    );
+  }
+
+  beforeEach(() => {
+    raw.prepare("UPDATE org_members SET role = 'admin' WHERE user_id = 'usr_alice'").run();
+    raw
+      .prepare("UPDATE orgs SET ip_allowlist = ? WHERE id = 'org_acme'")
+      .run(JSON.stringify(["203.0.113.0/24"]));
+  });
+
+  it("refuses an org admin outside the allowlist to link the installation to the org", async () => {
+    const refused = await from("198.51.100.9", "POST", "/api/github/installations/777/link", {
+      org: "acme",
+    });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ code: "IP_NOT_ALLOWED" });
+    expect(owner()).toEqual({ type: null, id: null });
+
+    const ok = await from(OFFICE, "POST", "/api/github/installations/777/link", { org: "acme" });
+    expect(ok.status).toBe(200);
+    expect(owner()).toEqual({ type: "org", id: "org_acme" });
+  });
+
+  it("refuses to unlink or move the org's link from outside the allowlist, failing closed with no address", async () => {
+    raw
+      .prepare(
+        "UPDATE github_app_installations SET stratum_owner_type = 'org', stratum_owner_id = 'org_acme' WHERE installation_id = 777",
+      )
+      .run();
+
+    const canUnlinkFrom = async (ip: string) => {
+      const listed = await from(ip, "GET", "/api/github/installations");
+      const body = (await listed.json()) as { installations: Array<{ canUnlink: boolean }> };
+      return body.installations[0]?.canUnlink;
+    };
+    expect(await canUnlinkFrom("198.51.100.9")).toBe(false);
+    expect(await canUnlinkFrom(OFFICE)).toBe(true);
+
+    for (const ip of ["198.51.100.9", null]) {
+      const unlink = await from(ip, "POST", "/api/github/installations/777/unlink", {});
+      expect(unlink.status).toBe(403);
+      expect(await unlink.json()).toMatchObject({ code: "IP_NOT_ALLOWED" });
+      const move = await from(ip, "POST", "/api/github/installations/777/link", {});
+      expect(move.status).toBe(403);
+      expect(await move.json()).toMatchObject({ code: "IP_NOT_ALLOWED" });
+    }
+    expect(owner()).toEqual({ type: "org", id: "org_acme" });
+
+    const ok = await from(OFFICE, "POST", "/api/github/installations/777/unlink", {});
+    expect(ok.status).toBe(200);
+    expect(owner()).toEqual({ type: null, id: null });
+  });
+
+  it("sends a browser form back to the setup page with the notice, and audits it", async () => {
+    // Its own org: denial audits are sampled per org and caller, in memory, so
+    // the earlier tests' refusals would otherwise suppress this one.
+    raw
+      .prepare(
+        "INSERT INTO orgs (id, name, slug, owner_id, ip_allowlist) VALUES ('org_form', 'Form', 'form', 'usr_alice', ?)",
+      )
+      .run(JSON.stringify(["203.0.113.0/24"]));
+    raw
+      .prepare(
+        "INSERT INTO org_members (org_id, user_id, role) VALUES ('org_form', 'usr_alice', 'admin')",
+      )
+      .run();
+    const res = await app.fetch(
+      new Request("http://localhost/api/github/installations/777/link", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tokenOf("alice")}`,
+          "CF-Connecting-IP": "198.51.100.9",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: "org=form",
+      }),
+      env,
+    );
+    expect(res.status).toBe(303);
+    expect(res.headers.get("Location")).toBe("/github/app/setup?notice=ip_not_allowed");
+    // The redirect never reaches the IP middleware, so the route must audit it.
+    const audited = raw
+      .prepare("SELECT org_id FROM audit_log WHERE action = 'org.ip_access_denied'")
+      .all() as Array<{ org_id: string }>;
+    expect(audited).toEqual([{ org_id: "org_form" }]);
+  });
+});

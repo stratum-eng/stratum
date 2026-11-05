@@ -13,7 +13,6 @@ import {
   releaseImportLock,
 } from "../middleware/rate-limit";
 import { emitEvent } from "../queue/events";
-import { orgBlockedFor } from "../services/org-second-factor";
 import { syncOrImportProject } from "../services/project-sync";
 import {
   MAX_NATIVE_LOG_DEPTH,
@@ -57,7 +56,7 @@ import {
   recoverStalledImport,
   updateImportStatus,
 } from "../storage/imports";
-import { getOrg, getOrgAccessLevel, getOrgBySlug } from "../storage/orgs";
+import { getOrg, getOrgBySlug } from "../storage/orgs";
 import {
   claimNamespace,
   confirmOwnerNamespace,
@@ -104,6 +103,7 @@ import {
   canReadProject,
   canWriteProject,
   credentialBindingFrom,
+  effectiveOrgAccessLevel,
   filterReadableProjects,
   isBound,
   isDirectOwner,
@@ -227,11 +227,10 @@ app.post("/", async (c) => {
     const orgResult = await getOrgBySlug(c.env.DB, logger, body.org);
     if (!orgResult.success) return notFound("Organization", body.org);
     const org = orgResult.data;
-    // An org requiring a second factor this session lacks grants nothing (#256);
-    // orgSecondFactorMiddleware turns this 403 into SECOND_FACTOR_REQUIRED.
-    const accessLevel = orgBlockedFor(c, org.id)
-      ? "none"
-      : await getOrgAccessLevel(c.env.DB, logger, org.id, userId);
+    // An org requiring a second factor this session lacks grants nothing
+    // (#256), nor does one whose IP allowlist excludes this request (#399);
+    // the org-policy middlewares turn this 403 into the specific refusal.
+    const accessLevel = await effectiveOrgAccessLevel(c.env.DB, org.id, userId);
     if (accessLevel !== "write" && accessLevel !== "admin") {
       return forbidden("Creating projects in this organization requires write access");
     }
@@ -1600,10 +1599,9 @@ async function resolveImportTargetOwner(
   if (!orgResult.success) return refusal;
   const org = orgResult.data;
   // An org requiring a second factor this session lacks grants nothing (#256),
-  // exactly as on project creation.
-  const accessLevel = orgBlockedFor(c, org.id)
-    ? "none"
-    : await getOrgAccessLevel(c.env.DB, logger, org.id, userId);
+  // nor does one whose IP allowlist excludes this request (#399), exactly as
+  // on project creation.
+  const accessLevel = await effectiveOrgAccessLevel(c.env.DB, org.id, userId);
   if (accessLevel !== "write" && accessLevel !== "admin") return refusal;
   return { owner: { id: org.id, type: "org" } };
 }

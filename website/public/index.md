@@ -14,6 +14,7 @@
 - [CLI](https://docs.usestratum.dev/guides/cli/)
 - [MCP server](https://docs.usestratum.dev/guides/mcp/)
 - [Passkeys and two-factor sign-in](https://docs.usestratum.dev/guides/passkeys/)
+- [Organization IP allowlists](https://docs.usestratum.dev/guides/org-ip-allowlist/)
 - [Troubleshooting](https://docs.usestratum.dev/guides/troubleshooting/)
 - [FAQ](https://docs.usestratum.dev/guides/faq/)
 - [Trust and data residency](https://docs.usestratum.dev/guides/trust/)

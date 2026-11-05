@@ -2950,6 +2950,10 @@ paths:
       operationId: listOrgs
       tags: [orgs]
       summary: List organizations the caller belongs to
+      description: |
+        Omits each organization's `ipAllowlist`, since this path is not
+        restricted to the organization's networks. Read it from
+        `GET /api/orgs/{slug}/security`.
       responses:
         "200":
           description: Organizations
@@ -2960,7 +2964,7 @@ paths:
                 properties:
                   orgs:
                     type: array
-                    items: { $ref: "#/components/schemas/Org" }
+                    items: { $ref: "#/components/schemas/OrgSummary" }
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -3580,7 +3584,7 @@ paths:
     put:
       operationId: setOrgSecurityPolicy
       tags: [orgs]
-      summary: Require (or stop requiring) a second factor for members (admins/owner only)
+      summary: Set the org's second-factor requirement and/or IP allowlist (admins/owner only)
       description: >
         When `requireSecondFactor` is true, a member's browser session reaches
         this org's projects and `/api/orgs/{slug}/*` endpoints only if it passed
@@ -3594,11 +3598,29 @@ paths:
         `409 ADMIN_SECOND_FACTOR_REQUIRED` until the acting admin has a passkey
         (unless their session signed in through this org's SSO). Changes are
         audited as `org.second_factor_policy_changed`.
+
+
+        `ipAllowlist` (IPv4/IPv6 addresses or CIDR ranges, at most 100; `[]`
+        clears it) limits this org's resources — its projects including git,
+        its `/api/orgs/{slug}/*` endpoints, and creating projects in it — to
+        requests from inside the listed networks, for EVERY credential kind
+        (sessions, API tokens, agent tokens, OAuth grants). Requests from
+        outside get `403 IP_NOT_ALLOWED` (members only; anyone else gets the
+        route's usual 404). The client address is `CF-Connecting-IP`; a request
+        without one is refused. Anonymous reads of public projects, the SSO
+        sign-in flow, SCIM and leaving the org are not restricted. Saving a list
+        that excludes the caller's own address is refused with
+        `409 IP_ALLOWLIST_SELF_LOCKOUT` unless `allowSelfLockout` is true.
+        Changes are audited as `org.ip_allowlist_changed`; refusals as
+        `org.ip_access_denied` (sampled: once per member per org per 10 minutes).
+
+
+        Send either field, or both.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/OrgSecurityPolicy" }
+            schema: { $ref: "#/components/schemas/OrgSecurityPolicyUpdate" }
       responses:
         "200":
           description: The policy now in force
@@ -3614,7 +3636,10 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: The acting admin has no passkey (code ADMIN_SECOND_FACTOR_REQUIRED)
+          description: >
+            The acting admin has no passkey (code ADMIN_SECOND_FACTOR_REQUIRED),
+            or the IP allowlist excludes the caller's own address (code
+            IP_ALLOWLIST_SELF_LOCKOUT, with the `ip` seen)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -5974,11 +5999,40 @@ components:
         lastUsedAt: { type: [string, "null"], format: date-time }
     OrgSecurityPolicy:
       type: object
-      required: [requireSecondFactor]
+      required: [requireSecondFactor, ipAllowlist]
       properties:
         requireSecondFactor:
           type: boolean
           description: Members must sign in with a second factor (passkey, or this org's SSO)
+        ipAllowlist:
+          type: array
+          maxItems: 100
+          items: { type: string, example: "203.0.113.0/24" }
+          description: >
+            Canonical CIDR ranges the org's resources may be reached from. Empty
+            means no restriction.
+    OrgSecurityPolicyUpdate:
+      type: object
+      anyOf:
+        - required: [requireSecondFactor]
+        - required: [ipAllowlist]
+      properties:
+        requireSecondFactor:
+          type: boolean
+        ipAllowlist:
+          type: array
+          maxItems: 100
+          items: { type: string, maxLength: 64 }
+          description: >
+            IPv4/IPv6 addresses or CIDR ranges. A bare address is a single host.
+            Saved in canonical form (host bits cleared), de-duplicated. `[]`
+            removes the restriction.
+        allowSelfLockout:
+          type: boolean
+          description: >
+            Save an `ipAllowlist` that excludes the caller's current address
+            anyway. Without it, such a list is refused with
+            `409 IP_ALLOWLIST_SELF_LOCKOUT`.
     Error:
       type: object
       required: [error]
@@ -6606,7 +6660,7 @@ components:
 
     Org:
       type: object
-      required: [id, name, slug, ownerId, createdAt, requireSecondFactor]
+      required: [id, name, slug, ownerId, createdAt, requireSecondFactor, ipAllowlist]
       properties:
         id: { type: string }
         name: { type: string }
@@ -6618,6 +6672,24 @@ components:
           description: >
             Members must pass a second factor (passkey, or this org's SSO) to
             use the access the org grants. See `PUT /api/orgs/{slug}/security`.
+        ipAllowlist:
+          type: array
+          items: { type: string }
+          description: >
+            CIDR ranges the org's resources may be reached from; empty means no
+            restriction. See `PUT /api/orgs/{slug}/security`.
+
+    OrgSummary:
+      type: object
+      description: An `Org` as `GET /api/orgs` lists it, without `ipAllowlist`.
+      required: [id, name, slug, ownerId, createdAt, requireSecondFactor]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        ownerId: { type: string }
+        createdAt: { type: string, format: date-time }
+        requireSecondFactor: { type: boolean }
 
     Team:
       type: object

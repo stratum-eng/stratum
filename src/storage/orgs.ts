@@ -11,6 +11,11 @@ export interface Org {
   createdAt: string;
   /** Members must use a second factor (passkey) to reach the app (#256). */
   requireSecondFactor: boolean;
+  /**
+   * Allowed client networks, as canonical CIDR strings (#399). Empty means no
+   * restriction. See `src/services/org-ip-allowlist.ts`.
+   */
+  ipAllowlist: string[];
 }
 
 export interface OrgMember {
@@ -27,6 +32,7 @@ interface OrgRow {
   owner_id: string;
   created_at: string;
   require_second_factor?: number | null;
+  ip_allowlist?: string | null;
 }
 
 interface OrgMemberRow {
@@ -44,8 +50,34 @@ function rowToOrg(row: OrgRow): Org {
     ownerId: row.owner_id,
     createdAt: row.created_at,
     requireSecondFactor: row.require_second_factor === 1,
+    ipAllowlist: parseStoredIpAllowlist(row.ip_allowlist),
   };
 }
+
+/**
+ * The stored `orgs.ip_allowlist` column as a list. NULL is "no restriction".
+ *
+ * A value that is not a JSON array of strings cannot have been written by
+ * `setOrgIpAllowlist`, so it is corruption — and corruption of a security
+ * restriction fails CLOSED: it comes back as a non-empty list whose entry
+ * matches no address, so the org stays restricted (to nothing) rather than
+ * silently opening up. An operator clears it by writing NULL.
+ */
+export function parseStoredIpAllowlist(raw: string | null | undefined): string[] {
+  if (raw === null || raw === undefined || raw === "") return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.every((entry) => typeof entry === "string")) {
+      return parsed as string[];
+    }
+  } catch {
+    // Fall through to the fail-closed value below.
+  }
+  return [CORRUPT_IP_ALLOWLIST];
+}
+
+/** Stands in for an unreadable stored allowlist; parses as no range at all. */
+export const CORRUPT_IP_ALLOWLIST = "<unreadable>";
 
 export async function createOrg(
   db: D1Database,
@@ -74,7 +106,15 @@ export async function createOrg(
       return err(new AppError("slug is already taken", "CONFLICT", 409, { slug }));
     }
 
-    const org: Org = { id, name, slug, ownerId, createdAt, requireSecondFactor: false };
+    const org: Org = {
+      id,
+      name,
+      slug,
+      ownerId,
+      createdAt,
+      requireSecondFactor: false,
+      ipAllowlist: [],
+    };
     logger.info("Org created successfully", { orgId: id, slug });
     return ok(org);
   } catch (error) {
@@ -140,7 +180,7 @@ export async function getOrgBySlug(
   db: D1Database,
   logger: Logger,
   slug: string,
-): Promise<Result<Org, NotFoundError>> {
+): Promise<Result<Org, NotFoundError | AppError>> {
   logger.debug("Querying org by slug", { slug });
 
   try {
@@ -155,7 +195,9 @@ export async function getOrgBySlug(
     return ok(rowToOrg(row));
   } catch (error) {
     logger.error("Failed to get org by slug", error instanceof Error ? error : undefined, { slug });
-    return err(new NotFoundError("Org", slug));
+    // Not NotFoundError: "no such org" lets a caller fall through to its own
+    // 404, which a failed lookup must not do (see the IP allowlist guard).
+    return err(new AppError("Failed to look up organization", "DATABASE_ERROR", 500, { slug }));
   }
 }
 
@@ -330,6 +372,7 @@ export type OrgAccessLevel = "none" | "read" | "write" | "admin";
 interface AccessRow {
   org_role: string;
   team_level: number | null;
+  ip_allowlist?: string | null;
 }
 
 /**
@@ -348,30 +391,61 @@ export async function getOrgAccessLevel(
   orgId: string,
   userId: string,
 ): Promise<OrgAccessLevel> {
+  return (await getOrgAccess(db, logger, orgId, userId)).level;
+}
+
+/** {@link getOrgAccessLevel}, plus the org's IP allowlist from the same row. */
+export interface OrgAccess {
+  level: OrgAccessLevel;
+  /** The org's allowlist (#399); empty for non-members, whose level is none anyway. */
+  ipAllowlist: string[];
+  /**
+   * The lookup failed, so `none` means "unknown", not "not a member". Most
+   * callers can ignore it, as none already fails closed; one that lets a
+   * confirmed non-member through (for the route's own 404) must not.
+   */
+  lookupFailed?: true;
+}
+
+/**
+ * {@link getOrgAccessLevel} and the org's IP allowlist in ONE query, so the
+ * authz path enforces the allowlist (#399) without a second D1 round-trip per
+ * org-project check. Same fail-closed contract: a database error is "none".
+ */
+export async function getOrgAccess(
+  db: D1Database,
+  logger: Logger,
+  orgId: string,
+  userId: string,
+): Promise<OrgAccess> {
   try {
     const row = await db
       .prepare(
         `SELECT om.role AS org_role,
-                MAX(CASE t.permissions WHEN 'admin' THEN 3 WHEN 'write' THEN 2 WHEN 'read' THEN 1 ELSE 0 END) AS team_level
+                MAX(CASE t.permissions WHEN 'admin' THEN 3 WHEN 'write' THEN 2 WHEN 'read' THEN 1 ELSE 0 END) AS team_level,
+                o.ip_allowlist AS ip_allowlist
          FROM org_members om
+         JOIN orgs o ON o.id = om.org_id
          LEFT JOIN team_members tm ON tm.user_id = om.user_id
          LEFT JOIN teams t ON t.id = tm.team_id AND t.org_id = om.org_id
          WHERE om.org_id = ? AND om.user_id = ?
-         GROUP BY om.role`,
+         GROUP BY om.role, o.ip_allowlist`,
       )
       .bind(orgId, userId)
       .first<AccessRow>();
 
-    if (!row) return "none";
-    if (row.org_role === "owner" || row.org_role === "admin") return "admin";
-    if ((row.team_level ?? 0) >= 2) return "write";
-    return "read";
+    if (!row) return { level: "none", ipAllowlist: [] };
+    const ipAllowlist = parseStoredIpAllowlist(row.ip_allowlist);
+    if (row.org_role === "owner" || row.org_role === "admin")
+      return { level: "admin", ipAllowlist };
+    if ((row.team_level ?? 0) >= 2) return { level: "write", ipAllowlist };
+    return { level: "read", ipAllowlist };
   } catch (error) {
     logger.error("Failed to resolve org access level", error instanceof Error ? error : undefined, {
       orgId,
       userId,
     });
-    return "none";
+    return { level: "none", ipAllowlist: [], lookupFailed: true };
   }
 }
 
@@ -427,6 +501,37 @@ export async function setOrgRequireSecondFactor(
         orgId,
       },
     );
+    return err(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
+/**
+ * Replace the org's IP allowlist (#399). `entries` must already be validated
+ * and canonical; an empty list clears the restriction (stored as NULL).
+ * Returns the previous list and whether anything changed, for the audit entry.
+ */
+export async function setOrgIpAllowlist(
+  db: D1Database,
+  logger: Logger,
+  orgId: string,
+  entries: string[],
+): Promise<Result<{ changed: boolean; previous: string[] }, Error>> {
+  try {
+    const before = await db
+      .prepare("SELECT ip_allowlist FROM orgs WHERE id = ?")
+      .bind(orgId)
+      .first<{ ip_allowlist: string | null }>();
+    const previous = parseStoredIpAllowlist(before?.ip_allowlist);
+    const next = entries.length === 0 ? null : JSON.stringify(entries);
+    const result = await db
+      .prepare("UPDATE orgs SET ip_allowlist = ? WHERE id = ? AND ip_allowlist IS NOT ?")
+      .bind(next, orgId, next)
+      .run();
+    return ok({ changed: (result.meta?.changes ?? 0) > 0, previous });
+  } catch (error) {
+    logger.error("Failed to set org IP allowlist", error instanceof Error ? error : undefined, {
+      orgId,
+    });
     return err(error instanceof Error ? error : new Error(String(error)));
   }
 }

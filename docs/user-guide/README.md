@@ -23,6 +23,7 @@ Welcome to Stratum! This guide helps you get started.
 - [The CLI](cli.md) — the change flow from the terminal
 - [The MCP server](mcp.md) — the change flow for any MCP-capable agent or editor
 - [Passkeys and two-factor sign-in](passkeys.md) — passkeys, recovery codes, and the org policy
+- [Organization IP allowlists](org-ip-allowlist.md) — limit an org's resources to its own networks
 - [Troubleshooting](troubleshooting.md) — symptoms and fixes
 - [FAQ](faq.md) — including honest current limitations
 - [Trust and data residency](trust.md) — architecture, subprocessors, encryption, backups, and compliance status

@@ -1,6 +1,17 @@
 import { type Context, Hono } from "hono";
+import {
+  clientIpOf,
+  ipAllowedByList,
+  validateIpAllowlistInput,
+} from "../services/org-ip-allowlist";
 import { recordAudit } from "../storage/audit";
-import { getOrgBySlug, isOrgAdmin, isOrgMember, setOrgRequireSecondFactor } from "../storage/orgs";
+import {
+  getOrgBySlug,
+  isOrgAdmin,
+  isOrgMember,
+  setOrgIpAllowlist,
+  setOrgRequireSecondFactor,
+} from "../storage/orgs";
 import { countPasskeys } from "../storage/webauthn";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
@@ -10,17 +21,21 @@ import { badRequest, forbidden, internalError, notFound, ok } from "../utils/res
 /**
  * Org security policy (#256), mounted under `/api/orgs/:slug/security`.
  *
- * One setting today: `requireSecondFactor`. When on, every member's browser
- * session must have passed a passkey check (or, for a session that signed in
- * through THIS org's SSO, the IdP's own MFA is trusted). Enforced per session
- * in `authMiddleware`; tokens are unaffected.
+ * Two settings:
+ * - `requireSecondFactor`: every member's browser session must have passed a
+ *   passkey check (or, for a session that signed in through THIS org's SSO,
+ *   the IdP's own MFA is trusted). Tokens are unaffected.
+ * - `ipAllowlist` (#399): CIDR ranges the org's resources may be reached from,
+ *   by any credential. Empty means no restriction. Enforced in authz and
+ *   `orgIpAllowlistMiddleware`.
  *
  * Any member may read the policy (they are subject to it); only an org admin
  * or the owner may change it.
  */
 const app = new Hono<{ Bindings: Env }>();
 
-const MAX_BODY_BYTES = 4 * 1024;
+// Room for a full allowlist (100 IPv6 ranges) with whitespace.
+const MAX_BODY_BYTES = 16 * 1024;
 
 type AppContext = Context<{ Bindings: Env }>;
 
@@ -46,60 +61,130 @@ async function loadOrgFor(c: AppContext, needAdmin: boolean) {
   return { org, userId, logger };
 }
 
+function policyBody(org: { requireSecondFactor: boolean; ipAllowlist: string[] }) {
+  return { requireSecondFactor: org.requireSecondFactor, ipAllowlist: org.ipAllowlist };
+}
+
 app.get("/:slug/security", async (c) => {
   const ctx = await loadOrgFor(c, false);
   if ("response" in ctx) return ctx.response;
-  return ok({ requireSecondFactor: ctx.org.requireSecondFactor });
+  return ok(policyBody(ctx.org));
 });
+
+interface PolicyUpdate {
+  requireSecondFactor?: unknown;
+  ipAllowlist?: unknown;
+  allowSelfLockout?: unknown;
+}
 
 app.put("/:slug/security", async (c) => {
   const ctx = await loadOrgFor(c, true);
   if ("response" in ctx) return ctx.response;
   const { org, userId, logger } = ctx;
 
-  const body = await readJsonWithLimit<{ requireSecondFactor?: unknown }>(
-    c,
-    MAX_BODY_BYTES,
-    logger,
-  );
+  const body = await readJsonWithLimit<PolicyUpdate>(c, MAX_BODY_BYTES, logger);
   if (body instanceof Response) return body;
-  if (!body || typeof body !== "object" || typeof body.requireSecondFactor !== "boolean") {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return badRequest("Body must be a JSON object");
+  }
+  if (body.requireSecondFactor === undefined && body.ipAllowlist === undefined) {
+    return badRequest("Provide requireSecondFactor (boolean) and/or ipAllowlist (array)");
+  }
+  if (body.requireSecondFactor !== undefined && typeof body.requireSecondFactor !== "boolean") {
     return badRequest("requireSecondFactor must be a boolean");
   }
-  const required = body.requireSecondFactor;
+  if (body.allowSelfLockout !== undefined && typeof body.allowSelfLockout !== "boolean") {
+    return badRequest("allowSelfLockout must be a boolean");
+  }
 
-  // An admin turning the policy on must satisfy it themselves — otherwise the
-  // very next request they make with their session is blocked, and an org whose
-  // only admin is locked out cannot turn it back off. A session that signed in
-  // through this org's SSO already satisfies it (IdP MFA is delegated).
-  if (required && !org.requireSecondFactor && c.get("sessionSsoOrgId") !== org.id) {
-    const passkeys = await countPasskeys(c.env.DB, logger, userId);
-    if (!passkeys.success) return internalError("Could not check your passkeys");
-    if (passkeys.data === 0) {
+  let ipAllowlist: string[] | undefined;
+  if (body.ipAllowlist !== undefined) {
+    const validated = validateIpAllowlistInput(body.ipAllowlist);
+    if (!validated.success) return badRequest(validated.error);
+    ipAllowlist = validated.data;
+
+    // Self-lockout guard: a list that excludes the admin's own address would
+    // refuse the very next request they make, including the one that would
+    // fix it — and nobody outside the listed networks could fix it either.
+    // Saving it anyway takes an explicit `allowSelfLockout: true` (an admin
+    // configuring the list from home for an office network, say).
+    const ip = clientIpOf(c);
+    if (!ipAllowedByList(ipAllowlist, ip) && body.allowSelfLockout !== true) {
       return c.json(
         {
-          error:
-            "Register a passkey for your own account (/settings/security) before requiring one for the organization.",
-          code: "ADMIN_SECOND_FACTOR_REQUIRED",
+          error: `This allowlist does not include your current address (${ip === "" ? "unknown" : ip}), so saving it would lock you out of the organization. Add your address, or resend with "allowSelfLockout": true to save it anyway.`,
+          code: "IP_ALLOWLIST_SELF_LOCKOUT",
+          ip: ip === "" ? null : ip,
         },
         409,
       );
     }
   }
 
-  const changed = await setOrgRequireSecondFactor(c.env.DB, logger, org.id, required);
-  if (!changed.success) return internalError("Failed to update security policy");
-  if (changed.data) {
-    await recordAudit(c.env.DB, logger, {
-      action: "org.second_factor_policy_changed",
-      actorType: "user",
-      actorId: userId,
-      subject: org.id,
-      orgId: org.id,
-      detail: { slug: org.slug, requireSecondFactor: required },
-    });
+  const required =
+    typeof body.requireSecondFactor === "boolean" ? body.requireSecondFactor : undefined;
+  if (required !== undefined) {
+    // An admin turning the policy on must satisfy it themselves — otherwise the
+    // very next request they make with their session is blocked, and an org whose
+    // only admin is locked out cannot turn it back off. A session that signed in
+    // through this org's SSO already satisfies it (IdP MFA is delegated).
+    if (required && !org.requireSecondFactor && c.get("sessionSsoOrgId") !== org.id) {
+      const passkeys = await countPasskeys(c.env.DB, logger, userId);
+      if (!passkeys.success) return internalError("Could not check your passkeys");
+      if (passkeys.data === 0) {
+        return c.json(
+          {
+            error:
+              "Register a passkey for your own account (/settings/security) before requiring one for the organization.",
+            code: "ADMIN_SECOND_FACTOR_REQUIRED",
+          },
+          409,
+        );
+      }
+    }
   }
-  return ok({ requireSecondFactor: required });
+
+  if (ipAllowlist !== undefined) {
+    const changed = await setOrgIpAllowlist(c.env.DB, logger, org.id, ipAllowlist);
+    if (!changed.success) return internalError("Failed to update IP allowlist");
+    if (changed.data.changed) {
+      await recordAudit(c.env.DB, logger, {
+        action: "org.ip_allowlist_changed",
+        actorType: "user",
+        actorId: userId,
+        subject: org.id,
+        orgId: org.id,
+        detail: {
+          slug: org.slug,
+          ipAllowlist,
+          previous: changed.data.previous,
+          ...(body.allowSelfLockout === true ? { allowSelfLockout: true } : {}),
+        },
+      });
+    }
+  }
+
+  if (required !== undefined) {
+    const changed = await setOrgRequireSecondFactor(c.env.DB, logger, org.id, required);
+    if (!changed.success) return internalError("Failed to update security policy");
+    if (changed.data) {
+      await recordAudit(c.env.DB, logger, {
+        action: "org.second_factor_policy_changed",
+        actorType: "user",
+        actorId: userId,
+        subject: org.id,
+        orgId: org.id,
+        detail: { slug: org.slug, requireSecondFactor: required },
+      });
+    }
+  }
+
+  return ok(
+    policyBody({
+      requireSecondFactor: required ?? org.requireSecondFactor,
+      ipAllowlist: ipAllowlist ?? org.ipAllowlist,
+    }),
+  );
 });
 
 export { app as orgSecurityRouter };

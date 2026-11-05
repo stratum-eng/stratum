@@ -120,6 +120,7 @@ const mockOrg = {
   ownerId: "usr_owner",
   createdAt: "2026-01-01T00:00:00.000Z",
   requireSecondFactor: false,
+  ipAllowlist: [],
 };
 
 const SECRET_CIPHERTEXT = "CIPHERTEXT_NEVER_ECHOED";

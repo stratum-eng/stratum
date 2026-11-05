@@ -68,10 +68,12 @@ vi.mock("../src/storage/agents", () => ({
 
 // The caller administers every org it is asked about, so the only thing that
 // can refuse an org project below is the binding itself.
-vi.mock("../src/storage/orgs", async (importActual) => ({
-  ...(await importActual<typeof import("../src/storage/orgs")>()),
-  getOrgAccessLevel: vi.fn(async () => "admin"),
-}));
+vi.mock("../src/storage/orgs", async (importActual) =>
+  (await import("./helpers/org-access-mock")).withOrgAccess({
+    ...(await importActual<typeof import("../src/storage/orgs")>()),
+    getOrgAccessLevel: vi.fn(async () => "admin" as const),
+  }),
+);
 
 function makeKV(): KVNamespace {
   const store = new Map<string, string>();

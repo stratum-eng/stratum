@@ -14,7 +14,9 @@
 
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { ipNotAllowedResponse } from "../middleware/org-ip-allowlist";
 import { secondFactorRequired } from "../middleware/org-second-factor";
+import { ipDenialFor, orgIpAllowsFor } from "../services/org-ip-allowlist";
 import { orgBlockedFor } from "../services/org-second-factor";
 import { recordAudit } from "../storage/audit";
 import {
@@ -58,7 +60,10 @@ function parseInstallationId(raw: string | undefined): number | null {
  * Does `userId` administer org `orgId` for THIS session? Every org-role
  * decision in this file goes through here. An admin whose session fails the
  * org's second-factor policy (#256) does not administer it: `blocked`, which
- * a mutating route answers with `SECOND_FACTOR_REQUIRED`.
+ * a mutating route answers with `SECOND_FACTOR_REQUIRED`. Nor does one calling
+ * from outside the org's IP allowlist (#399): `ip_denied`, answered with
+ * `IP_NOT_ALLOWED`. Linking decides which repositories the org's projects may
+ * push to with the app, which is org administration like any other.
  *
  * @param c - Request context, carrying the session's unmet org policies
  * @param orgId - The org
@@ -73,11 +78,17 @@ async function orgAuthority(
   userId: string,
   logger: Logger,
   record = false,
-): Promise<"admin" | "blocked" | "no"> {
+): Promise<OrgAuthority> {
   const role = await getOrgMemberRole(c.env.DB, logger, orgId, userId);
   if (!role.success || role.data !== "admin") return "no";
-  return orgBlockedFor(c, orgId, record) ? "blocked" : "admin";
+  if (orgBlockedFor(c, orgId, record)) return "blocked";
+  const org = await getOrg(c.env.DB, logger, orgId);
+  // Fail closed: an allowlist we could not read may be one that excludes this caller.
+  if (!org.success) return "no";
+  return orgIpAllowsFor(c, orgId, org.data.ipAllowlist, record) ? "admin" : "ip_denied";
 }
+
+type OrgAuthority = "admin" | "blocked" | "ip_denied" | "no";
 
 /** Orgs the caller administers for this session: link targets. */
 async function adminOrgs(
@@ -112,12 +123,21 @@ async function holdsCurrentOwner(
   user: User,
   logger: Logger,
   record = false,
-): Promise<"yes" | "blocked" | "no"> {
+): Promise<"yes" | Exclude<OrgAuthority, "admin">> {
   const owner = installation.owner;
   if (!owner) return "no";
   if (owner.type === "user") return owner.id === user.id ? "yes" : "no";
   const authority = await orgAuthority(c, owner.id, user.id, logger, record);
   return authority === "admin" ? "yes" : authority;
+}
+
+/** The refusal for an org admin calling from outside the org's IP allowlist. */
+async function ipRefusal(c: Ctx, orgId: string): Promise<Response> {
+  // Resolve first: it schedules the sampled audit entry, and a form's redirect
+  // never reaches the middleware that would otherwise do so.
+  const denial = await ipDenialFor(c, { id: orgId });
+  if (!isJsonRequest(c)) return c.redirect(`${SETUP_PATH}?notice=ip_not_allowed`, 303);
+  return ipNotAllowedResponse(c, denial);
 }
 
 /** The refusal for an org admin whose session fails the org's policy. */
@@ -308,6 +328,7 @@ app.post("/api/github/installations/:id/link", async (c) => {
   if (installation.owner) {
     const holds = await holdsCurrentOwner(c, installation, user, logger, true);
     if (holds === "blocked") return secondFactorRefusal(c, installation.owner.id, logger);
+    if (holds === "ip_denied") return ipRefusal(c, installation.owner.id);
     if (holds === "no") return respond(c, { ok: false, notice: "linked_elsewhere", status: 403 });
   }
 
@@ -317,6 +338,7 @@ app.post("/api/github/installations/:id/link", async (c) => {
     if (!org.success) return respond(c, { ok: false, notice: "bad_target", status: 400 });
     const authority = await orgAuthority(c, org.data.id, user.id, logger, true);
     if (authority === "blocked") return secondFactorRefusal(c, org.data.id, logger);
+    if (authority === "ip_denied") return ipRefusal(c, org.data.id);
     if (authority === "no") return respond(c, { ok: false, notice: "bad_target", status: 400 });
     target = { type: "org", id: org.data.id };
   }
@@ -371,6 +393,7 @@ app.post("/api/github/installations/:id/unlink", async (c) => {
   if (holds === "blocked" && installation.owner) {
     return secondFactorRefusal(c, installation.owner.id, logger);
   }
+  if (holds === "ip_denied" && installation.owner) return ipRefusal(c, installation.owner.id);
   if (holds !== "yes") return respond(c, { ok: false, notice: "not_found", status: 404 });
 
   const owner = installation.owner;

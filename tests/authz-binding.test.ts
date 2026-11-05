@@ -7,9 +7,11 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("../src/storage/orgs", () => ({
-  getOrgAccessLevel: vi.fn(async () => "admin"),
-}));
+vi.mock("../src/storage/orgs", async () =>
+  (await import("./helpers/org-access-mock")).withOrgAccess({
+    getOrgAccessLevel: vi.fn(async () => "admin" as const),
+  }),
+);
 
 import type { CredentialBinding, ProjectEntry, WorkspaceEntry } from "../src/types";
 import {

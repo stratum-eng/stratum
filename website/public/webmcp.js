@@ -36,6 +36,7 @@
     ["/guides/cli/", "The Stratum CLI — the change flow from the terminal"],
     ["/guides/mcp/", "The MCP server — the eval-gated change flow for any MCP client"],
     ["/guides/passkeys/", "Passkeys, recovery codes, and requiring two-factor sign-in"],
+    ["/guides/org-ip-allowlist/", "Limit an organization's resources to its own networks with CIDR allowlists"],
     ["/guides/troubleshooting/", "Troubleshooting"],
     ["/guides/faq/", "FAQ"],
     ["/guides/trust/", "Security architecture, subprocessors, and data residency"],

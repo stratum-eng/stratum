@@ -42,7 +42,7 @@ vi.mock("../src/storage/agents", () => ({
 // Org access: user_owner → admin, user_other → write (project write, not admin).
 vi.mock("../src/storage/orgs", async (importActual) => {
   const actual = await importActual<typeof import("../src/storage/orgs")>();
-  return {
+  return (await import("./helpers/org-access-mock")).withOrgAccess({
     ...actual,
     getOrgAccessLevel: vi.fn(
       async (_db: unknown, _logger: unknown, _orgId: string, uid: string) => {
@@ -51,7 +51,7 @@ vi.mock("../src/storage/orgs", async (importActual) => {
         return "none";
       },
     ),
-  };
+  });
 });
 
 import { commitAndPush } from "../src/storage/git-ops";
