@@ -374,6 +374,18 @@ export async function storeGitHubToken(
   }
 }
 
+/** A page of a GitHub list endpoint, items unparsed (untrusted JSON). */
+export type GitHubPageResult =
+  | { success: true; items: unknown[] }
+  | {
+      success: false;
+      error: string;
+      status: number;
+      rateLimited: boolean;
+      /** Epoch ms the primary rate limit resets at, when GitHub said. */
+      rateLimitResetAt?: number;
+    };
+
 export class GitHubClient {
   private token: string;
   private logger: Logger;
@@ -409,6 +421,8 @@ export class GitHubClient {
         error: string;
         status: number;
         rateLimited?: boolean;
+        /** Epoch ms at which the primary rate limit resets, when `rateLimited`. */
+        rateLimitResetAt?: number;
         networkError?: boolean;
         githubMessage?: string;
         errors?: GithubErrorDetail[];
@@ -472,6 +486,7 @@ export class GitHubClient {
             error: `GitHub rate limit exceeded. Resets at ${new Date(resetTime).toISOString()}`,
             status: 403,
             rateLimited: true,
+            rateLimitResetAt: resetTime,
           };
         }
       }
@@ -760,6 +775,85 @@ export class GitHubClient {
     );
     if (!result.success) return { success: false, error: result.error };
     return { success: true };
+  }
+
+  /**
+   * One page of a repository's issues, oldest first, in every state. GitHub's
+   * issues endpoint also returns pull requests (they carry a `pull_request`
+   * key); the items are returned unparsed for the caller to validate, because
+   * this is untrusted JSON and the importer needs to skip PRs, not reject them.
+   *
+   * Ascending creation order keeps page boundaries stable while an import is
+   * running: an issue opened mid-import lands on the last page instead of
+   * shifting every earlier page by one.
+   */
+  async listRepoIssuesPage(
+    owner: string,
+    repo: string,
+    page: number,
+    perPage: number,
+  ): Promise<GitHubPageResult> {
+    const query = `state=all&sort=created&direction=asc&per_page=${perPage}&page=${page}`;
+    return this.listPage(`/repos/${owner}/${repo}/issues?${query}`);
+  }
+
+  /** One page of an issue's comments, oldest first, unparsed (see {@link listRepoIssuesPage}). */
+  async listIssueCommentsPage(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    page: number,
+    perPage: number,
+  ): Promise<GitHubPageResult> {
+    return this.listPage(
+      `/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=${perPage}&page=${page}`,
+    );
+  }
+
+  /** Whether a repository is private (or internal), as GitHub reports it. */
+  async getRepoVisibility(
+    owner: string,
+    repo: string,
+  ): Promise<{ success: true; private: boolean } | { success: false; error: string }> {
+    const result = await this.request<{ private?: unknown; visibility?: unknown }>(
+      `/repos/${owner}/${repo}`,
+      {},
+      { timeoutMs: DEFAULT_TIMEOUT_MS },
+    );
+    if (!result.success) return { success: false, error: result.error };
+    // Anything other than an explicit public answer counts as private, so a
+    // response missing both fields fails closed.
+    const isPublic = result.data.private === false && result.data.visibility !== "internal";
+    return { success: true, private: !isPublic };
+  }
+
+  private async listPage(endpoint: string): Promise<GitHubPageResult> {
+    const result = await this.request<unknown>(endpoint, {}, { timeoutMs: DEFAULT_TIMEOUT_MS });
+    if (!result.success) {
+      // 429, and a 403 GitHub labels a secondary rate limit, are "slow down",
+      // not "no access": the importer waits and retries the page.
+      const secondary =
+        result.status === 429 ||
+        (result.status === 403 && /secondary rate limit/i.test(result.githubMessage ?? ""));
+      return {
+        success: false,
+        error: result.error,
+        status: result.status,
+        rateLimited: result.rateLimited === true || secondary,
+        ...(result.rateLimitResetAt !== undefined
+          ? { rateLimitResetAt: result.rateLimitResetAt }
+          : {}),
+      };
+    }
+    if (!Array.isArray(result.data)) {
+      return {
+        success: false,
+        error: "GitHub returned a non-list response for a list endpoint",
+        status: result.status,
+        rateLimited: false,
+      };
+    }
+    return { success: true, items: result.data };
   }
 
   async getRepo(

@@ -105,7 +105,10 @@ export type AuditAction =
   | "github_app.installation_unlinked"
   // Per-org IP allowlist (#399). Denials are sampled: see auditIpDenial.
   | "org.ip_allowlist_changed"
-  | "org.ip_access_denied";
+  | "org.ip_access_denied"
+  // GitHub issue import (#421): copies a repository's issues into the project
+  // using the instance's GitHub credential, so who started one is recorded.
+  | "issues.github_import_started";
 
 export interface AuditEntry {
   id: string;

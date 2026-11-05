@@ -357,7 +357,7 @@ export interface Env {
    * message in turn, so a slow deploy there would stall webhook delivery. */
   DEPLOY_QUEUE?: Queue<DeployQueueMessage>;
   EVENTS_QUEUE?: Queue;
-  IMPORT_QUEUE?: Queue<ImportJobMessage | SyncJobMessage>;
+  IMPORT_QUEUE?: Queue<ImportJobMessage | SyncJobMessage | IssueImportJobMessage>;
   /** Evaluation runs (#412, ADR 009). Its own queue for the reason
    * `DEPLOY_QUEUE` is: a sandbox or LLM evaluation runs for minutes, and must
    * not stall webhook delivery on the shared events consumer. Optional: with
@@ -393,6 +393,22 @@ export interface ImportJobMessage {
    * emailed to this user's address (in addition to the ADMIN_EMAIL copy).
    */
   initiatedBy?: string;
+}
+
+/**
+ * One page of a GitHub issue import (#421). Rides the import queue: each
+ * message imports one page of issues and enqueues the next, so a repository of
+ * any size never has to fit in one invocation.
+ */
+export interface IssueImportJobMessage {
+  type: "github.issues.import";
+  runId: string;
+  projectId: string;
+  namespace: string;
+  slug: string;
+  /** 1-based page of GitHub's issue listing this message imports. */
+  page: number;
+  timestamp: string;
 }
 
 // Git provider types

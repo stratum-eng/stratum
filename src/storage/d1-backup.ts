@@ -71,6 +71,12 @@ export const BACKUP_TABLES: readonly string[] = [
   // restore after their parent table.
   "issue_comments",
   "issue_labels",
+  // GitHub issue import (migration 071). The maps are what make a re-run update
+  // rather than duplicate, so a restore without them would turn the next import
+  // into a second copy of every issue.
+  "github_issue_imports",
+  "github_issue_map",
+  "github_issue_comment_map",
   "audit_log",
   "deletion_jobs",
   "commit_metrics",

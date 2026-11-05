@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import { fetchInviteCodes, referralServiceConfigured } from "../beta/gate";
 import { type UsageBannerNotice, loadUsageBanner } from "../billing/usage-banner";
 import { buildUsageReport } from "../billing/usage-report";
+import { githubRepoKey } from "../github/issue-import";
 import { cannotMintLegacyCredential } from "../middleware/auth";
 import { NO_ANALYTICS_HEADER } from "../middleware/web-analytics";
 import {
@@ -40,6 +41,7 @@ import {
   listRepoTags,
   resolveBranchRef,
 } from "../storage/git-ops";
+import { type IssueImportRun, getLatestIssueImportRun } from "../storage/github-issue-import";
 import { getImportProgress } from "../storage/imports";
 import { listIssueComments } from "../storage/issue-comments";
 import { getLabelsForIssues, listIssueLabels } from "../storage/issue-labels";
@@ -110,6 +112,7 @@ import {
   canWriteProject,
   credentialBindingFrom,
   filterMemberProjects,
+  isProjectAdmin,
 } from "../utils/authz";
 import { MAX_DISPLAY_NAME_LENGTH, normalizeDisplayName } from "../utils/display-name";
 import type { AppError } from "../utils/errors";
@@ -120,6 +123,7 @@ import { type Result, ok } from "../utils/result";
 import { isValidNamespace, isValidSlug } from "../utils/validation";
 import { canManageSecrets, secretErrorMessage } from "./deployments";
 import { getCurrentUser, renderWebhooksPage } from "./form-pages";
+import { issueImportNotice } from "./issue-import";
 import { DEFAULT_COMMENTS_PAGE, DEFAULT_ISSUES_PAGE } from "./issues";
 import { SUBSCRIBABLE_EVENTS } from "./webhooks";
 
@@ -2698,6 +2702,24 @@ app.get("/:namespace/:slug/settings", async (c) => {
   const secretErrorCode = c.req.query("secretError");
   const secretError = secretErrorMessage(secretErrorCode);
 
+  // The GitHub issue import is admin-only, like the route behind its form.
+  const issueImportRepo = githubRepoKey(project);
+  let issueImport:
+    | { githubRepo: string; latestRun: IssueImportRun | null; notice?: string }
+    | undefined;
+  if (
+    issueImportRepo !== null &&
+    (await isProjectAdmin(c.env.DB, project, credentialBindingFrom(c), userId))
+  ) {
+    const latest = await getLatestIssueImportRun(c.env.DB, logger, project.id);
+    const notice = issueImportNotice(c.req.query("issueImport"));
+    issueImport = {
+      githubRepo: issueImportRepo,
+      latestRun: latest.success ? latest.data : null,
+      ...(notice !== undefined ? { notice } : {}),
+    };
+  }
+
   return c.html(
     <ProjectSettingsPage
       project={{
@@ -2713,6 +2735,7 @@ app.get("/:namespace/:slug/settings", async (c) => {
       secretErrorField={
         secretErrorCode === "name" || secretErrorCode === "value" ? secretErrorCode : undefined
       }
+      {...(issueImport !== undefined ? { issueImport } : {})}
       user={userResult}
     />,
   );

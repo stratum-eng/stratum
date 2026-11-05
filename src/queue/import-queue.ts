@@ -3,6 +3,7 @@
  * Handles GitHub import jobs from Cloudflare Queue for durable execution
  */
 
+import { parseIssueImportMessage, processIssueImportMessage } from "../github/issue-import";
 import { syncOrImportProject } from "../services/project-sync";
 import { isTargetDeleting } from "../storage/deletion";
 import {
@@ -14,6 +15,7 @@ import {
   submoduleUnsupportedError,
 } from "../storage/git-ops";
 import { getProviderFromUrl } from "../storage/git-providers";
+import { recordIssueImportProgress } from "../storage/github-issue-import";
 import { finalizeImportSnapshot } from "../storage/import-finalize";
 import { deleteImportJob, isImportCancelled, updateImportStatus } from "../storage/imports";
 import {
@@ -30,6 +32,7 @@ import type {
   Env,
   GitProvider,
   ImportJobMessage,
+  IssueImportJobMessage,
   ProjectEntry,
   SyncJobMessage,
 } from "../types";
@@ -845,7 +848,7 @@ async function processSyncJob(
  * This is called by the Cloudflare Queue system
  */
 export async function handleImportQueue(
-  batch: MessageBatch<ImportJobMessage | SyncJobMessage>,
+  batch: MessageBatch<ImportJobMessage | SyncJobMessage | IssueImportJobMessage>,
   env: Env,
 ): Promise<void> {
   logger.info("Processing import queue batch", {
@@ -863,6 +866,12 @@ export async function handleImportQueue(
       continue;
     }
 
+    const issueImportMessage = parseIssueImportMessage(body);
+    if (issueImportMessage) {
+      await processIssueImportJob(env, issueImportMessage, msg);
+      continue;
+    }
+
     // Try to validate as sync message
     const syncMessage = validateSyncMessage(body);
     if (syncMessage) {
@@ -876,6 +885,43 @@ export async function handleImportQueue(
     });
     msg.ack();
   }
+}
+
+/** Delivery attempts after which an issue-import page that keeps throwing fails its run. */
+const ISSUE_IMPORT_MAX_ATTEMPTS = 3;
+
+/**
+ * Run one page of a GitHub issue import (#421). Failures the job can describe
+ * are written to the run by the job itself; this only decides what happens to
+ * the message when the job could not even record its outcome (or threw):
+ * retry, and after the last attempt mark the run failed so it does not sit
+ * "running" until the staleness window expires.
+ */
+async function processIssueImportJob(
+  env: Env,
+  message: IssueImportJobMessage,
+  msg: Message<unknown>,
+): Promise<void> {
+  const jobLogger = logger.child({ runId: message.runId, page: message.page });
+  try {
+    const result = await processIssueImportMessage(env, message, jobLogger);
+    if (result.success) {
+      msg.ack();
+      return;
+    }
+    jobLogger.error("Issue import page could not record its outcome", result.error);
+  } catch (error) {
+    jobLogger.error("Issue import page threw", error instanceof Error ? error : undefined);
+  }
+  if (msg.attempts >= ISSUE_IMPORT_MAX_ATTEMPTS) {
+    await recordIssueImportProgress(env.DB, jobLogger, message.runId, {
+      status: "failed",
+      message: "The import stopped after repeated internal errors",
+    });
+    msg.ack();
+    return;
+  }
+  msg.retry();
 }
 
 /**

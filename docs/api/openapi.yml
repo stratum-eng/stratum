@@ -1973,6 +1973,68 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/projects/{namespace}/{slug}/issues/import/github:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+    post:
+      operationId: importGitHubIssues
+      tags: [issues]
+      summary: Import the project's GitHub issues
+      description: |
+        Project admins only (user identity). Queues a background import of the
+        issues of the project's own GitHub source repository: title, body,
+        state, labels, timestamps and comments, each linked back to GitHub.
+        Pull requests are skipped. Re-running updates previously imported
+        issues and comments instead of duplicating them. Public repositories
+        only. A form-encoded request is answered with a redirect to the project
+        settings page instead of JSON.
+      responses:
+        "202":
+          description: Import queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run: { $ref: "#/components/schemas/IssueImportRun" }
+        "302":
+          description: Form post; redirect to the settings page
+        "400":
+          description: The project has no GitHub source (`code` = `no-source`)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Not an admin, the repository is private (`code` = `private`), or no GitHub credential may act for the project's owner (`not-authorized`)
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: An import is active (`active`), the code import is incomplete (`incomplete`), or the project is being deleted (`deleting`)
+        "502":
+          description: GitHub could not be reached (`code` = `github`)
+        "503":
+          description: No GitHub credential is available on this instance (`not-configured`), or the job could not be queued (`failed`)
+    get:
+      operationId: getGitHubIssueImport
+      tags: [issues]
+      summary: Latest GitHub issue import run
+      responses:
+        "200":
+          description: The latest run, or null if the project never imported
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run:
+                    oneOf:
+                      - $ref: "#/components/schemas/IssueImportRun"
+                      - type: "null"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/projects/{name}/changes:
     parameters:
       - $ref: "#/components/parameters/ProjectName"
@@ -6370,8 +6432,45 @@ components:
         linkedChangeId: { type: string }
         closedAt: { type: string, format: date-time }
         closedBy: { type: string }
+        externalAuthor:
+          type: string
+          description: GitHub login of an imported issue's author with no linked Stratum account
+        externalUrl:
+          type: string
+          format: uri
+          description: Link to the original GitHub issue; present only on imported issues
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+
+    IssueImportRun:
+      type: object
+      required: [id, projectId, githubRepo, status, initiatedBy, nextPage, issuesCreated, issuesUpdated, commentsImported, pullsSkipped, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        githubRepo: { type: string, description: "owner/repo" }
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        initiatedBy: { type: string }
+        nextPage: { type: integer }
+        resume:
+          type: object
+          description: >
+            Where the current page resumes, when it ran out of a queue message's
+            work budget. Absent when the page starts from its top.
+          required: [issue, commentPage]
+          properties:
+            issue: { type: integer, description: "GitHub number of the issue to resume at" }
+            commentPage: { type: integer }
+        issuesCreated: { type: integer }
+        issuesUpdated: { type: integer }
+        commentsImported: { type: integer }
+        pullsSkipped: { type: integer }
+        message: { type: string, description: Failure or rate-limit wait detail }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
 
     IssueComment:
       type: object
@@ -6384,6 +6483,13 @@ components:
           enum: [user, agent]
         authorId: { type: string }
         body: { type: string }
+        externalAuthor:
+          type: string
+          description: GitHub login of an imported comment's author with no linked Stratum account
+        externalUrl:
+          type: string
+          format: uri
+          description: Link to the original GitHub comment; present only on imported comments
         createdAt: { type: string, format: date-time }
 
     Review:

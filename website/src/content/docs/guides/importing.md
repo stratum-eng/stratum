@@ -172,8 +172,10 @@ What import does **not** do yet:
   not used for the clone, and GitHub sign-in only requests the `user:email`
   OAuth scope. Token-authenticated clones of private repositories are future
   work.
-- **Git data only.** Issues, pull requests, releases, and tags are not
-  imported — only the selected branch's commit history and files.
+- **Git data only.** Pull requests, releases, and tags are not imported — only
+  the selected branch's commit history and files. Issues come across in a
+  separate step once the import completes: see
+  [Importing issues from GitHub](/guides/issues/#importing-issues-from-github).
 - **Single branch.** Only one branch is imported per project. The clone is a
   `singleBranch` clone; it is bounded by `depth` only for shallow imports —
   `depth: 0` (or `"full"`) omits the cutoff and fetches the whole history of

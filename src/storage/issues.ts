@@ -21,6 +21,14 @@ export interface Issue {
   linkedChangeId?: string;
   closedAt?: string;
   closedBy?: string;
+  /**
+   * The original author's GitHub login, set only on an issue imported from
+   * GitHub whose author has no linked Stratum account (#421). `authorId` is then
+   * the user who ran the import, so this is what should be shown as the author.
+   */
+  externalAuthor?: string;
+  /** Link back to the original issue, set only on imported issues (#421). */
+  externalUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -40,6 +48,9 @@ interface IssueRow {
   linked_change_id: string | null;
   closed_at: string | null;
   closed_by: string | null;
+  /** Absent (undefined) on rows from stubs predating migration 071. */
+  external_author?: string | null;
+  external_url?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -70,6 +81,8 @@ function rowToIssue(row: IssueRow): Issue {
   if (row.linked_change_id !== null) issue.linkedChangeId = row.linked_change_id;
   if (row.closed_at !== null) issue.closedAt = row.closed_at;
   if (row.closed_by !== null) issue.closedBy = row.closed_by;
+  if (row.external_author != null) issue.externalAuthor = row.external_author;
+  if (row.external_url != null) issue.externalUrl = row.external_url;
   return issue;
 }
 
