@@ -50,7 +50,9 @@ Backups also read these optional vars (see the
 [backup/restore runbook](../runbooks/backup-restore.md)):
 `BACKUP_ENCRYPTION_SECRET` (set in production — encrypts backup blobs),
 `BACKUP_RETENTION` (runs to keep, default 14), `MAX_REPOS_PER_RUN` (default 25),
-`MAX_BACKUP_BYTES` (per-repo budget, default 128 MiB). The daily backup runs on
+`MAX_BACKUP_BYTES` (per-repo budget, default 128 MiB), and
+`BACKUP_PINNED_PROJECTS` (comma-separated `@namespace/slug` projects snapshotted
+in every run, on top of `MAX_REPOS_PER_RUN`). The daily backup runs on
 its own `0 4 * * *` cron — isolated from the `0 6 * * *` housekeeping so a slow
 project sync can't starve it of the invocation budget.
 

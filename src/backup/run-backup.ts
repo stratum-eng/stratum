@@ -5,6 +5,7 @@ import { exportKvIdentity } from "../storage/kv-backup";
 import { listProjects } from "../storage/state";
 import type { Env, ProjectEntry } from "../types";
 import type { Logger } from "../utils/logger";
+import { pinPath, resolvePinnedProjects } from "./pinned-projects";
 import { type SnapshotResult, snapshotRepo } from "./repo-snapshot";
 
 const DEFAULT_RETENTION = 14;
@@ -39,6 +40,13 @@ export interface BackupRunSummary {
     skipped: { projectId: string; reason: string }[];
     failed: { projectId: string }[];
     deferred: number;
+    /** Projects from `BACKUP_PINNED_PROJECTS` attempted in this run, outside the
+     * rotating slice and the `MAX_REPOS_PER_RUN` cap. Their outcome is reported in
+     * `backedUp`/`skipped`/`failed` like any other repo. Absent on manifests
+     * written before pinning existed. */
+    pinned?: { projectId: string; path: string }[];
+    /** Well-formed pinned entries that matched no project, as `@namespace/slug`. */
+    pinnedMissing?: string[];
   };
   bytes: number;
   prunedRuns: number;
@@ -90,7 +98,8 @@ async function touchCursor(db: D1Database, projectId: string, ts: string): Promi
 }
 
 /**
- * Run a full backup: D1 tables + KV identity + a rotating slice of repos, all to
+ * Run a full backup: D1 tables + KV identity + every pinned repo
+ * (`BACKUP_PINNED_PROJECTS`) + a rotating slice of the other repos, all to
  * R2 under one timestamped run. Fail-soft (one repo/table failing never aborts the
  * run); the run's `_manifest.json` is written LAST so a reader can distinguish a
  * complete run from a crashed one. Returns a summary of what happened.
@@ -107,7 +116,15 @@ export async function runBackup(
     runTs,
     d1: [],
     kv: { projects: 0, workspaces: 0, ok: true },
-    repos: { total: 0, backedUp: 0, skipped: [], failed: [], deferred: 0 },
+    repos: {
+      total: 0,
+      backedUp: 0,
+      skipped: [],
+      failed: [],
+      deferred: 0,
+      pinned: [],
+      pinnedMissing: [],
+    },
     bytes: 0,
     prunedRuns: 0,
     healthy: true,
@@ -156,6 +173,57 @@ export async function runBackup(
   }
 }
 
+/** Snapshot one repo into the run, recording its outcome in `summary`. Never
+ * throws: one repo failing must not abort the run. */
+async function backupRepo(
+  env: Env,
+  logger: Logger,
+  runTs: string,
+  deps: BackupDeps,
+  summary: BackupRunSummary,
+  put: (key: string, bytes: Uint8Array) => Promise<boolean>,
+  project: ProjectEntry,
+): Promise<void> {
+  try {
+    const snap = await deps.snapshotRepo(env, project, runTs, logger);
+    if (!snap.success) {
+      summary.repos.failed.push({ projectId: project.id });
+      logger.error("Backup: repo snapshot failed", snap.error, { projectId: project.id });
+    } else {
+      const result: SnapshotResult = snap.data;
+      if (result.status === "skipped") {
+        summary.repos.skipped.push({ projectId: project.id, reason: result.reason });
+      } else {
+        const okPack = await put(`repos/${project.id}.pack`, result.snapshot.pack);
+        const okManifest = await put(
+          `repos/${project.id}.manifest.json`,
+          new TextEncoder().encode(JSON.stringify(result.snapshot.manifest)),
+        );
+        if (okPack && okManifest) summary.repos.backedUp++;
+        else summary.repos.failed.push({ projectId: project.id });
+      }
+    }
+  } catch (error) {
+    summary.repos.failed.push({ projectId: project.id });
+    logger.error("Backup: unexpected repo error", error instanceof Error ? error : undefined, {
+      projectId: project.id,
+    });
+  }
+  // Advance the cursor for EVERY attempted repo — success, skip, or failure —
+  // so a permanently-failing repo rotates to the back instead of holding a
+  // slot every run and starving healthy repos of coverage. A pinned repo's
+  // cursor is advanced too, so if it is later unpinned it rejoins the rotation
+  // at the back rather than jumping the queue.
+  try {
+    await touchCursor(env.DB, project.id, runTs);
+  } catch (error) {
+    logger.warn("Backup: failed to advance repo cursor", {
+      projectId: project.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 async function runBackupLocked(
   env: Env,
   logger: Logger,
@@ -199,58 +267,34 @@ async function runBackupLocked(
     }
   }
 
-  // --- Repos, oldest-backed-up first (rotates coverage under the per-run cap) ---
+  // --- Repos: pinned projects every run, then a rotating slice, oldest-backed-up
+  // first, under the per-run cap ---
   const maxRepos = positiveIntEnv(env.MAX_REPOS_PER_RUN, DEFAULT_MAX_REPOS_PER_RUN);
   if (env.STATE) {
     const projectsResult = await listProjects(env.STATE, logger);
     if (projectsResult.success) {
-      const cursors = await readCursors(env.DB, logger);
-      const ordered = [...projectsResult.data].sort((a, b) =>
-        (cursors.get(a.id) ?? "").localeCompare(cursors.get(b.id) ?? ""),
+      const projects = projectsResult.data;
+      const { pinned, missing } = resolvePinnedProjects(
+        env.BACKUP_PINNED_PROJECTS,
+        projects,
+        logger,
       );
-      summary.repos.total = ordered.length;
+      summary.repos.pinned = pinned.map((p) => ({ projectId: p.id, path: pinPath(p) }));
+      summary.repos.pinnedMissing = missing;
+
+      // Pinned projects are excluded from the rotation so they neither take one of
+      // its `maxRepos` slots nor get snapshotted twice in one run.
+      const pinnedIds = new Set(pinned.map((p) => p.id));
+      const cursors = await readCursors(env.DB, logger);
+      const ordered = projects
+        .filter((p) => !pinnedIds.has(p.id))
+        .sort((a, b) => (cursors.get(a.id) ?? "").localeCompare(cursors.get(b.id) ?? ""));
+      summary.repos.total = projects.length;
       const slice = ordered.slice(0, maxRepos);
       summary.repos.deferred = ordered.length - slice.length;
 
-      for (const project of slice) {
-        try {
-          const snap = await deps.snapshotRepo(env, project, runTs, logger);
-          if (!snap.success) {
-            summary.repos.failed.push({ projectId: project.id });
-            logger.error("Backup: repo snapshot failed", snap.error, { projectId: project.id });
-          } else {
-            const result: SnapshotResult = snap.data;
-            if (result.status === "skipped") {
-              summary.repos.skipped.push({ projectId: project.id, reason: result.reason });
-            } else {
-              const okPack = await put(`repos/${project.id}.pack`, result.snapshot.pack);
-              const okManifest = await put(
-                `repos/${project.id}.manifest.json`,
-                new TextEncoder().encode(JSON.stringify(result.snapshot.manifest)),
-              );
-              if (okPack && okManifest) summary.repos.backedUp++;
-              else summary.repos.failed.push({ projectId: project.id });
-            }
-          }
-        } catch (error) {
-          summary.repos.failed.push({ projectId: project.id });
-          logger.error(
-            "Backup: unexpected repo error",
-            error instanceof Error ? error : undefined,
-            { projectId: project.id },
-          );
-        }
-        // Advance the cursor for EVERY attempted repo — success, skip, or failure —
-        // so a permanently-failing repo rotates to the back instead of holding a
-        // slot every run and starving healthy repos of coverage.
-        try {
-          await touchCursor(env.DB, project.id, runTs);
-        } catch (error) {
-          logger.warn("Backup: failed to advance repo cursor", {
-            projectId: project.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+      for (const project of [...pinned, ...slice]) {
+        await backupRepo(env, logger, runTs, deps, summary, put, project);
       }
     } else {
       logger.error("Backup: could not list projects", projectsResult.error);
@@ -294,6 +338,7 @@ async function runBackupLocked(
       trigger: "auto",
       healthy: summary.healthy,
       repos: summary.repos.backedUp,
+      pinned: summary.repos.pinned?.length ?? 0,
       failed: summary.repos.failed.length,
       bytes: summary.bytes,
     },

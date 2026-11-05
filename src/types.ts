@@ -313,6 +313,9 @@ export interface Env {
   BACKUP_RETENTION?: string;
   /** Max repos snapshotted per backup run; the rest defer to a later run (default 25). */
   MAX_REPOS_PER_RUN?: string;
+  /** Comma-separated `@namespace/slug` projects snapshotted in EVERY backup run,
+   * on top of (and not counted against) `MAX_REPOS_PER_RUN`. */
+  BACKUP_PINNED_PROJECTS?: string;
   /** Skip a repo whose reachable object bytes exceed this (default 128MB). */
   MAX_BACKUP_BYTES?: string;
   /** Gates the RepoDO fast-forward path (ADR 004). Off -> classic cold merge. */

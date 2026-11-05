@@ -102,6 +102,16 @@ dataset = "stratum_requests"
 # production and staging buckets:
 #   wrangler r2 bucket create stratum-backups
 #   wrangler r2 bucket create stratum-backups-staging
+#
+# Backup tuning vars (all optional; set them in the env's [vars] block, since
+# named envs inherit no vars — see docs/runbooks/backup-restore.md):
+#   BACKUP_RETENTION        whole runs to keep (default 14)
+#   MAX_REPOS_PER_RUN       rotating repos snapshotted per run (default 25)
+#   MAX_BACKUP_BYTES        per-repo object budget (default 128 MiB)
+#   BACKUP_PINNED_PROJECTS  comma-separated "@namespace/slug" projects included in
+#                           EVERY run, on top of MAX_REPOS_PER_RUN, e.g.
+#                           BACKUP_PINNED_PROJECTS = "@stratum/stratum,@jordan/dotfiles"
+#                           Malformed or unknown entries are logged and skipped.
 [[r2_buckets]]
 binding = "BACKUPS"
 bucket_name = "stratum-backups"

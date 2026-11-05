@@ -65,6 +65,7 @@ app.post("/", async (c) => {
     detail: {
       trigger: "manual",
       repos: summary.repos.backedUp,
+      pinned: summary.repos.pinned?.length ?? 0,
       deferred: summary.repos.deferred,
       failed: summary.repos.failed.length,
       bytes: summary.bytes,
