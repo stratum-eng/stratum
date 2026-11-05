@@ -71,14 +71,20 @@ function fail(error: string): SignupResult {
   return { ok: false, error };
 }
 
+function isClientError(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 429;
+}
+
 interface HttpReply {
   status: number;
   body: JsonObject;
 }
 
 /**
- * One JSON POST. A network failure or a non-JSON body becomes a string rather
- * than a throw, so the poll loop can decide whether it is worth retrying.
+ * One JSON POST. A network failure or an unreadable body becomes a string rather
+ * than a throw, so the poll loop can retry it. The exception is a 4xx other than
+ * 429: a WAF, access proxy, or wrong path answers with an HTML page that retrying
+ * cannot fix, so it comes back as a reply and fails on its status.
  */
 async function postJson(url: string, payload: JsonObject): Promise<HttpReply | string> {
   let response: Response;
@@ -97,9 +103,13 @@ async function postJson(url: string, payload: JsonObject): Promise<HttpReply | s
   try {
     parsed = JSON.parse(text);
   } catch {
+    if (isClientError(response.status)) return { status: response.status, body: {} };
     return `${url} returned a non-JSON response (HTTP ${response.status})`;
   }
-  if (!isObject(parsed)) return `${url} returned an unexpected response (HTTP ${response.status})`;
+  if (!isObject(parsed)) {
+    if (isClientError(response.status)) return { status: response.status, body: {} };
+    return `${url} returned an unexpected response (HTTP ${response.status})`;
+  }
   return { status: response.status, body: parsed };
 }
 

@@ -288,6 +288,26 @@ describe("stratum signup: transient poll failures", () => {
     expect(h.lines.filter((line) => line.startsWith("Warning:"))).toHaveLength(2);
   });
 
+  it("fails on a non-JSON 4xx poll reply instead of retrying it", async () => {
+    const spy = mockFetch(jsonResponse(accepted, 202), new Response("<html>", { status: 403 }));
+    const result = await runSignup(request, harness().deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/HTTP 403/);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("still retries a non-JSON 5xx poll reply", async () => {
+    const spy = mockFetch(
+      jsonResponse(accepted, 202),
+      new Response("<html>", { status: 502 }),
+      jsonResponse({ status: "expired", code: "EXPIRED", error: "expired" }, 410),
+    );
+    const result = await runSignup(request, harness().deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/expired/);
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+
   it("backs off on 429", async () => {
     mockFetch(
       jsonResponse(accepted, 202),
