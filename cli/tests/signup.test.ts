@@ -209,6 +209,13 @@ describe("stratum signup: request refused", () => {
     if (!result.ok) expect(result.error).toMatch(/could not reach.*fetch failed/);
   });
 
+  it("refuses to follow a redirect on either request", async () => {
+    const spy = mockFetch(jsonResponse(accepted, 202), jsonResponse(complete));
+    await runSignup(request, harness().deps);
+    expect(spy).toHaveBeenCalledTimes(2);
+    for (const [, init] of spy.mock.calls) expect(init?.redirect).toBe("error");
+  });
+
   it("reports a non-JSON response rather than crashing", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("<html>", { status: 502 }));
     const result = await runSignup(request, harness().deps);

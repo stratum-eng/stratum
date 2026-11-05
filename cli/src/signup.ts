@@ -97,6 +97,9 @@ async function postJson(url: string, payload: JsonObject): Promise<HttpReply | s
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      // assertSecureHost vetted only this URL, and a 307 or 308 resends the body
+      // (the signup fields, or the poll token) to wherever it points.
+      redirect: "error",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (err) {
