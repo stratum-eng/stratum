@@ -197,10 +197,16 @@ function scimRowOf(
     .get(connId, userId) as { scim_external_id: string | null; active: number } | undefined;
 }
 
-function auditActions(subject: string): Array<{ action: string; actor_type: string }> {
+/**
+ * Audit rows about a user. SCIM lifecycle events name the user in detail and
+ * the connection in subject (#425); a failed sign-in still keys on the account.
+ */
+function auditActions(userId: string): Array<{ action: string; actor_type: string }> {
   return raw
-    .prepare("SELECT action, actor_type FROM audit_log WHERE subject = ? ORDER BY rowid")
-    .all(subject) as Array<{ action: string; actor_type: string }>;
+    .prepare(
+      "SELECT action, actor_type FROM audit_log WHERE subject = ? OR json_extract(detail, '$.userId') = ? ORDER BY rowid",
+    )
+    .all(userId, userId) as Array<{ action: string; actor_type: string }>;
 }
 
 describe("getSsoConnectionByScimTokenHash", () => {
@@ -358,6 +364,12 @@ describe("POST /Users (provision + adopt)", () => {
     const actions = auditActions(body.id).map((row) => row.action);
     expect(actions).toContain("scim.user.provisioned");
     for (const row of auditActions(body.id)) expect(row.actor_type).toBe("system");
+    // auditActions matches either layout, so pin the subject itself (#425).
+    const provisioned = raw
+      .prepare("SELECT subject FROM audit_log WHERE action = 'scim.user.provisioned'")
+      .get() as { subject: string };
+    expect(provisioned.subject).toBe(connectionId);
+    expect(provisioned.subject).not.toBe(body.id);
   });
 
   it("POST with active:false provisions the user already deactivated", async () => {

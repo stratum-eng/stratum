@@ -213,9 +213,12 @@ app.post("/:slug/members", async (c) => {
       action: previousRole === null ? "org.member.added" : "org.member.role_changed",
       actorType: "user",
       actorId: userId,
-      subject: body.userId,
+      subject: org.id,
       orgId: org.id,
-      detail: previousRole === null ? { role } : { role, previousRole },
+      detail:
+        previousRole === null
+          ? { userId: body.userId, role }
+          : { userId: body.userId, role, previousRole },
     });
   }
 
@@ -284,9 +287,9 @@ app.delete("/:slug/members/:uid", async (c) => {
       action: "org.member.removed",
       actorType: "user",
       actorId: userId,
-      subject: uid,
+      subject: org.id,
       orgId: org.id,
-      detail: { previousRole: priorRole.success ? priorRole.data : "unknown" },
+      detail: { userId: uid, previousRole: priorRole.success ? priorRole.data : "unknown" },
     });
   }
 
@@ -501,9 +504,9 @@ app.post("/:slug/teams/:id/members", async (c) => {
     action: "team.member.added",
     actorType: "user",
     actorId: userId,
-    subject: body.userId,
+    subject: id,
     orgId: org.id,
-    detail: { teamId: id, teamSlug: team.slug },
+    detail: { userId: body.userId, teamId: id, teamSlug: team.slug },
   });
 
   logger.info("Team member added", { teamId: id, userId: body.userId });
@@ -558,9 +561,9 @@ app.delete("/:slug/teams/:id/members/:uid", async (c) => {
     action: "team.member.removed",
     actorType: "user",
     actorId: userId,
-    subject: uid,
+    subject: id,
     orgId: org.id,
-    detail: { teamId: id, teamSlug: team.slug },
+    detail: { userId: uid, teamId: id, teamSlug: team.slug },
   });
 
   logger.info("Team member removed", { teamId: id, userId: uid });

@@ -572,9 +572,9 @@ app.post("/Users", async (c) => {
   await recordAudit(c.env.DB, logger, {
     action: "scim.user.provisioned",
     actorType: "system",
-    subject: userId,
+    subject: connection.id,
     orgId: connection.orgId,
-    detail: { via: "scim", connectionId: connection.id, adopted },
+    detail: { via: "scim", connectionId: connection.id, userId, adopted },
   });
 
   const provisioned = await getScimScopedUser(c.env.DB, logger, connection, userId);
@@ -642,9 +642,14 @@ app.put("/Users/:id", async (c) => {
       await recordAudit(c.env.DB, logger, {
         action: "scim.user.updated",
         actorType: "system",
-        subject: user.userId,
+        subject: connection.id,
         orgId: connection.orgId,
-        detail: { via: "scim", connectionId: connection.id, externalId: body.externalId },
+        detail: {
+          via: "scim",
+          connectionId: connection.id,
+          userId: user.userId,
+          externalId: body.externalId,
+        },
       });
     }
   }
@@ -765,9 +770,14 @@ app.patch("/Users/:id", async (c) => {
     await recordAudit(c.env.DB, logger, {
       action: "scim.user.updated",
       actorType: "system",
-      subject: user.userId,
+      subject: connection.id,
       orgId: connection.orgId,
-      detail: { via: "scim", connectionId: connection.id, externalId: externalIdUpdate },
+      detail: {
+        via: "scim",
+        connectionId: connection.id,
+        userId: user.userId,
+        externalId: externalIdUpdate,
+      },
     });
   }
   if (desiredActive !== undefined) {

@@ -743,6 +743,69 @@ export async function anonymizeUserContributions(
   }
 }
 
+/**
+ * Erase `userId` — and the account's email — from audit_log `subject` and
+ * `detail` (#425). `actor_id` is handled with the other identity columns by
+ * `anonymizeUserContributions`; this covers the rest of the row, where a
+ * person can be named as the thing acted on (`subject`) or inside the detail
+ * JSON under any key or in any array (`userId`, `ownerId`, `reenabledUserIds`).
+ *
+ * This is one of the very few writes the append-only trigger accepts
+ * (migration 069), and it accepts it only while the users row exists with
+ * `deleting_at` set — so this must run BEFORE the cascade deletes that row.
+ * `deleting_at` is (re)asserted here because the trigger depends on it, rather
+ * than trusting every caller to have marked the account first.
+ *
+ * The detail rewrite replaces whole JSON string tokens (`"<value>"`), never a
+ * fragment of a longer string, and the trigger re-derives exactly that edit.
+ * Idempotent: a re-run finds no remaining token and updates nothing.
+ */
+export async function eraseUserFromAuditLog(
+  db: D1Database,
+  userId: string,
+  logger: Logger,
+): Promise<Result<void, AppError>> {
+  try {
+    await db
+      .prepare("UPDATE users SET deleting_at = COALESCE(deleting_at, ?) WHERE id = ?")
+      .bind(new Date().toISOString(), userId)
+      .run();
+    const user = await db
+      .prepare("SELECT email FROM users WHERE id = ? AND deleting_at IS NOT NULL")
+      .bind(userId)
+      .first<{ email: string }>();
+    // Without the users row the trigger cannot authorise any rewrite, and the
+    // email is no longer knowable. The cascade only deletes the row after a
+    // drive that left no residuals, which includes this step succeeding.
+    if (!user) {
+      logger.warn("Audit erasure skipped: no deleting users row", { userId });
+      return ok(undefined);
+    }
+    const identifiers = [...new Set([userId, user.email])].filter(
+      (value) => value !== "" && value !== DELETED_USER_SENTINEL,
+    );
+    for (const value of identifiers) {
+      await db
+        .prepare("UPDATE audit_log SET subject = ? WHERE subject = ?")
+        .bind(DELETED_USER_SENTINEL, value)
+        .run();
+      await db
+        .prepare(
+          "UPDATE audit_log SET detail = replace(detail, json_quote(?), json_quote(?)) " +
+            "WHERE instr(detail, json_quote(?)) > 0",
+        )
+        .bind(value, DELETED_USER_SENTINEL, value)
+        .run();
+    }
+    logger.info("Erased user from audit subject and detail", { userId });
+    return ok(undefined);
+  } catch (error) {
+    const appError = toAppError(error);
+    logger.error("Failed to erase user from audit log", appError, { userId });
+    return err(appError);
+  }
+}
+
 interface OrgOwnerRow {
   id: string;
   owner_id: string;
@@ -1043,7 +1106,13 @@ export async function deleteAccountCascade(
       await resolveOrgOwnership(env, org, userId, residuals, logger);
     }
 
-    // 5) The user row LAST — and ONLY when erasure is fully complete. Deleting
+    // 5) Audit subject/detail erasure (#425). After every step above, so a row
+    //    the cascade itself wrote is covered too; before the users row goes,
+    //    because the append-only trigger checks the rewrite against it.
+    const auditErased = await eraseUserFromAuditLog(db, userId, logger);
+    if (!auditErased.success) residuals.push(`account:audit-erasure:${auditErased.error.code}`);
+
+    // 6) The user row LAST — and ONLY when erasure is fully complete. Deleting
     //    it while residuals remain would strand PII (project rows/repos) with the
     //    account gone and no user to re-drive against. Leaving it keeps the row
     //    (access already revoked via deleting_at) so a re-enqueued job finishes

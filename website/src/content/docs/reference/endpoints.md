@@ -751,6 +751,10 @@ GDPR-grade account erasure. Deletes the caller's account and **all** owned
 projects, revokes all tokens/sessions (and the user's agents), and **anonymizes**
 the user's contributions to *other* people's projects (author set to a
 `deleted-user` tombstone — the contribution stays, the identity is removed).
+Audit log entries are kept, with the account's id and email replaced by
+`deleted-user` where they are the actor, the subject, or a complete string value
+in the entry's detail. An id or email inside longer free text is not rewritten,
+and neither are usernames.
 Requires confirmation with the caller's own username:
 
 ```json
@@ -871,10 +875,19 @@ mismatch, email outside the verified domains, a disabled account). Repeats
 for the same account or connection are collapsed to at most one entry per
 minute.
 
+**Who an entry is about.** An entry's `subject` is the thing acted on, never a
+person: member and role events carry the org id (team membership events the
+team id), and SCIM provisioning events carry the SSO connection id. The member
+or provisioned user is named in `detail.userId`. Entries written before this
+change carried the user id in `subject`.
+
 **Immutability.** The audit log is append-only: there is no API to edit or
 delete an entry, and the database rejects updates and deletes. The single
-exception is account erasure, which replaces the erased person's actor id
-with `deleted-user` and changes nothing else.
+exception is account erasure, which replaces the erased person's id and email
+with `deleted-user` — in the actor, the subject, and any complete value in
+`detail` — and changes nothing else. The database accepts every such rewrite
+only to the `deleted-user` sentinel, and the subject and detail rewrites only for
+an account that is being deleted.
 
 ## GitHub App installations
 

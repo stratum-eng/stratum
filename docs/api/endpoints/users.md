@@ -141,6 +141,10 @@ GDPR-grade account erasure. Deletes the caller's account and **all** owned
 projects, revokes all tokens/sessions (and the user's agents), and **anonymizes**
 the user's contributions to *other* people's projects (author set to a
 `deleted-user` tombstone — the contribution stays, the identity is removed).
+Audit log entries are kept, with the account's id and email replaced by
+`deleted-user` where they are the actor, the subject, or a complete string value
+in the entry's detail. An id or email inside longer free text is not rewritten,
+and neither are usernames.
 Requires confirmation with the caller's own username:
 
 ```json
