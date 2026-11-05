@@ -11,6 +11,7 @@
  *   notes [version]        Print one release's changelog entries (default: latest)
  *   commit [version]       Print the commit on this branch that introduced a release's
  *                          version (default: latest): the commit its tag belongs on
+ *   plan                   Print, as JSON, what an unattended release would do next
  *   prepare [options]      Fold changelog.d/ into Unreleased, cut it, bump package.json,
  *                          package-lock.json and src/version.ts
  *   pr [options]           Run `prepare` on a fresh branch off origin/main and open the
@@ -44,6 +45,7 @@ import {
   mergeChangelogBodies,
   nextVersion,
   parseChangelog,
+  planRelease,
   previousRelease,
   releaseNotes,
   resolveBump,
@@ -220,6 +222,23 @@ function commandCommit(args: string[]): void {
   const commit = releaseCommit(version);
   if (!commit) fail(`No commit on this branch sets package.json to ${version}`);
   console.log(commit);
+}
+
+/** `plan`: print what the autopilot should do, from the changelog and every fragment. */
+function commandPlan(): void {
+  const changelog = readChangelog();
+  const fragments = readFragments();
+  const problems = [...validateChangelog(changelog), ...validateFragments(fragments)];
+  if (problems.length > 0) {
+    for (const problem of problems) console.error(`  • ${problem}`);
+    fail(`Found ${problems.length} problem(s)`);
+  }
+
+  const unreleased = parseChangelog(changelog).sections.find((s) => s.version === UNRELEASED);
+  const body = mergeChangelogBodies([unreleased?.body ?? "", ...fragments.map((f) => f.body)]);
+  const plan = planRelease(readPackage().version, body);
+  if (!plan.success) fail(plan.error);
+  console.log(JSON.stringify(plan.data));
 }
 
 /** What `prepare` decided, for a caller that goes on to publish it. */
@@ -431,12 +450,15 @@ function main(argv: string[]): void {
     case "commit":
       commandCommit(args);
       break;
+    case "plan":
+      commandPlan();
+      break;
     case "pr":
       commandPr(args);
       break;
     default:
       fail(
-        `Unknown command: ${command ?? "(none)"}. Expected check, latest, previous, notes, commit, prepare, or pr.`,
+        `Unknown command: ${command ?? "(none)"}. Expected check, latest, previous, notes, commit, plan, prepare, or pr.`,
       );
   }
 }
