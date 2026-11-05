@@ -98,7 +98,8 @@ jobs:
               finish "A held or hand-opened release PR is open, so nothing was cut."
             fi
             if [ "$DRY_RUN" != "true" ]; then
-              jq -r '.[].number' <<< "$OPEN" | xargs -I{} gh pr close {} --delete-branch \
+              # The branch stays: this job can't delete it, and `cut` force-pushes over it.
+              jq -r '.[].number' <<< "$OPEN" | xargs -I{} gh pr close {} \
                 --comment "Stale: an autopilot run did not finish this release. Cutting it again."
             fi
           fi
