@@ -192,8 +192,9 @@ run's slice. Pinned projects use no rotation slots, so this calculation counts
 only the rest. With `P` unpinned projects and no failed or skipped snapshots, a
 project's most recent pack is up to `ceil(P / MAX_REPOS_PER_RUN)` runs old. A
 failed or skipped attempt still moves the project to the back of the rotation, so
-its pack can be a full rotation older for each one. Only the last
-`BACKUP_RETENTION` healthy runs are guaranteed to survive pruning. When every run
+its pack can be a full rotation older for each one. Pruning keeps
+the newest `BACKUP_RETENTION` runs that are healthy or of unknown health (an old
+or unreadable manifest counts), so fewer than that many healthy runs may survive. When every run
 is healthy, the defaults (25 per run, 14 runs) retain 14 × 25 = **350** distinct
 unpinned projects, plus any pinned ones. Unhealthy runs retained alongside them
 can briefly hold more, but do not plan capacity around that:
