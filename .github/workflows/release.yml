@@ -282,7 +282,10 @@ jobs:
               .addLink(release.html_url, release.html_url)
               .write();
 
+      # The release is already out, so failing here would report a published
+      # release as blocked.
       - name: Close any tracking issue
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
