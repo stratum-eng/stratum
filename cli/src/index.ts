@@ -6,6 +6,7 @@ import { clearConfig, readConfig, writeConfig } from "./config.js";
 import { getStagedContent, getStagedFiles } from "./git.js";
 import { assertSecureHost, browserLogin, normalizeHost, revokeToken } from "./oauth.js";
 import { print, withClient } from "./run.js";
+import { runSignup } from "./signup.js";
 
 const program = new Command();
 
@@ -133,6 +134,59 @@ program
       process.exitCode = 1;
     }
   });
+
+// ── signup ────────────────────────────────────────────────────────────────
+
+program
+  .command("signup")
+  .description("Request a new account for a human; they approve it by email and a code")
+  .requiredOption("--email <address>", "The human's email address")
+  .requiredOption("--username <name>", "Username for the new account")
+  .option("--invite <code>", "Invite code, when the instance is in closed beta")
+  .option("--agent-name <name>", "Name the agent is created under", "Stratum CLI")
+  .option("--model <model>", "Model the agent runs on, recorded on the agent")
+  .option("--host <url>", `Stratum host URL (default: ${DEFAULT_HOST})`)
+  .action(
+    async (opts: {
+      email: string;
+      username: string;
+      invite?: string;
+      agentName: string;
+      model?: string;
+      host?: string;
+    }) => {
+      try {
+        const result = await runSignup(
+          {
+            host: opts.host ?? DEFAULT_HOST,
+            email: opts.email,
+            username: opts.username,
+            agentName: opts.agentName,
+            ...(opts.invite !== undefined ? { inviteCode: opts.invite } : {}),
+            ...(opts.model !== undefined ? { model: opts.model } : {}),
+          },
+          {
+            notify: print,
+            save: writeConfig,
+            sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+            now: Date.now,
+          },
+        );
+        if (!result.ok) {
+          process.stderr.write(`Error: ${result.error}\n`);
+          process.exitCode = 1;
+          return;
+        }
+        const { host, user, agent } = result.value;
+        print(`Signed up on ${host}`);
+        print(`Authenticated as agent ${agent.name} (${agent.id})`);
+        print(`  owned by ${user.username} (${user.id})`);
+      } catch (err) {
+        process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exitCode = 1;
+      }
+    },
+  );
 
 program
   .command("logout")

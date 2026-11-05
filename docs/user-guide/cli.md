@@ -104,6 +104,58 @@ stratum status
 # Authenticated as you@example.com (usr_...)
 ```
 
+### Signing up from an agent
+
+An agent working for someone who has no Stratum account yet can request one,
+using [agent-initiated signup](../api/authentication.md#agent-initiated-signup):
+
+```bash
+stratum signup --email you@example.com --username you --invite BETA-CODE --agent-name "Claude Code"
+```
+
+The command prints a short code and waits:
+
+```text
+  Type this code on the approval page:  WXYZ-4KHT
+
+Check you@example.com for an email from Stratum and follow the approval link.
+Waiting for approval (the request expires at 2026-11-02T12:15:00.000Z)...
+```
+
+The human opens the email, follows the link, and types the code. That creates
+the account and signs them in. The command polls at the interval the server
+suggests, then stores the new **agent token** in `~/.stratum/config.json`, the
+same way `login --key` stores a token. It finishes by printing the agent it is
+signed in as and the account that owns it:
+
+```text
+Signed up on https://app.usestratum.dev
+Authenticated as agent Claude Code (agt_...)
+  owned by you (usr_...)
+```
+
+| Option | |
+|--------|-|
+| `--email <address>` | Required. The human's address. The approval link goes there. |
+| `--username <name>` | Required. The new account's username. |
+| `--invite <code>` | The invite code, when the instance is in closed beta. |
+| `--agent-name <name>` | The name the agent gets, shown in the approval email. Defaults to `Stratum CLI`. |
+| `--model <model>` | The model the agent runs on, recorded on the agent. |
+| `--host <url>` | The instance. Defaults to `https://app.usestratum.dev`. Must be `https://` (plain `http://` works for loopback only). |
+
+The command exits non-zero, and nothing is saved, when:
+
+- **The address already has an account** (`EMAIL_EXISTS`). Use `stratum login`
+  instead. Agent signup never attaches an agent to an existing account.
+- **The username is taken** (`USERNAME_TAKEN`). Choose another `--username`.
+- **The invite code is missing or invalid** (`INVITE_REQUIRED`, `INVALID_INVITE`).
+- **The request expires before approval** (`EXPIRED`), or someone types the wrong
+  code too many times (`LOCKED`). Run `stratum signup` again.
+
+A dropped connection or a server error while waiting is retried until the
+request expires. The token is an agent token, so it cannot approve reviews.
+Approvals stay with the human.
+
 ### Sessions renew themselves
 
 An OAuth access token is good for an hour and the CLI refreshes it silently
