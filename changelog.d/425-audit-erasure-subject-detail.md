@@ -7,7 +7,9 @@
 ### Security
 - **Account deletion now erases the user from the whole audit log.** Previously only the
   actor was anonymized, so an entry could still name the erased account by id or email as
-  its subject or inside its detail. Every such reference is now rewritten to
-  `deleted-user`. Migration 061 replaces the append-only trigger so the database allows
-  exactly that rewrite, only for an account that is being deleted, and still rejects every
-  other edit and every delete.
+  its subject or as a complete value in its detail. Every such reference is now rewritten
+  to `deleted-user`; an identifier inside longer free text, and usernames, are not.
+  Migration 069 replaces the append-only trigger so the database also allows those subject
+  and detail rewrites, only for an account that is being deleted, and still rejects every
+  other edit and every delete. The existing rewrite of an actor to `deleted-user` is
+  unchanged and does not check for a deleting account.

@@ -115,6 +115,7 @@ change carried the user id in `subject`.
 **Immutability.** The audit log is append-only: there is no API to edit or
 delete an entry, and the database rejects updates and deletes. The single
 exception is account erasure, which replaces the erased person's id and email
-with `deleted-user` — in the actor, the subject, and any value in `detail` —
-and changes nothing else. The database accepts that rewrite only for an
-account that is being deleted, and only to the `deleted-user` sentinel.
+with `deleted-user` — in the actor, the subject, and any complete value in
+`detail` — and changes nothing else. The database accepts every such rewrite
+only to the `deleted-user` sentinel, and the subject and detail rewrites only for
+an account that is being deleted.

@@ -364,6 +364,12 @@ describe("POST /Users (provision + adopt)", () => {
     const actions = auditActions(body.id).map((row) => row.action);
     expect(actions).toContain("scim.user.provisioned");
     for (const row of auditActions(body.id)) expect(row.actor_type).toBe("system");
+    // auditActions matches either layout, so pin the subject itself (#425).
+    const provisioned = raw
+      .prepare("SELECT subject FROM audit_log WHERE action = 'scim.user.provisioned'")
+      .get() as { subject: string };
+    expect(provisioned.subject).toBe(connectionId);
+    expect(provisioned.subject).not.toBe(body.id);
   });
 
   it("POST with active:false provisions the user already deactivated", async () => {

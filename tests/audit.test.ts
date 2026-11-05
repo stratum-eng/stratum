@@ -229,7 +229,7 @@ describe("audit log immutability (#255)", () => {
     const updaters = Object.entries(sourceFiles)
       .filter(([, sql]) => /\bUPDATE\s+audit_log\b/i.test(sql))
       .map(([path]) => path);
-    // `eraseUserFromAuditLog` (#425) — the trigger in migration 061 is what
+    // `eraseUserFromAuditLog` (#425) — the trigger in migration 069 is what
     // bounds it; this pins that no second writer appears.
     expect(updaters).toEqual(["../src/storage/deletion.ts"]);
     const deleters = Object.entries(sourceFiles)

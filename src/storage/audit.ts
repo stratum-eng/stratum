@@ -10,7 +10,7 @@ import { type Result, err, ok } from "../utils/result";
  * The trail is APPEND-ONLY: this module exposes writes and reads, never an
  * update or delete, and migration 055 installs triggers that abort any UPDATE
  * or DELETE against `audit_log` at the database. The only exception the
- * triggers allow (migration 061) is right-to-erasure: rewriting an account's
+ * triggers allow (migration 069) is right-to-erasure: rewriting an account's
  * id or email to `deleted-user` in `actor_id`, `subject` or `detail` while that
  * account is being deleted (`anonymizeUserContributions` and
  * `eraseUserFromAuditLog` in src/storage/deletion.ts).

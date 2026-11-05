@@ -751,7 +751,7 @@ export async function anonymizeUserContributions(
  * JSON under any key or in any array (`userId`, `ownerId`, `reenabledUserIds`).
  *
  * This is one of the very few writes the append-only trigger accepts
- * (migration 061), and it accepts it only while the users row exists with
+ * (migration 069), and it accepts it only while the users row exists with
  * `deleting_at` set — so this must run BEFORE the cascade deletes that row.
  * `deleting_at` is (re)asserted here because the trigger depends on it, rather
  * than trusting every caller to have marked the account first.

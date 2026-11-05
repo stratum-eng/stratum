@@ -12,7 +12,7 @@ import { makeSqliteD1 } from "./helpers/sqlite-d1";
 
 /**
  * Right-to-erasure for audit_log subject and detail (#425), against the REAL
- * schema and the REAL triggers from migrations 055 + 061 (node:sqlite runs
+ * schema and the REAL triggers from migrations 055 + 069 (node:sqlite runs
  * them), so the allowed rewrite and every refused edit are both exercised by
  * the database rather than asserted about a stub.
  */
@@ -154,7 +154,7 @@ describe("account deletion erases the user from every audit_log column (#425)", 
   });
 });
 
-describe("the append-only trigger after migration 061", () => {
+describe("the append-only trigger after migration 069", () => {
   async function seeded(deleting: boolean) {
     const made = makeSqliteD1();
     seedUser(made.raw, GONE, GONE_EMAIL, deleting);
@@ -232,6 +232,23 @@ describe("the append-only trigger after migration 061", () => {
     };
     expect(row.subject).toBe(GONE);
     expect(JSON.parse(row.detail)).toEqual({ userId: GONE, email: GONE_EMAIL, role: "member" });
+  });
+
+  it("never treats an empty email as an identifier to erase", async () => {
+    const { raw } = makeSqliteD1();
+    seedUser(raw, GONE, "", true);
+    raw
+      .prepare(
+        `INSERT INTO audit_log (id, action, actor_type, subject, detail, created_at)
+         VALUES ('a1', 'x', 'system', '', '{"note":""}', '2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    for (const sql of [
+      `UPDATE audit_log SET subject = '${DELETED_USER_SENTINEL}'`,
+      eraseDetail(""),
+    ]) {
+      expect(() => raw.prepare(sql).run(), sql).toThrow(/append-only/);
+    }
   });
 
   it("refuses to un-erase a row back to the user's id", async () => {

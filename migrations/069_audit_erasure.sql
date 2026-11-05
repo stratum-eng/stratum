@@ -27,6 +27,9 @@
 -- JSON string is always escaped as \", so `"v"` cannot match a fragment of a
 -- longer string. Ids and emails never contain a backslash or a quote.
 --
+-- An empty value identifies nobody: `users.email` is NOT NULL but may be '', and
+-- json_quote('') would match every empty string in a detail. B and C refuse it.
+--
 -- Every comparison is null-safe (IS / IS NOT) for the reason recorded in 055:
 -- with `=`, a NULL makes the WHEN not true and the trigger silently does not
 -- fire. Safe to re-run: the drop is IF EXISTS and the create follows it.
@@ -58,6 +61,7 @@ WHEN NOT (
       AND NEW.actor_id IS OLD.actor_id
       AND NEW.detail IS OLD.detail
       AND OLD.subject IS NOT NULL
+      AND OLD.subject IS NOT ''
       AND EXISTS (
         SELECT 1 FROM users
         WHERE deleting_at IS NOT NULL
@@ -76,6 +80,7 @@ WHEN NOT (
           SELECT email AS v FROM users WHERE deleting_at IS NOT NULL
         ) AS erased
         WHERE erased.v IS NOT 'deleted-user'
+          AND erased.v IS NOT ''
           AND instr(OLD.detail, json_quote(erased.v)) > 0
           AND NEW.detail IS replace(OLD.detail, json_quote(erased.v), json_quote('deleted-user'))
       )

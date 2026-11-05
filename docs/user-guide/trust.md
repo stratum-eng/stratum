@@ -336,10 +336,11 @@ What exists today, and can be pointed to in a review:
   webhooks, and similar — `src/storage/audit.ts`), documented account erasure,
   and a tested backup and restore runbook. The log is append-only, enforced by
   the database, **except for erasure of personal identifiers**: deleting an
-  account rewrites that account's id and email to `deleted-user` wherever an
-  entry names them. That is a deliberate trade-off: the trail keeps every event,
-  but it can no longer say which erased person it was. Free-text fields and
-  usernames are not rewritten.
+  account rewrites that account's id and email to `deleted-user` where they are
+  an entry's actor, its subject, or a complete value in its detail. That is a
+  deliberate trade-off: the trail keeps every event, but those fields can no
+  longer say which erased person it was. An id or email inside longer free text,
+  and usernames, are not rewritten, so such a value can still identify them.
 - A threat model for the sandbox evaluator
   ([ADR 007](../adr/007-sandbox-evaluator-threat-model.md)) and for BYOK LLM
   providers ([ADR 008](../adr/008-llm-provider-byok-threat-model.md)).
