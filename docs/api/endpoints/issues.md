@@ -92,6 +92,7 @@ comments instead of duplicating them. Form posts redirect to the settings page.
 | `409` | `deleting` | The project is being deleted |
 | `502` | `github` | GitHub could not be reached to check the repository |
 | `503` | `not-configured` | No GitHub credential is available on the instance |
+| `503` | `failed` | The run could not be created or queued; nothing was imported |
 
 `GET` on the same path returns `{ "run": … }` for the latest run, or
 `{ "run": null }`. Imported issues and comments carry `externalUrl` (the GitHub

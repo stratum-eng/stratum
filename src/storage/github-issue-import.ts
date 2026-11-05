@@ -16,6 +16,13 @@ import { type Result, err, ok } from "../utils/result";
 
 export type IssueImportStatus = "queued" | "running" | "completed" | "failed";
 
+export interface IssueImportResume {
+  /** GitHub number of the issue to resume at. */
+  issue: number;
+  /** Page of its comments to resume at; 1 means the issue itself is still to do. */
+  commentPage: number;
+}
+
 export interface IssueImportRun {
   id: string;
   projectId: string;
@@ -24,6 +31,8 @@ export interface IssueImportRun {
   status: IssueImportStatus;
   initiatedBy: string;
   nextPage: number;
+  /** Where the current page resumes after running out of its per-message budget. */
+  resume?: IssueImportResume;
   issuesCreated: number;
   issuesUpdated: number;
   commentsImported: number;
@@ -42,6 +51,8 @@ interface IssueImportRunRow {
   status: string;
   initiated_by: string;
   next_page: number;
+  resume_issue: number | null;
+  resume_comment_page: number | null;
   issues_created: number;
   issues_updated: number;
   comments_imported: number;
@@ -75,6 +86,9 @@ function rowToRun(row: IssueImportRunRow): IssueImportRun {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+  if (row.resume_issue !== null && row.resume_comment_page !== null) {
+    run.resume = { issue: row.resume_issue, commentPage: row.resume_comment_page };
+  }
   if (row.message !== null) run.message = row.message;
   if (row.completed_at !== null) run.completedAt = row.completed_at;
   return run;
@@ -190,6 +204,8 @@ export async function getLatestIssueImportRun(
 export interface IssueImportProgress {
   status?: IssueImportStatus;
   nextPage?: number;
+  /** `null` means the next message starts its page from the top. */
+  resume?: IssueImportResume | null;
   /** Added to the run's running totals, not assigned. */
   issuesCreated?: number;
   issuesUpdated?: number;
@@ -232,6 +248,10 @@ export async function recordIssueImportProgress(
   if (progress.nextPage !== undefined) {
     assignments.push("next_page = ?");
     binds.push(progress.nextPage);
+  }
+  if (progress.resume !== undefined) {
+    assignments.push("resume_issue = ?", "resume_comment_page = ?");
+    binds.push(progress.resume?.issue ?? null, progress.resume?.commentPage ?? null);
   }
   if (progress.message !== undefined) {
     assignments.push("message = ?");

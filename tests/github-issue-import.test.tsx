@@ -21,6 +21,7 @@ import {
 import { authMiddleware } from "../src/middleware/auth";
 import { handleImportQueue } from "../src/queue/import-queue";
 import { issueImportNotice, issueImportRouter } from "../src/routes/issue-import";
+import { DELETED_USER_SENTINEL, anonymizeUserContributions } from "../src/storage/deletion";
 import { createIssueImportRun, getIssueImportRun } from "../src/storage/github-issue-import";
 import { listIssueComments } from "../src/storage/issue-comments";
 import { listIssueLabels } from "../src/storage/issue-labels";
@@ -412,6 +413,132 @@ describe("GitHub issue import job", () => {
     expect(issues.success && issues.data).toHaveLength(ISSUES_PER_PAGE + 3);
     const run = await getIssueImportRun(ctx.db, logger, runId);
     expect(run.success && run.data?.nextPage).toBe(3);
+  });
+
+  describe("bounding the work of one queue message", () => {
+    const commentsFor = (number: number, count: number) =>
+      Array.from({ length: count }, (_, i) =>
+        ghComment(number * 100_000 + i, number, `Comment ${i}`),
+      );
+    const count = (ctx: Awaited<ReturnType<typeof makeEnv>>, table: string) =>
+      (ctx.raw.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+
+    it("spreads a long thread over several messages, importing each comment once", async () => {
+      gh.issues = [ghIssue(1, { comments: 650 }), ghIssue(2, { comments: 3 })];
+      gh.comments.set(1, commentsFor(1, 650));
+      gh.comments.set(2, commentsFor(2, 3));
+      const ctx = await makeEnv();
+      const { runId, outcomes } = await runImport(ctx);
+
+      expect(outcomes.length).toBeGreaterThan(1);
+      expect(outcomes.at(-1)).toBe("completed");
+      expect(outcomes.slice(0, -1).every((outcome) => outcome === "continued")).toBe(true);
+      expect(count(ctx, "issue_comments")).toBe(653);
+      const run = await getIssueImportRun(ctx.db, logger, runId);
+      if (!run.success || !run.data) throw new Error("run missing");
+      expect(run.data).toMatchObject({ issuesCreated: 2, issuesUpdated: 0, commentsImported: 653 });
+      expect(run.data.resume).toBeUndefined();
+    });
+
+    it("keeps every message within D1's per-invocation query limit", async () => {
+      gh.issues = [1, 2, 3].map((number) => ghIssue(number, { comments: 500 }));
+      for (const issue of [1, 2, 3]) gh.comments.set(issue, commentsFor(issue, 500));
+      const ctx = await makeEnv();
+      let queries = 0;
+      const realDb = ctx.env.DB;
+      ctx.env.DB = new Proxy(realDb, {
+        get(target, prop) {
+          if (prop !== "prepare") return Reflect.get(target, prop, target);
+          return (sql: string) => {
+            queries++;
+            return target.prepare(sql);
+          };
+        },
+      });
+      const run = await createIssueImportRun(ctx.db, logger, {
+        projectId: PROJECT_ID,
+        githubRepo: REPO,
+        initiatedBy: "user_owner",
+      });
+      if (!run.success) throw run.error;
+      let page: SentMessage = {
+        body: {
+          type: "github.issues.import",
+          runId: run.data.id,
+          projectId: PROJECT_ID,
+          namespace: "testns",
+          slug: "widgets",
+          page: 1,
+          timestamp: new Date().toISOString(),
+        },
+        delaySeconds: undefined,
+      };
+      let most = 0;
+      for (;;) {
+        queries = 0;
+        const result = await processIssueImportMessage(ctx.env, page.body, logger);
+        if (!result.success) throw result.error;
+        most = Math.max(most, queries);
+        const next = ctx.sent.shift();
+        if (!next) break;
+        page = next;
+      }
+      expect(count(ctx, "issue_comments")).toBe(1500);
+      expect(most).toBeLessThan(1000);
+    });
+
+    it("resumes by identity when issue numbers are not in listing order", async () => {
+      // Transferred issues keep their creation date but take a new number.
+      gh.issues = [ghIssue(9, { comments: 500 }), ghIssue(2, { comments: 1 }), ghIssue(5)];
+      gh.comments.set(9, commentsFor(9, 500));
+      gh.comments.set(2, commentsFor(2, 1));
+      const ctx = await makeEnv();
+      const { runId } = await runImport(ctx);
+      expect(count(ctx, "issue_comments")).toBe(501);
+      const run = await getIssueImportRun(ctx.db, logger, runId);
+      expect(run.success && run.data).toMatchObject({ issuesCreated: 3, status: "completed" });
+    });
+
+    it("carries on from the resume point when a message is redelivered", async () => {
+      gh.issues = [ghIssue(1, { comments: 650 })];
+      gh.comments.set(1, commentsFor(1, 650));
+      const ctx = await makeEnv();
+      const run = await createIssueImportRun(ctx.db, logger, {
+        projectId: PROJECT_ID,
+        githubRepo: REPO,
+        initiatedBy: "user_owner",
+      });
+      if (!run.success) throw run.error;
+      const body: IssueImportJobMessage = {
+        type: "github.issues.import",
+        runId: run.data.id,
+        projectId: PROJECT_ID,
+        namespace: "testns",
+        slug: "widgets",
+        page: 1,
+        timestamp: new Date().toISOString(),
+      };
+      await processIssueImportMessage(ctx.env, body, logger);
+      const paused = await getIssueImportRun(ctx.db, logger, run.data.id);
+      if (!paused.success || !paused.data?.resume) throw new Error("expected a resume point");
+      gh.requests.length = 0;
+      await processIssueImportMessage(ctx.env, body, logger);
+      const firstPage = `/repos/${REPO}/issues/1/comments?per_page=100&page=1`;
+      expect(gh.requests).not.toContain(firstPage);
+    });
+  });
+
+  it("erases the initiator of a run when their account is erased", async () => {
+    const ctx = await makeEnv();
+    const run = await createIssueImportRun(ctx.db, logger, {
+      projectId: PROJECT_ID,
+      githubRepo: REPO,
+      initiatedBy: "user_writer",
+    });
+    if (!run.success) throw run.error;
+    expect((await anonymizeUserContributions(ctx.db, "user_writer", logger)).success).toBe(true);
+    const after = await getIssueImportRun(ctx.db, logger, run.data.id);
+    expect(after.success && after.data?.initiatedBy).toBe(DELETED_USER_SENTINEL);
   });
 
   it("waits out a rate limit by re-enqueueing the same page with a delay", async () => {

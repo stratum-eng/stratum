@@ -133,7 +133,7 @@ with `GET` on the same URL, which returns the latest run:
 ```json
 { "run": { "id": "ghi_…", "status": "running", "githubRepo": "acme/billing",
            "issuesCreated": 25, "issuesUpdated": 0, "commentsImported": 41,
-           "pullsSkipped": 7, "message": null } }
+           "pullsSkipped": 7 } }
 ```
 
 `status` moves through `queued` → `running` → `completed` or `failed`; `message`

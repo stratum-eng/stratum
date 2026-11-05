@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS github_issue_imports (
   status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed')),
   initiated_by TEXT NOT NULL,
   next_page INTEGER NOT NULL DEFAULT 1,
+  -- Where a page that ran out of its per-message budget picks up: this GitHub
+  -- issue, at this page of its comments. NULL when the page starts from its top.
+  resume_issue INTEGER,
+  resume_comment_page INTEGER,
   issues_created INTEGER NOT NULL DEFAULT 0,
   issues_updated INTEGER NOT NULL DEFAULT 0,
   comments_imported INTEGER NOT NULL DEFAULT 0,

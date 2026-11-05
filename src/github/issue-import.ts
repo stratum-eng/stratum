@@ -16,6 +16,7 @@
 import { isTargetDeleting } from "../storage/deletion";
 import {
   type IssueImportProgress,
+  type IssueImportResume,
   type IssueImportRun,
   findUserByGitHubId,
   getIssueImportRun,
@@ -40,12 +41,22 @@ import {
 } from "./issue-import-transform";
 import { resolveGitHubRepo } from "./sync";
 
-/**
- * Issues per queue message. Small enough that a page whose every issue has a
- * page of comments stays far below a Worker invocation's subrequest budget.
- */
+/** Issues per page of GitHub's listing, and so at most per queue message. */
 export const ISSUES_PER_PAGE = 25;
 const COMMENTS_PER_PAGE = 100;
+/**
+ * Work one queue message may start, in rough D1 queries and subrequests. A page
+ * can hold 25 issues of 3,000 comments each, far past what one invocation may do
+ * (D1 allows 1,000 queries on the paid plan), and a retry would fail the same way
+ * forever. Past this a message stops and the next one resumes. It is checked only
+ * before an issue or a page of comments, so the most one message spends is this
+ * plus an issue and a full page of comments: about 700.
+ */
+const MESSAGE_WORK_BUDGET = 400;
+const WORK_PER_ISSUE = 5;
+const WORK_PER_COMMENT_PAGE = 1;
+/** A batched insert of two statements, plus an uncached author lookup. */
+const WORK_PER_COMMENT = 3;
 /** 3,000 comments on one issue is the most a single page will copy. */
 const MAX_COMMENT_PAGES = 30;
 /** Wait when GitHub rate-limits without saying until when (secondary limits). */
@@ -59,7 +70,7 @@ export type IssueImportEnv = Pick<Env, "DB" | "STATE" | "IMPORT_QUEUE" | "GITHUB
 export type IssueImportOutcome =
   /** The last page was imported; the run is complete. */
   | "completed"
-  /** This page was imported and the next one enqueued. */
+  /** This page, or the part of it the budget allowed, was imported and the rest enqueued. */
   | "continued"
   /** GitHub rate-limited us; this page was re-enqueued with a delay. */
   | "waiting"
@@ -175,22 +186,27 @@ interface PageContext {
   owner: string;
   repo: string;
   client: GitHubClient;
+  /** Work this message has started; see {@link MESSAGE_WORK_BUDGET}. */
+  work: { used: number };
 }
 
 type PageStep =
   | { kind: "done"; progress: IssueImportProgress; itemCount: number }
+  | { kind: "paused"; progress: IssueImportProgress; resume: IssueImportResume }
   | { kind: "rate-limited"; progress: IssueImportProgress; delaySeconds: number }
   | { kind: "error"; progress: IssueImportProgress; message: string };
 
-/** Import every comment of one issue. */
+/** Import the comments of one issue, from `startPage`, as far as the budget allows. */
 async function importComments(
   ctx: PageContext,
   issueId: string,
   githubNumber: number,
   numberMap: Map<number, number>,
   resolveAuthor: ReturnType<typeof makeAuthorResolver>,
+  startPage: number,
 ): Promise<
   | { kind: "done"; imported: number }
+  | { kind: "paused"; imported: number; commentPage: number }
   | { kind: "rate-limited"; imported: number; delaySeconds: number }
   | { kind: "error"; imported: number; message: string }
 > {
@@ -198,7 +214,13 @@ async function importComments(
   const commentMap = await loadCommentMap(env.DB, logger, issueId);
   if (!commentMap.success) return { kind: "error", imported: 0, message: "database error" };
   let imported = 0;
-  for (let page = 1; page <= MAX_COMMENT_PAGES; page++) {
+  for (let page = startPage; page <= MAX_COMMENT_PAGES; page++) {
+    // Never before the first page of this message's issue, so every message
+    // gets at least one page done and a run can't stall on one long thread.
+    if (page > startPage && ctx.work.used >= MESSAGE_WORK_BUDGET) {
+      return { kind: "paused", imported, commentPage: page };
+    }
+    ctx.work.used += WORK_PER_COMMENT_PAGE;
     const listing = await client.listIssueCommentsPage(
       owner,
       repo,
@@ -215,6 +237,7 @@ async function importComments(
             message: `GitHub refused the comments of #${githubNumber} (HTTP ${listing.status})`,
           };
     }
+    ctx.work.used += listing.items.length * WORK_PER_COMMENT;
     for (const raw of listing.items) {
       const comment = parseGitHubComment(raw);
       if (!comment) {
@@ -246,6 +269,29 @@ async function importComments(
   return { kind: "done", imported };
 }
 
+/** Count one issue's comments; the step that ends the page, if they did not finish. */
+function stepAfterComments(
+  comments: Awaited<ReturnType<typeof importComments>>,
+  issueNumber: number,
+  progress: { commentsImported: number } & IssueImportProgress,
+): PageStep | null {
+  progress.commentsImported += comments.imported;
+  switch (comments.kind) {
+    case "done":
+      return null;
+    case "paused":
+      return {
+        kind: "paused",
+        progress,
+        resume: { issue: issueNumber, commentPage: comments.commentPage },
+      };
+    case "rate-limited":
+      return { kind: "rate-limited", progress, delaySeconds: comments.delaySeconds };
+    case "error":
+      return { kind: "error", progress, message: comments.message };
+  }
+}
+
 /** Import one page of GitHub's issue listing. */
 async function importPage(ctx: PageContext, page: number): Promise<PageStep> {
   const { env, logger, client, owner, repo, run, project } = ctx;
@@ -273,7 +319,18 @@ async function importPage(ctx: PageContext, page: number): Promise<PageStep> {
   const numberMap = new Map([...existing].map(([gh, entry]) => [gh, entry.number]));
   const resolveAuthor = makeAuthorResolver(env.DB, logger, run.initiatedBy);
 
-  for (const raw of listing.items) {
+  // Find the resume point by identity, not by comparing numbers: the listing is
+  // ordered by creation date, and a transferred issue keeps its date but takes a
+  // new number. If that issue has since gone, redo the page: every write is an
+  // idempotent upsert.
+  const resume = run.resume;
+  const resumeAt =
+    resume === undefined
+      ? -1
+      : listing.items.findIndex((raw) => parseGitHubIssue(raw)?.number === resume.issue);
+
+  for (const [index, raw] of listing.items.entries()) {
+    if (index < resumeAt) continue;
     const issue = parseGitHubIssue(raw);
     if (!issue) {
       logger.warn("Skipping malformed GitHub issue", { runId: run.id, page });
@@ -283,6 +340,26 @@ async function importPage(ctx: PageContext, page: number): Promise<PageStep> {
       progress.pullsSkipped++;
       continue;
     }
+    // Part way through this issue's comments: the issue itself is already written.
+    const commentPage = index === resumeAt ? (resume?.commentPage ?? 1) : 1;
+    const known = existing.get(issue.number);
+    if (commentPage > 1 && known !== undefined) {
+      const comments = await importComments(
+        ctx,
+        known.issueId,
+        issue.number,
+        numberMap,
+        resolveAuthor,
+        commentPage,
+      );
+      const stop = stepAfterComments(comments, issue.number, progress);
+      if (stop) return stop;
+      continue;
+    }
+    if (index > Math.max(resumeAt, 0) && ctx.work.used >= MESSAGE_WORK_BUDGET) {
+      return { kind: "paused", progress, resume: { issue: issue.number, commentPage: 1 } };
+    }
+    ctx.work.used += WORK_PER_ISSUE;
     const author = await resolveAuthor(issue.author);
     if (!author.success) return { kind: "error", progress, message: "database error" };
 
@@ -323,14 +400,10 @@ async function importPage(ctx: PageContext, page: number): Promise<PageStep> {
         issue.number,
         numberMap,
         resolveAuthor,
+        1,
       );
-      progress.commentsImported += comments.imported;
-      if (comments.kind === "rate-limited") {
-        return { kind: "rate-limited", progress, delaySeconds: comments.delaySeconds };
-      }
-      if (comments.kind === "error") {
-        return { kind: "error", progress, message: comments.message };
-      }
+      const stop = stepAfterComments(comments, issue.number, progress);
+      if (stop) return stop;
     }
   }
   return { kind: "done", progress, itemCount: listing.items.length };
@@ -423,6 +496,7 @@ export async function processIssueImportMessage(
       owner: repo.owner,
       repo: repo.repo,
       client,
+      work: { used: 0 },
     },
     message.page,
   );
@@ -454,6 +528,24 @@ export async function processIssueImportMessage(
     return ok("waiting");
   }
 
+  if (step.kind === "paused") {
+    // Record the resume point before enqueueing, for the same reason as below:
+    // a redelivery of this message then carries on from here, not the page's top.
+    await recordIssueImportProgress(env.DB, logger, run.id, {
+      ...step.progress,
+      resume: step.resume,
+    });
+    const resumed = await enqueueIssueImportPage(env.IMPORT_QUEUE, {
+      runId: run.id,
+      projectId: project.id,
+      namespace: message.namespace,
+      slug: message.slug,
+      page: message.page,
+    });
+    if (!resumed.success) return ok(await failRun(env, logger, run.id, resumed.error.message));
+    return ok("continued");
+  }
+
   // A short page is the last one. (A full last page costs one extra message
   // that finds an empty page and lands here too.)
   if (step.itemCount < ISSUES_PER_PAGE) {
@@ -461,6 +553,7 @@ export async function processIssueImportMessage(
       ...step.progress,
       status: "completed",
       nextPage: message.page + 1,
+      resume: null,
       message: null,
     });
     logger.info("GitHub issue import completed", { runId: run.id, projectId: project.id });
@@ -472,6 +565,7 @@ export async function processIssueImportMessage(
   await recordIssueImportProgress(env.DB, logger, run.id, {
     ...step.progress,
     nextPage: message.page + 1,
+    resume: null,
   });
   const queued = await enqueueIssueImportPage(env.IMPORT_QUEUE, {
     runId: run.id,

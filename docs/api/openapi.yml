@@ -6454,6 +6454,15 @@ components:
           enum: [queued, running, completed, failed]
         initiatedBy: { type: string }
         nextPage: { type: integer }
+        resume:
+          type: object
+          description: >
+            Where the current page resumes, when it ran out of a queue message's
+            work budget. Absent when the page starts from its top.
+          required: [issue, commentPage]
+          properties:
+            issue: { type: integer, description: "GitHub number of the issue to resume at" }
+            commentPage: { type: integer }
         issuesCreated: { type: integer }
         issuesUpdated: { type: integer }
         commentsImported: { type: integer }

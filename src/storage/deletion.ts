@@ -706,6 +706,9 @@ const IDENTITY_COLUMNS: readonly [table: string, column: string][] = [
   // agent's id under requested_by_type = 'agent' and is left alone.
   ["deployments", "requested_by_id"],
   ["deployments", "approved_by"],
+  // A run row outlives the member who started it whenever the project is
+  // org-owned: project deletion removes the table, account erasure does not.
+  ["github_issue_imports", "initiated_by"],
   // Cost rows outlive an erasure by two routes: the project is org-owned, or it
   // is agent-owned and so never cascaded at all (only `ownerType === "user"`
   // projects are). In the agent case the row was stamped with the *user* id by
