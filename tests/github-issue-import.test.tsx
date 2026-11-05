@@ -227,7 +227,7 @@ async function runImport(ctx: Awaited<ReturnType<typeof makeEnv>>, initiatedBy =
     delaySeconds: undefined,
   });
   const outcomes: string[] = [];
-  for (let guard = 0; ctx.sent.length > 0 && guard < 50; guard++) {
+  for (let guard = 0; ctx.sent.length > 0 && guard < 100; guard++) {
     const next = ctx.sent.shift() as SentMessage;
     const result = await processIssueImportMessage(ctx.env, next.body, logger);
     if (!result.success) throw new Error(result.error.message);
@@ -423,6 +423,45 @@ describe("GitHub issue import job", () => {
     const count = (ctx: Awaited<ReturnType<typeof makeEnv>>, table: string) =>
       (ctx.raw.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
 
+    /** Run a whole import, counting the D1 statements each message prepares. */
+    async function mostQueriesInOneMessage(ctx: Awaited<ReturnType<typeof makeEnv>>) {
+      let queries = 0;
+      ctx.env.DB = new Proxy(ctx.db, {
+        get(target, prop) {
+          if (prop !== "prepare") return Reflect.get(target, prop, target);
+          return (sql: string) => {
+            queries++;
+            return target.prepare(sql);
+          };
+        },
+      });
+      const run = await createIssueImportRun(ctx.db, logger, {
+        projectId: PROJECT_ID,
+        githubRepo: REPO,
+        initiatedBy: "user_owner",
+      });
+      if (!run.success) throw run.error;
+      let body: IssueImportJobMessage = {
+        type: "github.issues.import",
+        runId: run.data.id,
+        projectId: PROJECT_ID,
+        namespace: "testns",
+        slug: "widgets",
+        page: 1,
+        timestamp: new Date().toISOString(),
+      };
+      let most = 0;
+      for (;;) {
+        queries = 0;
+        const result = await processIssueImportMessage(ctx.env, body, logger);
+        if (!result.success) throw result.error;
+        most = Math.max(most, queries);
+        const next = ctx.sent.shift();
+        if (!next) return most;
+        body = next.body;
+      }
+    }
+
     it("spreads a long thread over several messages, importing each comment once", async () => {
       gh.issues = [ghIssue(1, { comments: 650 }), ghIssue(2, { comments: 3 })];
       gh.comments.set(1, commentsFor(1, 650));
@@ -444,46 +483,38 @@ describe("GitHub issue import job", () => {
       gh.issues = [1, 2, 3].map((number) => ghIssue(number, { comments: 500 }));
       for (const issue of [1, 2, 3]) gh.comments.set(issue, commentsFor(issue, 500));
       const ctx = await makeEnv();
-      let queries = 0;
-      const realDb = ctx.env.DB;
-      ctx.env.DB = new Proxy(realDb, {
-        get(target, prop) {
-          if (prop !== "prepare") return Reflect.get(target, prop, target);
-          return (sql: string) => {
-            queries++;
-            return target.prepare(sql);
-          };
-        },
-      });
-      const run = await createIssueImportRun(ctx.db, logger, {
-        projectId: PROJECT_ID,
-        githubRepo: REPO,
-        initiatedBy: "user_owner",
-      });
-      if (!run.success) throw run.error;
-      let page: SentMessage = {
-        body: {
-          type: "github.issues.import",
-          runId: run.data.id,
-          projectId: PROJECT_ID,
-          namespace: "testns",
-          slug: "widgets",
-          page: 1,
-          timestamp: new Date().toISOString(),
-        },
-        delaySeconds: undefined,
-      };
-      let most = 0;
-      for (;;) {
-        queries = 0;
-        const result = await processIssueImportMessage(ctx.env, page.body, logger);
-        if (!result.success) throw result.error;
-        most = Math.max(most, queries);
-        const next = ctx.sent.shift();
-        if (!next) break;
-        page = next;
-      }
+      const most = await mostQueriesInOneMessage(ctx);
       expect(count(ctx, "issue_comments")).toBe(1500);
+      expect(most).toBeLessThan(1000);
+    });
+
+    it("imports every comment of a thread past the old 3,000 cap", async () => {
+      gh.issues = [ghIssue(1, { comments: 3050 })];
+      gh.comments.set(1, commentsFor(1, 3050));
+      const ctx = await makeEnv();
+      const { outcomes } = await runImport(ctx);
+      expect(outcomes.at(-1)).toBe("completed");
+      expect(count(ctx, "issue_comments")).toBe(3050);
+    });
+
+    it("counts labels toward the budget", async () => {
+      // Label-heavy issues spend the budget on statements of their own, then a
+      // long thread of distinct authors, the costliest comments, runs past it.
+      const labels = Array.from({ length: 20 }, (_, i) => ({ name: `label-${i}` }));
+      gh.issues = [
+        ...Array.from({ length: 18 }, (_, i) => ghIssue(i + 1, { labels })),
+        ghIssue(19, { comments: 300 }),
+      ];
+      gh.comments.set(
+        19,
+        commentsFor(19, 300).map((comment, i) => ({
+          ...comment,
+          user: { login: `author-${i}`, id: 1000 + i },
+        })),
+      );
+      const ctx = await makeEnv();
+      const most = await mostQueriesInOneMessage(ctx);
+      expect(count(ctx, "issue_comments")).toBe(300);
       expect(most).toBeLessThan(1000);
     });
 

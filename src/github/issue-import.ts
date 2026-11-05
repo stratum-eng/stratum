@@ -46,19 +46,18 @@ export const ISSUES_PER_PAGE = 25;
 const COMMENTS_PER_PAGE = 100;
 /**
  * Work one queue message may start, in rough D1 queries and subrequests. A page
- * can hold 25 issues of 3,000 comments each, far past what one invocation may do
- * (D1 allows 1,000 queries on the paid plan), and a retry would fail the same way
- * forever. Past this a message stops and the next one resumes. It is checked only
- * before an issue or a page of comments, so the most one message spends is this
- * plus an issue and a full page of comments: about 700.
+ * can hold 25 issues with thousands of comments each, far past what one invocation
+ * may do (D1 allows 1,000 queries on the paid plan), and a retry would fail the
+ * same way forever. Past this a message stops and the next one resumes. It is
+ * checked only before an issue or a page of comments, so the most one message
+ * spends is this plus an issue and a full page of comments: about 750.
  */
 const MESSAGE_WORK_BUDGET = 400;
+/** The issue's writes and reads, before one more for each of its labels. */
 const WORK_PER_ISSUE = 5;
 const WORK_PER_COMMENT_PAGE = 1;
 /** A batched insert of two statements, plus an uncached author lookup. */
 const WORK_PER_COMMENT = 3;
-/** 3,000 comments on one issue is the most a single page will copy. */
-const MAX_COMMENT_PAGES = 30;
 /** Wait when GitHub rate-limits without saying until when (secondary limits). */
 const DEFAULT_RATE_LIMIT_WAIT_SECONDS = 60;
 /** Cloudflare Queues' ceiling on a message delay. */
@@ -214,7 +213,8 @@ async function importComments(
   const commentMap = await loadCommentMap(env.DB, logger, issueId);
   if (!commentMap.success) return { kind: "error", imported: 0, message: "database error" };
   let imported = 0;
-  for (let page = startPage; page <= MAX_COMMENT_PAGES; page++) {
+  // Ends on GitHub's first short page; the budget, not a cap, bounds each message.
+  for (let page = startPage; ; page++) {
     // Never before the first page of this message's issue, so every message
     // gets at least one page done and a run can't stall on one long thread.
     if (page > startPage && ctx.work.used >= MESSAGE_WORK_BUDGET) {
@@ -264,9 +264,8 @@ async function importComments(
       commentMap.data.set(comment.id, written.data.commentId);
       if (written.data.created) imported++;
     }
-    if (listing.items.length < COMMENTS_PER_PAGE) break;
+    if (listing.items.length < COMMENTS_PER_PAGE) return { kind: "done", imported };
   }
-  return { kind: "done", imported };
 }
 
 /** Count one issue's comments; the step that ends the page, if they did not finish. */
@@ -359,7 +358,7 @@ async function importPage(ctx: PageContext, page: number): Promise<PageStep> {
     if (index > Math.max(resumeAt, 0) && ctx.work.used >= MESSAGE_WORK_BUDGET) {
       return { kind: "paused", progress, resume: { issue: issue.number, commentPage: 1 } };
     }
-    ctx.work.used += WORK_PER_ISSUE;
+    ctx.work.used += WORK_PER_ISSUE + issue.labels.length;
     const author = await resolveAuthor(issue.author);
     if (!author.success) return { kind: "error", progress, message: "database error" };
 
