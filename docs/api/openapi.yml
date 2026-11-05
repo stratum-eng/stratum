@@ -6009,7 +6009,9 @@ components:
             means no restriction.
     OrgSecurityPolicyUpdate:
       type: object
-      minProperties: 1
+      anyOf:
+        - required: [requireSecondFactor]
+        - required: [ipAllowlist]
       properties:
         requireSecondFactor:
           type: boolean

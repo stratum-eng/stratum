@@ -569,7 +569,19 @@ describe("org IP allowlist (#399)", () => {
     expect(owner()).toEqual({ type: null, id: null });
   });
 
-  it("sends a browser form back to the setup page with the notice", async () => {
+  it("sends a browser form back to the setup page with the notice, and audits it", async () => {
+    // Its own org: denial audits are sampled per org and caller, in memory, so
+    // the earlier tests' refusals would otherwise suppress this one.
+    raw
+      .prepare(
+        "INSERT INTO orgs (id, name, slug, owner_id, ip_allowlist) VALUES ('org_form', 'Form', 'form', 'usr_alice', ?)",
+      )
+      .run(JSON.stringify(["203.0.113.0/24"]));
+    raw
+      .prepare(
+        "INSERT INTO org_members (org_id, user_id, role) VALUES ('org_form', 'usr_alice', 'admin')",
+      )
+      .run();
     const res = await app.fetch(
       new Request("http://localhost/api/github/installations/777/link", {
         method: "POST",
@@ -578,11 +590,16 @@ describe("org IP allowlist (#399)", () => {
           "CF-Connecting-IP": "198.51.100.9",
           "Content-Type": "application/x-www-form-urlencoded",
         },
-        body: "org=acme",
+        body: "org=form",
       }),
       env,
     );
     expect(res.status).toBe(303);
     expect(res.headers.get("Location")).toBe("/github/app/setup?notice=ip_not_allowed");
+    // The redirect never reaches the IP middleware, so the route must audit it.
+    const audited = raw
+      .prepare("SELECT org_id FROM audit_log WHERE action = 'org.ip_access_denied'")
+      .all() as Array<{ org_id: string }>;
+    expect(audited).toEqual([{ org_id: "org_form" }]);
   });
 });

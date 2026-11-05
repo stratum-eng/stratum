@@ -133,8 +133,11 @@ async function holdsCurrentOwner(
 
 /** The refusal for an org admin calling from outside the org's IP allowlist. */
 async function ipRefusal(c: Ctx, orgId: string): Promise<Response> {
+  // Resolve first: it schedules the sampled audit entry, and a form's redirect
+  // never reaches the middleware that would otherwise do so.
+  const denial = await ipDenialFor(c, { id: orgId });
   if (!isJsonRequest(c)) return c.redirect(`${SETUP_PATH}?notice=ip_not_allowed`, 303);
-  return ipNotAllowedResponse(c, await ipDenialFor(c, { id: orgId }));
+  return ipNotAllowedResponse(c, denial);
 }
 
 /** The refusal for an org admin whose session fails the org's policy. */

@@ -35,7 +35,7 @@ type AppContext = Context<{ Bindings: Env }>;
  *
  * Deliberately NOT covered: the SSO sign-in flow (`/auth/sso/*` — signing in
  * is not acting on org resources, and the IdP may be off-network), SCIM
- * (`/scim/v2`, see docs/user-guide/org-security.md), webhooks and deploy
+ * (`/scim/v2`, see docs/user-guide/org-ip-allowlist.md), webhooks and deploy
  * callbacks, and anonymous reads of public projects.
  */
 export const orgIpAllowlistMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {

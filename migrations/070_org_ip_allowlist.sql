@@ -1,4 +1,4 @@
--- Migration 062: per-org IP allowlist (#399).
+-- Migration 070: per-org IP allowlist (#399).
 --
 -- A JSON array of canonical CIDR strings ("203.0.113.0/24", "2001:db8::/32").
 -- NULL — the default, so every existing org is unaffected — means the org
