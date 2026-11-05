@@ -48,7 +48,7 @@ interface IssueRow {
   linked_change_id: string | null;
   closed_at: string | null;
   closed_by: string | null;
-  /** Absent (undefined) on rows from stubs predating migration 064. */
+  /** Absent (undefined) on rows from stubs predating migration 071. */
   external_author?: string | null;
   external_url?: string | null;
   created_at: string;

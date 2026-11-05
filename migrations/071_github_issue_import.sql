@@ -1,4 +1,4 @@
--- Migration 064: import GitHub issues into a project's tracker (#421).
+-- Migration 071: import GitHub issues into a project's tracker (#421).
 --
 -- github_issue_imports is the run log: one row per import the API queued. The
 -- queue job advances it page by page, so it is also how the settings page and

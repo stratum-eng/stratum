@@ -1,5 +1,5 @@
 /**
- * Storage for the GitHub issue importer (#421), migration 064.
+ * Storage for the GitHub issue importer (#421), migration 071.
  *
  * Three concerns live here: the run log (`github_issue_imports`), the number
  * map that makes a re-run update rather than duplicate (`github_issue_map`,
