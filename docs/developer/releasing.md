@@ -12,9 +12,10 @@ release whose notes are that version's changelog section, so
 Production is not gated on a release. Every merge to `main` deploys to production
 through `ci.yml`, so a version labels code that is already live.
 
-**Agents:** the whole procedure is [Cutting a release](#cutting-a-release). Follow it
-literally. A release is done when `gh release view vX.Y.Z` succeeds, and not before: a
-green workflow run is not proof, because a dry run is green too.
+**Releases cut themselves.** [Release Autopilot](#autopilot) runs daily, and agents and
+people only need to add changelog fragments. A release is done when
+`gh release view vX.Y.Z` succeeds, and not before: a green workflow run is not proof,
+because a dry run is green too.
 
 ## The habit
 
@@ -23,10 +24,49 @@ the change — not a direct edit to `CHANGELOG.md`'s `## [Unreleased]` section, 
 how two PRs end up editing the same lines. A fragment is the same Keep a Changelog
 snippet you'd otherwise paste into `Unreleased`: one or more `### Group` headings
 (`Breaking`, `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`) with
-their bullets. Then cut a release whenever a meaningful feature lands — small and
-often beats a quarterly mega-release.
+their bullets.
 
-## Cutting a release
+## Autopilot
+
+`.github/workflows/release-autopilot.yml` runs daily and on demand
+(`gh workflow run release-autopilot.yml`). Each run:
+
+1. **Repairs first.** If the newest version in `CHANGELOG.md` has no tag or release, it
+   retries that publish and stops there.
+2. **Clears leftovers.** It closes its own release PR from a run that died. A held or
+   hand-opened release PR stops the run, so it never competes with a person.
+3. **Plans.** With no unreleased entries it stops (`npm run release:plan` shows the same
+   decision).
+4. **Gates.** It runs `prepare`, then lint, typecheck and test:coverage on that exact tree.
+5. **Ships.** It opens the PR, checks that only release files changed, squash-merges, then
+   starts **Release** (tag and publish) and **CI** (staging, then production).
+
+**What waits for a person:** a release whose notes include `Breaking` or `Removed` entries.
+Autopilot opens that PR with the `release-hold` label and doesn't merge it. Merging it
+publishes as usual, and no release is cut until it's resolved.
+
+**To stop it:** `gh variable set RELEASE_AUTOPILOT --body off`. Manual runs still work.
+
+**To preview it:** `gh workflow run release-autopilot.yml -f dry_run=true` plans and runs the
+gates, and opens, merges and publishes nothing.
+
+**It needs** "Allow GitHub Actions to create and approve pull requests" enabled in the
+repository's Actions settings.
+
+### When a release is blocked
+
+Any failure in Autopilot or Release opens one issue labelled `release-blocked`, and later
+failures comment on it. It closes itself when a release next publishes. To clear one, open
+the linked run and fix what failed, usually a red gate on `main`:
+
+- A failed publish retries on the next daily run, or now with
+  `gh workflow run release.yml -f version=X.Y.Z`.
+- A failed cut starts again from the current `main` on the next run. Nothing needs cleaning up.
+- Don't work around a gate by merging a release PR by hand.
+
+## Cutting a release by hand
+
+You rarely need this: use it to release ahead of the schedule or to choose the bump.
 
 **1. Check there is something to cut, and what it will be.**
 
@@ -97,7 +137,7 @@ While the major version is `0`, an inferred major is clamped to a minor — per 
 
 ## Running the workflow by hand
 
-Merging is the normal path. Run **Release** by hand (Actions, or
+Autopilot starts this for you. Run **Release** by hand (Actions, or
 `gh workflow run release.yml`) only to:
 
 | Goal | Inputs |
@@ -154,6 +194,8 @@ Nothing publishes them to npm yet.
 | `CHANGELOG.md` | Source of truth: versions, dates, notes, links |
 | `changelog.d/` | Where PRs add their entry — one new file each, folded in and deleted at release time |
 | `scripts/changelog.ts` | Pure parsing, fragment merging, bump inference, and rewriting |
-| `scripts/release.ts` | The `check` / `latest` / `previous` / `notes` / `commit` / `prepare` / `pr` CLI |
+| `scripts/release.ts` | The `check` / `latest` / `previous` / `notes` / `commit` / `plan` / `prepare` / `pr` CLI |
 | `tests/changelog.test.ts` | Unit tests, plus validation of the real changelog and real fragments |
+| `.github/workflows/release-autopilot.yml` | Cuts, gates, merges and starts the publish, daily |
 | `.github/workflows/release.yml` | Tags and publishes the GitHub release |
+| `scripts/release-alert.sh` | Opens, updates and closes the `release-blocked` issue |

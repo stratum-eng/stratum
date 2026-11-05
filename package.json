@@ -30,6 +30,7 @@
     "release:previous": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts previous",
     "release:notes": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts notes",
     "release:commit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts commit",
+    "release:plan": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts plan",
     "release:prepare": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts prepare",
     "release:pr": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts pr",
     "cf-typegen": "wrangler types"

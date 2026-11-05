@@ -322,6 +322,36 @@ export function inferBump(body: string): Bump {
   return "patch";
 }
 
+/** What the next release would be, or that there is nothing to release. */
+export type ReleasePlan =
+  | { pending: false }
+  | { pending: true; version: string; bump: Bump; hold: string | null };
+
+/**
+ * Decide what an unattended run should do with an `Unreleased` body. It releases
+ * by itself unless the notes announce something a user has to act on: those are
+ * the releases where a wrong word costs someone, so they wait for a person. The
+ * hold looks at the groups rather than the bump because 0.x clamps a major to a
+ * minor, and a break is just as breaking before 1.0.
+ */
+export function planRelease(current: string, unreleasedBody: string): Result<ReleasePlan> {
+  const groups = groupsIn(unreleasedBody);
+  if (groups.length === 0) return { success: true, data: { pending: false } };
+
+  const bump = resolveBump(current, "auto", unreleasedBody);
+  if (!bump.success) return bump;
+  const version = nextVersion(current, bump.data);
+  if (!version.success) return version;
+
+  const breaking = groups.filter((group) => BREAKING_GROUPS.has(group));
+  const hold =
+    breaking.length > 0 ? `the notes include ${[...new Set(breaking)].join(" and ")} changes` : null;
+  return {
+    success: true,
+    data: { pending: true, version: version.data, bump: bump.data, hold },
+  };
+}
+
 interface GroupBlock {
   /** Heading text exactly as written, e.g. `added` or `Added`. */
   heading: string;
