@@ -2778,7 +2778,7 @@ paths:
                   default: 60
       responses:
         "201":
-          description: Credential minted. Sent with `Cache-Control: no-store`.
+          description: "Credential minted. Sent with `Cache-Control: no-store`."
           content:
             application/json:
               schema:

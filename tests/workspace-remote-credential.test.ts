@@ -25,6 +25,7 @@ import { createApiToken, listApiTokens, revokeApiToken } from "../src/storage/ap
 import { issueTokens, registerClient, revokeGrantsForClientUser } from "../src/storage/oauth";
 import { createSession } from "../src/storage/sessions";
 import { disableLegacyToken } from "../src/storage/users";
+import { resolveWorkspaceGitCredential } from "../src/storage/workspace-git-credentials";
 import type { Env, ProjectEntry, WorkspaceEntry } from "../src/types";
 import { hashToken } from "../src/utils/crypto";
 import type { Logger } from "../src/utils/logger";
@@ -129,7 +130,10 @@ async function apiToken(scope: "read" | "read_write" = "read_write"): Promise<st
   return made.data.plaintext;
 }
 
-async function oauthGrant(scope: "mcp:read" | "mcp:write"): Promise<{
+async function oauthGrant(
+  scope: "mcp:read" | "mcp:write",
+  agentId?: string,
+): Promise<{
   accessToken: string;
   clientId: string;
 }> {
@@ -142,6 +146,7 @@ async function oauthGrant(scope: "mcp:read" | "mcp:write"): Promise<{
     clientId: client.data.client.id,
     userId: OWNER,
     scope,
+    ...(agentId !== undefined ? { agentId } : {}),
   });
   if (!tokens.success) throw tokens.error;
   return { accessToken: tokens.data.accessToken, clientId: client.data.client.id };
@@ -577,6 +582,23 @@ describe("the credential cannot outlive the credential that minted it", () => {
     ).toBe(200);
 
     await deleteAgent(env.DB, agent.data.agent.id, logger);
+    expect((await git(token, path, "GET")).status).toBe(401);
+  });
+
+  it("acts as the agent an OAuth grant is bound to, and fails closed without it", async () => {
+    const agent = await createAgent(env.DB, OWNER, "builder", logger);
+    if (!agent.success) throw agent.error;
+    const { accessToken } = await oauthGrant("mcp:write", agent.data.agent.id);
+    const { token } = await mintViaMcp(accessToken);
+    expect((await git(token, path, "GET")).status).toBe(200);
+
+    const resolved = await resolveWorkspaceGitCredential(env.DB, token, logger);
+    if (!resolved.success) throw resolved.error;
+    expect(resolved.data?.agentId).toBe(agent.data.agent.id);
+
+    // Remove only the agent row: the grant row stays, as it would if the two
+    // ever disagreed, and the child must not fall back to acting as the owner.
+    await env.DB.prepare("DELETE FROM agents WHERE id = ?").bind(agent.data.agent.id).run();
     expect((await git(token, path, "GET")).status).toBe(401);
   });
 

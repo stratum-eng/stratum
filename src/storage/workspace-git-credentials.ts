@@ -154,8 +154,11 @@ async function parentStatus(
     case "oauth_grant": {
       const row = await db
         .prepare(
-          `SELECT scope, access_expires_at, refresh_expires_at, revoked_at
-             FROM oauth_tokens WHERE id = ? AND user_id = ?`,
+          `SELECT t.scope, t.access_expires_at, t.refresh_expires_at, t.revoked_at,
+                  t.agent_id, a.id AS agent_row_id
+             FROM oauth_tokens t
+             LEFT JOIN agents a ON a.id = t.agent_id AND a.owner_id = t.user_id
+            WHERE t.id = ? AND t.user_id = ?`,
         )
         .bind(parent.id, userId)
         .first<{
@@ -163,8 +166,14 @@ async function parentStatus(
           access_expires_at: string;
           refresh_expires_at: string | null;
           revoked_at: string | null;
+          agent_id: string | null;
+          agent_row_id: string | null;
         }>();
       if (!row || row.revoked_at !== null) return err("revoked");
+      // A bound grant authenticates as its agent, so its child has to as well,
+      // and fails closed like the OAuth resolver if that agent is gone: acting
+      // as the owner instead would hand it authority the owner never granted.
+      if (row.agent_id !== null && row.agent_row_id === null) return err("revoked");
       // The GRANT, not the access token that happened to present it: the
       // grant lives as long as either half can still be used.
       const accessLive = !isExpired(row.access_expires_at);
@@ -178,6 +187,7 @@ async function parentStatus(
       return ok({
         expiresAtMs: ends.length > 0 ? Math.max(...ends) : Date.now(),
         binding: { kind: "unbound" },
+        ...(row.agent_id !== null ? { agentId: row.agent_id } : {}),
       });
     }
     case "agent": {

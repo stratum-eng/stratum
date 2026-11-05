@@ -210,7 +210,9 @@ git config credential.https://stratum.example.com.helper \
 git push stratum HEAD:main
 ```
 
-or, for a one-off, in the URL:
+Prefer the helper. Putting the credential in the URL for a one-off also works,
+but it passes the secret in git's command-line arguments, where other local
+processes and git's own diagnostics can read it until it expires:
 
 ```bash
 git push "https://stratum:${STRATUM_GIT_TOKEN}@stratum.example.com/@acme/billing/workspaces/fix-retries.git" HEAD:main
