@@ -229,7 +229,7 @@ immediately. Headless callers can present a `stratum_user_` or `stratum_agent_` 
 directly instead.
 
 That exposes the whole eval-gated change flow — plus project import and org
-management — as thirty-seven MCP tools, so Claude Code,
+management — as thirty-eight MCP tools, so Claude Code,
 Cursor, Zed, Copilot, or a custom agent can drive Stratum without a bespoke integration.
 See the [MCP guide](docs/user-guide/mcp.md).
 

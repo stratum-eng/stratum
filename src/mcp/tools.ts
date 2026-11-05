@@ -1,5 +1,5 @@
 /**
- * The thirty-seven tools the MCP server exposes.
+ * The thirty-eight tools the MCP server exposes.
  *
  * The full agent contribution loop: create or import a project, read it, fork a
  * workspace, commit, open an evaluation-gated change, re-evaluate it, discuss it
@@ -331,6 +331,23 @@ export function buildTools(client: StratumClient): ToolDef[] {
       "List all workspaces for a Stratum project (no status filter — workspaces whose changes already merged still appear).",
       { project: projectArg },
       (a) => client.listWorkspaces(parseProjectRef(a.project)),
+    ),
+    tool(
+      "stratum_workspace_remote",
+      "Get a git remote for a workspace, to work in a local checkout instead of sending file contents through stratum_commit (and to push deletions and renames, which stratum_commit cannot). Returns the smart-HTTP `remote` URL, a `username`, a short-lived `token`, its `expiresAt`, and the `branches` a push may update (the project default branch or the workspace branch; tags are also allowed). The token lasts 60 minutes by default (5 to 60), never longer than the credential you are calling with, and dies at once if that credential is revoked. It works ONLY for git fetch and git push on this one workspace: it is refused on the project URL, on every other workspace, on the REST API and on this MCP server. Give it to git as the HTTP password, through a credential helper or in the URL (`https://stratum:<token>@host/...`), then e.g. `git push <remote> HEAD:main`. Treat it as a secret: never write it into files, commits or messages. When it expires, call this tool again. A push lands on the workspace only; open a change with stratum_create_change to propose merging it. Needs write access (an `mcp:read` grant is refused) and push rights on the workspace (its creator or a project admin).",
+      {
+        project: projectArg,
+        workspace: {
+          type: "string",
+          description: "Workspace name returned by stratum_create_workspace",
+        },
+        expires_in_minutes: {
+          type: "integer",
+          description: "Credential lifetime in minutes, 5 to 60 (default 60)",
+          optional: true,
+        },
+      },
+      (a) => client.workspaceRemote(parseProjectRef(a.project), a.workspace, a.expires_in_minutes),
     ),
     tool(
       "stratum_commit",

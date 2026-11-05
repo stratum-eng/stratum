@@ -1,5 +1,7 @@
 import { Hono } from "hono";
 import { type EventActor, emitEvent } from "../queue/events";
+import { credentialMintRefused, orgBlockingCredentialMint } from "../services/org-second-factor";
+import { recordAudit } from "../storage/audit";
 import { isTargetDeleting } from "../storage/deletion";
 import {
   MAX_FILE_BYTES,
@@ -19,6 +21,13 @@ import {
   listWorkspaces,
   setWorkspace,
 } from "../storage/state";
+import {
+  DEFAULT_WORKSPACE_GIT_TTL_MINUTES,
+  MAX_WORKSPACE_GIT_TTL_MINUTES,
+  MIN_WORKSPACE_GIT_TTL_MINUTES,
+  type MintingCredential,
+  mintWorkspaceGitCredential,
+} from "../storage/workspace-git-credentials";
 import type { Env } from "../types";
 import { getArtifactsRepoName, projectDefaultBranch } from "../types";
 import {
@@ -30,7 +39,15 @@ import {
 } from "../utils/authz";
 import { createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
-import { badRequest, created, internalError, notFound, ok, unauthorized } from "../utils/response";
+import {
+  appError,
+  badRequest,
+  created,
+  internalError,
+  notFound,
+  ok,
+  unauthorized,
+} from "../utils/response";
 import { isStringRecord, isTraversalPath, isValidSlug, isValidUuid } from "../utils/validation";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -197,6 +214,194 @@ app.get("/:namespace/:slug/workspaces", async (c) => {
       path: `/${namespace}/${slug}/workspaces/${name}`,
     })),
   });
+});
+
+/**
+ * The minting credential, read off the auth context, or null when the caller
+ * authenticated in a way that cannot mint one.
+ *
+ * A browser session is refused. Its revocation is "sign out", and nothing a
+ * child could check on each use records which session minted it, so a
+ * session-minted credential would outlive the sign-out. Everything else here
+ * can be re-checked per use (see storage/workspace-git-credentials.ts).
+ */
+function mintingCredential(c: {
+  get: (key: "apiTokenId" | "oauthGrantId" | "agentId" | "authVia" | "userId") => unknown;
+}): MintingCredential | null {
+  if (c.get("authVia") !== "token") return null;
+  const grantId = c.get("oauthGrantId");
+  if (typeof grantId === "string") return { kind: "oauth_grant", id: grantId };
+  const tokenId = c.get("apiTokenId");
+  if (typeof tokenId === "string") return { kind: "api_token", id: tokenId };
+  const agentId = c.get("agentId");
+  if (typeof agentId === "string") return { kind: "agent", id: agentId };
+  if (typeof c.get("userId") === "string") return { kind: "legacy_token" };
+  return null;
+}
+
+// The body is one optional integer.
+const MAX_REMOTE_CREDENTIAL_BODY_BYTES = 1024;
+
+// POST /workspaces/:namespace/:slug/workspaces/:name/remote-credential (#408)
+//
+// Mints a short-lived credential that works ONLY for git-upload-pack and
+// git-receive-pack on this one workspace. Called by the MCP tool
+// `stratum_workspace_remote`. The response is the only place the secret
+// appears; it is never logged, and the audit row records only its id.
+app.post("/:namespace/:slug/workspaces/:name/remote-credential", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const userId = c.get("userId");
+  const agentId = c.get("agentId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const ownerId = userId ?? agentOwnerId;
+  if (!ownerId) return unauthorized("Authentication required");
+
+  // The middleware already refuses a read-only credential on a POST, before
+  // routing (and, over MCP, on the dispatched sub-request). Repeated here
+  // because a read-only grant minting a PUSH credential would be an
+  // escalation, and that should not rest on one check.
+  if (c.get("tokenScope") === "read") {
+    return c.json(
+      {
+        error: "A read-only credential cannot mint a push credential",
+        code: "TOKEN_SCOPE_INSUFFICIENT",
+      },
+      403,
+    );
+  }
+
+  const minter = mintingCredential(c);
+  if (minter === null) {
+    return c.json(
+      {
+        error:
+          "A browser session cannot mint a workspace remote credential. Call this with an API token, an agent token or an MCP grant.",
+        code: "TOKEN_REQUIRED",
+      },
+      403,
+    );
+  }
+
+  const { namespace, slug, name: workspaceName } = c.req.param();
+  if (!isValidSlug(workspaceName)) return badRequest("invalid workspace name");
+
+  // An empty or unparseable body means "the default lifetime".
+  const body = await readJsonWithLimit<{ expiresInMinutes?: unknown } | null>(
+    c,
+    MAX_REMOTE_CREDENTIAL_BODY_BYTES,
+    logger,
+  ).catch(() => null);
+  if (body instanceof Response) return body;
+  const requested = body !== null && typeof body === "object" ? body.expiresInMinutes : undefined;
+  const ttl = requested ?? DEFAULT_WORKSPACE_GIT_TTL_MINUTES;
+  if (
+    typeof ttl !== "number" ||
+    !Number.isInteger(ttl) ||
+    ttl < MIN_WORKSPACE_GIT_TTL_MINUTES ||
+    ttl > MAX_WORKSPACE_GIT_TTL_MINUTES
+  ) {
+    return badRequest(
+      `expiresInMinutes must be an integer between ${MIN_WORKSPACE_GIT_TTL_MINUTES} and ${MAX_WORKSPACE_GIT_TTL_MINUTES}`,
+    );
+  }
+
+  const projectResult = await getProjectByPath(c.env.STATE, namespace, slug, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code !== "NOT_FOUND") {
+      logger.error("Failed to get project", projectResult.error);
+    }
+    return notFound("Project", `${namespace}/${slug}`);
+  }
+  const project = projectResult.data;
+  const binding = credentialBindingFrom(c);
+
+  // A 404, not the 403 `refuseProjectAccess` gives a reader: like the commit
+  // route, every refusal here reads as "no such workspace", so the endpoint
+  // never confirms that a private project exists.
+  if (!(await canWriteProject(c.env.DB, project, binding, userId, agentOwnerId))) {
+    return notFound("Project", `${namespace}/${slug}`);
+  }
+
+  const workspaceResult = await getWorkspace(c.env.STATE, project.id, workspaceName, logger);
+  if (!workspaceResult.success) {
+    if (workspaceResult.error.code !== "NOT_FOUND") {
+      logger.error("Failed to get workspace", workspaceResult.error);
+    }
+    return notFound("Workspace", workspaceName);
+  }
+  const workspace = workspaceResult.data;
+
+  // Exactly the rule a push over git applies, so the credential is never
+  // minted for a workspace it could not push to. Same 404 as a missing
+  // workspace, as on the commit route, so ownership is not revealed.
+  if (!(await canWriteWorkspace(c.env.DB, project, workspace, binding, userId, agentOwnerId))) {
+    return notFound("Workspace", workspaceName);
+  }
+
+  // The org second-factor rule at mint (#428). The credential reaches one
+  // project, so only the org that owns it can refuse.
+  const blockingOrg = orgBlockingCredentialMint(
+    c,
+    project.ownerType === "org" ? { reachesOrgId: project.ownerId } : {},
+  );
+  if (blockingOrg) return credentialMintRefused(c, blockingOrg, { bindable: false });
+
+  if (await isTargetDeleting(c.env, project, logger)) {
+    return c.json({ error: "Project is being deleted", code: "TARGET_DELETING" }, 409);
+  }
+
+  const projectRef = `${project.namespace}/${project.slug}`;
+  const minted = await mintWorkspaceGitCredential(c.env.DB, logger, {
+    userId: ownerId,
+    minter,
+    projectId: project.id,
+    projectRef,
+    workspaceName: workspace.name,
+    workspaceCreatedAt: workspace.createdAt,
+    ttlMinutes: ttl,
+  });
+  if (!minted.success) return appError(minted.error);
+
+  await recordAudit(c.env.DB, logger, {
+    action: "workspace_remote.credential_minted",
+    actorType: agentId !== undefined ? "agent" : "user",
+    actorId: agentId ?? ownerId,
+    subject: minted.data.id,
+    project,
+    detail: {
+      workspace: workspace.name,
+      expiresAt: minted.data.expiresAt,
+      mintedBy: minter.kind,
+      ...(c.get("oauthClientId") !== undefined ? { oauthClientId: c.get("oauthClientId") } : {}),
+    },
+  });
+
+  const origin = new URL(c.req.url).origin;
+  return c.json(
+    {
+      remote: `${origin}/${project.namespace}/${project.slug}/workspaces/${workspace.name}.git`,
+      username: "stratum",
+      token: minted.data.plaintext,
+      expiresAt: minted.data.expiresAt,
+      credentialId: minted.data.id,
+      project: projectRef,
+      workspace: workspace.name,
+      allows: ["git-upload-pack", "git-receive-pack"],
+      // The refs a workspace push may update (utils/git-protocol.ts
+      // `checkWorkspacePushPolicy`), besides tags.
+      branches: [
+        ...new Set([projectDefaultBranch(project), workspace.branchName ?? workspace.name]),
+      ],
+    },
+    201,
+    { "Cache-Control": "no-store" },
+  );
 });
 
 // POST /workspaces/:workspaceName/commit - Commit changes

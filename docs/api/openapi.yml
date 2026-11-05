@@ -2735,6 +2735,83 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/workspaces/{namespace}/{slug}/workspaces/{name}/remote-credential:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+        description: Workspace name
+    post:
+      operationId: mintWorkspaceRemoteCredential
+      tags: [workspaces]
+      summary: Mint a short-lived git credential for one workspace
+      description: |
+        Returns the workspace's smart-HTTP remote and a `stratum_git_` credential
+        that works ONLY for `git-upload-pack` and `git-receive-pack` on this one
+        workspace. It is refused on the project URL, on every other workspace,
+        and on the whole API (including `/mcp`). It lasts `expiresInMinutes`
+        (default and maximum 60), never past the calling credential's own
+        expiry, and stops working at once if that credential is revoked. Backs
+        the `stratum_workspace_remote` MCP tool.
+
+        Requires a `read_write` API token, an `mcp:write` grant, an agent token
+        or the legacy key; a read-only credential gets 403
+        `TOKEN_SCOPE_INSUFFICIENT` and a browser session 403 `TOKEN_REQUIRED`.
+        The caller must be able to push to the workspace (its creator or a
+        project admin); every other refusal is a 404. At most 20 live
+        credentials per user (409 `TOKEN_LIMIT_REACHED`). Audited as
+        `workspace_remote.credential_minted`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expiresInMinutes:
+                  type: integer
+                  minimum: 5
+                  maximum: 60
+                  default: 60
+      responses:
+        "201":
+          description: "Credential minted. Sent with `Cache-Control: no-store`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  remote: { type: string, description: "Smart-HTTP URL of the workspace" }
+                  username: { type: string, description: "Any username works; this is a suggestion" }
+                  token: { type: string, description: "The secret. Returned once, never stored in plaintext" }
+                  expiresAt: { type: string, format: date-time }
+                  credentialId: { type: string }
+                  project: { type: string }
+                  workspace: { type: string }
+                  allows:
+                    type: array
+                    items: { type: string, enum: [git-upload-pack, git-receive-pack] }
+                  branches:
+                    type: array
+                    items: { type: string }
+                    description: Branches a push may update (tags are also allowed)
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Too many live credentials, or the project is being deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/workspaces/{name}/commit:
     parameters:
       - name: name

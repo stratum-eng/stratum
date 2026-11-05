@@ -213,7 +213,7 @@ vetted by anyone. A name you do not recognise should be disconnected.
 
 ## The tools
 
-Thirty-seven tools cover the full contribution loop, from creating or importing
+Thirty-eight tools cover the full contribution loop, from creating or importing
 a project to promoting a change to GitHub, plus organization management. Project
 arguments take a `namespace/slug` reference (`@acme/api` and `acme/api` both
 work); organization arguments take the org's slug (`acme` or `@acme`). Every
@@ -257,11 +257,13 @@ equivalent.
 | `stratum_create_workspace` | Fork an isolated workspace; returns its name and git remote. |
 | `stratum_list_workspaces` | List a project's workspaces — all of them; there is no status filter, so workspaces whose changes already merged still appear. |
 | `stratum_commit` | Commit a map of repo-relative paths to **complete file contents**. |
+| `stratum_workspace_remote` | The workspace's git remote URL plus a **short-lived push credential** for it, for working in a local checkout. See [Pushing from a local checkout](#pushing-from-a-local-checkout). |
 
 `stratum_commit` takes the `project_id` from `stratum_get_project`, not the
 `namespace/slug` reference. The file map is capped at 2,000 files, and it cannot
 express a deletion or rename — only full contents of added or modified files.
-Larger or destructive edits go over the workspace's git remote instead.
+Larger or destructive edits go over the workspace's git remote instead, with a
+credential from `stratum_workspace_remote`.
 
 **The whole MCP request is capped at 8 MB**, below the REST API's 25 MB commit
 limit. A tool call is buffered, parsed, re-serialized into an internal request
@@ -269,6 +271,77 @@ and parsed again, so a body near the REST limit would cost more than a Workers
 isolate's entire 128 MB budget — which is shared with every other request that
 isolate is serving. A commit that does not fit belongs on the git remote
 anyway.
+
+### Pushing from a local checkout
+
+An agent that works in a real checkout would rather `git push` than send whole
+files through `stratum_commit`. `stratum_workspace_remote` gives it what it
+needs without a long-lived token set up out of band:
+
+```json
+{ "project": "@acme/billing", "workspace": "fix-retries", "expires_in_minutes": 60 }
+```
+
+returns
+
+```json
+{
+  "remote": "https://stratum.example.com/@acme/billing/workspaces/fix-retries.git",
+  "username": "stratum",
+  "token": "stratum_git_…",
+  "expiresAt": "2026-11-02T13:00:00.000Z",
+  "credentialId": "tok_…",
+  "branches": ["main", "fix-retries"]
+}
+```
+
+Hand the token to git as the HTTP password, either through a credential helper
+or in the URL:
+
+```bash
+# Credential helper: keeps the token out of .git/config and the remote URL.
+export STRATUM_GIT_TOKEN='stratum_git_…'
+git remote add stratum https://stratum.example.com/@acme/billing/workspaces/fix-retries.git
+git -c credential.helper= \
+    -c 'credential.helper=!f() { echo username=stratum; echo "password=$STRATUM_GIT_TOKEN"; }; f' \
+    push stratum HEAD:main
+
+# URL token: simplest, but the token is then stored in .git/config.
+git push https://stratum:stratum_git_…@stratum.example.com/@acme/billing/workspaces/fix-retries.git HEAD:main
+```
+
+A push may update the branches listed in `branches` (the project's default
+branch or the workspace branch) and tags. It lands on the workspace only; open a
+change with `stratum_create_change` to propose merging it, exactly as after
+`stratum_commit`.
+
+What the credential is, and is not:
+
+- **One workspace, git only.** It works for `git fetch` and `git push`
+  (`git-upload-pack` and `git-receive-pack`) on the workspace it was minted for.
+  It is refused on the project's own URL, on every other workspace, on the REST
+  API, and on this MCP server. It does not follow the workspace's name: if the
+  workspace is deleted and re-created, the old credential is dead.
+- **Short-lived.** 60 minutes by default, 5 to 60 on request. Call the tool
+  again when it runs out.
+- **Never outlives what minted it.** It expires no later than the credential the
+  tool was called with, and it stops working the moment that credential does:
+  disconnecting the MCP application, revoking the API token, revoking the agent,
+  or rotating or disabling the legacy key ends it immediately. Its authority is
+  also re-checked on every push, so losing access to the project or workspace
+  ends it too.
+- **Needs write access.** It is refused for an `mcp:read` grant or a read-only
+  token, and for anyone who cannot push to the workspace (its creator or a
+  project admin can).
+- **Audited.** Every mint is recorded as `workspace_remote.credential_minted`,
+  and a refused use of an expired or revoked one as `auth.failed`. The secret
+  itself is never logged or stored; only its hash is.
+- **Bounded.** At most 20 live credentials per user. They do not appear in, or
+  count towards, your API tokens in settings.
+
+It is still a secret that passes through the model's context. It is narrow and
+short-lived precisely so that this is tolerable, but an agent should not write
+it into files, commits or messages.
 
 **The change flow**
 
@@ -327,6 +400,7 @@ them alike. With an **agent token**, or an OAuth connection
 
 - **Works:** the project reading tools (`get_project`, `list_files`,
   `get_file`, `get_activity`), `stratum_create_workspace`, `stratum_commit`,
+  `stratum_workspace_remote` (the credential then pushes as the agent),
   `stratum_create_change`, `stratum_comment_change`,
   `stratum_list_change_comments`, `stratum_create_issue`, `stratum_list_issues`,
   and `stratum_get_usage` (which reports the **owner's** allowance) — an agent

@@ -226,6 +226,54 @@ staged deletion rather than silently dropping it. For anything the file map
 cannot say, push to the workspace's git remote instead; the same change gate
 applies either way.
 
+### Pushing to a workspace's git remote
+
+A workspace is an ordinary smart-HTTP git remote at
+`https://<host>/<namespace>/<slug>/workspaces/<workspace>.git`. git authenticates
+to it with HTTP Basic, and takes a Stratum credential as the password (the
+username is ignored).
+
+Your own `read_write` API token works, but it can do everything you can. For an
+agent, or anything else you would rather not hand a full token, mint a
+**short-lived credential for that one workspace** instead. The MCP tool
+`stratum_workspace_remote` does this (see
+[Pushing from a local checkout](mcp.md#pushing-from-a-local-checkout)), as does
+the API it calls:
+
+```bash
+curl -s -X POST "https://stratum.example.com/api/workspaces/@acme/billing/workspaces/fix-retries/remote-credential" \
+  -H "Authorization: Bearer $STRATUM_TOKEN"
+# → {"remote":"https://stratum.example.com/@acme/billing/workspaces/fix-retries.git",
+#    "username":"stratum","token":"stratum_git_…","expiresAt":"…", …}
+```
+
+The credential works for `git fetch` and `git push` on that workspace and
+nothing else, lasts an hour at most, and stops working as soon as the token that
+minted it is revoked. A browser session cannot mint one; use a token.
+
+Give it to git through a credential helper, which keeps it out of
+`.git/config`:
+
+```bash
+export STRATUM_GIT_TOKEN='stratum_git_…'
+git remote add stratum https://stratum.example.com/@acme/billing/workspaces/fix-retries.git
+git config credential.https://stratum.example.com.helper \
+  '!f() { echo username=stratum; echo "password=$STRATUM_GIT_TOKEN"; }; f'
+git push stratum HEAD:main
+```
+
+Prefer the helper. Putting the credential in the URL for a one-off also works,
+but it passes the secret in git's command-line arguments, where other local
+processes and git's own diagnostics can read it until it expires:
+
+```bash
+git push "https://stratum:${STRATUM_GIT_TOKEN}@stratum.example.com/@acme/billing/workspaces/fix-retries.git" HEAD:main
+```
+
+A workspace push may update the project's default branch name or the workspace
+branch, plus tags. It lands on the workspace; open a change from it with
+`stratum change create` as usual.
+
 ## Changes
 
 ```bash
