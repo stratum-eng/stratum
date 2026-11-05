@@ -310,6 +310,47 @@ describe("denial audit", () => {
     });
   });
 
+  it("attributes a git refusal to its caller, sampling each caller separately", async () => {
+    const org = await createOrg(env.DB, logger, "usr_bob", "Gitaudit", "gitaudit");
+    if (!org.success) throw org.error;
+    await addOrgMember(env.DB, logger, org.data.id, "usr_alice", "admin");
+    raw
+      .prepare("UPDATE orgs SET ip_allowlist = ? WHERE id = ?")
+      .run(JSON.stringify(["203.0.113.0/24"]), org.data.id);
+    await env.STATE.put(
+      "project:@gitaudit:repo",
+      JSON.stringify({
+        id: "proj_gitaudit",
+        name: "repo",
+        slug: "repo",
+        namespace: "@gitaudit",
+        ownerId: org.data.id,
+        ownerType: "org",
+        visibility: "private",
+        remote: "https://acct.artifacts.cloudflare.net/git/x/proj_gitaudit.git",
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    for (const token of [creds.apiToken, creds.agentToken]) {
+      const res = await app.fetch(
+        new Request(`${ORIGIN}/@gitaudit/repo.git/info/refs?service=git-upload-pack`, {
+          headers: { Authorization: `Basic ${btoa(`x:${token}`)}`, "CF-Connecting-IP": OUTSIDE },
+        }),
+        env,
+      );
+      expect(res.status).toBe(403);
+    }
+    const rows = raw
+      .prepare(
+        "SELECT actor_type, actor_id FROM audit_log WHERE action = 'org.ip_access_denied' AND org_id = ? ORDER BY rowid",
+      )
+      .all(org.data.id) as Array<{ actor_type: string; actor_id: string | null }>;
+    expect(rows).toEqual([
+      { actor_type: "user", actor_id: "usr_alice" },
+      { actor_type: "agent", actor_id: expect.stringMatching(/^agt/) },
+    ]);
+  });
+
   it("records the refused address and org", async () => {
     const before = auditCount("org.ip_access_denied");
     await call("/api/projects/@acme/app", { as: "carol", ip: OUTSIDE });

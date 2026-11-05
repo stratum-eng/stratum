@@ -168,9 +168,21 @@ const RECENT_DENIAL_AUDITS_MAX = 5000;
  * across isolates with a KV marker; the two together are a sampler, not a
  * counter, and an occasional duplicate is harmless.
  */
-async function auditIpDenial(c: AppContext, org: { id: string; slug: string }, ip: string) {
-  const agentId = c.get("agentId");
-  const actorId = c.get("userId") ?? agentId;
+/** The authenticated caller a denial is recorded against. */
+export interface IpDenialActor {
+  userId?: string;
+  agentId?: string;
+}
+
+async function auditIpDenial(
+  c: AppContext,
+  org: { id: string; slug: string },
+  ip: string,
+  actor: IpDenialActor | undefined,
+) {
+  const userId = actor?.userId ?? c.get("userId");
+  const agentId = actor?.agentId ?? c.get("agentId");
+  const actorId = userId ?? agentId;
   const key = `ip-deny-audit:${org.id}:${actorId ?? "anonymous"}`;
   const now = Date.now();
   const until = recentDenialAudits.get(key);
@@ -191,7 +203,7 @@ async function auditIpDenial(c: AppContext, org: { id: string; slug: string }, i
   }
   await recordAudit(c.env.DB, logger, {
     action: "org.ip_access_denied",
-    actorType: agentId !== undefined && c.get("userId") === undefined ? "agent" : "user",
+    actorType: agentId !== undefined && userId === undefined ? "agent" : "user",
     ...(actorId !== undefined ? { actorId } : {}),
     subject: org.id,
     orgId: org.id,
@@ -216,10 +228,14 @@ export interface IpDenial {
  * Resolve a refusal for org `orgId`: look up its slug for the message and
  * schedule the (sampled) audit entry. Clears the recorded denial so an outer
  * middleware does not answer the same refusal twice.
+ *
+ * @param actor Who was refused, for a router that authenticates for itself and
+ *   so never publishes them on the context (git smart-HTTP).
  */
 export async function ipDenialFor(
   c: AppContext,
   org: { id: string; slug?: string },
+  actor?: IpDenialActor,
 ): Promise<IpDenial> {
   c.set("ipDeniedOrgId", undefined);
   let slug = org.slug;
@@ -229,7 +245,7 @@ export async function ipDenialFor(
     slug = found.success && found.data !== null ? found.data : org.id;
   }
   const ip = clientIpOf(c);
-  const audit = auditIpDenial(c, { id: org.id, slug }, ip);
+  const audit = auditIpDenial(c, { id: org.id, slug }, ip, actor);
   const waitUntil = getWaitUntil(c);
   if (waitUntil) waitUntil(audit);
   else await audit;
@@ -240,11 +256,11 @@ export async function ipDenialFor(
  * The denial authz recorded on the current request, if any — for routers
  * (git smart-HTTP) whose narrowed context type has no `get`.
  */
-export async function takeRecordedIpDenial(): Promise<IpDenial | undefined> {
+export async function takeRecordedIpDenial(actor?: IpDenialActor): Promise<IpDenial | undefined> {
   const c = tryGetContext<{ Bindings: Env }>();
   const orgId = c?.get("ipDeniedOrgId");
   if (c === undefined || orgId === undefined) return undefined;
-  return ipDenialFor(c, { id: orgId });
+  return ipDenialFor(c, { id: orgId }, actor);
 }
 
 /** The sentence every refusal carries, whatever its format. */

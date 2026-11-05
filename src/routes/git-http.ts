@@ -135,15 +135,22 @@ function gitNotFound(): Response {
  * credential-retry loop for a repository they can see from the office). Every
  * other refusal keeps the existing truth table.
  */
-async function refuseGitAccess(isAnonymous: boolean): Promise<Response> {
-  const denial = await takeRecordedIpDenial();
+async function refuseGitAccess(identity: Identity | null): Promise<Response> {
+  const denial = await takeRecordedIpDenial(
+    identity === null
+      ? undefined
+      : {
+          ...(identity.userId !== undefined ? { userId: identity.userId } : {}),
+          ...(identity.agentId !== undefined ? { agentId: identity.agentId } : {}),
+        },
+  );
   if (denial !== undefined) {
     return new Response(`${ipNotAllowedMessage(denial)}\n`, {
       status: 403,
       headers: { "Content-Type": "text/plain", "X-Stratum-Error-Code": IP_NOT_ALLOWED },
     });
   }
-  return isAnonymous ? authChallenge() : gitNotFound();
+  return identity === null ? authChallenge() : gitNotFound();
 }
 
 function upstreamError(): Response {
@@ -556,7 +563,7 @@ async function authorizeProject(
           identity?.userId,
           identity?.agentOwnerId,
         );
-  if (!allowed) return refuseGitAccess(isAnonymous);
+  if (!allowed) return refuseGitAccess(identity);
   const scopeRefusal = refuseReadOnlyToken(scope, identity, logger);
   if (scopeRefusal) return scopeRefusal;
 
@@ -631,7 +638,7 @@ async function authorizeWorkspace(
           identity?.userId,
           identity?.agentOwnerId,
         );
-  if (!allowed) return refuseGitAccess(isAnonymous);
+  if (!allowed) return refuseGitAccess(identity);
   const scopeRefusal = refuseReadOnlyToken(scope, identity, logger);
   if (scopeRefusal) return scopeRefusal;
 
@@ -674,7 +681,7 @@ async function authorizeWorkspace(
       identity?.userId,
       identity?.agentOwnerId,
     );
-    if (!canWrite) return refuseGitAccess(isAnonymous);
+    if (!canWrite) return refuseGitAccess(identity);
   }
 
   // Validate the host before a (possibly write-scoped) token is minted against it.
