@@ -88,7 +88,7 @@ interface HttpReply {
  * than a throw, so the poll loop can retry it. The exception is most 4xx: a WAF,
  * access proxy, or wrong path answers with an HTML page that retrying cannot fix,
  * and a rate limiter's HTML 429 must still reach the backoff, so those come back
- * as a reply carrying their status.
+ * as a reply carrying their status. So does a redirect, which is never followed.
  */
 async function postJson(url: string, payload: JsonObject): Promise<HttpReply | string> {
   let response: Response;
@@ -98,13 +98,16 @@ async function postJson(url: string, payload: JsonObject): Promise<HttpReply | s
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       // assertSecureHost vetted only this URL, and a 307 or 308 resends the body
-      // (the signup fields, or the poll token) to wherever it points.
-      redirect: "error",
+      // (the signup fields, or the poll token) to wherever it points. "manual"
+      // rather than "error": a rejected fetch reads as a network failure, which
+      // the poll loop would retry until its deadline.
+      redirect: "manual",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (err) {
     return `could not reach ${url}: ${err instanceof Error ? err.message : String(err)}`;
   }
+  if (response.status >= 300 && response.status < 400) return { status: response.status, body: {} };
   const text = await response.text().catch(() => "");
   let parsed: unknown;
   try {

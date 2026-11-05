@@ -75,6 +75,10 @@ function harness(): Harness {
   };
 }
 
+function redirectTo(location: string): Response {
+  return new Response(null, { status: 307, headers: { Location: location } });
+}
+
 function mockFetch(...responses: Array<Response | Error>) {
   const spy = vi.spyOn(globalThis, "fetch");
   for (const response of responses) {
@@ -209,11 +213,27 @@ describe("stratum signup: request refused", () => {
     if (!result.ok) expect(result.error).toMatch(/could not reach.*fetch failed/);
   });
 
-  it("refuses to follow a redirect on either request", async () => {
+  it("does not let fetch follow a redirect on either request", async () => {
     const spy = mockFetch(jsonResponse(accepted, 202), jsonResponse(complete));
     await runSignup(request, harness().deps);
     expect(spy).toHaveBeenCalledTimes(2);
-    for (const [, init] of spy.mock.calls) expect(init?.redirect).toBe("error");
+    for (const [, init] of spy.mock.calls) expect(init?.redirect).toBe("manual");
+  });
+
+  it("fails on a redirected signup request", async () => {
+    const spy = mockFetch(redirectTo("http://evil.example/"));
+    const result = await runSignup(request, harness().deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/HTTP 307/);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails on a redirected poll instead of retrying it", async () => {
+    const spy = mockFetch(jsonResponse(accepted, 202), redirectTo("http://evil.example/"));
+    const result = await runSignup(request, harness().deps);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/HTTP 307/);
+    expect(spy).toHaveBeenCalledTimes(2);
   });
 
   it("reports a non-JSON response rather than crashing", async () => {
