@@ -180,7 +180,7 @@ export async function getOrgBySlug(
   db: D1Database,
   logger: Logger,
   slug: string,
-): Promise<Result<Org, NotFoundError>> {
+): Promise<Result<Org, NotFoundError | AppError>> {
   logger.debug("Querying org by slug", { slug });
 
   try {
@@ -195,7 +195,9 @@ export async function getOrgBySlug(
     return ok(rowToOrg(row));
   } catch (error) {
     logger.error("Failed to get org by slug", error instanceof Error ? error : undefined, { slug });
-    return err(new NotFoundError("Org", slug));
+    // Not NotFoundError: "no such org" lets a caller fall through to its own
+    // 404, which a failed lookup must not do (see the IP allowlist guard).
+    return err(new AppError("Failed to look up organization", "DATABASE_ERROR", 500, { slug }));
   }
 }
 

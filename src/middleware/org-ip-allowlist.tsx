@@ -9,6 +9,7 @@ import {
 import { getOrgAccess, getOrgBySlug } from "../storage/orgs";
 import type { Env } from "../types";
 import { Layout } from "../ui/layout";
+import { NotFoundError } from "../utils/errors";
 import { createLogger } from "../utils/logger";
 
 type AppContext = Context<{ Bindings: Env }>;
@@ -69,8 +70,12 @@ async function guardOrgAdminRoute(c: AppContext): Promise<Response | undefined> 
 
   const logger = createLogger({ component: "OrgIpAllowlist", path: c.req.path });
   const orgResult = await getOrgBySlug(c.env.DB, logger, slug);
-  // A missing org (or a failed lookup) is the route's to answer.
-  if (!orgResult.success) return undefined;
+  if (!orgResult.success) {
+    // A missing org is the route's to answer. A failed lookup is not: the
+    // route's own query could succeed and serve the org to this address.
+    if (orgResult.error instanceof NotFoundError) return undefined;
+    return orgAccessLookupFailed(c);
+  }
   const org = orgResult.data;
   if (orgIpAllowsFor(c, org.id, org.ipAllowlist, false)) return undefined;
 
@@ -80,15 +85,17 @@ async function guardOrgAdminRoute(c: AppContext): Promise<Response | undefined> 
     const access = await getOrgAccess(c.env.DB, logger, org.id, actor);
     // Unknown is not "not a member": the route's own membership query could
     // still succeed and serve the restricted org to this address.
-    if (access.lookupFailed) {
-      return c.json(
-        { error: "Could not check access to this organization", code: "ORG_ACCESS_LOOKUP_FAILED" },
-        503,
-      );
-    }
+    if (access.lookupFailed) return orgAccessLookupFailed(c);
     if (access.level === "none") return undefined;
   }
   return ipNotAllowedResponse(c, await ipDenialFor(c, org));
+}
+
+function orgAccessLookupFailed(c: AppContext): Response {
+  return c.json(
+    { error: "Could not check access to this organization", code: "ORG_ACCESS_LOOKUP_FAILED" },
+    503,
+  );
 }
 
 /** 403 `IP_NOT_ALLOWED`: JSON for API clients, a page for a browser GET. */

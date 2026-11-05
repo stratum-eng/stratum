@@ -328,6 +328,22 @@ describe("org list and lookup failures", () => {
     }
   });
 
+  it("fails closed when the org itself can't be looked up", async () => {
+    const restore = failQueriesMatching("SELECT * FROM orgs WHERE slug");
+    try {
+      const res = await call("/api/orgs/acme", { as: "apiToken", ip: OUTSIDE });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: "ORG_ACCESS_LOOKUP_FAILED" });
+    } finally {
+      restore();
+    }
+  });
+
+  it("still gives a missing org the route's usual 404", async () => {
+    const res = await call("/api/orgs/no-such-org", { as: "apiToken", ip: OUTSIDE });
+    expect(res.status).toBe(404);
+  });
+
   it("still gives a confirmed non-member the route's usual 404", async () => {
     const res = await call("/api/orgs/acme", { as: "carol", ip: OUTSIDE });
     expect(res.status).toBe(404);
