@@ -23,7 +23,8 @@ curl -X PUT https://app.usestratum.dev/api/orgs/acme/security \
 - An empty list (`"ipAllowlist": []`) removes the restriction. This is the
   default, so existing orgs are not affected.
 - `GET /api/orgs/{slug}/security` returns the current list. Any member can read
-  it, but only from an allowed network once a list is set.
+  it, but only from an allowed network once a list is set. `GET /api/orgs`
+  leaves the list out.
 
 `ipAllowlist` and `requireSecondFactor` are independent. You can send either
 one or both in the same request.

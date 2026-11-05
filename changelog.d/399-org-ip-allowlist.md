@@ -16,8 +16,9 @@
   org every 10 minutes.
 
 ### Changed
-- `GET`/`PUT /api/orgs/{slug}/security` responses, and org objects, now include
-  `ipAllowlist`. `PUT` accepts `requireSecondFactor` and `ipAllowlist`
+- `GET`/`PUT /api/orgs/{slug}/security` responses, and org objects from
+  `/api/orgs/{slug}`, now include `ipAllowlist`. `GET /api/orgs` omits it, since
+  that path is not restricted to an org's networks. `PUT` accepts `requireSecondFactor` and `ipAllowlist`
   independently, so either can be sent alone.
 
 ### Security

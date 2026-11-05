@@ -397,6 +397,12 @@ export interface OrgAccess {
   level: OrgAccessLevel;
   /** The org's allowlist (#399); empty for non-members, whose level is none anyway. */
   ipAllowlist: string[];
+  /**
+   * The lookup failed, so `none` means "unknown", not "not a member". Most
+   * callers can ignore it, as none already fails closed; one that lets a
+   * confirmed non-member through (for the route's own 404) must not.
+   */
+  lookupFailed?: true;
 }
 
 /**
@@ -437,7 +443,7 @@ export async function getOrgAccess(
       orgId,
       userId,
     });
-    return { level: "none", ipAllowlist: [] };
+    return { level: "none", ipAllowlist: [], lookupFailed: true };
   }
 }
 

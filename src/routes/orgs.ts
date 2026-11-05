@@ -123,7 +123,10 @@ app.get("/", async (c) => {
   }
 
   logger.debug("Orgs listed", { count: result.data.length });
-  return ok({ orgs: result.data });
+  // This path has no org in it, so the IP allowlist middleware does not guard
+  // it: a member outside an org's networks must not read those networks here.
+  const orgs = result.data.map(({ ipAllowlist: _ipAllowlist, ...org }) => org);
+  return ok({ orgs });
 });
 
 app.get("/:slug", async (c) => {

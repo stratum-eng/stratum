@@ -206,6 +206,23 @@ function latestAudit(action: string): { detail: string; org_id: string } {
     .get(action) as { detail: string; org_id: string };
 }
 
+/** Make every D1 statement containing `fragment` throw, until the result is called. */
+function failQueriesMatching(fragment: string): () => void {
+  const real = env.DB;
+  env.DB = new Proxy(real, {
+    get(target, prop) {
+      if (prop !== "prepare") return Reflect.get(target, prop, target);
+      return (sql: string) => {
+        if (sql.includes(fragment)) throw new Error("d1 down");
+        return target.prepare(sql);
+      };
+    },
+  });
+  return () => {
+    env.DB = real;
+  };
+}
+
 async function expectIpRefusal(res: Response): Promise<void> {
   expect(res.status).toBe(403);
   const body = (await res.json()) as Record<string, unknown>;
@@ -289,6 +306,34 @@ describe("what the refusal reveals", () => {
   });
 });
 
+describe("org list and lookup failures", () => {
+  it("leaves the allowlist out of GET /api/orgs, from any network", async () => {
+    for (const ip of [OUTSIDE, INSIDE]) {
+      const res = await call("/api/orgs", { as: "apiToken", ip });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { orgs: Array<Record<string, unknown>> };
+      expect(body.orgs.some((org) => org.slug === "acme")).toBe(true);
+      for (const org of body.orgs) expect(org).not.toHaveProperty("ipAllowlist");
+    }
+  });
+
+  it("fails closed when membership can't be checked, rather than reaching the route", async () => {
+    const restore = failQueriesMatching("team_level");
+    try {
+      const res = await call("/api/orgs/acme", { as: "apiToken", ip: OUTSIDE });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: "ORG_ACCESS_LOOKUP_FAILED" });
+    } finally {
+      restore();
+    }
+  });
+
+  it("still gives a confirmed non-member the route's usual 404", async () => {
+    const res = await call("/api/orgs/acme", { as: "carol", ip: OUTSIDE });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe("denial audit", () => {
   it("records a denial once per member per window, however many requests", async () => {
     const before = auditCount("org.ip_access_denied");
@@ -349,6 +394,33 @@ describe("denial audit", () => {
       { actor_type: "user", actor_id: "usr_alice" },
       { actor_type: "agent", actor_id: expect.stringMatching(/^agt/) },
     ]);
+  });
+
+  it("retries the audit after a failed insert instead of losing the window", async () => {
+    const org = await createOrg(env.DB, logger, "usr_alice", "Auditretry", "auditretry");
+    if (!org.success) throw org.error;
+    raw
+      .prepare("UPDATE orgs SET ip_allowlist = ? WHERE id = ?")
+      .run(JSON.stringify(["203.0.113.0/24"]), org.data.id);
+    const count = () =>
+      (
+        raw
+          .prepare(
+            "SELECT COUNT(*) AS n FROM audit_log WHERE action = 'org.ip_access_denied' AND org_id = ?",
+          )
+          .get(org.data.id) as { n: number }
+      ).n;
+
+    const restore = failQueriesMatching("INSERT INTO audit_log");
+    try {
+      await call("/api/orgs/auditretry", { as: "apiToken", ip: OUTSIDE });
+    } finally {
+      restore();
+    }
+    expect(count()).toBe(0);
+
+    await call("/api/orgs/auditretry", { as: "apiToken", ip: OUTSIDE });
+    expect(count()).toBe(1);
   });
 
   it("records the refused address and org", async () => {

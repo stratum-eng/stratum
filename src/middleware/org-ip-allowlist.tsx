@@ -76,9 +76,18 @@ async function guardOrgAdminRoute(c: AppContext): Promise<Response | undefined> 
 
   // Only someone the org would let in learns about the allowlist. The owner
   // counts even without a member row (see `requireOrgAdmin`).
-  const isParty =
-    org.ownerId === actor || (await getOrgAccess(c.env.DB, logger, org.id, actor)).level !== "none";
-  if (!isParty) return undefined;
+  if (org.ownerId !== actor) {
+    const access = await getOrgAccess(c.env.DB, logger, org.id, actor);
+    // Unknown is not "not a member": the route's own membership query could
+    // still succeed and serve the restricted org to this address.
+    if (access.lookupFailed) {
+      return c.json(
+        { error: "Could not check access to this organization", code: "ORG_ACCESS_LOOKUP_FAILED" },
+        503,
+      );
+    }
+    if (access.level === "none") return undefined;
+  }
   return ipNotAllowedResponse(c, await ipDenialFor(c, org));
 }
 

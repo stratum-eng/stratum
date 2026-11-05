@@ -154,6 +154,12 @@ export function validateIpAllowlistInput(value: unknown): Result<string[], strin
 /** How long one member's denials in one org collapse into a single audit row. */
 const DENIAL_AUDIT_WINDOW_SECONDS = 600;
 /** Isolate-local memory of recent denial audits, to spare the KV round-trip. */
+/** The authenticated caller a denial is recorded against. */
+export interface IpDenialActor {
+  userId?: string;
+  agentId?: string;
+}
+
 const recentDenialAudits = new Map<string, number>();
 const RECENT_DENIAL_AUDITS_MAX = 5000;
 
@@ -168,12 +174,6 @@ const RECENT_DENIAL_AUDITS_MAX = 5000;
  * across isolates with a KV marker; the two together are a sampler, not a
  * counter, and an occasional duplicate is harmless.
  */
-/** The authenticated caller a denial is recorded against. */
-export interface IpDenialActor {
-  userId?: string;
-  agentId?: string;
-}
-
 async function auditIpDenial(
   c: AppContext,
   org: { id: string; slug: string },
@@ -201,7 +201,7 @@ async function auditIpDenial(
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  await recordAudit(c.env.DB, logger, {
+  const recorded = await recordAudit(c.env.DB, logger, {
     action: "org.ip_access_denied",
     actorType: agentId !== undefined && userId === undefined ? "agent" : "user",
     ...(actorId !== undefined ? { actorId } : {}),
@@ -215,6 +215,17 @@ async function auditIpDenial(
       sampledWindowSeconds: DENIAL_AUDIT_WINDOW_SECONDS,
     },
   });
+  if (recorded.success) return;
+  // Nothing was written, so this denial must not use up the window: give the
+  // next one the chance to leave the record this one could not.
+  recentDenialAudits.delete(key);
+  try {
+    await c.env.STATE.delete(key);
+  } catch (error) {
+    logger.warn("IP denial audit marker could not be released", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /** A refusal ready to render: which org, and the address it refused. */
