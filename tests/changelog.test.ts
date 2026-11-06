@@ -18,6 +18,7 @@ import {
   mergeChangelogBodies,
   nextVersion,
   parseChangelog,
+  planRelease,
   previousRelease,
   releaseNotes,
   resolveBump,
@@ -771,6 +772,51 @@ describe("the repository's own package-lock.json", () => {
     const { version } = JSON.parse(REAL_MANIFEST) as { version: string };
     const result = setLockfileVersion(REAL_LOCKFILE, version);
     expect(result).toEqual({ success: true, data: REAL_LOCKFILE });
+  });
+});
+
+describe("planRelease", () => {
+  it("has nothing to do when there are no entries", () => {
+    expect(planRelease("0.3.0", "")).toEqual({ success: true, data: { pending: false } });
+  });
+
+  it("releases additions and fixes without a person", () => {
+    expect(planRelease("0.3.0", "### Added\n- x\n\n### Fixed\n- y")).toEqual({
+      success: true,
+      data: { pending: true, version: "0.4.0", bump: "minor", hold: null },
+    });
+    expect(planRelease("0.3.0", "### Security\n- x")).toEqual({
+      success: true,
+      data: { pending: true, version: "0.3.1", bump: "patch", hold: null },
+    });
+  });
+
+  it("holds a break before 1.0, even though the bump is clamped to a minor", () => {
+    expect(planRelease("0.3.0", "### Breaking\n- x\n\n### Added\n- y")).toEqual({
+      success: true,
+      data: {
+        pending: true,
+        version: "0.4.0",
+        bump: "minor",
+        hold: "the notes include breaking changes",
+      },
+    });
+  });
+
+  it("holds a removal, and a major after 1.0", () => {
+    expect(planRelease("1.2.3", "### Removed\n- x")).toEqual({
+      success: true,
+      data: {
+        pending: true,
+        version: "2.0.0",
+        bump: "major",
+        hold: "the notes include removed changes",
+      },
+    });
+  });
+
+  it("reports a version it cannot parse rather than planning from it", () => {
+    expect(planRelease("nope", "### Added\n- x").success).toBe(false);
   });
 });
 

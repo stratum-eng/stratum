@@ -3,12 +3,13 @@ name: Release
 # Publishes a `vX.Y.Z` tag and a GitHub release whose notes are that version's
 # CHANGELOG section.
 #
-#   push to main       The normal path. Merging the PR from `npm run release:pr`
-#                      changes package.json, and a newest changelog version with
-#                      no tag or no release gets published. Every other change to
-#                      package.json finds both present and stops at `resolve`.
-#   workflow_dispatch  Retry a failed publish, republish corrected notes, backfill
-#                      an older version, or dry-run. Runs from the default branch.
+#   push to main       A person merging a release PR changes package.json, and a
+#                      newest changelog version with no tag or no release gets
+#                      published. Every other change to package.json finds both
+#                      present and stops at `resolve`.
+#   workflow_dispatch  How Release Autopilot publishes, since its merge cannot
+#                      trigger `push`. Also retries a failed publish, republishes
+#                      corrected notes, backfills an older version, or dry-runs.
 #
 # A pushed tag is deliberately not a trigger. GitHub reads a tag push's workflow
 # from the tagged commit, so it silently never fired for a commit older than this
@@ -207,6 +208,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write
     steps:
       - name: Checkout the default branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -279,3 +281,32 @@ jobs:
               .addHeading(`${existing ? "Updated" : "Published"} ${tag}`, 3)
               .addLink(release.html_url, release.html_url)
               .write();
+
+      # The release is already out, so failing here would report a published
+      # release as blocked.
+      - name: Close any tracking issue
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/release-alert.sh close
+
+  alert:
+    name: Report a blocked release
+    needs: [resolve, verify, publish]
+    if: ${{ failure() && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/release-alert.sh open "Release"

@@ -3,6 +3,9 @@ name: CI - Main Branch
 on:
   push:
     branches: [main]
+  # Release Autopilot's merge cannot trigger `push` (it uses GITHUB_TOKEN), so it
+  # starts this directly. The deploy jobs still only act on main.
+  workflow_dispatch:
 
 # Note: PR checks are now handled in .github/workflows/pr-checks.yml
 
@@ -86,7 +89,8 @@ jobs:
     # in forks, where they are actually useful.
     if: >
       github.repository == 'stratum-eng/stratum' &&
-      github.event_name == 'push' && github.ref == 'refs/heads/main'
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
     environment:
       name: staging
       url: ${{ steps.deploy.outputs.url }}
@@ -189,7 +193,8 @@ jobs:
     # Repo guard: see deploy-staging.
     if: >
       github.repository == 'stratum-eng/stratum' &&
-      github.event_name == 'push' && github.ref == 'refs/heads/main'
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
     environment:
       name: production
       url: ${{ steps.deploy.outputs.url }}

@@ -55,7 +55,7 @@ npm run typecheck    # tsc --noEmit
 npm run lint         # biome check src tests
 npm run lint:fix     # biome check --write src tests
 npm run release:check   # validate CHANGELOG.md against package.json
-npm run release:pr      # cut a release and open its PR; merging it publishes (when asked to release)
+npm run release:pr      # cut a release by hand, only when asked; Autopilot normally does this daily
 ```
 
 `npm run test:smoke` hits a **live deployed instance** (set `STAGING_URL` + `TEST_AUTH_TOKEN`);
@@ -112,11 +112,16 @@ Mirror lint → typecheck → test locally before pushing.
 
 ## Releasing
 
-Cut a release only when asked. Follow `docs/developer/releasing.md` exactly:
-`npm run release:pr -- --dry-run`, then
-`npm run release:pr -- --co-author "<the model that ran it> <noreply@anthropic.com>"`, then merge the PR when
-you have been told to merge it. Merging publishes the release. It is finished when
-`gh release view vX.Y.Z` succeeds, not when a workflow run is green.
+Releases cut themselves: Release Autopilot runs daily and needs only the changelog fragment
+in your PR (`docs/developer/releasing.md`). Don't run `release:pr` unless asked. Two things
+do need attention:
+
+- An open `release-blocked` issue means releases have stopped. Fix the cause it links to; don't
+  merge a release PR by hand to get past a failed gate.
+- A PR labelled `release-hold` announces breaking or removed behaviour and waits for a person.
+  Don't merge it unless a person has told you to.
+
+A release is finished when `gh release view vX.Y.Z` succeeds, not when a workflow run is green.
 
 ## Commit & PR conventions
 
