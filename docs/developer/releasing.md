@@ -38,7 +38,8 @@ their bullets.
 3. **Plans.** With no unreleased entries it stops (`npm run release:plan` shows the same
    decision).
 4. **Gates.** It runs `prepare`, then lint, typecheck and test:coverage on that exact tree.
-5. **Ships.** It opens the PR, checks that only release files changed, squash-merges, then
+5. **Ships.** If `main` moved during the gates, it stops and tries again on the next run.
+   Otherwise it opens the PR, checks that only release files changed, squash-merges, then
    starts **Release** (tag and publish) and **CI** (staging, then production).
 
 **What waits for a person:** a release whose notes include `Breaking` or `Removed` entries.
