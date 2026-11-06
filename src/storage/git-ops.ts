@@ -4489,7 +4489,11 @@ export async function readAdvertisedRefs(
   httpClient: HttpClient = http,
 ): Promise<Result<AdvertisedRefs, AppError>> {
   const infoResult = await fromPromise(
-    git.getRemoteInfo({ http: httpClient, url: remote, onAuth: makeAuth(token) }),
+    withTimeout(
+      git.getRemoteInfo({ http: httpClient, url: remote, onAuth: makeAuth(token) }),
+      TAG_FETCH_TIMEOUT_MS,
+      "readAdvertisedRefs: git.getRemoteInfo",
+    ),
   );
   if (!infoResult.success) {
     logger.error("Failed to read remote ref advertisement", infoResult.error, { remote });

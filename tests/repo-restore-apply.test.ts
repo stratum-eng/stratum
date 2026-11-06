@@ -188,6 +188,31 @@ describe("a restore drill", () => {
     expect(result.data.verification.error).toBeDefined();
   });
 
+  it("reports a stalled ref read as unverified, and still cleans up", async () => {
+    const { env, artifacts } = await makeEnv();
+    mockGetRemoteInfo.mockReturnValue(new Promise(() => {}));
+    const realSetTimeout = globalThis.setTimeout;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pending = applyRepoRestore(env, RUN, PROJECT_ID, { drill: true }, logger);
+      let result: Awaited<typeof pending> | undefined;
+      void pending.then((value) => {
+        result = value;
+      });
+      for (let i = 0; i < 100 && result === undefined; i++) {
+        await vi.advanceTimersByTimeAsync(30_000);
+        await new Promise((resolve) => realSetTimeout(resolve, 0));
+      }
+      if (!result?.success) throw new Error("expected the drill to finish");
+      expect(result.data.verification.ok).toBe(false);
+      expect(result.data.verification.error).toBeDefined();
+      expect(result.data.scratchDeleted).toBe(true);
+      expect(artifacts.delete).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("still cleans up when the push fails", async () => {
     const { env, artifacts } = await makeEnv();
     mockPush.mockRejectedValue(new Error("push refused"));

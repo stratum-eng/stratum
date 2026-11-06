@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { applyRepoRestore } from "../backup/apply-repo-restore";
 import { planRestore } from "../backup/plan-restore";
 import { recordAudit } from "../storage/audit";
@@ -52,7 +53,6 @@ const PROJECT_ID = /^[A-Za-z0-9_-]{1,100}$/;
 const MAX_RESTORE_BODY_BYTES = 1024;
 
 function parseRestoreBody(raw: string): { force: boolean; drill: boolean } | string {
-  if (raw.length > MAX_RESTORE_BODY_BYTES) return "Request body is too large";
   if (raw.trim() === "") return { force: false, drill: false };
   let body: unknown;
   try {
@@ -77,7 +77,12 @@ function parseRestoreBody(raw: string): { force: boolean; drill: boolean } | str
 // `{ "drill": true }` restores to a scratch repo, verifies it and deletes it;
 // otherwise it restores to the project's own repo, and `{ "force": true }` is
 // required if that repo exists.
-app.post("/:runTs/repos/:projectId", async (c) => {
+const restoreBodyLimit = bodyLimit({
+  maxSize: MAX_RESTORE_BODY_BYTES,
+  onError: (c) => c.json({ error: "Request body is too large" }, 413),
+});
+
+app.post("/:runTs/repos/:projectId", restoreBodyLimit, async (c) => {
   const auth = await requireAdmin(c);
   if (!auth.ok) return forbidden("Administrator access required");
   const { logger } = auth;

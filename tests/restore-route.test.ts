@@ -153,6 +153,12 @@ describe("POST /api/admin/restore/:runTs/repos/:projectId", () => {
     expect(applyRepoRestore).not.toHaveBeenCalled();
   });
 
+  it("413 for an oversized body, doing nothing", async () => {
+    const res = await post(`{"drill":true,"padding":"${"é".repeat(600)}"}`);
+    expect(res.status).toBe(413);
+    expect(applyRepoRestore).not.toHaveBeenCalled();
+  });
+
   it("400 for a run or project id that could escape its key", async () => {
     for (const path of ["..%2F..%2Fsecret/repos/proj_1", `${RUN}/repos/a%2Fb`]) {
       const res = await post('{"drill":true}', undefined, path);
