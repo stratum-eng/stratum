@@ -20,7 +20,7 @@ limitations recorded below.
   `RepoDO`, `MagicLinkRateLimiter` and `UsageMeter` (`src/index.ts:58-61`,
   `wrangler.toml:87-105`).
 - Project create/import (GitHub/GitLab/Bitbucket), workspace fork/commit/delete,
-  change creation with synchronous evaluation, evaluation-gated merge, provenance
+  change creation with queued evaluation, evaluation-gated merge, provenance
   (records the agent, the model and prompt hash snapshotted at change creation, and
   the eval score per merged commit; full per-evaluator evidence is linked by change).
 - Project resolution accepts namespace/slug refs, legacy names, and falls back to a
@@ -211,8 +211,10 @@ environment (`wrangler.toml:84-85`), so it works out of the box.
 - Project/workspace identity lives in KV; changes, issues, events, costs, and
   audit live in D1. Full identity migration to D1 is future work (so is
   `workspace.deleted` event emission, blocked on an id→name index).
-- Evaluation runs synchronously at change creation; the event pipeline is async
-  but evaluation itself has no queue worker yet.
+- Change creation and re-evaluation run on `EVALUATION_QUEUE`, or inline on the
+  request if it is unbound or the send fails. A gated `git push` always evaluates
+  inside its own request, because its response is how the pusher learns the
+  verdict (ADR 009).
 - Team permissions are org-wide; per-project team grants are not implemented.
 - The Cloudflare Sandboxes binding is a gated beta and is commented out in
   `wrangler.toml`, so the `sandbox` evaluator and `merge.postMergeCommand` are

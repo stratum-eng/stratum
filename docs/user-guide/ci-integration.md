@@ -261,10 +261,11 @@ Any non-2xx status is recorded as a failed evaluation
 
 ### The timeout constraint (important)
 
-The call is **synchronous**: evaluation runs at change-creation time, inside
-the request, and the webhook is aborted after `timeoutMs` (default **10
-seconds**). There is **no async callback API today** — your CI must produce
-its verdict within the request window. Practical approaches:
+The call is **synchronous**: Stratum makes one HTTP request to your webhook and
+aborts it after `timeoutMs` (default **10 seconds**). The evaluation run itself
+may be queued, so opening the change does not wait for your CI, but there is **no
+async callback API today** — your CI must still produce its verdict within that
+one request. Practical approaches:
 
 - Keep the webhook check fast (lint, typecheck, focused smoke tests) and
   raise `timeoutMs` moderately for slower suites.
