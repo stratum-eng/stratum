@@ -5,6 +5,7 @@ import {
   pushBranches,
   pushMain,
   pushTags,
+  readAdvertisedRefs,
 } from "../storage/git-ops";
 import { isValidBranchName } from "../storage/git-ops";
 import { MemoryFS } from "../storage/memory-fs";
@@ -237,6 +238,62 @@ export async function reconstructRepo(
   }
 }
 
+/** Whether the refs the remote now advertises are the ones the backup recorded. */
+export interface RestoreVerification {
+  ok: boolean;
+  /** Refs compared. */
+  checked: number;
+  /** Refs that are missing or point elsewhere, as `<ref>: expected <oid>, found <oid|nothing>`. */
+  mismatches: string[];
+  /** Set when the refs could not be read; `ok` is then false, whatever landed. */
+  error?: string;
+}
+
+/**
+ * Read the restored refs back from the remote and compare them with the
+ * manifest. Extra refs on the remote are not mismatches: a forced restore leaves
+ * refs the snapshot never recorded, on purpose.
+ */
+async function verifyRestoredRefs(
+  remote: string,
+  token: string,
+  manifest: RepoManifest,
+  branch: string,
+  logger: Logger,
+): Promise<RestoreVerification> {
+  const advertised = await readAdvertisedRefs(remote, token, logger);
+  if (!advertised.success) {
+    return { ok: false, checked: 0, mismatches: [], error: advertised.error.message };
+  }
+  const expected: Array<{ ref: string; oid: string; found: string | undefined }> = [];
+  if (manifest.tipSha !== undefined) {
+    expected.push({
+      ref: `refs/heads/${branch}`,
+      oid: manifest.tipSha,
+      found: advertised.data.branches[branch],
+    });
+  }
+  for (const record of manifest.branches ?? []) {
+    if (record.name === branch) continue;
+    expected.push({
+      ref: `refs/heads/${record.name}`,
+      oid: record.oid,
+      found: advertised.data.branches[record.name],
+    });
+  }
+  for (const record of manifest.tags ?? []) {
+    expected.push({
+      ref: `refs/tags/${record.name}`,
+      oid: record.oid,
+      found: advertised.data.tags[record.name],
+    });
+  }
+  const mismatches = expected
+    .filter(({ oid, found }) => found !== oid)
+    .map(({ ref, oid, found }) => `${ref}: expected ${oid}, found ${found ?? "nothing"}`);
+  return { ok: mismatches.length === 0, checked: expected.length, mismatches };
+}
+
 /**
  * Restores a project's repository to Artifacts, optionally overwriting an
  * existing repository.
@@ -247,20 +304,23 @@ export async function reconstructRepo(
  * reconstruction, not publication.
  *
  * @param snapshot - The repository snapshot and manifest to restore.
- * @param opts - Restore options; set `force` to overwrite an existing repository.
- * @returns The restored manifest tip SHA; absent for a tag-only restore (#251).
+ * @param opts - Restore options; set `force` to overwrite an existing repository,
+ * `targetName` to restore under another repo name (a drill's scratch repo), and
+ * `verify` to read the refs back afterwards.
+ * @returns The restored manifest tip SHA, absent for a tag-only restore (#251),
+ * and the verification when asked for.
  */
 export async function restoreProjectRepo(
   env: Env,
   snapshot: RepoSnapshot,
-  opts: { force?: boolean },
+  opts: { force?: boolean; targetName?: string; verify?: boolean },
   logger: Logger,
-): Promise<Result<{ tipSha?: string }, AppError>> {
+): Promise<Result<{ tipSha?: string; verification?: RestoreVerification }, AppError>> {
   if (!env.ARTIFACTS)
     return err(new AppError("ARTIFACTS binding not configured", "CONFIG_ERROR", 500));
 
   const project = snapshot.manifest.project;
-  const name = artifactsRepoNameFromRemote(project.remote);
+  const name = opts.targetName ?? artifactsRepoNameFromRemote(project.remote);
   if (!name)
     return err(new AppError("Project remote is not an Artifacts repo", "BACKUP_ERROR", 500));
 
@@ -428,5 +488,12 @@ export async function restoreProjectRepo(
     tagCount: tagNames.length,
     branchCount: branchNames.length,
   });
-  return ok(tipSha !== undefined ? { tipSha } : {});
+  return ok({
+    ...(tipSha !== undefined ? { tipSha } : {}),
+    ...(opts.verify
+      ? {
+          verification: await verifyRestoredRefs(remote, token, snapshot.manifest, branch, logger),
+        }
+      : {}),
+  });
 }

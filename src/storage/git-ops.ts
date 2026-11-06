@@ -4482,14 +4482,18 @@ interface AdvertisedRefs {
  * how many were fetched. The advertisement already carries every branch name
  * and its tip oid, which is all a listing needs.
  */
-async function readAdvertisedRefs(
+export async function readAdvertisedRefs(
   remote: string,
   token: string,
   logger: Logger,
   httpClient: HttpClient = http,
 ): Promise<Result<AdvertisedRefs, AppError>> {
   const infoResult = await fromPromise(
-    git.getRemoteInfo({ http: httpClient, url: remote, onAuth: makeAuth(token) }),
+    withTimeout(
+      git.getRemoteInfo({ http: httpClient, url: remote, onAuth: makeAuth(token) }),
+      TAG_FETCH_TIMEOUT_MS,
+      "readAdvertisedRefs: git.getRemoteInfo",
+    ),
   );
   if (!infoResult.success) {
     logger.error("Failed to read remote ref advertisement", infoResult.error, { remote });

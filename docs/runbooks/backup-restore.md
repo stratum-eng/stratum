@@ -180,14 +180,14 @@ A `restorable: false` (or a top-level decode error — usually a wrong
 complete run. This endpoint never mutates anything; the write/apply steps below
 are the deliberate, separately-run operation.
 
-**No deployed route or script runs those steps yet.** `restoreTable`,
-`restoreKvIdentity` and `restoreProjectRepo` are library functions with no caller
-in the Worker, so calling one today means building a temporary entry point: a
-route behind the same admin check as the plan endpoint (`requireAdmin` in
-`src/routes/restore.ts`) that loads the run from `BACKUPS` and calls the function
-with the Worker's bindings. Deploy it to the environment being restored, which
-takes deploy access to that environment and the admin credential, then remove it
-when the restore is done.
+**A repository has a route; D1 and KV do not yet.** See [Repos](#repos--the-leg-ci-cannot-prove)
+for `POST /api/admin/restore/<runTs>/repos/<projectId>`. `restoreTable` and
+`restoreKvIdentity` are library functions with no caller in the Worker, so running
+either today means building a temporary entry point: a route behind the same admin
+check (`requireAdmin` in `src/routes/restore.ts`) that loads the run from `BACKUPS`
+and calls the function with the Worker's bindings. Deploy it to the environment
+being restored, which takes deploy access to that environment and the admin
+credential, then remove it when the restore is done.
 
 ### D1
 
@@ -211,6 +211,30 @@ Use `restoreKvIdentity` (in `src/storage/kv-backup.ts`) with `projects.json` the
 project.
 
 ### Repos — the leg CI cannot prove
+
+To restore one project's repo from a run, as an admin:
+
+```
+POST /api/admin/restore/<runTs>/repos/<projectId>     # X-Admin-API-Key, or an admin session
+{}                  # recreate a repo that no longer exists
+{ "force": true }   # overwrite the project's existing repo
+{ "drill": true }   # restore to a scratch repo, verify it, delete it
+```
+
+The response's `restore.verification` reads every restored ref back from Artifacts
+and compares it with the manifest. **Check `verification.ok` even on a `200`**:
+`mismatches` names any ref that came back wrong, and `error` means the refs could not
+be read at all. Also check `branchesTruncatedTotal`: when present, the backup held only
+some of the repo's branches. A `504 PUSH_TIMEOUT` means the outcome is unknown, since
+the push may still land: inspect the repo before retrying. Every attempt is audited as
+`backup.repo_restore`, before the push and after it.
+
+A run marked unhealthy can still be used, because one failed repo does not spoil the
+others in its slice. The run must be complete and hold a pack for that project;
+otherwise the answer is `404`. This restores the Git repository only: a project that
+was deleted also needs its registry entry back from the KV leg. It holds the whole pack
+in memory and pushes within one request, so a repository near `MAX_BACKUP_BYTES` is
+untested and may hit Worker limits.
 
 Cloudflare Artifacts exposes no low-level object-write or set-ref API, so a repo is
 restored by **recreating it and pushing** a reconstructed history, not by writing
@@ -248,11 +272,9 @@ match, and a truncated pack is rejected. **The Artifacts push in step 4 cannot r
 in CI** — there is no local Artifacts emulator. Validate it on staging:
 
 1. Snapshot a known staging repo (trigger a backup, confirm the pack exists).
-2. Delete or rename the staging repo.
-3. Run `restoreProjectRepo` against the snapshot, through a temporary entry point
-   (see the note under the restore plan above).
-4. Clone the restored repo and confirm `HEAD` equals the manifest tip sha and the
-   working tree matches the original.
+2. Run `POST /api/admin/restore/<runTs>/repos/<projectId>` with `{ "drill": true }`.
+3. Confirm `verification.ok` is `true`, `checked` covers the repo's refs, and
+   `scratchDeleted` is `true`.
 
 Do this after any change to `repo-restore.ts`, `git-ops.ts` push handling, or the
 Artifacts client, and before relying on backups in production.
@@ -274,27 +296,20 @@ least one tag.
    `failed` or `skipped`. Note the `runTs`.
 2. **Check that the run is restorable.** Call `GET /api/admin/restore/<runTs>/plan`
    and confirm `restorable: true`.
-3. **Record the live refs.** Clone the live repo and save its refs:
+3. **Run the drill.** It restores to a generated scratch repo and never touches the
+   live one:
    ```bash
-   git clone <live-clone-url> live && git -C live show-ref --head > live-refs.txt
+   curl -X POST "$STAGING/api/admin/restore/<runTs>/repos/<projectId>" \
+     -H "X-Admin-API-Key: $ADMIN_KEY" -d '{"drill": true}'
    ```
-4. **Restore into staging.** Rename the live staging repo first:
-   `restoreProjectRepo` takes the repo name from the snapshot manifest's project
-   remote and has no name override, so the restore always targets the original
-   name. Then run it for the drill repo from `<runTs>`, through a temporary entry
-   point deployed to staging (see the note under the restore plan above: no route
-   or script calls it yet). Use `force` only if you mean to overwrite.
-5. **Clone the restored repo and compare.**
-   ```bash
-   git clone <restored-clone-url> restored && git -C restored show-ref --head > restored-refs.txt
-   diff live-refs.txt restored-refs.txt && git -C restored fsck --full
-   ```
-   The drill passes when `diff` prints nothing (every branch and tag points at
-   the same sha, and `HEAD` equals the manifest `tipSha`) and `git fsck` reports
-   no missing or corrupt objects. If the live repo got new commits after
-   `<runTs>`, compare against the manifest's recorded refs instead.
-6. **Clean up.** Delete the scratch repo, or put the original back.
-7. **Record it.** Add a row to the drill log below: the date, who ran it,
+4. **Read the result.** The drill passes when `verification.ok` is `true`, with
+   `checked` covering the default branch, the other branches and the tags. The
+   comparison is against the manifest, so commits made after `<runTs>` don't affect it.
+   This proves the refs landed on the commits the backup recorded. It does not run
+   `git fsck` on the result.
+5. **Clean up if you have to.** The drill deletes its scratch repo. If `scratchDeleted`
+   is `false`, delete the repo named by `repoName` yourself.
+6. **Record it.** Add a row to the drill log below: the date, who ran it,
    the repo, the `runTs`, and the result. On a failure, link the issue
    you filed.
 
@@ -315,5 +330,7 @@ least one tag.
   restored `project_secrets` rows were encrypted under a different
   `DEPLOY_SECRET_KEY`. Not a backup defect: that key is never backed up. Restore
   the original key, or have each project re-enter its secrets.
-- **Repo restore `409`** — the target repo still exists; restore into a fresh
-  instance, or pass `force` only when intentionally overwriting.
+- **Repo restore `409`** — the project's repo still exists; pass `force` only when
+  intentionally overwriting.
+- **Repo restore `404`** — the run did not complete, or holds no pack for that
+  project (a rotating run holds only its slice). Try another run.
