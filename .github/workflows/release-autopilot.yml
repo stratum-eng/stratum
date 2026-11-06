@@ -187,8 +187,19 @@ jobs:
           BUMP: ${{ needs.plan.outputs.bump }}
           HOLD: ${{ needs.plan.outputs.hold }}
           RELEASE_DATE: ${{ needs.plan.outputs.date }}
+          PLANNED_SHA: ${{ needs.plan.outputs.sha }}
         run: |
           set -euo pipefail
+          # The gates ran on the planned commit, and a merge would combine this
+          # release with whatever has landed since. Stop rather than ship a tree
+          # nothing has gated. In the seconds left before the merge this can't see,
+          # release.yml still gates the merged commit before tagging it.
+          if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$PLANNED_SHA" ]; then
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::main moved after the gates ran, so nothing was cut. The next run starts again."
+            exit 0
+          fi
+
           npm run --silent release:prepare -- --date "$RELEASE_DATE"
 
           # This commit merges with no review, so it must be exactly what a
@@ -232,7 +243,7 @@ jobs:
           fi
 
       - name: Merge
-        if: needs.plan.outputs.hold == ''
+        if: needs.plan.outputs.hold == '' && steps.pr.outputs.moved != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           URL: ${{ steps.pr.outputs.url }}
@@ -260,14 +271,18 @@ jobs:
       # merge starts nothing. ci.yml keeps staging ahead of production and
       # carries the new version to the page footer.
       - name: Start publish and deploy
-        if: needs.plan.outputs.hold == ''
+        if: needs.plan.outputs.hold == '' && steps.pr.outputs.moved != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          set -euo pipefail
-          gh workflow run release.yml --ref main -f version="$VERSION"
-          gh workflow run ci.yml --ref main
+          set -uo pipefail
+          # One failing must not stop the other. A failure still fails this job,
+          # which opens the tracking issue, and the next run retries a publish.
+          FAILED=0
+          gh workflow run release.yml --ref main -f version="$VERSION" || FAILED=1
+          gh workflow run ci.yml --ref main || FAILED=1
+          exit "$FAILED"
 
   alert:
     name: Report a blocked release
