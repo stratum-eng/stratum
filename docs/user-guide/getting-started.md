@@ -451,11 +451,12 @@ workspace  →  commit  →  change (evaluation runs)  →  review  →  merge
    ```
 
 3. **Create a change.** A change is Stratum's merge proposal (a PR, roughly).
-   Creating it runs your full evaluation policy **synchronously** — you get each
-   gate's verdict in the response.
+   Creating it runs your full evaluation policy. On an instance with an
+   evaluation queue (the hosted one has one) it comes back `evaluating`, and each
+   gate's verdict lands when the run finishes; pass `--wait` to block until then.
 
    ```bash
-   stratum change create --project @you/my-project --workspace fix-n-plus-one
+   stratum change create --project @you/my-project --workspace fix-n-plus-one --wait
    stratum change show chg_xxxxx   # eval evidence + costs
    ```
 

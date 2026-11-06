@@ -145,8 +145,8 @@ correctness requirement as well as a safety one. The numbers on Stratum's side
 |------|-------|
 | Default `timeoutMs` | 10,000 ms |
 | Allowed `timeoutMs` | clamped to 1,000–120,000 ms |
-| When evaluation runs | synchronously, inside the request that triggered it — for example `POST /api/projects/:name/changes`, `POST /api/changes/:id/evaluate`, and a gated `git push` |
-| Ordering | every evaluator in the policy starts **concurrently** (`Promise.all` in `runEvaluation`, `src/services/change-flow.ts`), so the triggering request waits for the slowest one plus overhead. Several webhook entries' timeouts overlap and do not add up |
+| When evaluation runs | for `POST /api/projects/:name/changes` and `POST /api/changes/:id/evaluate`, in a queue consumer after the request has returned, or inside the request if `EVALUATION_QUEUE` is unbound or the send fails. A gated `git push` always evaluates inside its own request |
+| Ordering | every evaluator in the policy starts **concurrently** (`Promise.all` in `runEvaluation`, `src/services/change-flow.ts`), so the run waits for the slowest one plus overhead. Several webhook entries' timeouts overlap and do not add up |
 | On timeout | Stratum aborts its fetch, and the evaluator returns an external-service error. `runEvaluation` records that as a **failed evaluation** (score 0, reason `Webhook error: <abort message>`) and it counts against the gate like any failing verdict. The recorded reason is Stratum's abort message, not anything your receiver said |
 | Retries | none — a re-run is an explicit re-evaluation |
 | Cap on the request body Stratum sends | **none** — size is bounded only indirectly (a workspace commit body is capped at 32 MiB, a `git push` request at 50 MiB, and a change can span several commits) |

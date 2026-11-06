@@ -56,7 +56,7 @@ returns an empty list for you.
 | `stratum_list_files`, `stratum_get_file` | Read the tree and file contents, including `.stratum/policy.yaml` |
 | `stratum_list_workspaces`, `stratum_create_workspace` | Fork an isolated workspace to work in |
 | `stratum_commit` | Commit files to your workspace |
-| `stratum_create_change` | Open a change — **this runs every evaluation gate synchronously and returns each verdict** |
+| `stratum_create_change` | Open a change and run every evaluation gate. On an instance with an evaluation queue it comes back `evaluating` with no verdict yet: **poll `stratum_get_change` until the status leaves `evaluating` before acting on it** |
 | `stratum_list_changes`, `stratum_get_change` | Read evaluation evidence and cost records |
 | `stratum_review_change` | Human-only. Rejected for agent tokens. |
 | `stratum_merge_change`, `stratum_reject_change` | Land or abandon a change |

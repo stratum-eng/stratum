@@ -40,14 +40,16 @@ stratum workspace create @you/my-project --name fix-n-plus-one
 stratum commit --project @you/my-project --workspace fix-n-plus-one -m "Fix N+1 query"
 ```
 
-## 3. Create the change — this runs the gates synchronously
+## 3. Create the change — this runs the gates
 
 ```bash
-stratum change create --project @you/my-project --workspace fix-n-plus-one
+stratum change create --project @you/my-project --workspace fix-n-plus-one --wait
 ```
 
-The response carries each evaluator's verdict. Do not poll; the evaluation is
-already done when the call returns.
+`--wait` returns once the gates have finished and prints the verdict. Without it,
+an instance with an evaluation queue (the hosted one has one) answers at once with
+the change `evaluating`: check it with `stratum change show <id>` until the status
+leaves `evaluating`. A change cannot merge, or be approved, while it is evaluating.
 
 ## 4. Interpret the verdict
 

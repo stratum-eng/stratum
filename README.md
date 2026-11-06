@@ -63,7 +63,8 @@ Humans and AI agents are both first-class citizens, with different powers by des
 ### Prerequisites
 
 - **Node.js 22.13+** (the test suite uses `node:sqlite`, unflagged only from 22.13)
-- A Cloudflare account with access to:
+- A Cloudflare account on the **Workers Paid plan** (the Free plan is not supported) with
+  access to:
 
   | Binding | Used for | |
   |---|---|---|
@@ -381,8 +382,9 @@ tokens) · `@stratum-eng/cli` covering the change flow, issues, and activity ·
   no preview deploy of an unmerged change and no rollback: retrying an earlier successful
   deployment is the recovery path. Netlify isn't supported.
 - **Scale** — git operations run in-memory on the Worker; large repos will hit Worker limits.
-- **Synchronous evaluation** — the evaluator suite runs inline at change creation, so change
-  creation latency includes it.
+- **Gated pushes evaluate on the request** — change creation and re-evaluation run on a queue,
+  but a gated `git push` reports its verdict in its own response, so its latency includes the
+  evaluator suite.
 - **Identity in KV** — project and workspace identity records live in KV rather than D1,
   which is why `workspace.deleted` events aren't emitted yet.
 - **Team permissions are org-wide** — per-project team grants aren't implemented.

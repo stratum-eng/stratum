@@ -168,8 +168,9 @@ Honestly, several:
   knowing: any authenticated user can **open** an issue on a public project
   (rate-limited), while editing or closing issues requires project write
   access.
-- **Evaluation runs synchronously** at change creation — there's no async
-  evaluation queue yet, so very slow evaluators stretch the request.
+- **A gated `git push` still evaluates on the request.** Change creation and
+  re-evaluation hand their run to a queue, but a push reports its verdict in its
+  own response, so very slow evaluators stretch the push.
 - **No Git LFS**: see
   [Does Stratum support Git LFS?](#does-stratum-support-git-lfs) below.
 - **Git submodules are not supported.** A gitlink entry at any depth, or a
@@ -207,8 +208,10 @@ SSH transport is not supported (Workers have no raw TCP listener).
 
 ## What do I need to self-host?
 
-Node.js 22.13+ and your own Cloudflare account with Workers, **Artifacts (which
-is in beta — you need access to it)**, D1, KV, Queues, and Durable Objects.
+Node.js 22.13+ and your own Cloudflare account on the **Workers Paid plan** (the
+Free plan is not supported: its limits are too low for Stratum's request and
+queue work), with Workers, **Artifacts (which is in beta — you need access to
+it)**, D1, KV, Queues, and Durable Objects.
 Optional: the Workers AI binding for the LLM evaluator (or, instead, an
 `LLM_PROVIDERS` allowlist so projects can bring their own model key), R2 for
 backups, and Cloudflare Email for magic links. Sandboxes — for the `sandbox`
