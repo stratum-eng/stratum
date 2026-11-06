@@ -55,7 +55,7 @@ npm run typecheck    # tsc --noEmit
 npm run lint         # biome check src tests
 npm run lint:fix     # biome check --write src tests
 npm run release:check   # validate CHANGELOG.md against package.json
-npm run release:prepare # cut a release from the Unreleased section (maintainers)
+npm run release:pr      # cut a release and open its PR; merging it publishes (when asked to release)
 ```
 
 `npm run test:smoke` hits a **live deployed instance** (set `STAGING_URL` + `TEST_AUTH_TOKEN`);
@@ -109,6 +109,14 @@ Mirror lint → typecheck → test locally before pushing.
 - **`REPO_DO_ENABLED` is a kill switch** — `true` on staging, `false` in production. Respect it
   when touching the Durable-Object hot-index / merge paths.
 - Secrets live in `.dev.vars` (gitignored) and Wrangler secrets — never commit credentials.
+
+## Releasing
+
+Cut a release only when asked. Follow `docs/developer/releasing.md` exactly:
+`npm run release:pr -- --dry-run`, then
+`npm run release:pr -- --co-author "<the model that ran it> <noreply@anthropic.com>"`, then merge the PR when
+you have been told to merge it. Merging publishes the release. It is finished when
+`gh release view vX.Y.Z` succeeds, not when a workflow run is green.
 
 ## Commit & PR conventions
 

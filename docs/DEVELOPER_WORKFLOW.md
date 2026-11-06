@@ -181,18 +181,13 @@ Before a PR can be merged to `main`, all checks must pass:
 
 ### Automatic Trigger
 
-Merging to `main` triggers the production deployment workflow, but it requires **manual approval**.
-
-### Approval Process
-
-1. Go to the GitHub Actions tab
-2. Find the pending "Deploy Production" workflow
-3. Review the changes being deployed
-4. Click "Approve and deploy"
+Merging to `main` deploys to production once the tests and the staging deploy pass.
+Nothing waits for approval: the `production` environment has no required reviewers. Cutting
+a release doesn't change this (see [Releasing](developer/releasing.md)).
 
 ### Deployment Steps
 
-Once approved, the following happens:
+The following happens:
 
 1. Build and type-check
 2. Deploy to Cloudflare Workers (production)

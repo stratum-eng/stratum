@@ -29,7 +29,9 @@
     "release:latest": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts latest",
     "release:previous": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts previous",
     "release:notes": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts notes",
+    "release:commit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts commit",
     "release:prepare": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts prepare",
+    "release:pr": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/release.ts pr",
     "cf-typegen": "wrangler types"
   },
   "dependencies": {

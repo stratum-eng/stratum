@@ -3,24 +3,32 @@
  *
  * Run with: node --experimental-strip-types scripts/release.ts <command>
  *
- *   check                  Validate CHANGELOG.md, changelog.d/, and that package.json and
- *                          package-lock.json agree
+ *   check                  Validate CHANGELOG.md, changelog.d/, and that package.json,
+ *                          package-lock.json and src/version.ts agree
  *   latest                 Print the most recently released version (no `v` prefix)
  *   previous [version]     Print the release listed below `version` (default: latest);
  *                          prints nothing when there is none
  *   notes [version]        Print one release's changelog entries (default: latest)
- *   prepare [options]      Fold changelog.d/ into Unreleased, cut it, bump package.json
- *                          and package-lock.json
+ *   commit [version]       Print the commit on this branch that introduced a release's
+ *                          version (default: latest): the commit its tag belongs on
+ *   prepare [options]      Fold changelog.d/ into Unreleased, cut it, bump package.json,
+ *                          package-lock.json and src/version.ts
+ *   pr [options]           Run `prepare` on a fresh branch off origin/main and open the
+ *                          release PR. Merging that PR publishes the release.
  *
- * `prepare` options:
+ * `prepare` and `pr` options:
  *   --bump auto|major|minor|patch   Default: auto (derived from the `Unreleased` groups)
  *   --date YYYY-MM-DD               Default: today, UTC
  *   --dry-run                       Print the resulting version, write nothing
  *
- * The npm wrappers are `npm run release:check`, `release:notes`, `release:prepare`.
+ * `pr` also takes:
+ *   --co-author "Name <email>"      Add a Co-Authored-By trailer to the release commit
+ *
+ * The npm wrappers are `npm run release:pr`, `release:check`, `release:notes`, and so on.
  * See docs/developer/releasing.md for the whole flow.
  */
 
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
@@ -39,8 +47,10 @@ import {
   previousRelease,
   releaseNotes,
   resolveBump,
+  serverVersionProblems,
   setLockfileVersion,
   setPackageVersion,
+  setServerVersion,
   validateChangelog,
   validateFragments,
   withUnreleasedBody,
@@ -51,6 +61,7 @@ const CHANGELOG_PATH = resolve(REPO_ROOT, "CHANGELOG.md");
 const PACKAGE_PATH = resolve(REPO_ROOT, "package.json");
 const LOCKFILE_PATH = resolve(REPO_ROOT, "package-lock.json");
 const CHANGELOGD_PATH = resolve(REPO_ROOT, "changelog.d");
+const SERVER_VERSION_PATH = resolve(REPO_ROOT, "src/version.ts");
 
 const BUMPS: BumpRequest[] = ["auto", "major", "minor", "patch"];
 
@@ -129,6 +140,7 @@ function commandCheck(): void {
     problems.push(`package.json is ${pkg.version} but the newest CHANGELOG release is ${latest}`);
   }
   problems.push(...lockfileVersionProblems(readLockfile(), pkg.version));
+  problems.push(...serverVersionProblems(readFileSync(SERVER_VERSION_PATH, "utf8"), pkg.version));
 
   if (problems.length > 0) {
     for (const problem of problems) console.error(`  • ${problem}`);
@@ -166,12 +178,62 @@ function commandNotes(args: string[]): void {
   console.log(notes.data);
 }
 
+/** Run a command in the repository root and return its trimmed stdout; exits if it fails. */
+function run(command: string, args: string[]): string {
+  try {
+    return execFileSync(command, args, {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch (error) {
+    const stderr = (error as { stderr?: string }).stderr?.trim();
+    fail(`${command} ${args.join(" ")} failed${stderr ? `: ${stderr}` : ""}`);
+  }
+}
+
+/**
+ * The oldest first-parent commit whose root manifest line carries `version`,
+ * which is the release commit. A release must be tagged here and not at the
+ * branch tip: anything merged after the release commit is not in its notes.
+ */
+function releaseCommit(version: string): string | undefined {
+  const escaped = version.replaceAll(".", "\\.");
+  const log = run("git", [
+    "log",
+    "--first-parent",
+    "--reverse",
+    "--format=%H",
+    `-G^[[:space:]]*"version": "${escaped}"`,
+    "--",
+    "package.json",
+  ]);
+  return log.split("\n")[0] || undefined;
+}
+
+/** `commit`: print the commit a release's tag belongs on. */
+function commandCommit(args: string[]): void {
+  const version = args[0]?.replace(/^v/, "") ?? latestRelease(readChangelog());
+  if (!version) fail("CHANGELOG.md has no released version yet");
+  const commit = releaseCommit(version);
+  if (!commit) fail(`No commit on this branch sets package.json to ${version}`);
+  console.log(commit);
+}
+
+/** What `prepare` decided, for a caller that goes on to publish it. */
+interface Prepared {
+  from: string;
+  to: string;
+  bump: string;
+  dryRun: boolean;
+}
+
 /**
  * `prepare`: fold changelog.d/ fragments into `Unreleased`, cut it into a
- * dated section, relink it, bump package.json and package-lock.json, and
- * delete the fragments that were folded in.
+ * dated section, relink it, bump package.json, package-lock.json and
+ * src/version.ts, and delete the fragments that were folded in.
  */
-function commandPrepare(args: string[]): void {
+function commandPrepare(args: string[]): Prepared {
   const bump = (argValue(args, "--bump") ?? "auto") as BumpRequest;
   if (!BUMPS.includes(bump)) fail(`--bump must be one of ${BUMPS.join(", ")}`);
 
@@ -223,24 +285,96 @@ function commandPrepare(args: string[]): void {
   if (!bumped.success) fail(`package.json: ${bumped.error}`);
   const bumpedLock = setLockfileVersion(readLockfile(), next.data);
   if (!bumpedLock.success) fail(bumpedLock.error);
+  const bumpedServer = setServerVersion(readFileSync(SERVER_VERSION_PATH, "utf8"), next.data);
+  if (!bumpedServer.success) fail(bumpedServer.error);
 
+  const prepared = { from: pkg.version, to: next.data, bump: resolved.data, dryRun };
   if (dryRun) {
     console.log(`${pkg.version} → ${next.data} (${resolved.data}, dry run — nothing written)`);
-    return;
+    return prepared;
   }
 
   writeFileSync(CHANGELOG_PATH, cut.data);
   writeFileSync(PACKAGE_PATH, bumped.data);
   writeFileSync(LOCKFILE_PATH, bumpedLock.data);
+  writeFileSync(SERVER_VERSION_PATH, bumpedServer.data);
   for (const fragment of fragments) unlinkSync(fragment.path);
   console.log(`✓ Prepared v${next.data} (${resolved.data} from ${pkg.version}), dated ${date}`);
   if (fragments.length > 0) {
     console.log(`  Folded in and removed ${fragments.length} changelog.d/ fragment(s).`);
   }
   console.log(
-    "  Review the diff (CHANGELOG.md, package.json, package-lock.json, removed fragments),",
+    "  Review the diff (CHANGELOG.md, package.json, package-lock.json, src/version.ts,",
   );
-  console.log("  open a PR, and merge it; then run the Release workflow.");
+  console.log("  removed fragments), then open a PR. Merging it publishes the release.");
+  return prepared;
+}
+
+/**
+ * `pr`: cut a release from the current origin/main and open its PR. Refuses to
+ * cut over a predecessor that never published, which is how v0.2.0 sat
+ * unpublished for two months: each release would otherwise paper over the last.
+ */
+function commandPr(args: string[]): void {
+  const coAuthor = argValue(args, "--co-author");
+  if (run("git", ["status", "--porcelain"]) !== "") {
+    fail("The working tree has uncommitted changes. Commit or stash them first.");
+  }
+
+  const startingPoint =
+    run("git", ["branch", "--show-current"]) || run("git", ["rev-parse", "HEAD"]);
+  run("git", ["fetch", "origin", "main", "--tags"]);
+
+  const openPrs = run("gh", ["pr", "list", "--state", "open", "--json", "headRefName"]);
+  const openRelease = (JSON.parse(openPrs) as Array<{ headRefName: string }>).find((pr) =>
+    pr.headRefName.startsWith("release/"),
+  );
+  if (openRelease) fail(`A release PR is already open from ${openRelease.headRefName}.`);
+
+  // Every failure past this point exits with the checkout away from where the
+  // caller started, so say how to get back rather than leave them to work it out.
+  process.once("exit", (code) => {
+    if (code !== 0) console.error(`  You were on ${startingPoint}: git switch ${startingPoint}`);
+  });
+  run("git", ["switch", "--detach", "origin/main"]);
+
+  const published = latestRelease(readChangelog());
+  if (published && !run("git", ["tag", "--list", `v${published}`])) {
+    fail(`v${published} has no tag, so it never published. Run the Release workflow for it first.`);
+  }
+
+  const prepared = commandPrepare(args);
+  if (prepared.dryRun) {
+    run("git", ["checkout", startingPoint]);
+    return;
+  }
+
+  const tag = `v${prepared.to}`;
+  const branch = `release/${tag}`;
+  run("git", ["switch", "-c", branch]);
+  run("git", ["add", "-A", "CHANGELOG.md", "package.json", "package-lock.json", "src/version.ts", "changelog.d"]);
+  const trailer = coAuthor ? ["-m", `Co-Authored-By: ${coAuthor}`] : [];
+  run("git", ["commit", "-m", `chore(release): ${tag}`, ...trailer]);
+  run("git", ["push", "--set-upstream", "origin", branch]);
+  const url = run("gh", [
+    "pr",
+    "create",
+    "--base",
+    "main",
+    "--head",
+    branch,
+    "--title",
+    `chore(release): ${tag}`,
+    "--body",
+    [
+      `Cuts **${tag}** (${prepared.bump} bump from ${prepared.from}) with \`npm run release:pr\`.`,
+      "",
+      "Merging this PR tags that merge and publishes the GitHub release, with no further step.",
+      "The `CHANGELOG.md` section in this diff ships verbatim as the release notes, so this is",
+      "the last chance to reword it. See `docs/developer/releasing.md`.",
+    ].join("\n"),
+  ]);
+  console.log(`✓ Opened ${url}`);
 }
 
 /** Dispatch the subcommand named by the first argument. */
@@ -262,9 +396,15 @@ function main(argv: string[]): void {
     case "prepare":
       commandPrepare(args);
       break;
+    case "commit":
+      commandCommit(args);
+      break;
+    case "pr":
+      commandPr(args);
+      break;
     default:
       fail(
-        `Unknown command: ${command ?? "(none)"}. Expected check, latest, previous, notes, or prepare.`,
+        `Unknown command: ${command ?? "(none)"}. Expected check, latest, previous, notes, commit, prepare, or pr.`,
       );
   }
 }

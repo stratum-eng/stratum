@@ -176,7 +176,11 @@ jobs:
           echo "✓ Health check passed"
 
   # ========================================================================
-  # Production Deployment with Manual Approval
+  # Production Deployment
+  #
+  # Runs on every push to main once staging passes. The `production` environment
+  # has no required reviewers, so nothing waits for a human here; adding a
+  # reviewer to that environment in the repository settings is how to change that.
   # ========================================================================
   deploy-production:
     name: Deploy to Production
