@@ -5231,6 +5231,99 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/admin/restore/{runTs}/repos/{projectId}:
+    parameters:
+      - name: runTs
+        in: path
+        required: true
+        schema: { type: string }
+        description: Backup run timestamp identifier
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: adminRestoreRepo
+      tags: [admin]
+      summary: Restore one project's repository from a backup run, or drill it
+      description: |
+        With `drill`, restores to a generated scratch repository, verifies it and
+        deletes it, without touching the project's repository. Otherwise restores
+        to the project's own repository, and needs `force` if it exists. Restores
+        the Git repository only. Check `verification.ok` even on a `200`.
+      security:
+        - bearerAuth: []
+        - adminApiKey: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force:
+                  type: boolean
+                  description: Overwrite the project's existing repository. Cannot be combined with `drill`.
+                drill: { type: boolean }
+      responses:
+        "200":
+          description: The restore ran. `verification` says whether the refs match the backup.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [restore]
+                properties:
+                  restore:
+                    type: object
+                    required: [runTs, projectId, mode, verification]
+                    properties:
+                      runTs: { type: string }
+                      projectId: { type: string }
+                      mode: { type: string, enum: [drill, restore] }
+                      repoName:
+                        type: string
+                        description: Drill only. The scratch repository.
+                      tipSha: { type: string, description: "Absent for a tag-only snapshot" }
+                      verification:
+                        type: object
+                        required: [ok, checked, mismatches]
+                        properties:
+                          ok: { type: boolean }
+                          checked: { type: integer }
+                          mismatches: { type: array, items: { type: string } }
+                          error: { type: string, description: "The refs could not be read" }
+                      scratchDeleted:
+                        type: boolean
+                        description: Drill only. False means the scratch repository still exists.
+                      branchesTruncatedTotal:
+                        type: integer
+                        description: The backup held only some branches; this many existed.
+        "400":
+          description: Invalid run, project id or body
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The run did not complete, or holds no pack for this project
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The project's repository exists and `force` was not set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "504":
+          description: The push timed out and may still land. The outcome is unknown.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/admin/restore/{runTs}/plan:
     parameters:
       - name: runTs

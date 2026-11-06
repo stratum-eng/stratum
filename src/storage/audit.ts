@@ -41,6 +41,9 @@ export type AuditAction =
   | "conflict.resolved_manually"
   | "review.approvals_dismissed"
   | "backup.run"
+  // An admin applying a backed-up repository (or drilling it). Recorded before
+  // the push as well as after, so a run that dies midway still leaves a trail.
+  | "backup.repo_restore"
   | "deletion.requested"
   | "deletion.started"
   | "deletion.completed"

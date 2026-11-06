@@ -225,7 +225,11 @@ gap as long as the streak, and a project over `MAX_BACKUP_BYTES` has no pack at
 all.
 - **Not in any backup:** `DEPLOY_SECRET_KEY` and the other Wrangler secrets. The
   `project_secrets` rows are backed up as ciphertext only.
-- **Restore** has a documented, tested path in the runbook.
+- **Restore** is documented in the runbook. A single repository can be restored
+  through an admin route, which checks its refs against the backup afterwards. A
+  database or KV restore is covered by tests of its restore functions, but
+  applying one still takes an operator-deployed admin route, because no built-in
+  command exists yet.
 
 ### Retention of live data
 
@@ -353,7 +357,7 @@ What exists today, and can be pointed to in a review:
 - Private vulnerability reporting through GitHub Security Advisories.
 - An audit log of sensitive operations (sessions, token and agent lifecycle,
   webhooks, and similar — `src/storage/audit.ts`), documented account erasure,
-  and a tested backup and restore runbook. The log is append-only, enforced by
+  and a documented backup and restore runbook. The log is append-only, enforced by
   the database, **except for erasure of personal identifiers**: deleting an
   account rewrites that account's id and email to `deleted-user` where they are
   an entry's actor, its subject, or a complete value in its detail. That is a

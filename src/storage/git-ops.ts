@@ -4482,7 +4482,7 @@ interface AdvertisedRefs {
  * how many were fetched. The advertisement already carries every branch name
  * and its tip oid, which is all a listing needs.
  */
-async function readAdvertisedRefs(
+export async function readAdvertisedRefs(
   remote: string,
   token: string,
   logger: Logger,
