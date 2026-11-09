@@ -24,6 +24,8 @@ import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 import {
   type RepoView,
+  type TagDetailCache,
+  type TagObjectDetails,
   artifactsRepoNameFromRemote,
   getCommitLog,
   listFilesInRepo,
@@ -184,6 +186,61 @@ export function kvTreeListingCache(
       } catch (error) {
         logger.warn("Tree listing cache write failed", {
           hash,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  };
+}
+
+const TAG_DETAILS_VERSION = 1;
+const TAG_DETAILS_TTL_SECONDS = 30 * 24 * 60 * 60;
+/** A tag message longer than this is not stored; that tag is read by cloning. */
+const TAG_DETAILS_MAX_BYTES = 64 * 1024;
+
+function parseTagDetails(raw: string): TagObjectDetails | null {
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const { message, tagger, timestamp } = parsed as Record<string, unknown>;
+  if (message !== undefined && typeof message !== "string") return null;
+  if (tagger !== undefined && typeof tagger !== "string") return null;
+  if (timestamp !== undefined && typeof timestamp !== "number") return null;
+  return {
+    ...(message !== undefined ? { message } : {}),
+    ...(tagger !== undefined ? { tagger } : {}),
+    ...(timestamp !== undefined ? { timestamp } : {}),
+  };
+}
+
+/**
+ * A {@link TagDetailCache} in KV, scoped to `scope` (the project id) for the
+ * same reason as {@link kvTreeListingCache}: one project's tag messages are
+ * never read on another project's behalf.
+ */
+export function kvTagDetailCache(kv: KVNamespace, scope: string, logger: Logger): TagDetailCache {
+  const key = (oid: string) =>
+    `tag_details:v${TAG_DETAILS_VERSION}:${encodeURIComponent(scope)}:${oid}`;
+  return {
+    async get(oid) {
+      try {
+        const raw = await kv.get(key(oid));
+        return raw === null ? null : parseTagDetails(raw);
+      } catch (error) {
+        logger.warn("Tag detail cache read failed", {
+          oid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+    },
+    async put(oid, details) {
+      const body = JSON.stringify(details);
+      if (body.length > TAG_DETAILS_MAX_BYTES) return;
+      try {
+        await kv.put(key(oid), body, { expirationTtl: TAG_DETAILS_TTL_SECONDS });
+      } catch (error) {
+        logger.warn("Tag detail cache write failed", {
+          oid,
           error: error instanceof Error ? error.message : String(error),
         });
       }

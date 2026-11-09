@@ -587,7 +587,7 @@ describe("cloneRepo includeTags", () => {
 });
 
 describe("listRepoTags", () => {
-  it("clones with tags and returns the collected entries", async () => {
+  it("clones for an annotated tag whose details are not cached", async () => {
     mockClone.mockImplementation(async ({ fs, dir }: { fs: NodeFS; dir: string }) => {
       const { shas } = await buildRepo(dir, [{ "a.txt": "one" }], fs);
       await git.tag({ fs, dir, ref: "v1.0.0", object: shas[0] });
@@ -601,13 +601,18 @@ describe("listRepoTags", () => {
       });
     });
     mockGetRemoteInfo.mockResolvedValue(
-      remoteInfoWithTags({ "v1.0.0": "a".repeat(40), "v2.0.0": "b".repeat(40) }),
+      remoteInfoWithTags({
+        "v1.0.0": "a".repeat(40),
+        "v2.0.0": "b".repeat(40),
+        "v2.0.0^{}": "a".repeat(40),
+      }),
     );
     mockFetch.mockResolvedValue({});
 
     const result = await listRepoTags("https://r.example/repo.git", "tok", logger);
     expect(result.success).toBe(true);
     if (!result.success) return;
+    expect(mockClone).toHaveBeenCalledTimes(1);
     expect(result.data.tags.map((t) => t.name)).toEqual(["v1.0.0", "v2.0.0"]);
     expect(result.data.tags[1]?.annotated).toBe(true);
     expect(result.data.tags[1]?.message).toBe("second");
@@ -615,8 +620,134 @@ describe("listRepoTags", () => {
     expect(result.data.totalTagCount).toBe(2);
   });
 
+  it("lists no tags without cloning when the remote advertises none", async () => {
+    const result = await listRepoTags("https://r.example/repo.git", "tok", logger);
+    expect(result).toEqual({
+      success: true,
+      data: { tags: [], truncated: false, totalTagCount: 0 },
+    });
+    expect(mockClone).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("lists lightweight tags from the advertisement without cloning", async () => {
+    mockGetRemoteInfo.mockResolvedValue(
+      remoteInfoWithTags({ "v1.0.0": "a".repeat(40), "release/2.0": "c".repeat(40) }),
+    );
+
+    const result = await listRepoTags("https://r.example/repo.git", "tok", logger);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(mockClone).not.toHaveBeenCalled();
+    expect(result.data.tags).toEqual([
+      {
+        name: "release/2.0",
+        oid: "c".repeat(40),
+        targetSha: "c".repeat(40),
+        annotated: false,
+        unresolvable: false,
+      },
+      {
+        name: "v1.0.0",
+        oid: "a".repeat(40),
+        targetSha: "a".repeat(40),
+        annotated: false,
+        unresolvable: false,
+      },
+    ]);
+  });
+
+  it("lists an annotated tag from the advertisement when its details are cached", async () => {
+    mockGetRemoteInfo.mockResolvedValue(
+      remoteInfoWithTags({ ann: "b".repeat(40), "ann^{}": "a".repeat(40) }),
+    );
+    const detailCache = {
+      get: vi.fn(async () => ({ message: "release one", tagger: "t <t@x.com>", timestamp: 7 })),
+      put: vi.fn(async () => {}),
+    };
+
+    const result = await listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+      detailCache,
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(mockClone).not.toHaveBeenCalled();
+    expect(detailCache.get).toHaveBeenCalledWith("b".repeat(40));
+    expect(result.data.tags).toEqual([
+      {
+        name: "ann",
+        oid: "b".repeat(40),
+        targetSha: "a".repeat(40),
+        annotated: true,
+        message: "release one",
+        tagger: "t <t@x.com>",
+        timestamp: 7,
+        unresolvable: false,
+      },
+    ]);
+  });
+
+  it("stores what a clone read, so the next listing does not clone", async () => {
+    let tagOid = "";
+    let commitOid = "";
+    mockClone.mockImplementation(async ({ fs, dir }: { fs: NodeFS; dir: string }) => {
+      const { shas } = await buildRepo(dir, [{ "a.txt": "one" }], fs);
+      commitOid = shas[0] as string;
+      await git.annotatedTag({
+        fs,
+        dir,
+        ref: "ann",
+        object: commitOid,
+        message: "first\n",
+        tagger,
+      });
+      tagOid = await git.resolveRef({ fs, dir, ref: "refs/tags/ann" });
+    });
+    mockFetch.mockResolvedValue({});
+    // The advertisement has to name the oids the clone will hold, so build the
+    // same repository once to learn them.
+    await mockClone({ fs: new MemoryFS().toNodeFS() as unknown as NodeFS, dir: "/repo" });
+    mockClone.mockClear();
+    mockGetRemoteInfo.mockResolvedValue(remoteInfoWithTags({ ann: tagOid, "ann^{}": commitOid }));
+
+    const stored = new Map<string, { message?: string; tagger?: string; timestamp?: number }>();
+    const detailCache = {
+      get: async (oid: string) => stored.get(oid) ?? null,
+      put: async (oid: string, details: { message?: string }) => {
+        stored.set(oid, details);
+      },
+    };
+
+    const first = await listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+      detailCache,
+    });
+    expect(mockClone).toHaveBeenCalledTimes(1);
+    expect(stored.get(tagOid)).toEqual({
+      message: "first",
+      tagger: "tagger <tag@x.com>",
+      timestamp: tagger.timestamp,
+    });
+
+    const second = await listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+      detailCache,
+    });
+    expect(mockClone).toHaveBeenCalledTimes(1);
+    // Both paths describe the tag identically.
+    expect(second).toEqual(first);
+  });
+
+  it("propagates a failure to read the advertisement", async () => {
+    mockGetRemoteInfo.mockRejectedValue(new Error("unreachable"));
+    const result = await listRepoTags("https://r.example/repo.git", "tok", logger);
+    expect(result.success).toBe(false);
+    expect(mockClone).not.toHaveBeenCalled();
+  });
+
   it("propagates a clone failure", async () => {
     mockClone.mockRejectedValue(new Error("no such repo"));
+    mockGetRemoteInfo.mockResolvedValue(
+      remoteInfoWithTags({ ann: "b".repeat(40), "ann^{}": "a".repeat(40) }),
+    );
     const result = await listRepoTags("https://r.example/repo.git", "tok", logger);
     expect(result.success).toBe(false);
   });
@@ -629,6 +760,9 @@ describe("listRepoTags", () => {
     listTagsOverride.fn = async () => {
       throw new Error("refs are corrupt");
     };
+    mockGetRemoteInfo.mockResolvedValue(
+      remoteInfoWithTags({ ann: "b".repeat(40), "ann^{}": "a".repeat(40) }),
+    );
     const result = await listRepoTags("https://r.example/repo.git", "tok", logger);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.message).toContain("Failed to list tags");

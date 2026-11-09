@@ -4368,20 +4368,72 @@ export interface ListRepoTagsResult {
   totalTagCount: number;
 }
 
+/** What an annotated tag's own object says, as shown in a tag listing. */
+export interface TagObjectDetails {
+  message?: string;
+  tagger?: string;
+  timestamp?: number;
+}
+
 /**
- * Lists the tags in a repository, including entries whose targets cannot be
- * resolved from the cloned history.
+ * Annotated-tag details keyed by the TAG OBJECT's oid.
  *
- * The clone is shallow but fetches tag refs, so a tag whose target lies outside
- * the shallow window is reported with `unresolvable: true` rather than raising:
- * a tag pointing into unfetched history is expected here, not a failure, and
- * erroring would make the whole listing unavailable because of one old tag.
- * See `collectRepoTags`.
+ * The oid is a hash of the object, so an entry is correct for as long as it is
+ * kept: moving or re-creating a tag gives it a new oid and so a new key.
+ */
+export type TagDetailCache = {
+  /** The details stored for `oid`, or null on a miss or any failure. */
+  get(oid: string): Promise<TagObjectDetails | null>;
+  /** Best-effort store; never throws. */
+  put(oid: string, details: TagObjectDetails): Promise<void>;
+};
+
+/**
+ * Builds a tag listing from the ref advertisement alone, or returns null when
+ * it cannot: an annotated tag whose details are not in `cache`.
  *
- * The underlying fetch is tags-only (per-tag `singleBranch` fetches, never a
- * whole-branches pull) and capped at {@link MAX_TAGS}; a remote with more tags
- * than that comes back with `truncated: true` rather than silently dropping
- * the excess. See the `cloneRepo` `includeTags` option.
+ * The advertisement carries every tag's name and oid and, for an annotated tag,
+ * the commit it peels to. Only the message, tagger and date live in the tag
+ * object, and those are what the cache supplies.
+ */
+async function tagsFromAdvertisement(
+  names: string[],
+  advertised: AdvertisedRefs,
+  cache: TagDetailCache | undefined,
+): Promise<RepoTagEntry[] | null> {
+  const entries = await Promise.all(
+    names.map(async (name): Promise<RepoTagEntry | null> => {
+      const oid = advertised.tags[name] as string;
+      const peeled = advertised.peeledTags[name];
+      if (peeled === undefined) {
+        return { name, oid, targetSha: oid, annotated: false, unresolvable: false };
+      }
+      const details = cache ? await cache.get(oid) : null;
+      if (details === null) return null;
+      return { name, oid, targetSha: peeled, annotated: true, ...details, unresolvable: false };
+    }),
+  );
+  return entries.every((entry): entry is RepoTagEntry => entry !== null) ? entries : null;
+}
+
+/**
+ * Lists the tags in a repository.
+ *
+ * Read from the ref advertisement — one handshake, no object data — whenever
+ * that is enough: always for lightweight tags, and for annotated tags once
+ * their details are in `opts.detailCache`. Cloning to list tags cost seconds on
+ * every request, including for a repository with no tags at all.
+ *
+ * Only an annotated tag whose details are not cached yet needs its tag object,
+ * and that takes the clone below: shallow, followed by a tags-only fetch
+ * (per-tag `singleBranch` fetches, never a whole-branches pull). A tag whose
+ * target lies outside the shallow window is then reported with
+ * `unresolvable: true` rather than raising; see `collectRepoTags`. What the
+ * clone reads is stored in the cache, so the next listing does not repeat it.
+ *
+ * Either way the listing is capped at {@link MAX_TAGS}, keeping the
+ * highest-sorting names; a remote with more comes back with `truncated: true`
+ * rather than silently dropping the excess.
  *
  * @param remote - The repository's remote URL
  * @param token - The authentication token for the remote
@@ -4392,8 +4444,36 @@ export async function listRepoTags(
   token: string,
   logger: Logger,
   httpClient: HttpClient = http,
+  opts: { detailCache?: TagDetailCache } = {},
 ): Promise<Result<ListRepoTagsResult, AppError>> {
   logger.debug("Listing repo tags", { remote });
+
+  const advertised = await readAdvertisedRefs(remote, token, logger, httpClient);
+  if (!advertised.success) return err(advertised.error);
+
+  // Same order and same truncation rule as the `includeTags` clone, so the two
+  // paths list the same tags.
+  const allNames = Object.keys(advertised.data.tags).sort();
+  const advertisedTotal = allNames.length;
+  const names = advertisedTotal > MAX_TAGS ? allNames.slice(-MAX_TAGS) : allNames;
+  const fromAdvertisement = await tagsFromAdvertisement(names, advertised.data, opts.detailCache);
+  if (fromAdvertisement !== null) {
+    const capped = advertisedTotal > MAX_TAGS;
+    if (capped) {
+      logger.warn("Tag listing truncated at MAX_TAGS", {
+        remote,
+        totalTagCount: advertisedTotal,
+        returnedTagCount: fromAdvertisement.length,
+      });
+    }
+    logger.info("Successfully listed repo tags", {
+      remote,
+      tagCount: fromAdvertisement.length,
+      truncated: capped,
+      source: "advertisement",
+    });
+    return ok({ tags: fromAdvertisement, truncated: capped, totalTagCount: advertisedTotal });
+  }
 
   const cloneResult = await cloneRepo(remote, token, logger, { includeTags: true }, httpClient);
   if (!cloneResult.success) return err(cloneResult.error);
@@ -4404,6 +4484,21 @@ export async function listRepoTags(
   if (!collected.success) {
     logger.error("Failed to collect repo tags", collected.error, { remote });
     return err(new ExternalServiceError("Git", "Failed to list tags", collected.error));
+  }
+
+  const detailCache = opts.detailCache;
+  if (detailCache) {
+    await Promise.all(
+      collected.data
+        .filter((tag) => tag.annotated)
+        .map((tag) =>
+          detailCache.put(tag.oid, {
+            ...(tag.message !== undefined ? { message: tag.message } : {}),
+            ...(tag.tagger !== undefined ? { tagger: tag.tagger } : {}),
+            ...(tag.timestamp !== undefined ? { timestamp: tag.timestamp } : {}),
+          }),
+        ),
+    );
   }
 
   const truncated = cloneResult.data.tagsTruncated ?? false;
@@ -4420,6 +4515,7 @@ export async function listRepoTags(
     remote,
     tagCount: collected.data.length,
     truncated,
+    source: "clone",
   });
   return ok({ tags: collected.data, truncated, totalTagCount });
 }

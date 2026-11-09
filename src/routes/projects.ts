@@ -17,6 +17,7 @@ import { syncOrImportProject } from "../services/project-sync";
 import {
   MAX_NATIVE_LOG_DEPTH,
   getCommitLogPreferNative,
+  kvTagDetailCache,
   kvTreeListingCache,
   listFilesInRepoPreferNative,
 } from "../storage/artifacts-reads";
@@ -1462,7 +1463,13 @@ app.get("/:namespace/:slug/tags", async (c) => {
 
   const readToken = await freshRepoToken(c.env.ARTIFACTS, project.remote, "read", logger);
   if (!readToken.success) return internalError(readToken.error.message);
-  const tagsResult = await listRepoTags(project.remote, readToken.data, logger);
+  const tagsResult = await listRepoTags(
+    project.remote,
+    readToken.data,
+    logger,
+    undefined,
+    project.id ? { detailCache: kvTagDetailCache(c.env.STATE, project.id, logger) } : {},
+  );
   if (!tagsResult.success) {
     logger.error("Failed to list tags", tagsResult.error);
     return internalError(tagsResult.error.message);
