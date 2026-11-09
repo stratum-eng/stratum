@@ -3,6 +3,7 @@ import { AppError, NotFoundError } from "../utils/errors";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+import { parseSecondFactor, parseUnmetOrgs, unmetPolicyOrgsSql } from "./credential-factors";
 
 // Sessions are stored HASHED at rest: the `id` column holds hashToken(rawId), and
 // the raw id is only ever held by the client cookie. A read-only leak of the
@@ -49,23 +50,6 @@ interface SessionRow {
   second_factor?: string | null;
   sso_org_id?: string | null;
   unmet_policy_orgs?: string | null;
-}
-
-/** `id:slug,id:slug` (ids are `org_<hex>`, slugs are `[a-z0-9-]`, so both
- * separators are unambiguous). */
-function parseUnmetOrgs(raw: string | null | undefined): UnmetSecondFactorOrg[] {
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((pair) => {
-      const at = pair.indexOf(":");
-      return { id: pair.slice(0, at), slug: pair.slice(at + 1) };
-    })
-    .filter((org) => org.id.length > 0 && org.slug.length > 0);
-}
-
-function parseSecondFactor(value: string | null | undefined): SessionSecondFactor | undefined {
-  return value === "passkey" || value === "recovery_code" ? value : undefined;
 }
 
 function rowToSession(row: SessionRow): Session {
@@ -159,17 +143,16 @@ export async function getSession(
     // org-resource check costs no extra round-trip. It is only evaluated for a
     // session without a second factor: a passkey-verified session satisfies
     // every org, and an SSO session satisfies the org whose IdP issued it.
+    // The rule itself is `unmetPolicyOrgsSql`, shared with every credential
+    // lookup (#441).
     const row = await db
       .prepare(
         `SELECT s.id, s.user_id, s.expires_at, s.created_at, s.second_factor, s.sso_org_id,
-                CASE WHEN s.second_factor IS NULL THEN (
-                  SELECT group_concat(o.id || ':' || o.slug, ',') FROM orgs o
-                  WHERE o.require_second_factor = 1
-                    AND (s.sso_org_id IS NULL OR o.id != s.sso_org_id)
-                    AND (o.owner_id = s.user_id
-                         OR EXISTS (SELECT 1 FROM org_members m
-                                    WHERE m.org_id = o.id AND m.user_id = s.user_id))
-                ) END AS unmet_policy_orgs
+                ${unmetPolicyOrgsSql({
+                  userId: "s.user_id",
+                  secondFactor: "s.second_factor",
+                  ssoOrgId: "s.sso_org_id",
+                })} AS unmet_policy_orgs
          FROM sessions s WHERE s.id = ?`,
       )
       .bind(await hashToken(id))

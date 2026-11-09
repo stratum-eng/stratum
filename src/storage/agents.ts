@@ -4,6 +4,13 @@ import { AppError, NotFoundError } from "../utils/errors";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+import {
+  type CredentialPolicy,
+  type MintFactors,
+  credentialPolicyFromRow,
+  mintFactorColumns,
+  unmetPolicyOrgsSql,
+} from "./credential-factors";
 
 export interface CreateAgentResult {
   agent: Agent;
@@ -52,6 +59,9 @@ export async function createAgent(
   model?: string,
   description?: string,
   promptHash?: string,
+  /** How the minting request had authenticated (#441). Omitted = nothing
+   * recorded, so the agent satisfies no org's second-factor policy. */
+  mintFactors?: MintFactors,
 ): Promise<Result<CreateAgentResult, AppError>> {
   try {
     const id = newId("agt");
@@ -60,9 +70,20 @@ export async function createAgent(
 
     await db
       .prepare(
-        "INSERT INTO agents (id, name, owner_id, model, description, prompt_hash, token_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        `INSERT INTO agents (id, name, owner_id, model, description, prompt_hash, token_hash,
+                             minted_second_factor, minted_sso_org_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(id, name, ownerId, model ?? null, description ?? null, promptHash ?? null, tokenHash)
+      .bind(
+        id,
+        name,
+        ownerId,
+        model ?? null,
+        description ?? null,
+        promptHash ?? null,
+        tokenHash,
+        ...mintFactorColumns(mintFactors),
+      )
       .run();
 
     const agent: Agent = {
@@ -172,17 +193,37 @@ export async function getAgent(
   }
 }
 
+/** An agent authenticated by its own token, with that token's policy. */
+export interface AuthenticatedAgent extends Agent {
+  /**
+   * What the agent was minted with, and the orgs (of its OWNER's) whose
+   * second-factor policy that falls short of (#441). An agent reaches an org
+   * only through its owner's membership, so the owner is who the policy is
+   * evaluated for. `getAgentByToken` always sets it; optional for the same
+   * reason as `LegacyKeyHolder.keyPolicy`.
+   */
+  policy?: CredentialPolicy;
+}
+
 export async function getAgentByToken(
   db: D1Database,
   plaintext: string,
   logger: Logger,
-): Promise<Result<Agent, NotFoundError | AppError>> {
+): Promise<Result<AuthenticatedAgent, NotFoundError | AppError>> {
   try {
     const tokenHash = await hashToken(plaintext);
     const row = await db
-      .prepare("SELECT * FROM agents WHERE token_hash = ?")
+      .prepare(
+        `SELECT agents.*,
+                ${unmetPolicyOrgsSql({
+                  userId: "agents.owner_id",
+                  secondFactor: "agents.minted_second_factor",
+                  ssoOrgId: "agents.minted_sso_org_id",
+                })} AS unmet_policy_orgs
+           FROM agents WHERE token_hash = ?`,
+      )
       .bind(tokenHash)
-      .first<AgentRow>();
+      .first<AgentRow & Parameters<typeof credentialPolicyFromRow>[0]>();
 
     if (!row) {
       const notFoundError = new NotFoundError("Agent", "by_token");
@@ -199,7 +240,7 @@ export async function getAgentByToken(
     }
 
     logger.debug("Agent retrieved by token", { agentId: row.id });
-    return ok(rowToAgent(row));
+    return ok({ ...rowToAgent(row), policy: credentialPolicyFromRow(row) });
   } catch (error) {
     const appError =
       error instanceof AppError

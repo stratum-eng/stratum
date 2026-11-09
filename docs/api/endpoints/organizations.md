@@ -21,7 +21,8 @@ shapes, and [Authentication](../authentication.md) for the SCIM token class.
 
 ## Security policy
 
-- `GET /api/orgs/:slug/security` — read the policy (any member)
+- `GET /api/orgs/:slug/security` — read the policy (any member). For an admin
+  or the owner, the response also carries `secondFactorImpact`.
 - `PUT /api/orgs/:slug/security` — `{ "requireSecondFactor": true }` (admins/owner).
   Either field (`requireSecondFactor`, `ipAllowlist`) may be sent alone.
 
@@ -32,12 +33,28 @@ signed in through this org's own SSO. Otherwise those requests return
 projects, other orgs, or account settings. See
 [Passkeys and two-factor sign-in](../../user-guide/passkeys.md). Turning it on
 returns `409 ADMIN_SECOND_FACTOR_REQUIRED` until you have a passkey yourself.
-API tokens are not checked against the policy when they are used. Instead the
-policy applies when a credential is created: a session that has not met it
-cannot mint an unbound API token, a token bound to this org or its projects,
-an agent token, a rotated legacy key, or an OAuth grant (MCP/CLI consent).
-Those requests return `403 SECOND_FACTOR_REQUIRED`. Tokens bound to other
-targets are unaffected. See
+API tokens, the legacy key, agent tokens, OAuth grants and workspace remote
+credentials are held to the same policy when they are **used**, by how the
+session that created them had signed in. Each credential records that. One
+created from a session with a second factor meets every org's policy; one
+created from a session that signed in through this org's SSO meets this org's;
+any other, including every credential created before this was recorded, meets
+none. A credential that does not meet the policy gets
+`403 SECOND_FACTOR_REQUIRED` on this org's projects (including git clone and
+push) and `/api/orgs/:slug/` endpoints, and keeps all of its other access.
+Creating it again from a session that meets the policy restores access. See
+[Using credentials](../../user-guide/passkeys.md#using-credentials).
+
+`secondFactorImpact` counts the members' live credentials the policy refuses:
+`{ members, apiTokens, agents, oauthGrants, accountKeys }`. Read it before
+turning the policy on. `accountKeys` is an upper bound, because a disabled
+legacy key cannot be told from a live one.
+
+The policy also applies when a credential is created: a session that has not
+met it cannot mint an unbound API token, a token bound to this org or its
+projects, an agent token, a rotated legacy key, or an OAuth grant (MCP/CLI
+consent). Those requests return `403 SECOND_FACTOR_REQUIRED`. Tokens bound to
+other targets are unaffected. See
 [Creating credentials](../../user-guide/passkeys.md#creating-credentials).
 
 ### IP allowlist

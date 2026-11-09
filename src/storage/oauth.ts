@@ -34,6 +34,13 @@ import {
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+import {
+  type CredentialPolicy,
+  type MintFactors,
+  credentialPolicyFromRow,
+  mintFactorColumns,
+  unmetPolicyOrgsSql,
+} from "./credential-factors";
 
 /**
  * The scope vocabulary, deliberately identical in power to `api_tokens.scope`.
@@ -457,6 +464,10 @@ export interface AuthCodeRecord {
   resource: string | null;
   /** Which identity the grant will act as (#409, ADR 010). Absent = the user. */
   actAs?: GrantActor;
+  /** How the consenting session had authenticated (#441). Recorded at consent
+   * and copied to the grant at redemption, because the token endpoint is
+   * called by the client and has no session of its own to read. */
+  mintFactors?: MintFactors;
 }
 
 /**
@@ -485,6 +496,9 @@ interface AuthCodeRow {
   /** Migration 067. Absent on a stub row. */
   agent_id?: string | null;
   new_agent_name?: string | null;
+  /** Migration 072. Absent on a stub row. */
+  minted_second_factor?: string | null;
+  minted_sso_org_id?: string | null;
 }
 
 /** Read the consent-time identity back off a code row. An agent id wins over a
@@ -518,8 +532,8 @@ export async function issueAuthorizationCode(
         `INSERT INTO oauth_auth_codes
            (code_hash, client_id, user_id, redirect_uri, scope, code_challenge,
             code_challenge_method, resource, expires_at, created_at,
-            agent_id, new_agent_name)
-         VALUES (?, ?, ?, ?, ?, ?, 'S256', ?, ?, ?, ?, ?)`,
+            agent_id, new_agent_name, minted_second_factor, minted_sso_org_id)
+         VALUES (?, ?, ?, ?, ?, ?, 'S256', ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         codeHash,
@@ -533,6 +547,7 @@ export async function issueAuthorizationCode(
         new Date(now).toISOString(),
         record.actAs?.kind === "agent" ? record.actAs.agentId : null,
         record.actAs?.kind === "new" ? record.actAs.name : null,
+        ...mintFactorColumns(record.mintFactors),
       )
       .run();
     logger.info("Authorization code issued", {
@@ -603,6 +618,7 @@ export async function readAuthorizationCode(
   if (isExpired(row.expires_at)) return err("expired");
 
   const actAs = codeRowActor(row);
+  const { factors } = credentialPolicyFromRow(row);
   return ok({
     clientId: row.client_id,
     userId: row.user_id,
@@ -614,6 +630,7 @@ export async function readAuthorizationCode(
     alreadyConsumed: row.consumed_at !== null,
     codeId: codeIdOf(codeHash),
     ...(actAs !== undefined ? { actAs } : {}),
+    mintFactors: factors,
   });
 }
 
@@ -721,6 +738,8 @@ export async function issueTokens(
     /** Bind the grant to this agent (#409). The caller has already checked
      * that `userId` owns it; the resolver checks again on every request. */
     agentId?: string;
+    /** How the consenting session had authenticated (#441), off the code. */
+    mintFactors?: MintFactors;
   },
 ): Promise<Result<IssuedTokens, AppError>> {
   try {
@@ -731,8 +750,9 @@ export async function issueTokens(
       .prepare(
         `INSERT INTO oauth_tokens
            (id, access_token_hash, refresh_token_hash, client_id, user_id, scope,
-            access_expires_at, refresh_expires_at, created_at, agent_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            access_expires_at, refresh_expires_at, created_at, agent_id,
+            minted_second_factor, minted_sso_org_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         newId("mcpt"),
@@ -745,6 +765,7 @@ export async function issueTokens(
         new Date(now + REFRESH_TOKEN_TTL_MS).toISOString(),
         new Date(now).toISOString(),
         opts.agentId ?? null,
+        ...mintFactorColumns(opts.mintFactors),
       )
       .run();
     logger.info("OAuth tokens issued", {
@@ -900,6 +921,13 @@ export interface ResolvedOAuthToken {
   /** Present when the grant is bound to an agent (#409, ADR 010): requests
    * then authenticate as this agent, acting for `user`. */
   agent?: { id: string; name: string };
+  /**
+   * What the grant was minted with, and the orgs whose second-factor policy
+   * that falls short of (#441). An agent-bound grant is governed by this too:
+   * the grant is that agent's only credential. The resolver always sets it;
+   * see `LegacyKeyHolder.keyPolicy` for why the type leaves it optional.
+   */
+  policy?: CredentialPolicy;
 }
 
 interface ResolvedOAuthRow {
@@ -925,6 +953,10 @@ interface ResolvedOAuthRow {
   agent_row_id?: string | null;
   agent_owner_id?: string | null;
   agent_name?: string | null;
+  /** Migration 072. Absent on a stub row. */
+  minted_second_factor?: string | null;
+  minted_sso_org_id?: string | null;
+  unmet_policy_orgs?: string | null;
 }
 
 /** A refusal that names the account, for the auth-failure audit (#255). */
@@ -957,7 +989,13 @@ export async function resolveOAuthAccessToken(
                 t.id AS grant_id, t.client_id, t.scope AS token_scope,
                 t.access_expires_at, t.last_used_at, t.revoked_at,
                 t.agent_id AS grant_agent_id, a.id AS agent_row_id,
-                a.owner_id AS agent_owner_id, a.name AS agent_name
+                a.owner_id AS agent_owner_id, a.name AS agent_name,
+                t.minted_second_factor, t.minted_sso_org_id,
+                ${unmetPolicyOrgsSql({
+                  userId: "t.user_id",
+                  secondFactor: "t.minted_second_factor",
+                  ssoOrgId: "t.minted_sso_org_id",
+                })} AS unmet_policy_orgs
            FROM oauth_tokens t JOIN users u ON u.id = t.user_id
            LEFT JOIN agents a ON a.id = t.agent_id
           WHERE t.access_token_hash = ?`,
@@ -1018,6 +1056,7 @@ export async function resolveOAuthAccessToken(
     scope: narrowOAuthScope(row.token_scope),
     grantId: row.grant_id,
     clientId: row.client_id,
+    policy: credentialPolicyFromRow(row),
   };
   if (row.last_used_at !== null) resolved.lastUsedAt = row.last_used_at;
   if (agent !== undefined) resolved.agent = agent;

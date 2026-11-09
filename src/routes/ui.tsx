@@ -8,6 +8,7 @@ import { cannotMintLegacyCredential } from "../middleware/auth";
 import { NO_ANALYTICS_HEADER } from "../middleware/web-analytics";
 import {
   credentialMintRefusalMessage,
+  mintFactorsOf,
   orgBlockingCredentialMint,
 } from "../services/org-second-factor";
 import {
@@ -975,6 +976,7 @@ app.post("/settings/tokens", async (c) => {
     scope: parsed.scope,
     ...(parsed.expiresInDays !== undefined ? { expiresInDays: parsed.expiresInDays } : {}),
     ...(resolvedBinding.data !== null ? { binding: resolvedBinding.data.binding } : {}),
+    mintFactors: mintFactorsOf(c),
   });
   if (!createResult.success) {
     logger.error("Failed to create API token", createResult.error);
@@ -1197,7 +1199,7 @@ app.post("/settings/rotate-token", async (c) => {
     return c.html(page, 403);
   }
 
-  const rotateResult = await rotateUserToken(c.env.DB, user.id, logger);
+  const rotateResult = await rotateUserToken(c.env.DB, user.id, logger, mintFactorsOf(c));
   if (!rotateResult.success) {
     logger.error("Failed to rotate API key", rotateResult.error);
     return c.html(issuePageError(500, user), 500);
@@ -1264,7 +1266,16 @@ app.post("/settings/agents", async (c) => {
     return c.html(page, 403);
   }
 
-  const createResult = await createAgent(c.env.DB, user.id, name, logger, model);
+  const createResult = await createAgent(
+    c.env.DB,
+    user.id,
+    name,
+    logger,
+    model,
+    undefined,
+    undefined,
+    mintFactorsOf(c),
+  );
   if (!createResult.success) {
     logger.error("Failed to create agent", createResult.error);
     return c.html(issuePageError(500, user), 500);

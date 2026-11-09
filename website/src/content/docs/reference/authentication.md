@@ -278,8 +278,15 @@ for its members (`PUT /api/orgs/{slug}/security`). The requirement covers only
 second factor gets `403 SECOND_FACTOR_REQUIRED` there, and keeps all of its
 other access.
 
-**Non-interactive credentials are not subject to a second factor.** They are
-not all scoped, so treat every one of them like a password:
+**Non-interactive credentials are never asked for a second factor.** An org
+that requires one holds them to it by how the session that created them had
+signed in, which each credential records. A credential created without a
+second factor gets `403 SECOND_FACTOR_REQUIRED` on that org's resources, and
+keeps all of its other access. Creating it again from a session that meets the
+policy restores access. See
+[Using credentials](/guides/passkeys/#using-credentials).
+
+They are not all scoped, so treat every one of them like a password:
 
 | Credential | What it can reach | How to cut it off |
 |------------|-------------------|-------------------|

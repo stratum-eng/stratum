@@ -3633,6 +3633,10 @@ paths:
       operationId: getOrgSecurityPolicy
       tags: [orgs]
       summary: Read the org's security policy (any member)
+      description: >
+        For an org admin or the owner, the response also carries
+        `secondFactorImpact`: how many of the members' live credentials the
+        second-factor policy refuses, whether or not it is currently on.
       responses:
         "200":
           description: The policy
@@ -3656,7 +3660,14 @@ paths:
         resources: members' personal projects, other orgs and account settings
         are never affected, because membership is granted without the member's
         consent. `GET …/security` and leaving the org stay open. API tokens,
-        agent tokens and OAuth grants are not affected. Turning the policy on is refused with
+        the legacy key, agent tokens, OAuth grants and workspace remote
+        credentials are held to the same rule by how the session that created
+        them had signed in, which each credential records: one created without
+        a second factor (including every credential created before this was
+        recorded) gets `403 SECOND_FACTOR_REQUIRED` on this org's resources
+        until it is created again from a session that meets the policy. Read
+        `secondFactorImpact` on `GET …/security` first to see how many
+        credentials that is. Turning the policy on is refused with
         `409 ADMIN_SECOND_FACTOR_REQUIRED` until the acting admin has a passkey
         (unless their session signed in through this org's SSO). Changes are
         audited as `org.second_factor_policy_changed`.
@@ -6166,6 +6177,31 @@ components:
           description: >
             Canonical CIDR ranges the org's resources may be reached from. Empty
             means no restriction.
+        secondFactorImpact:
+          type: object
+          description: >
+            Admins and the owner only, on `GET`. The members' live credentials
+            that the second-factor policy refuses because they were not created
+            from a session that meets it.
+          required: [members, apiTokens, agents, oauthGrants, accountKeys]
+          properties:
+            members:
+              type: integer
+              description: Members holding at least one refused token, agent or grant
+            apiTokens:
+              type: integer
+              description: API tokens that are account-wide, bound to this org, or bound to one of its projects
+            agents:
+              type: integer
+              description: Agents with their own token
+            oauthGrants:
+              type: integer
+              description: MCP and CLI connections
+            accountKeys:
+              type: integer
+              description: >
+                Members whose legacy API key would be refused. An upper bound:
+                a disabled key cannot be told from a live one.
     OrgSecurityPolicyUpdate:
       type: object
       anyOf:

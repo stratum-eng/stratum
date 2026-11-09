@@ -9,6 +9,13 @@ import {
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
+import {
+  type CredentialPolicy,
+  type MintFactors,
+  credentialPolicyFromRow,
+  mintFactorColumns,
+  unmetPolicyOrgsSql,
+} from "./credential-factors";
 
 /**
  * Most active tokens one user may hold. Revoked AND expired rows deliberately
@@ -183,6 +190,9 @@ export async function createApiToken(
      * Callers must already have checked the user can reach the target; this
      * layer stores what it is given. */
     binding?: BoundCredentialBinding;
+    /** How the minting request had authenticated (#441). Omitted = nothing
+     * recorded, so the token satisfies no org's second-factor policy. */
+    mintFactors?: MintFactors;
   },
 ): Promise<Result<CreatedApiToken, AppError>> {
   const { userId, name, scope, expiresInDays, binding } = opts;
@@ -237,8 +247,8 @@ export async function createApiToken(
       .prepare(
         `INSERT INTO api_tokens
            (id, user_id, name, token_hash, token_prefix, scope, expires_at, created_at,
-            binding_kind, binding_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            binding_kind, binding_id, minted_second_factor, minted_sso_org_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         id,
@@ -251,6 +261,7 @@ export async function createApiToken(
         createdAt,
         bindingKind,
         bindingId,
+        ...mintFactorColumns(opts.mintFactors),
       )
       .run();
 
@@ -371,6 +382,12 @@ export interface ResolvedApiToken {
   tokenId: string;
   /** Drives the last-used debounce; absent until the token is first used. */
   lastUsedAt?: string;
+  /**
+   * What the token was minted with, and the orgs whose second-factor policy that
+   * falls short of (#441). The resolver always sets it; see
+   * `LegacyKeyHolder.keyPolicy` for why the type leaves it optional.
+   */
+  policy?: CredentialPolicy;
 }
 
 interface ResolvedTokenRow {
@@ -391,6 +408,10 @@ interface ResolvedTokenRow {
   token_revoked_at: string | null;
   token_binding_kind: string | null;
   token_binding_id: string | null;
+  /** Migration 072. Absent on a stub row. */
+  minted_second_factor?: string | null;
+  minted_sso_org_id?: string | null;
+  unmet_policy_orgs?: string | null;
 }
 
 /** A refusal that names the account, for the auth-failure audit (#255). */
@@ -432,7 +453,13 @@ export async function resolveApiToken(
                 u.telemetry_opt_out,
                 t.id AS token_id, t.scope AS token_scope, t.expires_at AS token_expires_at,
                 t.last_used_at AS token_last_used_at, t.revoked_at AS token_revoked_at,
-                t.binding_kind AS token_binding_kind, t.binding_id AS token_binding_id
+                t.binding_kind AS token_binding_kind, t.binding_id AS token_binding_id,
+                t.minted_second_factor, t.minted_sso_org_id,
+                ${unmetPolicyOrgsSql({
+                  userId: "t.user_id",
+                  secondFactor: "t.minted_second_factor",
+                  ssoOrgId: "t.minted_sso_org_id",
+                })} AS unmet_policy_orgs
            FROM api_tokens t JOIN users u ON u.id = t.user_id
           WHERE t.token_hash = ? AND t.purpose = 'api'`,
       )
@@ -483,6 +510,7 @@ export async function resolveApiToken(
     scope: narrowTokenScope(row.token_scope),
     binding,
     tokenId: row.token_id,
+    policy: credentialPolicyFromRow(row),
   };
   if (row.token_last_used_at !== null) resolved.lastUsedAt = row.token_last_used_at;
   return ok(resolved);

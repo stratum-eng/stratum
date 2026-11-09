@@ -246,6 +246,7 @@ describe("POST /settings/tokens — creating a token", () => {
       userId: "usr_1",
       name: "ci",
       scope: "read",
+      mintFactors: {},
     });
   });
 
@@ -256,6 +257,7 @@ describe("POST /settings/tokens — creating a token", () => {
       name: "deploy",
       scope: "read_write",
       expiresInDays: 90,
+      mintFactors: {},
     });
   });
 

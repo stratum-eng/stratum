@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { tryGetContext } from "hono/context-storage";
+import type { CredentialPolicy, MintFactors } from "../storage/credential-factors";
 import type { Env } from "../types";
 
 declare module "hono" {
@@ -27,9 +28,13 @@ declare module "hono" {
  *
  * Reads the request through Hono's context storage, so the dozens of authz
  * call sites need no new parameter. Outside a request (queue consumers,
- * scheduled jobs) or for non-session callers (tokens, agents, OAuth grants)
- * there is no unmet set and the answer is always false — those credentials are
- * not subject to the second factor.
+ * scheduled jobs) there is no unmet set and the answer is always false.
+ *
+ * Every kind of caller carries an unmet set. A session's is computed from the
+ * factors it passed at sign-in. A credential's (API token, legacy key, agent
+ * token, OAuth grant, workspace git credential) is computed from the factors
+ * its MINTER had passed, recorded on the credential when it was minted (#441):
+ * see {@link applyCredentialPolicy}.
  *
  * @param record When true (single-resource checks), remember the denial so the
  *   response can say why. List filters pass false: silently omitting a
@@ -62,16 +67,84 @@ export function unmetOrgBySlug(c: Context<{ Bindings: Env }>, slug: string): str
 export const SECOND_FACTOR_ENROLL_PATH = "/settings/security";
 
 /**
+ * Publish an authenticated credential's second-factor policy on the request
+ * (#441). Called by every credential branch of `authMiddleware`, and by git
+ * smart-HTTP, which owns its own authentication.
+ *
+ * Two things are recorded. The unmet orgs go where a session's do, so the one
+ * enforcement path (authz, and the org-route middleware) covers credentials
+ * with no second code path to keep in step. The credential's own factors are
+ * kept so that anything it mints inherits exactly them and no more: see
+ * {@link mintFactorsOf}.
+ */
+export function applyCredentialPolicy(
+  c: { set: Context<{ Bindings: Env }>["set"] },
+  policy: CredentialPolicy | undefined,
+): void {
+  // Undefined only from a test double: every real resolver sets it.
+  if (policy === undefined) return;
+  c.set("credentialMintFactors", policy.factors);
+  if (policy.unmetOrgs.length > 0) c.set("secondFactorUnmetOrgs", policy.unmetOrgs);
+}
+
+/**
+ * {@link applyCredentialPolicy} for a router whose narrowed context type has no
+ * `set` (git smart-HTTP). It reaches the request the same way the authz check
+ * that enforces the policy does, through Hono's context storage, so the two
+ * are present or absent together.
+ */
+export function applyCredentialPolicyToCurrentRequest(policy: CredentialPolicy | undefined): void {
+  const c = tryGetContext<{ Bindings: Env }>();
+  if (c !== undefined) applyCredentialPolicy(c, policy);
+}
+
+/**
+ * The factors a credential minted by the current request should record (#441).
+ *
+ * A session passes on what it passed at sign-in. A credential passes on what
+ * it was itself minted with, so an agent created with an API key, or a
+ * workspace git credential minted over MCP, satisfies exactly the policies its
+ * minter does. An unauthenticated caller (agent signup) passes on nothing.
+ */
+export function mintFactorsOf(c: Context<{ Bindings: Env }>): MintFactors {
+  if (c.get("authVia") !== "session") return c.get("credentialMintFactors") ?? {};
+  const factors: MintFactors = {};
+  const secondFactor = c.get("sessionSecondFactor");
+  if (secondFactor !== undefined) factors.secondFactor = secondFactor;
+  const ssoOrgId = c.get("sessionSsoOrgId");
+  if (ssoOrgId !== undefined) factors.ssoOrgId = ssoOrgId;
+  return factors;
+}
+
+/**
+ * What a refused caller is told, by kind of caller. A session can fix it by
+ * adding or using a passkey. A credential cannot change how it was minted, so
+ * its holder is told to mint it again.
+ */
+export function secondFactorRequiredMessage(org: string, viaSession: boolean): string {
+  if (viaSession) {
+    return `The organization '${org}' requires a second factor. Add a passkey at ${SECOND_FACTOR_ENROLL_PATH} — or, if you already have one, sign out and sign in again with it.`;
+  }
+  return `The organization '${org}' requires a second factor, and this credential was not created from a session that had passed one. Sign in with a passkey (add one at ${SECOND_FACTOR_ENROLL_PATH}) and create the credential again. Access to anything outside '${org}' is not affected.`;
+}
+
+/**
+ * The org whose second-factor policy authz refused on the current request, if
+ * any, for routers (git smart-HTTP) whose narrowed context type has no `get`.
+ */
+export function recordedSecondFactorDenial(): string | undefined {
+  return tryGetContext<{ Bindings: Env }>()?.get("secondFactorDeniedOrg");
+}
+
+/**
  * The org whose second-factor policy refuses minting this credential from the
  * current request, or undefined when nothing does.
  *
- * The org-resource checks above run per request, against the session's own
- * factors. A credential minted by that session is not a session: tokens,
- * agents and OAuth grants carry no record of how their minter signed in, so
- * once issued they reach the org's resources with no policy check at all. The
- * policy therefore has to hold at the moment of minting. A session that has
- * not met some org's policy may not mint a credential that could reach that
- * org.
+ * A session that has not met some org's policy may not mint a credential that
+ * could reach that org. Since #441 such a credential would be refused by that
+ * org on use anyway, because it records its minter's factors. Refusing here
+ * as well tells the person at the moment they can act on it, in a browser,
+ * instead of leaving a script to find out later.
  *
  * This is the single decision point, and it decides on what the credential
  * can reach:
@@ -87,8 +160,12 @@ export const SECOND_FACTOR_ENROLL_PATH = "/settings/security";
  * policy org without their consent can still mint a token bound to their own
  * projects, add a passkey, or leave the org. All other access is untouched.
  *
- * Only sessions carry an unmet set; any other caller gets undefined here.
- * Scoped tokens and OAuth grants cannot mint at all (`cannotMintLegacyCredential`).
+ * Only a session is ever refused here. A credential that mints another one
+ * (the legacy key creating an agent, a grant minting a workspace git
+ * credential) hands its own factors on through {@link mintFactorsOf}, so the
+ * new credential reaches nothing its minter cannot. Refusing that mint would
+ * stop a member of a policy org creating an agent for their own projects,
+ * which is further than an org's policy is allowed to reach.
  *
  * @param c - Request context
  * @param binding - The resolved binding, or null/omitted for an unbound credential
@@ -98,6 +175,7 @@ export function orgBlockingCredentialMint(
   c: Context<{ Bindings: Env }>,
   binding: { reachesOrgId?: string } | null = null,
 ): { id: string; slug: string } | undefined {
+  if (c.get("authVia") !== "session") return undefined;
   const unmet = c.get("secondFactorUnmetOrgs");
   if (!unmet || unmet.length === 0) return undefined;
   if (binding === null) return unmet[0];

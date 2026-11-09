@@ -1,5 +1,5 @@
 import type { Context, MiddlewareHandler } from "hono";
-import { unmetOrgBySlug } from "../services/org-second-factor";
+import { secondFactorRequiredMessage, unmetOrgBySlug } from "../services/org-second-factor";
 import type { Env } from "../types";
 import { Layout } from "../ui/layout";
 
@@ -10,7 +10,9 @@ const ENROLL_PATH = "/settings/security";
 /**
  * Enforces an org's "require a second factor" policy on THAT ORG'S resources
  * only (#256). Runs after `authMiddleware`, which records the orgs whose policy
- * the session does not satisfy (`secondFactorUnmetOrgs`).
+ * the caller does not satisfy (`secondFactorUnmetOrgs`): for a session, from
+ * the factors it passed at sign-in; for a token, agent or OAuth grant, from
+ * the factors its minter had passed (#441).
  *
  * Two halves:
  * - Before routing: `/api/orgs/:slug/*` for such an org is refused outright.
@@ -64,8 +66,12 @@ function blockedOrgRoute(c: AppContext): string | undefined {
  * than through the guarded paths above) answers in the same shape.
  */
 export async function secondFactorRequired(c: AppContext, org: string): Promise<Response> {
-  const message = `The organization '${org}' requires a second factor. Add a passkey at ${ENROLL_PATH} — or, if you already have one, sign out and sign in again with it.`;
+  const viaSession = c.get("authVia") === "session";
+  const message = secondFactorRequiredMessage(org, viaSession);
+  // Only a browser session is shown the page: its call to action (set up a
+  // passkey) does not fix a credential, which has to be minted again.
   const wantsHtml =
+    viaSession &&
     (c.req.method === "GET" || c.req.method === "HEAD") &&
     (c.req.header("Accept") ?? "").includes("text/html");
   if (!wantsHtml) {

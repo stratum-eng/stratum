@@ -5,6 +5,13 @@ import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 import { validateUsername } from "../utils/username-validation";
+import {
+  type CredentialPolicy,
+  type MintFactors,
+  credentialPolicyFromRow,
+  mintFactorColumns,
+  unmetPolicyOrgsSql,
+} from "./credential-factors";
 
 export interface CreateUserResult {
   user: User;
@@ -158,14 +165,21 @@ export async function rotateUserToken(
   db: D1Database,
   userId: string,
   logger: Logger,
+  mintFactors?: MintFactors,
 ): Promise<Result<string, AppError>> {
   try {
     const plaintext = await generateApiKey("stratum_user");
     const tokenHash = await hashToken(plaintext);
 
+    // The new key records how THIS rotation's caller had authenticated (#441),
+    // replacing whatever the previous key recorded: the two columns describe
+    // the key in `token_hash`, never the account.
     const result = await db
-      .prepare("UPDATE users SET token_hash = ? WHERE id = ?")
-      .bind(tokenHash, userId)
+      .prepare(
+        `UPDATE users SET token_hash = ?, token_minted_second_factor = ?,
+                token_minted_sso_org_id = ? WHERE id = ?`,
+      )
+      .bind(tokenHash, ...mintFactorColumns(mintFactors), userId)
       .run();
     if (result.meta.changes === 0) {
       return err(new AppError(`User '${userId}' not found`, "NOT_FOUND", 404, { userId }));
@@ -420,23 +434,52 @@ export async function getUser(
   return ok(rowToUser(row));
 }
 
+/** A user authenticated by the legacy account key, with that key's policy. */
+export interface LegacyKeyHolder extends User {
+  /**
+   * What the key was minted with, and the orgs whose second-factor policy that
+   * falls short of (#441). `getUserByToken` always sets it. It is optional
+   * only so the many test doubles that return a bare `User` keep working; a
+   * caller reads an absent value as "nothing recorded, nothing unmet". That
+   * the real resolvers do set it, for every credential kind, is what
+   * `tests/second-factor-credential-use.test.ts` runs against a real database.
+   */
+  keyPolicy?: CredentialPolicy;
+}
+
+/**
+ * Resolve the legacy account key (`users.token_hash`) to its user.
+ *
+ * The key's second-factor policy rides on the same lookup, as it does for
+ * every other credential kind, so the check costs no extra round-trip.
+ */
 export async function getUserByToken(
   db: D1Database,
   plaintext: string,
   logger: Logger,
-): Promise<Result<User, NotFoundError>> {
+): Promise<Result<LegacyKeyHolder, NotFoundError>> {
   logger.debug("Fetching user by token");
   const tokenHash = await hashToken(plaintext);
   const row = await db
-    .prepare("SELECT * FROM users WHERE token_hash = ?")
+    .prepare(
+      `SELECT users.*,
+              users.token_minted_second_factor AS minted_second_factor,
+              users.token_minted_sso_org_id AS minted_sso_org_id,
+              ${unmetPolicyOrgsSql({
+                userId: "users.id",
+                secondFactor: "users.token_minted_second_factor",
+                ssoOrgId: "users.token_minted_sso_org_id",
+              })} AS unmet_policy_orgs
+         FROM users WHERE token_hash = ?`,
+    )
     .bind(tokenHash)
-    .first<UserRow>();
+    .first<UserRow & Parameters<typeof credentialPolicyFromRow>[0]>();
 
   if (!row) {
     return err(new NotFoundError("User", "by-token"));
   }
 
-  return ok(rowToUser(row));
+  return ok({ ...rowToUser(row), keyPolicy: credentialPolicyFromRow(row) });
 }
 
 export async function getUserByGitHubId(
@@ -600,7 +643,10 @@ export async function disableLegacyToken(
   try {
     const unknowable = await generateApiKey("stratum_user_disabled");
     await db
-      .prepare("UPDATE users SET token_hash = ? WHERE id = ?")
+      .prepare(
+        `UPDATE users SET token_hash = ?, token_minted_second_factor = NULL,
+                token_minted_sso_org_id = NULL WHERE id = ?`,
+      )
       .bind(await hashToken(unknowable), userId)
       .run();
     logger.info("Legacy token disabled", { userId });

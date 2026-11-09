@@ -6,6 +6,11 @@ import {
   ipNotAllowedMessage,
   takeRecordedIpDenial,
 } from "../services/org-ip-allowlist";
+import {
+  applyCredentialPolicyToCurrentRequest,
+  recordedSecondFactorDenial,
+  secondFactorRequiredMessage,
+} from "../services/org-second-factor";
 import { getAgentByToken } from "../storage/agents";
 import { resolveApiToken } from "../storage/api-tokens";
 import { updateChangeStatus } from "../storage/changes";
@@ -150,6 +155,17 @@ async function refuseGitAccess(identity: Identity | null): Promise<Response> {
       headers: { "Content-Type": "text/plain", "X-Stratum-Error-Code": IP_NOT_ALLOWED },
     });
   }
+  // The org's second-factor policy (#441) refused a credential that was not
+  // minted with one. Same reasoning as the allowlist: the caller is a member
+  // the org would otherwise let in, and a 404 would only send git round a
+  // credential-retry loop with a credential that can never work here.
+  const secondFactorOrg = identity === null ? undefined : recordedSecondFactorDenial();
+  if (secondFactorOrg !== undefined) {
+    return new Response(`${secondFactorRequiredMessage(secondFactorOrg, false)}\n`, {
+      status: 403,
+      headers: { "Content-Type": "text/plain", "X-Stratum-Error-Code": "SECOND_FACTOR_REQUIRED" },
+    });
+  }
   return identity === null ? authChallenge() : gitNotFound();
 }
 
@@ -292,6 +308,7 @@ async function authenticate(
     }
     const credential = resolved.data;
     c.set?.("telemetryOptOut", credential.user.telemetryOptOut === true);
+    applyCredentialPolicyToCurrentRequest(credential.policy);
     const restriction: WorkspaceRestriction = {
       projectId: credential.projectId,
       workspaceName: credential.workspaceName,
@@ -325,6 +342,7 @@ async function authenticate(
     const scoped = await resolveApiToken(c.env.DB, token, logger);
     if (scoped.success) {
       c.set?.("telemetryOptOut", scoped.data.user.telemetryOptOut === true);
+      applyCredentialPolicyToCurrentRequest(scoped.data.policy);
       return {
         userId: scoped.data.user.id,
         tokenScope: scoped.data.scope,
@@ -346,19 +364,21 @@ async function authenticate(
     // smart-HTTP owns its own auth and must apply the same gate, or a
     // deprovisioned user keeps clone/push access to private code.
     if (!result.success) return null;
-    if (result.data.deletingAt || result.data.disabledAt) {
+    const keyHolder = result.data;
+    if (keyHolder.deletingAt || keyHolder.disabledAt) {
       await auditGitAuthFailure(c.env.DB, logger, {
         method: "legacy_token",
-        reason: result.data.deletingAt ? "owner-deleting" : "owner-disabled",
+        reason: keyHolder.deletingAt ? "owner-deleting" : "owner-disabled",
         actorType: "user",
-        actorId: result.data.id,
-        subject: result.data.id,
+        actorId: keyHolder.id,
+        subject: keyHolder.id,
       });
       return null;
     }
-    c.set?.("telemetryOptOut", result.data.telemetryOptOut === true);
+    c.set?.("telemetryOptOut", keyHolder.telemetryOptOut === true);
+    applyCredentialPolicyToCurrentRequest(keyHolder.keyPolicy);
     // The legacy credential predates scopes and carries full account power.
-    return { userId: result.data.id, tokenScope: "read_write", binding: UNBOUND };
+    return { userId: keyHolder.id, tokenScope: "read_write", binding: UNBOUND };
   }
   const result = await getAgentByToken(c.env.DB, token, logger);
   if (!result.success) return null;
@@ -396,6 +416,7 @@ async function authenticate(
   // An agent's git traffic inherits its owner's telemetry choice, matching the
   // way it inherits the owner's access.
   c.set?.("telemetryOptOut", owner.data.telemetryOptOut === true);
+  applyCredentialPolicyToCurrentRequest(result.data.policy);
   return { agentId: result.data.id, agentOwnerId: result.data.ownerId, binding: UNBOUND };
 }
 
