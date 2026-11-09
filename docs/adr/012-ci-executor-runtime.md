@@ -36,19 +36,50 @@ that a previous job could have written.
 Containers meet the three requirements that could have ruled them out. Each was
 checked against Cloudflare's documentation on 2026-11-09:
 
-- **Egress can be denied by default.** `enableInternet = false` blocks the
-  public internet, and `allowedHosts` turns the container's outbound traffic
-  into an allowlist. Only ports 80 and 443 are available in that mode. A job
-  reaches the package registries its project needs and nothing else.
-- **A job need not hold a credential.** Outbound handlers run in the Worker,
-  outside the container, and can attach a token to a request as it leaves. The
-  job clones through a hostname the Worker intercepts. It never sees the read
-  token, so there is nothing for a dependency's install script to send
-  anywhere. This is stronger than the read-only job token #415 asked for.
-  Intercepting HTTPS requires the image to trust Cloudflare's interception CA.
+- **Egress can be denied by default.** A container started with
+  `enableInternet: false` reaches only the hostnames the Durable Object has
+  registered an intercept for (`ctx.container.interceptOutboundHttps`), and
+  only on ports 80 and 443. Every other DNS lookup times out. A job reaches
+  the package registries its project needs and nothing else. A container has
+  128 intercept entries, which bounds the allowlist.
+- **A job need not hold a credential.** The intercepts are Worker entrypoints
+  that run outside the container and can attach a token to a request as it
+  leaves. The job clones through a hostname the Worker intercepts. It never
+  sees the read token, so there is nothing for a dependency's install script
+  to send anywhere. This is stronger than the read-only job token #415 asked
+  for. Intercepting HTTPS requires the image to trust Cloudflare's
+  interception CA.
 - **Self-hosters can run it.** Containers are included in the Workers Paid
   plan, which is the plan self-hosters are on. They have been generally
   available since April 2026.
+
+### The `durable_object` scheduling policy
+
+A Container application has a scheduling policy, and it cannot be changed after
+the application is created. The executor uses `durable_object`.
+
+- **`default` is deprecated.** Cloudflare's documentation marked it deprecated
+  in November 2026 and directs new applications to `durable_object`. Moving
+  later means a replacement application, a new Durable Object class and
+  namespace, and no transfer of instances. Starting on `default` would be
+  choosing that migration.
+- **It fits the job model.** The Durable Object passes the image and instance
+  size to `ctx.container.start()` for each job. That lets the CI and deploy
+  profiles below use different images, and lets a project's `.stratum/ci.yaml`
+  ask for a larger instance, without a deploy of the executor. Instances have
+  independent lifecycles, which is what one-container-per-job means.
+- **It supports snapshots**, which `default` does not. That is the route to
+  faster starts if cold-start cost turns out to matter.
+
+Two costs come with it:
+
+- **It is in public beta** (since 30 September 2026). The API may change
+  under us. That is accepted: the alternative is building on a policy already
+  marked for removal.
+- **The `Container` helper class does not support it.** The executor uses the
+  Durable Object Container API (`ctx.container`) directly, and so does not get
+  the helper's `allowedHosts` and `outboundByHost` properties. The egress
+  rules above are written against the direct API for that reason.
 
 ### The executor is its own Worker
 
@@ -141,7 +172,11 @@ what it is good at.
   Those projects keep the external-runner path.
 - **Cold starts.** A fresh container per job pays image start-up on every job.
   That is the price of sharing nothing between jobs. Measure it before
-  optimizing; snapshots are available if it matters.
+  optimizing. A snapshot taken by Stratum from a known-clean image, never from
+  a container a job has run in, is the option if it matters.
+- **A beta dependency.** The scheduling policy the executor needs is in public
+  beta. Pin the Wrangler version the executor deploys with, and expect to
+  follow API changes until it is generally available.
 - **A second deployable.** Self-hosters who want first-party CI deploy the
   executor Worker as well, which needs Docker at deploy time to build the
   image. Stratum without the executor keeps working exactly as it does now.
