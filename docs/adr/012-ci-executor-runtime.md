@@ -87,6 +87,22 @@ Two costs come with it:
   Durable Object Container API (`ctx.container`) directly, and so does not get
   the helper's `allowedHosts` and `outboundByHost` properties. The egress
   rules above are written against the direct API for that reason.
+- **The platform no longer caps instances for us.** `max_instances` is a
+  `default`-policy setting and is rejected under `durable_object`. Nothing but
+  the account's own limits stops a burst of dispatches from starting a
+  container each.
+
+So the executor enforces its own cap, in every deployment, self-hosted
+included. One coordinating Durable Object admits jobs. It holds the count of
+running jobs and starts a container only while that count is below an
+executor-wide limit, which has a conservative default and is a required
+setting with no "unlimited" value. A job over the limit waits in the
+coordinator's queue with its checks still `queued`; the queue is bounded too,
+and a dispatch that does not fit is refused, which the check's deadline turns
+into `errored`. A slot is released when the job ends or when its wall-clock
+timeout fires, whichever is first, so a container that dies without reporting
+cannot hold a slot forever. Per-project limits sit on top of this cap and
+cannot raise it.
 
 ### The executor is its own Worker
 
@@ -214,8 +230,9 @@ what it is good at.
   executor Worker as well, which needs Docker at deploy time to build the
   image. Stratum without the executor keeps working exactly as it does now.
 - **Usage is metered.** Containers bill for memory and disk while running and
-  for CPU actually used. A hosted instance needs per-project limits before this
-  is offered to anyone but the project itself.
+  for CPU actually used. The executor-wide cap bounds the worst case for any
+  deployment. A hosted instance also needs per-project limits before this is
+  offered to anyone but the project itself.
 - **Registry access is still access.** A dependency can send what it can read
   to a registry it is allowed to reach. The job holds no credential and sees
   only one repository's content, which bounds the loss to that content. This is
@@ -229,7 +246,8 @@ what it is good at.
 - How the read path for one repository at one commit is scoped: a short-lived
   token injected by the outbound handler, or a service binding back to Stratum
   that serves exactly that bundle.
-- Per-project concurrency and monthly usage limits.
+- The default for the executor-wide concurrency cap, and the shape of the
+  per-project concurrency and monthly usage limits that sit under it.
 - Whether to test the proposed merge tree (base tip plus the change) instead
   of the change's head, which would remove the dependence on
   `requireFreshBase`.
