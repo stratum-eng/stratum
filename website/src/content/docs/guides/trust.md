@@ -372,6 +372,12 @@ Do these in order. Steps 1–4 must be finished **before the first deploy**.
      --data '{"namespace": "stratum", "jurisdiction": "eu"}'
    ```
 
+   The name must be the one in the `[[artifacts]]` binding of the environment
+   you deploy. `stratum` is the top-level template's; a named environment has
+   its own (`stratum-staging` for `[env.staging]`). Creating a namespace the
+   Worker is not bound to protects nothing: the bound one is still created on
+   first use, without a jurisdiction.
+
 3. **Create every queue with an EU jurisdiction.** A dead-letter queue must be
    in the same jurisdiction as its source queue; create them explicitly rather
    than relying on that being inferred.
@@ -383,8 +389,12 @@ Do these in order. Steps 1–4 must be finished **before the first deploy**.
    done
    ```
 
-4. **Edit `wrangler.toml`.** Each of these has a commented sample in the
-   top-level template:
+4. **Edit `wrangler.toml`**, in the environment you will deploy. Each of these
+   has a commented sample in the top-level template, which is what a bare
+   `wrangler deploy` uses. If you deploy with `--env <name>`, make every change
+   below inside `[env.<name>]` instead: a named environment has its own
+   bindings, vars, `workers_dev` and `routes`, and the ones shipped in this
+   repository set `workers_dev = true`.
 
    - Put the ids from step 1 in the `[[kv_namespaces]]` and `[[d1_databases]]`
      bindings.
@@ -396,7 +406,8 @@ Do these in order. Steps 1–4 must be finished **before the first deploy**.
      environments do not inherit top-level vars, and a value set only at the top
      level leaves the deployed Worker unrestricted with no warning.
    - Set `workers_dev = false` and `preview_urls = false`, and route the Worker
-     on a custom domain (`routes = [{ pattern = "…", custom_domain = true }]`).
+     on a custom domain (`routes = [{ pattern = "…", custom_domain = true }]`),
+     all three in the environment you deploy.
      `preview_urls` must be set explicitly: Cloudflare documents that disabling
      the `workers.dev` route "does not disable" version and preview URLs, and
      that omitting `preview_urls` leaves an existing setting unchanged.
@@ -407,16 +418,26 @@ Do these in order. Steps 1–4 must be finished **before the first deploy**.
      by `DO_JURISDICTION`, and this page makes no residency statement about it.
    - Optionally remove `[[analytics_engine_datasets]]`. Nothing writes to it.
 
-5. **Deploy**, then configure
+5. **Settle where logs go, before the first deploy.** Set Customer Metadata
+   Boundary to `EU` (Data Localization Suite) if Worker logs must stay in the
+   EU, or turn `[observability]` off. Application logs contain identifiers such
+   as user and project ids, and the template has observability on, so a
+   deployment made before this step writes logs with no boundary from its
+   first request or cron run.
+
+6. **Apply the database schema, deploy, then configure Regional Services.**
+   The database from step 1 is empty. Apply the migrations to it first
+   (`npx wrangler d1 migrations apply <database> --remote`, with `--env <name>`
+   for a named environment; see the
+   [deployment guide](https://github.com/stratum-eng/stratum/blob/main/docs/developer/deployment.md)),
+   or `/health` can answer while everything that reads the database fails.
+   Then deploy, and configure
    [Regional Services](https://developers.cloudflare.com/data-localization/regional-services/regional-hostnames/)
    for the custom domain with an EU region. This needs a Cloudflare Enterprise
    plan with the Data Localization Suite; without it, nothing constrains where
    HTTP requests are decrypted and handled, and the rest of this list covers
-   storage and Durable Objects only.
-
-6. **Set Customer Metadata Boundary to `EU`** (also Data Localization Suite) if
-   Worker logs must stay in the EU, or turn `[observability]` off. Application
-   logs contain identifiers such as user and project ids.
+   storage and Durable Objects only. Do not send real traffic to the domain
+   until Regional Services is in place.
 
 7. **Deal with everything outside Cloudflare.** Leave `POSTHOG_API_KEY` and
    `POSTHOG_PUBLIC_KEY` unset, or point `POSTHOG_HOST` at PostHog's EU cloud.
@@ -447,9 +468,12 @@ build if any code reads a Durable Object binding without going through it.
 The value must match exactly. `EU`, `europe`, `weur`, or a value with stray
 whitespace is not normalised and is not ignored: **every HTTP request is
 answered `503`**, the health check included, and the reason is logged once per
-isolate. Queue consumers and cron handlers, which no request reaches, throw
-instead of addressing an unrestricted object. A deployment with a mistyped
-jurisdiction is therefore down rather than quietly unrestricted.
+isolate. Queue consumers and cron handlers, which no request reaches, are not
+stopped as a whole: a job throws at the point it reaches for a Durable Object,
+instead of addressing an unrestricted one, and a job that never touches a
+Durable Object (delivering a webhook, for example) still runs. So with a
+mistyped jurisdiction the HTTP side is down, and no Durable Object is ever
+addressed unrestricted, but background work that needs none continues.
 
 #### Do not switch an existing deployment
 
@@ -501,7 +525,11 @@ Cloudflare documents none, and no setting in Stratum creates one.
 | Worker logs, traces and metrics | **Covered by Customer Metadata Boundary** set to `EU` (Data Localization Suite), or by turning `[observability]` off | Without either, there is no guarantee where logs are stored |
 | Sandbox evaluator and `merge.postMergeCommand` | **No statement made** | The `[[sandboxes]]` binding is commented out in every environment and was not assessed. Leave it off |
 
-So such a deployment keeps its **stored** data in the EU, runs its **Durable
+So such a deployment keeps the data in its **jurisdiction-restricted stores**
+(D1, R2, the KV namespace's authoritative copy, Artifacts, queue messages and
+Durable Object storage) in the EU, with two exceptions from the table that
+are also data at rest: KV's cached copies can sit outside the jurisdiction,
+and Worker code and secrets are deployed globally. It runs its **Durable
 Objects** in the EU, and — with Regional Services — handles its **HTTP
 requests** in the EU. It **cannot** guarantee that every computation over that
 data happens in the EU, because queue consumers and cron handlers run wherever

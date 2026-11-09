@@ -26,6 +26,9 @@ compatibility_flags = ["nodejs_compat"]
 # not cover *.workers.dev, so that hostname must not exist. `preview_urls` has
 # to be set explicitly as well — disabling workers_dev alone does not disable
 # version/preview URLs, which are served on workers.dev too.
+# These three are per environment. If you deploy with `--env <name>`, set them
+# inside [env.<name>] instead: the named environments below set
+# `workers_dev = true` and their own routes, and do not inherit these.
 # workers_dev = false
 # preview_urls = false
 # routes = [{ pattern = "stratum.example.eu", custom_domain = true }]

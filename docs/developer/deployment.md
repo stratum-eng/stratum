@@ -651,8 +651,10 @@ DO_JURISDICTION = "eu"
 - **The value must match exactly.** `EU`, `europe` or a value with whitespace is
   rejected: `configGuardMiddleware` answers `503` to every request, `/health`
   included, and logs the reason, and `durableObjectNamespace` throws in queue
-  and cron handlers. A typo takes the deployment down instead of leaving it
-  unrestricted.
+  and cron handlers when they reach for a Durable Object. A typo takes the
+  deployment down instead of leaving it unrestricted. The one value that is
+  not rejected is the empty string: `DO_JURISDICTION = ""` means unset, and the
+  deployment runs unrestricted.
 - **Named environments do not inherit it.** Like every var above, it must be
   declared in each `[env.<name>.vars]` block you deploy. Set only under
   top-level `[vars]`, it has no effect on `wrangler deploy --env=…`, and nothing
