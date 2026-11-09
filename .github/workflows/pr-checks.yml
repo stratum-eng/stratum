@@ -202,7 +202,7 @@ jobs:
   # main, and with it the production deploy that gates on staging.
   #
   # Per-PR environments live in pr-preview.yml: an isolated stratum-pr-<N>
-  # Worker with its own D1 and KV, torn down when the PR closes. The shared
+  # Worker with its own D1, KV and evaluation queue, torn down when the PR closes. The shared
   # staging Worker is deployed from main only (ci.yml), which keeps its
   # migration tag a function of main's wrangler.toml alone.
 

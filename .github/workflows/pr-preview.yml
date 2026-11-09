@@ -100,6 +100,7 @@ jobs:
       # 10064) and refuses to delete a queue that still has a consumer, so the
       # link has to be removed first. Deleting the Worker does not remove it.
       - name: Detach Worker from the Evaluation Queue
+        id: queue
         if: ${{ !cancelled() && steps.guard.outcome != 'failure' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -124,6 +125,9 @@ jobs:
             return 1
           }
           QUEUE_ID=$(find_queue "$EVAL_QUEUE_NAME") || { echo "❌ Could not list queues"; exit 1; }
+          # The delete step reuses this lookup rather than walking the pages again.
+          echo "id=$QUEUE_ID" >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
           if [ -z "$QUEUE_ID" ]; then
             echo "Queue not found, so there is no consumer to remove"
             exit 0
@@ -182,33 +186,20 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          QUEUE_ID: ${{ steps.queue.outputs.id }}
+          LOOKED_UP: ${{ steps.queue.outputs.found }}
         run: |
           echo "Deleting queue: $EVAL_QUEUE_NAME"
-          API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/queues"
-          # The list endpoint pages and documents no name filter, so walk every
-          # page; stopping at the first could miss this PR's queue.
-          find_queue() {
-            local page=1 resp id per total
-            while [ "$page" -le 50 ]; do
-              resp=$(curl -sf "${API}?page=${page}&per_page=100" \
-                -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || return 1
-              echo "$resp" | jq -e '.success == true' >/dev/null 2>&1 || return 1
-              id=$(echo "$resp" | jq -r --arg n "$1" '[.result[]? | select(.queue_name == $n) | .queue_id] | first // empty')
-              if [ -n "$id" ]; then echo "$id"; return 0; fi
-              per=$(echo "$resp" | jq -r '.result_info.per_page // 0')
-              total=$(echo "$resp" | jq -r '.result_info.total_count // 0')
-              { [ "$per" -le 0 ] || [ $((page * per)) -ge "$total" ]; } && return 0
-              page=$((page + 1))
-            done
-            return 1
-          }
-          QUEUE_ID=$(find_queue "$EVAL_QUEUE_NAME") || { echo "❌ Could not list queues"; exit 1; }
+          if [ "$LOOKED_UP" != "true" ]; then
+            echo "❌ The queue lookup in the detach step failed, so there is no queue ID"
+            exit 1
+          fi
           if [ -z "$QUEUE_ID" ]; then
             echo "Queue not found, may have been already deleted"
             exit 0
           fi
           DELETE_RESPONSE=$(curl -s -X DELETE \
-            "${API}/${QUEUE_ID}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/queues/${QUEUE_ID}" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
           if [ "$(echo "$DELETE_RESPONSE" | jq -r '.success // false')" = "true" ]; then
             echo "✓ Queue deleted"
