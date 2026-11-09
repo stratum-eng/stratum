@@ -242,6 +242,15 @@ export interface MergeWorkspaceOptions {
    * master/trunk/….
    */
   branch?: string;
+  /**
+   * Lines appended to the commit message of a squash, as git trailers — one
+   * blank line after the subject, then these (#420). A squash writes one new
+   * commit and drops the workspace's own, so this is the only place the people
+   * who wrote them can still be named. Ignored by a plain merge, which keeps
+   * the commits themselves. Each entry must already be a single safe line; the
+   * caller builds them with `coAuthorTrailers`.
+   */
+  messageTrailers?: string[];
 }
 
 /**
@@ -1305,7 +1314,17 @@ export async function mergeWorkspaceIntoProject(
   }
 
   if (options.strategy === "squash") {
-    return squashMerge(fs, dir, workspaceSha, projectRemote, projectToken, author, logger, branch);
+    return squashMerge(
+      fs,
+      dir,
+      workspaceSha,
+      projectRemote,
+      projectToken,
+      author,
+      logger,
+      branch,
+      options.messageTrailers,
+    );
   }
 
   const mergeResult = await measure("mergeMs", () =>
@@ -2155,6 +2174,8 @@ export async function squashMerge(
   author: Author,
   logger: Logger,
   branch = "main",
+  /** See {@link MergeWorkspaceOptions.messageTrailers}. */
+  messageTrailers: string[] = [],
 ): Promise<Result<string, AppError>> {
   logger.debug("Performing squash merge", { projectRemote, workspaceSha });
 
@@ -2311,7 +2332,10 @@ export async function squashMerge(
     git.commit({
       fs: projectFs,
       dir: projectDir,
-      message: `Squash merge workspace (${changeCount} file${changeCount === 1 ? "" : "s"} changed)`,
+      message: [
+        `Squash merge workspace (${changeCount} file${changeCount === 1 ? "" : "s"} changed)`,
+        ...(messageTrailers.length > 0 ? ["", ...messageTrailers] : []),
+      ].join("\n"),
       author,
     }),
   );

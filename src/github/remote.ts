@@ -13,7 +13,9 @@
  *   holds;
  * - {@link isAncestor} — the fast-forward test, on a clone the caller holds;
  * - {@link pushRefFastForward} — push one ref, never forced, with the refusal
- *   classified.
+ *   classified;
+ * - {@link fetchPullRequestHead} — read one pull request's commits from the
+ *   repository itself, bounded in bytes (#420).
  *
  * Nothing here force-pushes or deletes a ref, and there is deliberately no
  * option to. A caller that wants to overwrite GitHub has to write that code,
@@ -133,6 +135,48 @@ export async function openGitHubRemote(
         // granted the permission still gets a token, and the push of a commit
         // touching a workflow then fails with GitHub's own explanation.
         ...(access === "write" ? { optionalPermissions: { workflows: "write" as const } } : {}),
+      },
+    },
+    logger,
+  );
+  if (!token.success) return token;
+  return ok({ ...target, url: githubRemoteUrl(target), token: token.data.token });
+}
+
+/**
+ * Resolves the credential for working with pull requests on `target` (#420),
+ * narrowed to that one repository and to what the purpose needs:
+ *
+ * - `import` — read the pull request and fetch its commits: `contents: read`
+ *   and `pull_requests: read`. Nothing can be written with it.
+ * - `settle` — comment on and close a pull request whose change merged:
+ *   `pull_requests: write` and nothing else. It cannot push. Like a mirror
+ *   push, it also requires the project to be the repository's canonical
+ *   target.
+ *
+ * The Pull requests permission is required, not optional: a token without it
+ * cannot do either job, and failing here names the missing permission
+ * (`GITHUB_APP_PERMISSION_DENIED`) instead of failing later with a bare 403.
+ */
+export async function openGitHubPullRequests(
+  env: GitHubAuthEnv,
+  project: ProjectEntry,
+  target: GitHubRepoRef,
+  purpose: "import" | "settle",
+  logger: Logger,
+): Promise<Result<GitHubRemote, AppError>> {
+  const token = await resolveGitHubToken(
+    env,
+    {
+      owner: target.owner,
+      repo: target.repo,
+      principal: projectPrincipal(project),
+      ...(purpose === "settle" ? { project } : {}),
+      repoScope: {
+        permissions:
+          purpose === "import"
+            ? { contents: "read", pull_requests: "read" }
+            : { pull_requests: "write" },
       },
     },
     logger,
@@ -427,4 +471,144 @@ export async function pushRefFastForward(
     error: error.message,
   });
   return err(remoteError(`pushing ${ref}`, remote, error));
+}
+
+/** Thrown inside the response stream when a fetch passes its byte limit. */
+class FetchLimitExceeded extends Error {
+  constructor(readonly limitBytes: number) {
+    super(`fetch exceeded ${limitBytes} bytes`);
+    this.name = "FetchLimitExceeded";
+  }
+}
+
+/**
+ * An HTTP client that stops reading a response once `maxBytes` of it have
+ * arrived. isomorphic-git has no size limit of its own, and the pack a fetch
+ * downloads is chosen by whoever wrote the commits being fetched.
+ */
+function cappedHttpClient(maxBytes: number): {
+  client: ReturnType<typeof createHttpClient>;
+  exceeded: () => boolean;
+} {
+  const base = createHttpClient();
+  let total = 0;
+  let exceeded = false;
+  return {
+    exceeded: () => exceeded,
+    client: {
+      async request(args) {
+        const response = await base.request(args);
+        const body = response.body;
+        async function* capped(): AsyncIterableIterator<Uint8Array> {
+          for await (const chunk of body) {
+            total += chunk.byteLength;
+            if (total > maxBytes) {
+              exceeded = true;
+              throw new FetchLimitExceeded(maxBytes);
+            }
+            yield chunk;
+          }
+        }
+        return { ...response, body: capped() };
+      },
+    },
+  };
+}
+
+/** How long one pull request fetch may take. The request waits on it. */
+const PULL_FETCH_TIMEOUT_MS = 60_000;
+
+/** Name of the throwaway remote a pull request is fetched through. */
+const PULL_REMOTE = "github-pull";
+
+/**
+ * Fetches the head of pull request `prNumber` into an existing clone and
+ * returns its commit id.
+ *
+ * GitHub publishes every pull request's head on the BASE repository as
+ * `refs/pull/<n>/head`, forks included. So this reads the mirror repository
+ * with the mirror's own narrowed token and never contacts the fork: the fork's
+ * owner chooses the bytes, but not the host, the URL or the credential.
+ *
+ * Bounded three ways: `depth` commits of history, `maxBytes` of response, and a
+ * timeout. The clone's own branch is offered as what it already has, so only
+ * objects the pull request adds are sent.
+ *
+ * @returns The head commit id; `PR_FETCH_TOO_LARGE` (422) when the response
+ *   passed `maxBytes`; `PR_HEAD_UNAVAILABLE` (409) when GitHub does not
+ *   advertise the ref
+ */
+export async function fetchPullRequestHead(
+  fs: NodeFS,
+  dir: string,
+  remote: GitHubRemote,
+  prNumber: number,
+  limits: { depth: number; maxBytes: number },
+  logger: Logger,
+): Promise<Result<string, AppError>> {
+  const capped = cappedHttpClient(limits.maxBytes);
+  const fetched = await fromPromise(
+    (async () => {
+      // A named remote, because isomorphic-git refuses to finish a fetch for a
+      // remote with no refspec configured. Nothing matches the refspec this
+      // adds, so no local ref is written: the commits arrive, and the caller
+      // is handed the id.
+      await git.addRemote({ fs, dir, remote: PULL_REMOTE, url: remote.url, force: true });
+      return withTimeout(
+        git.fetch({
+          fs,
+          dir,
+          http: capped.client,
+          remote: PULL_REMOTE,
+          url: remote.url,
+          remoteRef: `refs/pull/${prNumber}/head`,
+          singleBranch: true,
+          depth: limits.depth,
+          tags: false,
+          onAuth: auth(remote),
+        }),
+        PULL_FETCH_TIMEOUT_MS,
+        `fetchPullRequestHead: git.fetch refs/pull/${prNumber}/head`,
+      );
+    })(),
+  );
+  if (capped.exceeded()) {
+    return err(
+      new AppError(
+        `The pull request's commits are larger than the ${Math.floor(limits.maxBytes / (1024 * 1024))} MB that can be brought in`,
+        "PR_FETCH_TOO_LARGE",
+        422,
+      ),
+    );
+  }
+  if (!fetched.success) {
+    const code = (fetched.error as { code?: unknown }).code;
+    if (code === "NotFoundError") {
+      return err(
+        new AppError(
+          `GitHub does not have refs/pull/${prNumber}/head on ${remote.owner}/${remote.repo}`,
+          "PR_HEAD_UNAVAILABLE",
+          409,
+        ),
+      );
+    }
+    logger.warn("Failed to fetch pull request head", {
+      owner: remote.owner,
+      repo: remote.repo,
+      prNumber,
+      error: fetched.error.message,
+    });
+    return err(remoteError(`fetching pull request #${prNumber}`, remote, fetched.error));
+  }
+  const head = fetched.data.fetchHead;
+  if (typeof head !== "string") {
+    return err(
+      new AppError(
+        `GitHub does not have refs/pull/${prNumber}/head on ${remote.owner}/${remote.repo}`,
+        "PR_HEAD_UNAVAILABLE",
+        409,
+      ),
+    );
+  }
+  return ok(head);
 }

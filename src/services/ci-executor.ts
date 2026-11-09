@@ -60,6 +60,27 @@ const DEFAULT_TOKEN_LIFETIME_MS = 60 * 60_000;
 /** Used as the request URL when the executor is reached over a service binding only. */
 const BINDING_ONLY_ORIGIN = "https://ci-executor.internal";
 
+/**
+ * Where the change a job tests came from: the project's own contributors, or a
+ * pull request a stranger opened on its mirror (#420).
+ */
+export type CiJobOrigin = "project" | "external";
+
+/**
+ * May a job with this origin run under this profile?
+ *
+ * ADR 012: a change from outside the project's trust boundary runs under the
+ * CI profile, with the registry allowlist and nothing else. Only `ci` exists
+ * today, so this is true of every job that can be built — which is exactly why
+ * it is written down as a rule and not left as a coincidence. When the deploy
+ * and publish profiles arrive (#416, #422), whatever chooses a profile must
+ * ask this first; the executor asks the same question of every dispatch it
+ * receives.
+ */
+export function profileAllowedForOrigin(profile: string, origin: CiJobOrigin): boolean {
+  return origin !== "external" || profile === "ci";
+}
+
 /** The job a first-party dispatch adds to the public payload. */
 export interface CiJobSpec {
   /**
@@ -68,6 +89,11 @@ export interface CiJobSpec {
    * set of injected credentials — which is why this is a field at all.
    */
   profile: "ci";
+  /**
+   * Sent so the executor can refuse, by itself, any profile but `ci` for an
+   * external change — see {@link profileAllowedForOrigin}.
+   */
+  origin: CiJobOrigin;
   steps: Array<{ name: string; run: string; timeoutSeconds: number }>;
   /** Wall-clock limit for the whole job. */
   timeoutSeconds: number;
@@ -193,10 +219,13 @@ export function buildCiJobSpec(args: {
   repositoryToken: string;
   logUrls: Record<string, string>;
   now: Date;
+  /** Defaults to `project`. Pass `external` for a change from a mirror's pull request. */
+  origin?: CiJobOrigin;
 }): CiJobSpec {
   const { config } = args;
   return {
     profile: "ci",
+    origin: args.origin ?? "project",
     // `required` stays here: whether a step gates a merge is this Worker's
     // business, and the executor runs every step the same way.
     steps: config.steps.map((step) => ({

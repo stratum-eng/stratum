@@ -67,6 +67,10 @@ export interface PushMirrorView {
   nextAttemptAt: string | null;
   /** Consecutive failed attempts. */
   attempts: number;
+  /** Whether pull requests opened on the mirror become external changes (#420). */
+  acceptPullRequests: boolean;
+  /** Whether importing one needs the contributor agreement confirmed (#420). */
+  requireContributorAgreement: boolean;
 }
 
 /**
@@ -86,6 +90,8 @@ export function toPushMirrorView(mirror: PushMirror): PushMirrorView {
     lastError: mirror.lastError ?? null,
     nextAttemptAt: mirror.nextAttemptAt ?? null,
     attempts: mirror.attempts,
+    acceptPullRequests: mirror.acceptPullRequests,
+    requireContributorAgreement: mirror.requireContributorAgreement,
   };
 }
 
@@ -260,12 +266,21 @@ app.on(["PUT", "POST"], "/:namespace/:slug/mirror", async (c) => {
 
   let repoInput: unknown;
   let enabled = true;
+  // Undefined means "not stated", and leaves the stored setting alone: an API
+  // client written before these existed must not switch pull requests off by
+  // re-saving a mirror. The form always states both.
+  let acceptPullRequests: boolean | undefined;
+  let requireContributorAgreement: boolean | undefined;
   if (json) {
-    const parsed = await readJsonWithLimit<{ repo?: unknown; enabled?: unknown }>(
-      c,
-      MAX_MIRROR_BODY_BYTES,
-      logger,
-    ).catch(() => ({}) as { repo?: unknown; enabled?: unknown });
+    interface MirrorBody {
+      repo?: unknown;
+      enabled?: unknown;
+      acceptPullRequests?: unknown;
+      requireContributorAgreement?: unknown;
+    }
+    const parsed = await readJsonWithLimit<MirrorBody>(c, MAX_MIRROR_BODY_BYTES, logger).catch(
+      () => ({}) as MirrorBody,
+    );
     if (parsed instanceof Response) return parsed;
     // `null`, an array or a bare string parse without throwing. Reading
     // `.repo` off `null` would be a 500 for input that is only malformed; an
@@ -273,14 +288,22 @@ app.on(["PUT", "POST"], "/:namespace/:slug/mirror", async (c) => {
     const body =
       parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
         ? parsed
-        : ({} as { repo?: unknown; enabled?: unknown });
+        : ({} as MirrorBody);
     repoInput = body.repo;
     if (body.enabled !== undefined) enabled = body.enabled === true;
+    if (body.acceptPullRequests !== undefined) {
+      acceptPullRequests = body.acceptPullRequests === true;
+    }
+    if (body.requireContributorAgreement !== undefined) {
+      requireContributorAgreement = body.requireContributorAgreement === true;
+    }
   } else {
     const form = await c.req.parseBody();
     repoInput = form.repo;
     // A checkbox is present when ticked and absent otherwise.
     enabled = form.enabled !== undefined;
+    acceptPullRequests = form.acceptPullRequests !== undefined;
+    requireContributorAgreement = form.requireContributorAgreement !== undefined;
   }
 
   const target = parseGitHubRepo(repoInput);
@@ -322,6 +345,8 @@ app.on(["PUT", "POST"], "/:namespace/:slug/mirror", async (c) => {
     repoName: target.repo,
     enabled,
     configuredBy: userId,
+    ...(acceptPullRequests !== undefined ? { acceptPullRequests } : {}),
+    ...(requireContributorAgreement !== undefined ? { requireContributorAgreement } : {}),
   });
   if (!saved.success) {
     return saved.error.code === "MIRROR_TARGET_TAKEN"
@@ -339,6 +364,8 @@ app.on(["PUT", "POST"], "/:namespace/:slug/mirror", async (c) => {
       project: project.name,
       repo: `${saved.data.repoOwner}/${saved.data.repoName}`,
       enabled,
+      acceptPullRequests: saved.data.acceptPullRequests,
+      requireContributorAgreement: saved.data.requireContributorAgreement,
     },
   });
 

@@ -38,9 +38,30 @@ export interface JobProfile {
   allowedHosts: string[];
 }
 
+/**
+ * Where the change under test came from. `external` is a pull request opened
+ * on the project's mirror by someone outside it.
+ */
+export type JobOrigin = "project" | "external";
+
+/**
+ * May a job with this origin run under this profile?
+ *
+ * ADR 012: a change from outside the project's trust boundary runs under the
+ * CI profile — the registry allowlist, no injected credential — and nothing
+ * else. Asked of every dispatch, before and independently of the check on
+ * which profiles this executor implements, so that adding a deploy or publish
+ * profile (#416, #422) cannot by itself make one reachable from a stranger's
+ * pull request.
+ */
+export function profileAllowedForOrigin(profile: unknown, origin: JobOrigin): boolean {
+  return origin !== "external" || profile === "ci";
+}
+
 export interface Job {
   changeId: string;
   project: string;
+  origin: JobOrigin;
   baseSha: string;
   headSha: string;
   headTreeSha: string;
@@ -147,6 +168,13 @@ export function parseDispatch(raw: string, config: ExecutorConfig): DispatchResu
   if (!isRecord(body.checkRunIds)) return refuse("checkRunIds must be an object");
   const spec = body.job;
   if (!isRecord(spec)) return refuse("job is required");
+  // Absent means a Stratum from before the field existed, which had no
+  // external changes to send.
+  const origin = spec.origin === undefined ? "project" : spec.origin;
+  if (origin !== "project" && origin !== "external") return refuse("unsupported job origin");
+  if (!profileAllowedForOrigin(spec.profile, origin)) {
+    return refuse("a job for an external change can only run under the ci profile");
+  }
   if (spec.profile !== "ci") return refuse("unsupported job profile");
 
   const timeoutSeconds = seconds(spec.timeoutSeconds, config.maxJobSeconds);
@@ -242,6 +270,7 @@ export function parseDispatch(raw: string, config: ExecutorConfig): DispatchResu
     job: {
       changeId,
       project,
+      origin,
       baseSha: body.baseSha as string,
       headSha: body.headSha as string,
       headTreeSha: body.headTreeSha as string,

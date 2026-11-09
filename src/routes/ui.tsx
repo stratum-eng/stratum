@@ -4,6 +4,7 @@ import { fetchInviteCodes, referralServiceConfigured } from "../beta/gate";
 import { type UsageBannerNotice, loadUsageBanner } from "../billing/usage-banner";
 import { buildUsageReport } from "../billing/usage-report";
 import { githubRepoKey } from "../github/issue-import";
+import { toExternalPullRequestView } from "../github/mirror-pulls";
 import { resolveResyncSource, resyncSourceRepo } from "../github/resync";
 import { cannotMintLegacyCredential } from "../middleware/auth";
 import { NO_ANALYTICS_HEADER } from "../middleware/web-analytics";
@@ -40,6 +41,7 @@ import { getChangeCostSummary } from "../storage/costs";
 import { type Deployment, getDeployment, listDeployments } from "../storage/deployments";
 import { listEvalRuns } from "../storage/eval-runs";
 import { listProjectEvents } from "../storage/events";
+import { getExternalPullRequestByChange } from "../storage/external-pull-requests";
 import type { RefResolutionFailure } from "../storage/git-ops";
 import {
   freshRepoToken,
@@ -129,6 +131,7 @@ import type { Logger } from "../utils/logger";
 import { createLogger } from "../utils/logger";
 import { type Result, ok } from "../utils/result";
 import { isValidNamespace, isValidSlug } from "../utils/validation";
+import { importNotice } from "./changes";
 import { canManageSecrets, secretErrorMessage } from "./deployments";
 import { getCurrentUser, renderWebhooksPage } from "./form-pages";
 import { issueImportNotice } from "./issue-import";
@@ -1657,6 +1660,22 @@ app.get("/changes/:id", async (c) => {
   const canReview =
     !!userResult &&
     (await canWriteProject(c.env.DB, projectResult.data, credentialBindingFrom(c), userId));
+
+  // A change from the mirror's pull request shows where it came from and, for
+  // someone who may import it, the control that does (#420).
+  const externalResult = await getExternalPullRequestByChange(c.env.DB, logger, change.id);
+  const externalPullRequest =
+    externalResult.success && externalResult.data !== null
+      ? toExternalPullRequestView(externalResult.data)
+      : null;
+  let requireContributorAgreement = false;
+  if (externalPullRequest !== null) {
+    const mirror = await getPushMirror(c.env.DB, logger, projectResult.data.id);
+    // Unknown is shown as required: the server decides either way, and an
+    // extra checkbox costs less than an import refused for a missing one.
+    requireContributorAgreement =
+      !mirror.success || mirror.data === null || mirror.data.requireContributorAgreement;
+  }
   logger.debug("Rendering change detail page", { id });
   return c.html(
     <ChangeDetailPage
@@ -1679,6 +1698,11 @@ app.get("/changes/:id", async (c) => {
       reviews={reviewsResult.success ? reviewsResult.data : []}
       costs={costsResult.success ? costsResult.data : []}
       diff={diffFiles}
+      externalPullRequest={externalPullRequest}
+      requireContributorAgreement={requireContributorAgreement}
+      {...(importNotice(c.req.query("import")) !== undefined
+        ? { importNotice: importNotice(c.req.query("import")) as string }
+        : {})}
       canReview={canReview}
       projectRef={projectRef(projectResult.data)}
       user={userResult}

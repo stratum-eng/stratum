@@ -95,6 +95,10 @@ const PROJECT_ID_ONLY_TABLES = [
   // repository reserved (one mirror per repo) and keep the sweep nudging a
   // project that no longer exists.
   "push_mirrors",
+  // Pull requests from the mirror (migration 080). Left behind, a project
+  // created later under the same id could never bring the same pull request
+  // numbers in, and the closure pass would keep reading rows for nothing.
+  "external_pull_requests",
 ] as const;
 
 /** Tables keyed by the globally-unique (namespace, slug) tuple. */

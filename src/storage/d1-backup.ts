@@ -116,6 +116,11 @@ export const BACKUP_TABLES: readonly string[] = [
   // dropped it would silently stop every mirror. A row restored mid-`pushing`
   // heals by itself: its lease has expired by the time anything reads it.
   "push_mirrors",
+  // Pull requests brought in from a mirror (migration 080). The link from a
+  // change to its pull request, who imported it, and who confirmed the
+  // contributor agreement — the last of which is a record a project may be
+  // asked to produce, and cannot be rebuilt from GitHub.
+  "external_pull_requests",
 ];
 
 /**

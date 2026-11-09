@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readConfig } from "../src/config";
-import { parseDispatch } from "../src/dispatch";
+import { parseDispatch, profileAllowedForOrigin } from "../src/dispatch";
 import { CONFIG, REPO_PASSWORD, SECRET, STRATUM, dispatchBody } from "./helpers/fixtures";
 
 const NOW = Date.UTC(2026, 10, 9, 12);
@@ -130,6 +130,41 @@ describe("what the executor's own limits refuse", () => {
       const repository = { url, username: "x", password: "p", expiresAt: "2026-11-09T13:00:00Z" };
       expect(reason({ job: { repository } }), url).toMatch(/repository.url/);
     }
+  });
+});
+
+describe("a job for an external change", () => {
+  it("is accepted under the ci profile, and keeps its origin", () => {
+    const result = parse({ job: { origin: "external" } });
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.job.origin).toBe("external");
+    expect(result.job.profile.name).toBe("ci");
+  });
+
+  it("treats a dispatch that does not say as the project's own", () => {
+    const result = parse();
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.job.origin).toBe("project");
+  });
+
+  it("is refused under any other profile, for the reason that it is external", () => {
+    // The reason matters: it shows the origin rule fired, not merely the
+    // "no such profile" rule that a future deploy profile will relax.
+    expect(reason({ job: { origin: "external", profile: "deploy" } })).toMatch(/external change/);
+    expect(reason({ job: { origin: "external", profile: "publish" } })).toMatch(/external change/);
+  });
+
+  it("is refused for an origin the executor does not know", () => {
+    expect(reason({ job: { origin: "trusted" } })).toMatch(/origin/);
+  });
+
+  it("can never be given a profile other than ci, whatever profiles exist", () => {
+    for (const profile of ["deploy", "publish", "release", "", undefined, null, 1]) {
+      expect(profileAllowedForOrigin(profile, "external")).toBe(false);
+    }
+    expect(profileAllowedForOrigin("ci", "external")).toBe(true);
+    // The rule constrains external jobs only.
+    expect(profileAllowedForOrigin("deploy", "project")).toBe(true);
   });
 });
 

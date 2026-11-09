@@ -131,7 +131,17 @@ export type AuditAction =
   // The resync stopped without knowing whether its push landed: it timed out
   // (the push is not cancelled) or its run died. Written so the audit log
   // names the two commits when nothing else will.
-  | "branch.resync_uncertain";
+  | "branch.resync_uncertain"
+  // Pull requests from the mirror (#420). `external_change.imported` names the
+  // maintainer who brought a stranger's commits into a workspace, and
+  // `contributor_agreement.confirmed` the maintainer who vouched that the
+  // contributor has agreed to the project's terms. The other two are written
+  // by the system: a pull request closed on GitHub closing its change, and
+  // Stratum closing a pull request whose change merged.
+  | "external_change.imported"
+  | "contributor_agreement.confirmed"
+  | "external_change.closed"
+  | "external_change.pull_request_closed";
 
 export interface AuditEntry {
   id: string;

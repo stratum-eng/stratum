@@ -379,7 +379,7 @@ export function buildTools(client: StratumClient): ToolDef[] {
     ),
     tool(
       "stratum_list_changes",
-      "List changes for a Stratum project, optionally filtered by status (open, evaluating, needs_changes, accepted, approved, promoted, merged, rejected).",
+      "List changes for a Stratum project, optionally filtered by status (open, evaluating, external, needs_changes, accepted, approved, promoted, merged, rejected). `external` is a pull request from the project's GitHub mirror that a maintainer has not imported yet: it cannot be evaluated, reviewed or merged until a person imports it in Stratum.",
       {
         project: projectArg,
         status: { type: "string", description: "Optional status filter", optional: true },

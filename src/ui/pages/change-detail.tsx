@@ -1,5 +1,6 @@
 import type { FC } from "hono/jsx";
 import type { UsageBannerNotice } from "../../billing/usage-banner";
+import type { ExternalPullRequestView } from "../../github/mirror-pulls";
 import type { ChangeComment, ChangeReview } from "../../storage/change-reviews";
 import type { CheckRunView, CheckStatus } from "../../storage/checks";
 import type { CostSummaryEntry } from "../../storage/costs";
@@ -46,6 +47,16 @@ interface ChangeDetailProps {
   costs?: CostSummaryEntry[];
   /** Parsed diff between workspace and project; null when unavailable. */
   diff?: DiffFile[] | null;
+  /**
+   * The pull request this change came from, when it came from the project's
+   * GitHub mirror (#420). Its title and author are a stranger's text: rendered
+   * as text, like everything else here, and never as markup or a link target.
+   */
+  externalPullRequest?: ExternalPullRequestView | null;
+  /** Whether importing needs the contributor agreement confirmed. */
+  requireContributorAgreement?: boolean;
+  /** Outcome of the last import attempt, already resolved to a fixed message. */
+  importNotice?: string;
   /** Whether the current user may submit review verdicts. */
   canReview?: boolean;
   /** Namespaced project ref for the header; legacy changes may lack one. */
@@ -61,6 +72,8 @@ function statusBadgeClass(status: string): string {
       return "badge badge-open";
     case "evaluating":
       return "badge badge-warning";
+    case "external":
+      return "badge badge-queued";
     case "approved":
     case "accepted":
       return "badge badge-approved";
@@ -117,6 +130,110 @@ function describeCost(entry: CostSummaryEntry): string {
   }
 }
 
+/**
+ * The pull request an external change stands for, and the one control that
+ * turns it into an ordinary change (#420).
+ *
+ * The import control is a plain form: it works with JavaScript off, and the
+ * contributor-agreement checkbox is `required`, so a browser will not submit
+ * without it — the server refuses without it regardless. The hidden `headSha`
+ * pins the import to the commits this page showed.
+ */
+const ExternalPullRequestCard: FC<{
+  changeId: string;
+  status: string;
+  pullRequest: ExternalPullRequestView;
+  requireContributorAgreement: boolean;
+  canImport: boolean;
+  notice?: string;
+}> = ({ changeId, status, pullRequest, requireContributorAgreement, canImport, notice }) => {
+  const waiting = status === "external";
+  const reimport = pullRequest.importedHeadSha !== null;
+  return (
+    <div class="card" id="pull-request">
+      <h2>Pull request from the GitHub mirror</h2>
+      <p class="text-muted">
+        Opened on GitHub by someone outside this project. Its commits are untrusted until a
+        maintainer imports them: nothing is evaluated, no CI runs and nothing can merge before that.
+      </p>
+      {notice !== undefined && <p class="settings-help">{notice}</p>}
+      <dl class="detail-list">
+        <dt>Pull request</dt>
+        <dd>
+          <a href={pullRequest.url} target="_blank" rel="noopener noreferrer">
+            {pullRequest.repo}#{pullRequest.number}
+          </a>{" "}
+          <span class="badge">{pullRequest.state}</span>
+        </dd>
+        <dt>Title</dt>
+        <dd>{pullRequest.title}</dd>
+        <dt>Author</dt>
+        <dd>{pullRequest.author} (GitHub)</dd>
+        <dt>Head commit</dt>
+        <dd>
+          <code>{pullRequest.headSha.slice(0, 12)}</code>
+          {pullRequest.commits !== null && ` · ${pullRequest.commits} commits`}
+          {pullRequest.changedFiles !== null && ` · ${pullRequest.changedFiles} files changed`}
+        </dd>
+        {pullRequest.importedAt !== null && pullRequest.importedHeadSha !== null && (
+          <>
+            <dt>Imported</dt>
+            <dd>
+              <code>{pullRequest.importedHeadSha.slice(0, 12)}</code> at{" "}
+              {new Date(pullRequest.importedAt).toLocaleString()}
+            </dd>
+          </>
+        )}
+        {pullRequest.agreementConfirmedAt !== null && (
+          <>
+            <dt>Contributor agreement</dt>
+            <dd>
+              Confirmed by a maintainer at{" "}
+              {new Date(pullRequest.agreementConfirmedAt).toLocaleString()}
+            </dd>
+          </>
+        )}
+        {pullRequest.closure.state === "failed" && (
+          <>
+            <dt>Closing on GitHub</dt>
+            <dd class="settings-help-error">
+              The pull request could not be commented on or closed:{" "}
+              {pullRequest.closure.error ?? "unknown error"}
+            </dd>
+          </>
+        )}
+      </dl>
+      {waiting && reimport && (
+        <p class="text-muted">
+          The pull request has commits newer than the ones that were imported. The earlier verdict,
+          checks and approvals no longer apply; import again to evaluate the new commits.
+        </p>
+      )}
+      {waiting && pullRequest.refusal !== null && (
+        <p class="settings-help-error">
+          This pull request cannot be imported as it stands: {pullRequest.refusal.reason}. (
+          <code>{pullRequest.refusal.code}</code>)
+        </p>
+      )}
+      {waiting && pullRequest.refusal === null && pullRequest.state === "open" && canImport && (
+        <form method="post" action={`/api/changes/${changeId}/import`} class="comment-form">
+          <input type="hidden" name="headSha" value={pullRequest.headSha} />
+          {requireContributorAgreement && (
+            <label>
+              <input type="checkbox" name="agreementConfirmed" required /> I confirm that{" "}
+              {pullRequest.author} has agreed to this project's contributor agreement. This is
+              recorded in the audit log under my name.
+            </label>
+          )}
+          <button type="submit" class="btn btn-primary">
+            {reimport ? "Import new commits" : "Import pull request"}
+          </button>
+        </form>
+      )}
+    </div>
+  );
+};
+
 export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   change,
   evalRuns,
@@ -126,6 +243,9 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   reviews = [],
   costs = [],
   diff = null,
+  externalPullRequest = null,
+  requireContributorAgreement = false,
+  importNotice,
   canReview = false,
   projectRef = null,
   user,
@@ -177,6 +297,17 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
           </a>
         )}
       </div>
+
+      {externalPullRequest && (
+        <ExternalPullRequestCard
+          changeId={change.id}
+          status={change.status}
+          pullRequest={externalPullRequest}
+          requireContributorAgreement={requireContributorAgreement}
+          canImport={canReview}
+          {...(importNotice !== undefined ? { notice: importNotice } : {})}
+        />
+      )}
 
       {hasActions && (
         <div class="card">
