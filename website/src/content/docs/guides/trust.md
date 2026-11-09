@@ -338,7 +338,9 @@ this procedure does not change that.
 > object. See [Do not switch an existing deployment](#do-not-switch-an-existing-deployment).
 
 The same steps apply to `us` or `fedramp` by substituting the jurisdiction,
-except Artifacts, which documents only `eu` and `us`.
+with two exceptions. Artifacts documents only `eu` and `us`. And Customer
+Metadata Boundary (step 5) has only `EU` and `US` regions: there is no
+`fedramp` value, and a FedRAMP deployment uses `US`.
 
 Do these in order. Steps 1–5 must be finished **before the first deploy**.
 
@@ -367,6 +369,17 @@ existing resource that has no jurisdiction.
 
    Do not substitute `--location=weur`. That is a hint, and Cloudflare says it
    is not a guarantee.
+
+   If you created the `stratum-repo-objects` bucket, give it its retention
+   rule now. Without one, the staged copies of rejected and abandoned
+   workspace trees are kept for ever. The rule and its reasoning are in the
+   [staged-tree retention runbook](https://github.com/stratum-eng/stratum/blob/main/docs/runbooks/staged-tree-retention.md);
+   for a bucket with a jurisdiction, name it on the command:
+
+   ```bash
+   npx wrangler@latest r2 bucket lifecycle add stratum-repo-objects \
+     expire-staged-sha staged-sha/ --expire-days 30 --jurisdiction eu
+   ```
 
 2. **Create the Artifacts namespace with an EU jurisdiction**, before any
    project exists. If the Worker creates a repository in a namespace that does
@@ -445,12 +458,22 @@ existing resource that has no jurisdiction.
    environment you deploy: `[observability] enabled = false` stops logs, and
    traces have their own switch, `[observability.traces] enabled = false`,
    which the template also has on. Leaving traces on keeps request metadata
-   flowing with no boundary. Application logs contain identifiers such
+   flowing with no boundary. Neither switch stops Workers **metrics**:
+   Cloudflare records invocation metrics for every Worker whether or not
+   Workers Logs is on, and only Customer Metadata Boundary restricts where
+   those are stored. Without the boundary there is no setting in this
+   repository that keeps metrics in the EU. Application logs contain identifiers such
    as user and project ids, and the template has observability on, so a
    deployment made before this step writes logs with no boundary from its
    first request or cron run.
 
-6. **Apply the database schema, deploy, then configure Regional Services.**
+6. **Apply the database schema, set up sign-in, deploy, then configure
+   Regional Services.** A fresh deployment has no way to sign in: no OAuth
+   credentials and no sender address for magic links, so `/health` answers
+   and nobody can create an account. Set at least one sign-in method's
+   secrets first, following "Secrets Management" in the
+   [deployment guide](https://github.com/stratum-eng/stratum/blob/main/docs/developer/deployment.md).
+   Each one is also a subrequest to a service outside Cloudflare (step 7).
    The database from step 1 is empty. Apply the migrations to it first
    (`npx wrangler d1 migrations apply <database> --remote`, with `--env <name>`
    for a named environment; see the
@@ -547,7 +570,8 @@ Cloudflare documents none, and no setting in Stratum creates one.
 | Workers AI (`llm` evaluator) | **No guarantee available**, because Cloudflare documents no location control for inference | Remove the `[ai]` binding (step 4) |
 | Rate limiting bindings | **No guarantee available** as a separate control, because none is documented | Counters live in the Cloudflare location the Worker runs in, so they follow Regional Services for HTTP requests. The key is a user id, an agent id, or a client IP address |
 | Outbound email | **No guarantee available**, because Cloudflare documents no location control for Email Sending | Recipient addresses and message bodies reach Cloudflare's mail infrastructure and then the recipient's mail server |
-| Worker logs, traces and metrics | **Covered by Customer Metadata Boundary** set to `EU` (Data Localization Suite), or by turning off both `[observability]` and `[observability.traces]` | Without either, there is no guarantee where logs are stored |
+| Worker logs and traces | **Covered by Customer Metadata Boundary** set to `EU` (Data Localization Suite), or by turning off both `[observability]` and `[observability.traces]` | Without either, there is no guarantee where logs are stored |
+| Worker metrics | **Covered by Customer Metadata Boundary** only | The observability switches do not stop invocation metrics. Without the boundary there is **no guarantee available** |
 | Sandbox evaluator and `merge.postMergeCommand` | **No statement made** | The `[[sandboxes]]` binding is commented out in every environment and was not assessed. Leave it off |
 
 So such a deployment keeps the data in its **jurisdiction-restricted stores**
