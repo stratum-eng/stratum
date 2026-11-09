@@ -114,7 +114,7 @@ jobs:
             while [ "$page" -le 50 ]; do
               resp=$(curl -sf "${API}?page=${page}&per_page=100" \
                 -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || return 1
-              echo "$resp" | jq -e '.success == true' >/dev/null 2>&1 || return 1
+              echo "$resp" | jq -e '.success == true and (.result | type == "array")' >/dev/null 2>&1 || return 1
               id=$(echo "$resp" | jq -r --arg n "$1" '[.result[]? | select(.queue_name == $n) | .queue_id] | first // empty')
               if [ -n "$id" ]; then echo "$id"; return 0; fi
               # Done only on evidence the scan is complete: the reported totals
