@@ -29,8 +29,10 @@ behind the existing webhook contract, and `@cloudflare/computer`.
 
 ### Jobs run in Cloudflare Containers
 
-One fresh container per job, started by a Durable Object, destroyed when the
-job ends. Nothing is reused between jobs: no filesystem, no process, no cache
+One fresh container per job, destroyed when the job ends. A Durable Object
+owns exactly one container, so each job gets its own Durable Object, addressed
+by the job's id, and that object starts, drives and destroys the job's
+container. Nothing is reused between jobs: no filesystem, no process, no cache
 that a previous job could have written.
 
 Containers meet the three requirements that could have ruled them out. Each was
@@ -93,16 +95,25 @@ Two costs come with it:
   container each.
 
 So the executor enforces its own cap, in every deployment, self-hosted
-included. One coordinating Durable Object admits jobs. It holds the count of
-running jobs and starts a container only while that count is below an
-executor-wide limit, which has a conservative default and is a required
-setting with no "unlimited" value. A job over the limit waits in the
-coordinator's queue with its checks still `queued`; the queue is bounded too,
-and a dispatch that does not fit is refused, which the check's deadline turns
-into `errored`. A slot is released when the job ends or when its wall-clock
-timeout fires, whichever is first, so a container that dies without reporting
-cannot hold a slot forever. Per-project limits sit on top of this cap and
-cannot raise it.
+included. One coordinating Durable Object admits jobs and starts none itself.
+It holds the set of admitted jobs and tells a job's own Durable Object to
+start only while that set is smaller than an executor-wide limit, which has a
+conservative default and is a required setting with no "unlimited" value. A
+job over the limit waits in the coordinator's queue with its checks still
+`queued`; the queue is bounded too, and a dispatch that does not fit is
+refused, which the check's deadline turns into `errored`.
+
+A slot is held until the job's container is confirmed gone, not until the job
+is believed to be over. When a job finishes, or its wall-clock timeout fires,
+its Durable Object destroys the container and reports back only once
+`ctx.container.running` is false. A timeout that fired while the container was
+still stopping therefore does not free a slot early, and repeated timeouts
+cannot push the number of live containers past the cap. If destruction fails,
+the slot stays held and the job object retries on an alarm. The coordinator
+also reconciles on an alarm: it asks each job it believes is running for its
+state, so a job object that was lost, or never reported, is found and its slot
+freed only after its container is known to be gone. Per-project limits sit on
+top of this cap and cannot raise it.
 
 ### The executor is its own Worker
 
@@ -137,10 +148,13 @@ It holds no D1 binding, no session store, and no deploy credential.
   `npm test` runs the `test` script of the tree under test, and a change can
   make that script a no-op. That is true of any CI that tests a change's own
   code, and reading `ci.yaml` from the base does not alter it. What covers it
-  is review: a project that wants its gate-defining files (`package.json`
-  scripts, test configuration) held to a higher bar lists them under the
-  policy's existing path rules so that a change touching them needs approval.
-  Stratum's own project will.
+  is review. The control that exists today is `merge.requiredApprovals`,
+  which requires a person to approve every change; a project that gates on the
+  executor and has agents authoring changes sets it, and Stratum's own project
+  will. The merge policy has no path-specific approval rule, so "require
+  approval only when `package.json` or the test configuration changes" cannot
+  be expressed yet. That rule is the better fit and is listed below as a
+  follow-up.
 - **Reconstructed, then verified.** The job clones at `baseSha`, applies the
   diff, and checks that the resulting tree is the head's tree before any step
   runs. A mismatch fails the job. The executor reads one repository at one
@@ -152,7 +166,11 @@ It holds no D1 binding, no session store, and no deploy credential.
   tested tree with newer commits, and Stratum refuses that only when the policy
   sets `requireFreshBase`. A project that gates merges on the executor sets
   `requireFreshBase`, so that a stale change is re-evaluated, and its checks
-  re-run, against the new base. Testing the proposed merge tree instead is the
+  re-run, against the new base. That check has a hole today: the merge route
+  skips it when the project's head cannot be resolved, or when the change has
+  no recorded base, and the merge proceeds unverified. The executor's
+  implementation closes it, so that under `requireFreshBase` an unresolvable
+  head or a missing base refuses the merge. Testing the proposed merge tree instead is the
   better long-term answer and is left open below.
 - **One check per step, and every step is required.** Each step reports
   through the #414 callback. The steps declared in the base `ci.yaml` are
@@ -248,6 +266,8 @@ what it is good at.
   that serves exactly that bundle.
 - The default for the executor-wide concurrency cap, and the shape of the
   per-project concurrency and monthly usage limits that sit under it.
+- Path-specific approval rules in the merge policy, so that a change touching
+  gate-defining files needs approval without requiring it for every change.
 - Whether to test the proposed merge tree (base tip plus the change) instead
   of the change's head, which would remove the dependence on
   `requireFreshBase`.
