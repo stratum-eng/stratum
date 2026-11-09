@@ -9,6 +9,15 @@ on:
   # The check runs land on that branch's head commit, which is what main's
   # required checks look at.
   workflow_dispatch:
+    inputs:
+      dispatch_id:
+        description: Unique tag the caller uses to find this run
+        required: false
+        type: string
+
+# A PR run keeps its default name (the PR title). A dispatched run carries the
+# caller's tag, so the caller can find the exact run it started.
+run-name: ${{ inputs.dispatch_id && format('PR Checks [{0}]', inputs.dispatch_id) || github.event.pull_request.title }}
 
 concurrency:
   group: pr-checks-${{ github.head_ref || github.ref }}
