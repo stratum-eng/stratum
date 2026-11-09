@@ -19,6 +19,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { authMiddleware } from "../src/middleware/auth";
 import {
   canManageSecrets,
+  deployCallbackRouter,
   deploymentsRouter,
   projectDeploymentsRouter,
   secretErrorMessage,
@@ -34,7 +35,16 @@ vi.mock("../src/storage/deployments", async (importActual) => {
     findDeploymentById: vi.fn(),
     insertDeployment: vi.fn(),
     listDeployments: vi.fn(),
+    nextDeploymentAttempt: vi.fn(),
   };
+});
+vi.mock("../src/services/ci-executor", async (importActual) => {
+  const actual = await importActual<typeof import("../src/services/ci-executor")>();
+  return { ...actual, fetchCiLog: vi.fn() };
+});
+vi.mock("../src/services/deploy-reports", async (importActual) => {
+  const actual = await importActual<typeof import("../src/services/deploy-reports")>();
+  return { ...actual, applyDeployReport: vi.fn() };
 });
 vi.mock("../src/storage/project-secrets", async (importActual) => {
   const actual = await importActual<typeof import("../src/storage/project-secrets")>();
@@ -57,6 +67,8 @@ vi.mock("../src/storage/events", async (importActual) => {
 vi.mock("../src/storage/users", () => ({ getUserByToken: vi.fn(), getUser: vi.fn() }));
 vi.mock("../src/storage/agents", () => ({ getAgentByToken: vi.fn() }));
 
+import { fetchCiLog } from "../src/services/ci-executor";
+import { applyDeployReport } from "../src/services/deploy-reports";
 import { getAgentByToken } from "../src/storage/agents";
 import { recordAudit } from "../src/storage/audit";
 import {
@@ -65,6 +77,7 @@ import {
   findDeploymentById,
   insertDeployment,
   listDeployments,
+  nextDeploymentAttempt,
 } from "../src/storage/deployments";
 import { insertEvent } from "../src/storage/events";
 import {
@@ -145,6 +158,7 @@ function makeApp() {
   const app = new Hono<{ Bindings: Env }>();
   app.use("*", authMiddleware);
   app.route("/api/projects", projectDeploymentsRouter);
+  app.route("/api/deploy-reports", deployCallbackRouter);
   app.route("/api/deployments", deploymentsRouter);
   return app;
 }
@@ -1004,11 +1018,470 @@ describe("secret values never reach a response body", () => {
     );
     for (const body of readerBodies) expect(body).not.toContain(SECRET_VALUE);
 
+    // Every request is awaited, though only the secret routes are checked:
+    // one left in flight would finish inside a later test and be counted there.
+    const writerResponses = await Promise.all(routes(asOwner));
     const writerBodies = await Promise.all(
-      routes(asOwner)
-        .slice(0, 5)
-        .map(async (pending) => (await pending).text()),
+      writerResponses.slice(0, 5).map((response) => response.text()),
     );
     for (const body of writerBodies) expect(body).not.toContain(SECRET_VALUE);
+  });
+});
+
+describe("retry of a pipeline deployment that went through approval", () => {
+  const approvedProduction = deployment({
+    target: "pipeline",
+    status: "failed",
+    approvedBy: "usr_owner",
+  });
+
+  beforeEach(() => {
+    vi.mocked(findDeploymentById).mockResolvedValue({ success: true, data: approvedProduction });
+    vi.mocked(insertDeployment).mockImplementation(async (_db, _logger, opts) => ({
+      success: true,
+      data: {
+        inserted: true,
+        deployment: deployment({
+          id: "dep_2",
+          target: "pipeline",
+          attempt: 2,
+          status: opts.status ?? "queued",
+        }),
+      },
+    }));
+  });
+
+  it("an agent's retry goes back to waiting for a person, and is not queued", async () => {
+    const res = await call("/api/deployments/dep_1/retry", {
+      method: "POST",
+      headers: { ...asAgent, "content-type": "application/json" },
+    });
+
+    expect(res.status).toBe(201);
+    expect(insertDeployment).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({ status: "pending_approval", approvedBy: null }),
+    );
+    // Nothing starts it but an approval.
+    expect(send).not.toHaveBeenCalled();
+    expect(insertEvent).not.toHaveBeenCalled();
+  });
+
+  it("a user's retry is its own approval", async () => {
+    const res = await call("/api/deployments/dep_1/retry", {
+      method: "POST",
+      headers: { ...asOwner, "content-type": "application/json" },
+    });
+
+    expect(res.status).toBe(201);
+    expect(insertDeployment).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({ status: "queued", approvedBy: "usr_owner" }),
+    );
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("an ungated environment's retry is queued for an agent, as it always was", async () => {
+    vi.mocked(findDeploymentById).mockResolvedValue({
+      success: true,
+      data: deployment({ target: "pipeline", name: "staging", status: "failed" }),
+    });
+    await call("/api/deployments/dep_1/retry", {
+      method: "POST",
+      headers: { ...asAgent, "content-type": "application/json" },
+    });
+    expect(insertDeployment).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({ status: "queued" }),
+    );
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("a static target that was approved keeps the behaviour it has always had", async () => {
+    vi.mocked(findDeploymentById).mockResolvedValue({
+      success: true,
+      data: deployment({ target: "vercel", status: "failed", approvedBy: "usr_owner" }),
+    });
+    await call("/api/deployments/dep_1/retry", {
+      method: "POST",
+      headers: { ...asAgent, "content-type": "application/json" },
+    });
+    expect(insertDeployment).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({ status: "queued" }),
+    );
+  });
+
+  it("retrying a rollback is still a rollback to the same deployment", async () => {
+    vi.mocked(findDeploymentById).mockResolvedValue({
+      success: true,
+      data: deployment({ target: "pipeline", status: "failed", rollbackOf: "dep_0" }),
+    });
+    await call("/api/deployments/dep_1/retry", {
+      method: "POST",
+      headers: { ...asOwner, "content-type": "application/json" },
+    });
+    expect(insertDeployment).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({ rollbackOf: "dep_0" }),
+    );
+  });
+});
+
+describe("rollback", () => {
+  const live = deployment({
+    id: "dep_live",
+    target: "pipeline",
+    status: "succeeded",
+    attempt: 1,
+    version: "ver-a",
+    reason: undefined,
+    logTail: undefined,
+  });
+
+  beforeEach(() => {
+    vi.mocked(findDeploymentById).mockResolvedValue({ success: true, data: live });
+    vi.mocked(nextDeploymentAttempt).mockResolvedValue({ success: true, data: 3 });
+    vi.mocked(insertDeployment).mockImplementation(async (_db, _logger, opts) => ({
+      success: true,
+      data: {
+        inserted: true,
+        deployment: deployment({
+          id: "dep_rollback",
+          target: "pipeline",
+          attempt: opts.attempt ?? 1,
+          status: "queued",
+          rollbackOf: opts.rollbackOf ?? undefined,
+          reason: undefined,
+          logTail: undefined,
+        }),
+      },
+    }));
+  });
+
+  const post = (headers: Record<string, string>, init: RequestInit = {}) =>
+    call("/api/deployments/dep_live/rollback", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      ...init,
+    });
+
+  it("creates a new deployment of the same environment and commit, pointing at the one it puts back", async () => {
+    const res = await post(asOwner);
+
+    expect(res.status).toBe(201);
+    expect(insertDeployment).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({
+        projectId: "prj_owner",
+        name: "production",
+        commitSha: "a".repeat(40),
+        target: "pipeline",
+        // Past every attempt that exists for this commit, not the target's + 1.
+        attempt: 3,
+        status: "queued",
+        rollbackOf: "dep_live",
+        requestedByType: "user",
+        requestedById: "usr_owner",
+        // The person rolling back is the approval; it does not then wait for one.
+        approvedBy: "usr_owner",
+        changeId: "chg_1",
+      }),
+    );
+    // Through the same queue as every deployment: no shortcut around ordering.
+    expect(send).toHaveBeenCalledWith({
+      kind: "deployment",
+      projectId: "prj_owner",
+      deploymentId: "dep_rollback",
+    });
+    const body = (await res.json()) as { deployment: { rollbackOf: string } };
+    expect(body.deployment.rollbackOf).toBe("dep_live");
+  });
+
+  it("is audited, with who, what and which version", async () => {
+    await post(asOwner);
+    expect(recordAudit).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({
+        action: "deployment.rolled_back",
+        actorType: "user",
+        actorId: "usr_owner",
+        subject: "dep_rollback",
+        detail: expect.objectContaining({
+          name: "production",
+          commitSha: "a".repeat(40),
+          rollbackOf: "dep_live",
+          version: "ver-a",
+        }),
+      }),
+    );
+  });
+
+  it("refuses an agent token: only the people who may approve a deploy may roll one back", async () => {
+    const res = await post(asAgent);
+    expect(res.status).toBe(401);
+    expect(insertDeployment).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("refuses a reader who cannot write the project", async () => {
+    const res = await post(asOutsider);
+    expect([403, 404]).toContain(res.status);
+    expect(insertDeployment).not.toHaveBeenCalled();
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unauthenticated caller", async () => {
+    const res = await post({});
+    expect(res.status).toBe(401);
+    expect(insertDeployment).not.toHaveBeenCalled();
+  });
+
+  it("404s an id from another project rather than confirming it exists", async () => {
+    vi.mocked(findDeploymentById).mockResolvedValue({
+      success: true,
+      data: { ...live, projectId: OTHER_PROJECT.id },
+    });
+    vi.mocked(getProjectById).mockResolvedValue({ success: true, data: OTHER_PROJECT });
+    const res = await post(asOwner);
+    expect(res.status).toBe(404);
+    expect(insertDeployment).not.toHaveBeenCalled();
+  });
+
+  it("only rolls back to something that was live", async () => {
+    for (const status of [
+      "failed",
+      "running",
+      "queued",
+      "pending_approval",
+      "superseded",
+    ] as const) {
+      vi.mocked(findDeploymentById).mockResolvedValue({ success: true, data: { ...live, status } });
+      const res = await post(asOwner);
+      expect(res.status, status).toBe(409);
+      expect(((await res.json()) as { code: string }).code).toBe("DEPLOYMENT_NOT_ROLLBACKABLE");
+    }
+    vi.mocked(findDeploymentById).mockResolvedValue({
+      success: true,
+      data: { ...live, target: "unresolved" },
+    });
+    expect((await post(asOwner)).status).toBe(409);
+    expect(insertDeployment).not.toHaveBeenCalled();
+  });
+
+  it("a rollback of a rollback puts back what that one put back", async () => {
+    vi.mocked(findDeploymentById).mockResolvedValue({
+      success: true,
+      data: { ...live, rollbackOf: "dep_original" },
+    });
+    await post(asOwner);
+    expect(insertDeployment).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({ rollbackOf: "dep_original" }),
+    );
+  });
+
+  it("works for a static target too: it redeploys that commit", async () => {
+    vi.mocked(findDeploymentById).mockResolvedValue({
+      success: true,
+      data: { ...live, target: "vercel" },
+    });
+    const res = await post(asOwner);
+    expect(res.status).toBe(201);
+    expect(insertDeployment).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({ target: "vercel", rollbackOf: "dep_live" }),
+    );
+  });
+
+  it("answers 409 when another retry or rollback took the attempt first", async () => {
+    vi.mocked(insertDeployment).mockResolvedValue({
+      success: true,
+      data: { inserted: false, existing: null },
+    });
+    const res = await post(asOwner);
+    expect(res.status).toBe(409);
+    expect(send).not.toHaveBeenCalled();
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("records the request for recovery when the queue refuses it", async () => {
+    send.mockRejectedValueOnce(new Error("queue unavailable"));
+    const res = await post(asOwner);
+    expect(res.status).toBe(201);
+    expect(insertEvent).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({
+        type: "deploy.enqueue",
+        payload: { kind: "deployment", projectId: "prj_owner", deploymentId: "dep_rollback" },
+      }),
+    );
+  });
+
+  describe("from a browser, with JavaScript disabled", () => {
+    it("a form post without the confirmation goes to the confirmation page and does nothing", async () => {
+      const res = await call("/api/deployments/dep_live/rollback", {
+        method: "POST",
+        headers: asOwner,
+        body: new URLSearchParams(),
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/@owner/site/deployments/dep_live/rollback");
+      expect(insertDeployment).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("a confirmed form post rolls back and lands on the new deployment", async () => {
+      const res = await call("/api/deployments/dep_live/rollback", {
+        method: "POST",
+        headers: asOwner,
+        body: new URLSearchParams({ confirm: "yes" }),
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/@owner/site/deployments/dep_rollback");
+      expect(insertDeployment).toHaveBeenCalledTimes(1);
+      expect(recordAudit).toHaveBeenCalledWith(
+        env.DB,
+        expect.any(Object),
+        expect.objectContaining({ action: "deployment.rolled_back" }),
+      );
+    });
+
+    it("a confirmed form post from an agent is refused all the same", async () => {
+      const res = await call("/api/deployments/dep_live/rollback", {
+        method: "POST",
+        headers: asAgent,
+        body: new URLSearchParams({ confirm: "yes" }),
+      });
+      expect(res.status).toBe(401);
+      expect(insertDeployment).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("a pipeline deployment's full log", () => {
+  const executorEnv = {
+    ...env,
+    CI_EXECUTOR_URL: "https://ci-executor.example.com",
+    CI_EXECUTOR_SECRET: "executor-shared-secret-0123456789abcdef",
+  } as Env;
+  const get = (headers: Record<string, string>, withEnv: Env = executorEnv) =>
+    makeApp().fetch(
+      new Request("http://localhost/api/deployments/dep_1/log", { headers }),
+      withEnv,
+    );
+
+  beforeEach(() => {
+    vi.mocked(findDeploymentById).mockResolvedValue({
+      success: true,
+      data: deployment({ target: "pipeline", status: "failed" }),
+    });
+    vi.mocked(fetchCiLog).mockImplementation(async (_config, _logger, id) => {
+      const logs: Record<string, string> = {
+        "dep_1-0": "migrate: 2 applied\n",
+        "dep_1-1": "deploy: uploaded\n",
+      };
+      const body = logs[id];
+      return body === undefined
+        ? { status: "missing" }
+        : { status: "ok", body: new Response(body).body };
+    });
+  });
+
+  it("gives a writer every step's log, in order, as plain text", async () => {
+    const res = await get(asOwner);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("content-security-policy")).toContain("sandbox");
+    expect(await res.text()).toBe("migrate: 2 applied\ndeploy: uploaded\n");
+    expect(vi.mocked(fetchCiLog).mock.calls.map((call) => call[2])).toEqual([
+      "dep_1-0",
+      "dep_1-1",
+      "dep_1-2",
+    ]);
+  });
+
+  it("is withheld from a reader of a public project, like the log tail", async () => {
+    const res = await get(asOutsider);
+    expect([403, 404]).toContain(res.status);
+    expect(fetchCiLog).not.toHaveBeenCalled();
+  });
+
+  it("404s for a static target, which has no step log", async () => {
+    vi.mocked(findDeploymentById).mockResolvedValue({ success: true, data: deployment() });
+    const res = await get(asOwner);
+    expect(res.status).toBe(404);
+    expect(fetchCiLog).not.toHaveBeenCalled();
+  });
+
+  it("404s when nothing has been stored yet, and 503s without an executor", async () => {
+    vi.mocked(fetchCiLog).mockResolvedValue({ status: "missing" });
+    expect((await get(asOwner)).status).toBe(404);
+    expect((await get(asOwner, env)).status).toBe(503);
+  });
+});
+
+describe("the executor's report route", () => {
+  const post = (body: string, headers: Record<string, string> = {}) =>
+    call("/api/deploy-reports/dep_1", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body,
+    });
+
+  it("hands the raw body and signature to the verifier, with no Stratum credential involved", async () => {
+    vi.mocked(applyDeployReport).mockResolvedValue({
+      kind: "ok",
+      deployment: deployment({ status: "succeeded" }),
+    });
+    const res = await post('{"deploymentId":"dep_1"}', { "X-Stratum-Signature": "sha256=abc" });
+
+    expect(res.status).toBe(200);
+    expect(applyDeployReport).toHaveBeenCalledWith(
+      env,
+      expect.any(Object),
+      expect.objectContaining({
+        deploymentId: "dep_1",
+        rawBody: '{"deploymentId":"dep_1"}',
+        signatureHeader: "sha256=abc",
+      }),
+    );
+    expect(await res.json()).toEqual({ applied: true, status: "succeeded" });
+  });
+
+  it("maps each refusal to its status without saying more than the code", async () => {
+    vi.mocked(applyDeployReport).mockResolvedValue({ kind: "unauthenticated" });
+    const unauthenticated = await post("{}");
+    expect(unauthenticated.status).toBe(401);
+    expect(await unauthenticated.json()).toEqual({
+      error: "Invalid signature",
+      code: "INVALID_SIGNATURE",
+    });
+
+    vi.mocked(applyDeployReport).mockResolvedValue({ kind: "invalid", message: "bad" });
+    expect((await post("{}")).status).toBe(400);
+
+    vi.mocked(applyDeployReport).mockResolvedValue({ kind: "conflict", message: "not running" });
+    const conflict = await post("{}");
+    expect(conflict.status).toBe(409);
+    expect(((await conflict.json()) as { code: string }).code).toBe("DEPLOYMENT_NOT_RUNNING");
+  });
+
+  it("refuses a body too large to be a report before verifying anything", async () => {
+    const res = await post("x".repeat(200 * 1024));
+    expect(res.status).toBe(413);
+    expect(applyDeployReport).not.toHaveBeenCalled();
   });
 });

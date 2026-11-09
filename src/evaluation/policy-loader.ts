@@ -261,6 +261,9 @@ function attachCiConfig(
   }
 
   const ci: CiConfig = parsed.config;
+  // A file that only declares a deploy pipeline has no CI steps: the project
+  // runs no first-party checks, and is treated exactly as if it had no file.
+  if (ci.steps.length === 0) return policy;
   const declared = declaredCheckNames(policy.evaluators).names;
   const clash = ciStepNames(ci).find((name) => declared.has(name));
   if (clash !== undefined) {

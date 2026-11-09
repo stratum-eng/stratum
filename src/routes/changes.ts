@@ -1564,6 +1564,25 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
 
   const persist = (async () => {
     if (statements.length > 0) await c.env.DB.batch(statements);
+    // One deploy for the whole batch, of its FINAL commit (#416). A batch is
+    // one push: its last synthetic commit contains every change that landed,
+    // so deploying each change's own commit in turn would publish N
+    // intermediate trees to reach the same place. The deployment is recorded
+    // against the last change that landed. A batch runs no post-merge check,
+    // so there is nothing that could have reverted it: `skipped`.
+    //
+    // After the status write, and inside it, on purpose: the deploy runner
+    // re-reads the change and refuses one that is not `merged` yet.
+    const last = landed[landed.length - 1];
+    if (last !== undefined) {
+      await enqueueMergeDeploy(c.env, logger, {
+        projectId: project.id,
+        changeId: last.changeId,
+        commitSha: last.commit,
+        postMergeStatus: "skipped",
+        mergedAt,
+      });
+    }
     // Force-merges bypass evaluation/approval gates, so every one must leave an
     // audit trail — the single-merge path records `merge.forced` too (SEC-2).
     if (force) {

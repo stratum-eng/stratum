@@ -19,6 +19,7 @@ const noopRunners: JobRunners = {
   "evaluation-sweep": () => Promise.resolve(),
   "check-deadline-sweep": () => Promise.resolve(),
   "mirror-sweep": () => Promise.resolve(),
+  "deploy-report-sweep": () => Promise.resolve(),
 };
 
 describe("jobsForCron", () => {
@@ -49,6 +50,7 @@ describe("jobsForCron", () => {
       "evaluation-sweep",
       "check-deadline-sweep",
       "mirror-sweep",
+      "deploy-report-sweep",
     ]);
   });
 

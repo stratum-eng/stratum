@@ -2200,6 +2200,112 @@ describe("POST /api/projects/:name/changes/merge-batch", () => {
     ]);
   });
 
+  // #416: a batch used to deploy nothing. It now deploys once, for the whole
+  // batch, the commit the push left the default branch at.
+  describe("deploys the batch's final commit, once", () => {
+    let send: ReturnType<typeof vi.fn>;
+    let order: string[];
+
+    beforeEach(() => {
+      order = [];
+      send = vi.fn(async () => {
+        order.push("deploy enqueued");
+      });
+      env.DEPLOY_QUEUE = { send } as unknown as Env["DEPLOY_QUEUE"];
+      env.DB = {
+        prepare: () => ({ bind: () => ({}) }),
+        batch: vi.fn(async () => {
+          order.push("changes marked merged");
+          return [];
+        }),
+        // biome-ignore lint/suspicious/noExplicitAny: minimal D1 stub
+      } as any;
+      vi.mocked(getChangesByIds).mockResolvedValue({
+        success: true,
+        data: ["chg_b1", "chg_b2", "chg_b3"].map((id, index) => ({
+          id,
+          project: "my-project",
+          workspace: `ws-${index}`,
+          status: "approved",
+          baseSha: "base1",
+        })),
+        // biome-ignore lint/suspicious/noExplicitAny: minimal Change stubs
+      } as any);
+    });
+
+    const mergeBatch = () =>
+      app.fetch(
+        request(
+          "POST",
+          "/api/projects/my-project/changes/merge-batch",
+          { changeIds: ["chg_b1", "chg_b2", "chg_b3"], force: true },
+          USER_AUTH,
+        ),
+        env,
+        // biome-ignore lint/suspicious/noExplicitAny: minimal ExecutionContext
+        exec() as any,
+      );
+
+    it("enqueues one deploy, of the last commit that landed, for the last change that landed", async () => {
+      vi.mocked(batchMergeStagedTrees).mockResolvedValue({
+        success: true,
+        data: [
+          { changeId: "chg_b1", merged: true, commit: "merge-1" },
+          { changeId: "chg_b2", merged: true, commit: "merge-2" },
+          // The last change conflicted: the batch's final commit is merge-2.
+          { changeId: "chg_b3", merged: false },
+        ],
+        // biome-ignore lint/suspicious/noExplicitAny: minimal result stub
+      } as any);
+
+      const res = await mergeBatch();
+      expect(res.status).toBe(200);
+      await Promise.all(waitUntils);
+
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith({
+        kind: "merge",
+        projectId: mockProject.id,
+        changeId: "chg_b2",
+        commitSha: "merge-2",
+        mergedAt: expect.any(String),
+      });
+    });
+
+    it("enqueues only after the changes are recorded as merged", async () => {
+      // The deploy runner re-reads the change and refuses one that is not
+      // `merged` yet, so the order of these two is the feature.
+      vi.mocked(batchMergeStagedTrees).mockResolvedValue({
+        success: true,
+        data: [{ changeId: "chg_b1", merged: true, commit: "merge-1" }],
+        // biome-ignore lint/suspicious/noExplicitAny: minimal result stub
+      } as any);
+
+      await mergeBatch();
+      await Promise.all(waitUntils);
+
+      expect(order).toEqual(["changes marked merged", "deploy enqueued"]);
+    });
+
+    it("enqueues nothing when no change landed", async () => {
+      vi.mocked(batchMergeStagedTrees).mockResolvedValue({
+        success: true,
+        data: [
+          { changeId: "chg_b1", merged: false },
+          { changeId: "chg_b2", merged: false },
+          { changeId: "chg_b3", merged: false },
+        ],
+        // biome-ignore lint/suspicious/noExplicitAny: minimal result stub
+      } as any);
+
+      const res = await mergeBatch();
+      expect(res.status).toBe(200);
+      await Promise.all(waitUntils);
+
+      expect(send).not.toHaveBeenCalled();
+    });
+  });
+
   it("rejects a batch above the size cap", async () => {
     const ids = Array.from({ length: 81 }, (_u, i) => `c${i}`);
     const res = await app.fetch(

@@ -84,9 +84,10 @@ export function profileAllowedForOrigin(profile: string, origin: CiJobOrigin): b
 /** The job a first-party dispatch adds to the public payload. */
 export interface CiJobSpec {
   /**
-   * Which kind of job this is. Only `ci` exists. Deploy and publish jobs
-   * (#416, #422) will be other profiles — a different image, allowlist and
-   * set of injected credentials — which is why this is a field at all.
+   * Which kind of job this is. Deploy jobs (#416) are another profile, with
+   * their own dispatch ({@link DeployJobDispatch}); publish jobs (#422) will
+   * be a third. A different image, allowlist and set of injected credentials
+   * — which is why this is a field at all.
    */
   profile: "ci";
   /**
@@ -280,6 +281,82 @@ export async function submitCiJob(
   logger: Logger,
   dispatch: CiJobDispatch,
 ): Promise<string | null> {
+  return postExecutorJob(config, logger, dispatch, dispatch.changeId);
+}
+
+/** One step of a deploy job: a pipeline step, as the executor runs it. */
+export interface DeployJobStep {
+  name: string;
+  run: string;
+  timeoutSeconds: number;
+}
+
+/**
+ * The body of a deploy dispatch (#416): "deploy this merged commit to this
+ * environment", and the steps the merged commit's pipeline declares for it.
+ *
+ * What is NOT here is the point: no credential for the deploy target. The
+ * executor decides which of its own secrets the job's requests leave with,
+ * from `projectId` and `environment`, and a pair it has no target for is
+ * refused. The only credential in this body is the same short-lived,
+ * read-only repository token a CI job gets.
+ */
+export interface DeployJobDispatch {
+  event: "deploy.requested";
+  deploymentId: string;
+  project: string;
+  projectId: string;
+  environment: string;
+  commitSha: string;
+  /** The executor reports to `<callbackUrl>/<deploymentId>`. */
+  callbackUrl: string;
+  /** ISO 8601 instant after which Stratum gives the deployment up. */
+  deadline: string;
+  /** Present for a rollback; `version` is the recorded version to put back. */
+  rollback?: { version?: string };
+  job: {
+    profile: "deploy";
+    steps: DeployJobStep[];
+    timeoutSeconds: number;
+    instance?: CiInstanceType;
+    allowHosts: string[];
+    repository: CiJobSpec["repository"];
+    /** The deployment's page on this Worker, which is where its log is read. */
+    logUrl: string;
+  };
+}
+
+/**
+ * How long Stratum waits for the executor's report on a deploy job dispatched
+ * now: the job's own limit, the longest it may wait for a slot, and room for
+ * the report. Also the lease on the deployment row.
+ */
+export function deployJobAllowanceMs(timeoutSeconds: number): number {
+  return timeoutSeconds * 1000 + CI_QUEUE_ALLOWANCE_MS + CI_REPORT_ALLOWANCE_MS;
+}
+
+/**
+ * Submit one deploy job. Returns `null` when the executor accepted it (running
+ * or queued), or why it did not — a reason safe to store and show.
+ */
+export async function submitDeployJob(
+  config: Extract<CiExecutorConfig, { status: "configured" }>,
+  logger: Logger,
+  dispatch: DeployJobDispatch,
+): Promise<string | null> {
+  return postExecutorJob(config, logger, dispatch, dispatch.deploymentId);
+}
+
+/**
+ * Sign a dispatch and POST it to `<executor>/jobs`. `ref` only labels the log
+ * line: the change or deployment the job is for.
+ */
+async function postExecutorJob(
+  config: Extract<CiExecutorConfig, { status: "configured" }>,
+  logger: Logger,
+  dispatch: { event: string },
+  ref: string,
+): Promise<string | null> {
   const body = JSON.stringify(dispatch);
   const signature = await hmacSha256Hex(config.secret, body);
   const sent = await sendWithTimeout(
@@ -298,7 +375,11 @@ export async function submitCiJob(
     }),
   );
   if ("failure" in sent) {
-    logger.warn("CI job submission failed", { changeId: dispatch.changeId, error: sent.detail });
+    logger.warn("Executor job submission failed", {
+      event: dispatch.event,
+      ref,
+      error: sent.detail,
+    });
     return sent.failure === "timeout"
       ? `the CI executor did not answer within ${EXECUTOR_REQUEST_TIMEOUT_MS}ms`
       : "the CI executor could not be reached";
@@ -319,7 +400,9 @@ export async function submitCiJob(
     detail = "";
   }
   if (response.status === 429) {
-    return `the CI executor is at capacity${detail ? ` (${detail})` : ""}; re-run the check once running jobs have finished`;
+    return dispatch.event === "deploy.requested"
+      ? `the CI executor is at capacity${detail ? ` (${detail})` : ""}; retry the deployment once running jobs have finished`
+      : `the CI executor is at capacity${detail ? ` (${detail})` : ""}; re-run the check once running jobs have finished`;
   }
   return `the CI executor answered HTTP ${response.status}${detail ? ` (${detail})` : ""}`;
 }

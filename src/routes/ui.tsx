@@ -95,7 +95,12 @@ import { ActivityPage } from "../ui/pages/activity";
 import { BranchesPage } from "../ui/pages/branches";
 import { ChangeDetailPage } from "../ui/pages/change-detail";
 import { ChangesPage } from "../ui/pages/changes";
-import { DeploymentDetailPage, DeploymentsPage } from "../ui/pages/deployments";
+import {
+  DeploymentDetailPage,
+  DeploymentsPage,
+  RollbackConfirmPage,
+  canRollBackTo,
+} from "../ui/pages/deployments";
 import { ErrorPage } from "../ui/pages/error";
 import { FileViewerPage } from "../ui/pages/file-viewer";
 import { HomePage } from "../ui/pages/home";
@@ -2716,6 +2721,45 @@ app.get("/:namespace/:slug/deployments/:id", async (c) => {
       canWrite={canWrite}
       user={user}
     />,
+  );
+});
+
+// GET /:namespace/:slug/deployments/:id/rollback — Confirm a rollback (#416)
+//
+// The page a rollback is confirmed on, so the control works without
+// JavaScript. It only renders a form: the POST it submits to is where the
+// rollback is authorized, so this route's own check is about not offering a
+// page to someone the POST would refuse. Same rule as the POST: a project
+// writer who is a user, never an agent.
+app.get("/:namespace/:slug/deployments/:id/rollback", async (c) => {
+  const { namespace, slug, id } = c.req.param();
+  const userId = c.get("userId");
+  const logger = createLogger({ path: c.req.path, userId });
+
+  if (!isValidNamespace(namespace) || !isValidSlug(slug)) return c.notFound();
+
+  const loaded = await loadProjectPage(c, logger);
+  if ("response" in loaded) return loaded.response;
+  const { project, user } = loaded;
+
+  if (!userId || !(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId))) {
+    return c.html(errorPage(404, `Project '${namespace}/${slug}' not found.`, user), 404);
+  }
+
+  const result = await getDeployment(c.env.DB, logger, { projectId: project.id, deploymentId: id });
+  if (!result.success) {
+    logger.error("Failed to get deployment", result.error);
+    return c.html(errorPage(500, "Error loading deployment. Please try again.", user), 500);
+  }
+  if (!result.data) {
+    return c.html(errorPage(404, `Deployment '${id}' not found.`, user), 404);
+  }
+  if (!canRollBackTo(result.data)) {
+    return c.redirect(`/${namespace}/${slug}/deployments/${id}`, 302);
+  }
+
+  return c.html(
+    <RollbackConfirmPage project={projectRef(project)} deployment={result.data} user={user} />,
   );
 });
 

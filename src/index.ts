@@ -33,7 +33,11 @@ import { changesRouter } from "./routes/changes";
 import { changeChecksRouter, checkCallbackRouter } from "./routes/checks";
 import { cspReportRouter } from "./routes/csp-report";
 import { deletionJobsRouter } from "./routes/deletion-jobs";
-import { deploymentsRouter, projectDeploymentsRouter } from "./routes/deployments";
+import {
+  deployCallbackRouter,
+  deploymentsRouter,
+  projectDeploymentsRouter,
+} from "./routes/deployments";
 import { emailAuthRouter } from "./routes/email-auth";
 import { gitHttpRouter } from "./routes/git-http";
 import { githubAppRouter } from "./routes/github-app";
@@ -285,6 +289,10 @@ app.route("/api/projects", mirrorRouter);
 // for the same reason. Deliberately NOT mounted in the MCP dispatcher.
 app.route("/api/projects", resyncRouter);
 app.route("/api/projects", projectsRouter);
+// The CI executor's signed report on a pipeline deployment (#416). Its own
+// prefix, like /api/checks: it is outside the surfaces a project- or org-bound
+// token may reach, so one is refused before routing.
+app.route("/api/deploy-reports", deployCallbackRouter);
 app.route("/api/deployments", deploymentsRouter);
 app.route("/api/workspaces", workspacesRouter);
 // Ahead of usersRouter, which also claims /api/users (#256).

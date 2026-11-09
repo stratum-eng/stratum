@@ -31,16 +31,21 @@
 import { Hono } from "hono";
 import type { DeployQueueMessage } from "../deploy/runner";
 import { recordDeployRequest } from "../queue/deploy-queue";
+import { ciExecutorConfig, fetchCiLog } from "../services/ci-executor";
+import { MAX_DEPLOY_REPORT_BODY_BYTES, applyDeployReport } from "../services/deploy-reports";
 import { recordAudit } from "../storage/audit";
 import {
   DEPLOYMENT_STATUSES,
   type Deployment,
   type DeploymentStatus,
+  PIPELINE_TARGET,
   TERMINAL_DEPLOYMENT_STATUSES,
+  UNRESOLVED_TARGET,
   approveDeployment,
   findDeploymentById,
   insertDeployment,
   listDeployments,
+  nextDeploymentAttempt,
 } from "../storage/deployments";
 import {
   DEPLOY_SECRET_KEY_MISSING,
@@ -62,8 +67,9 @@ import {
   refuseProjectAccess,
 } from "../utils/authz";
 import { AppError } from "../utils/errors";
+import { getWaitUntil } from "../utils/execution-ctx";
 import { type Logger, createLogger } from "../utils/logger";
-import { readJsonWithLimit } from "../utils/request-body";
+import { readJsonWithLimit, readTextWithLimit } from "../utils/request-body";
 import {
   appError,
   badRequest,
@@ -71,6 +77,7 @@ import {
   internalError,
   notFound,
   ok,
+  payloadTooLarge,
   unauthorized,
 } from "../utils/response";
 import type { Result } from "../utils/result";
@@ -713,6 +720,15 @@ deploymentApp.post("/:id/retry", async (c) => {
     );
   }
 
+  // A pipeline environment that waited for a person the first time waits for
+  // one again. A retry row starts `queued`, so without this an agent could
+  // re-run an approved production deployment — of any earlier commit — with
+  // nobody approving it. A user who may approve is that approval; an agent's
+  // retry goes back to `pending_approval`. (Static targets keep the behaviour
+  // they have always had.)
+  const gated = deployment.target === PIPELINE_TARGET && deployment.approvedBy !== undefined;
+  const retryStatus: DeploymentStatus = gated && !userId ? "pending_approval" : "queued";
+
   const inserted = await insertDeployment(c.env.DB, logger, {
     projectId: project.id,
     project: project.name,
@@ -725,9 +741,12 @@ deploymentApp.post("/:id/retry", async (c) => {
     name: deployment.name,
     target: deployment.target,
     attempt: deployment.attempt + 1,
-    status: "queued",
+    status: retryStatus,
     requestedByType: agentId ? "agent" : "user",
     requestedById: agentId ?? userId ?? null,
+    approvedBy: gated && userId ? userId : null,
+    // Retrying a rollback is still a rollback, to the same deployment.
+    rollbackOf: deployment.rollbackOf ?? null,
   });
   if (!inserted.success) return appError(inserted.error);
 
@@ -750,7 +769,8 @@ deploymentApp.post("/:id/retry", async (c) => {
     deploymentId: retry.id,
   };
   try {
-    await queue.send(message);
+    // A retry that waits for approval is started by the approval, not by this.
+    if (retryStatus === "queued") await queue.send(message);
   } catch (error) {
     logger.error(
       "Retry row was created but could not be enqueued",
@@ -793,4 +813,290 @@ deploymentApp.post("/:id/retry", async (c) => {
   return ok({ deployment: toResponse(retry, true) }, 201);
 });
 
-export { projectApp as projectDeploymentsRouter, deploymentApp as deploymentsRouter };
+/** Whether a rollback form was submitted from the confirmation page. */
+function isConfirmed(value: unknown): boolean {
+  return value === "yes" || value === true;
+}
+
+/**
+ * POST /api/deployments/:id/rollback — Put an earlier deployment back
+ *
+ * Creates a NEW deployment of the same environment that redeploys what `:id`
+ * deployed, and queues it. It goes through everything an ordinary deployment
+ * does: it waits its turn for the environment, it is the newest intent for
+ * that environment (so older queued or waiting deployments are superseded),
+ * and it takes a slot on the executor like any deploy job. It never promotes
+ * to a later environment.
+ *
+ * Who: exactly the people who may approve a deployment — a project writer
+ * with a user identity. An agent token is refused. The rollback is its own
+ * approval, recorded as `approvedBy`, which is why it does not then wait at
+ * `pending_approval`.
+ *
+ * **It does not undo a database migration.** Migrations are forward-only; a
+ * rollback redeploys earlier code against the schema as it is now.
+ *
+ * A browser reaches this from a confirmation page, and a form post without
+ * `confirm=yes` is sent to that page instead of acting: the control works with
+ * JavaScript disabled, and cannot be triggered by a stray link or a
+ * double-submitted form from the history list.
+ */
+deploymentApp.post("/:id/rollback", async (c) => {
+  const logger = routeLogger(c);
+  const userId = c.get("userId");
+  if (!userId) return unauthorized("Only authenticated users can roll back a deployment");
+
+  const loaded = await loadDeployment(c, logger);
+  if ("response" in loaded) return loaded.response;
+  const { deployment, project } = loaded;
+
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId))) {
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Deployment", deployment.id),
+    );
+  }
+
+  const json = wantsJson(c);
+  const page = `/${project.namespace}/${project.slug}/deployments/${deployment.id}`;
+  if (!json) {
+    const form = await c.req.parseBody();
+    if (!isConfirmed(form.confirm)) return c.redirect(`${page}/rollback`, 302);
+  }
+
+  if (deployment.status !== "succeeded" || deployment.target === UNRESOLVED_TARGET) {
+    // Only something that was actually live can be put back.
+    return appError(
+      new AppError(
+        `Deployment is ${deployment.status}; only a succeeded deployment can be rolled back to`,
+        "DEPLOYMENT_NOT_ROLLBACKABLE",
+        409,
+      ),
+    );
+  }
+
+  const queue = c.env.DEPLOY_QUEUE;
+  if (!queue) {
+    return appError(
+      new AppError(
+        "Deployments are not enabled on this instance (DEPLOY_QUEUE is not configured)",
+        "DEPLOY_QUEUE_UNAVAILABLE",
+        503,
+      ),
+    );
+  }
+
+  const attempt = await nextDeploymentAttempt(c.env.DB, logger, {
+    projectId: project.id,
+    name: deployment.name,
+    commitSha: deployment.commitSha,
+  });
+  if (!attempt.success) return appError(attempt.error);
+
+  const inserted = await insertDeployment(c.env.DB, logger, {
+    projectId: project.id,
+    project: project.name,
+    // Carried so the runner can still refuse a commit whose change was reverted.
+    changeId: deployment.changeId ?? null,
+    commitSha: deployment.commitSha,
+    name: deployment.name,
+    target: deployment.target,
+    attempt: attempt.data,
+    status: "queued",
+    requestedByType: "user",
+    requestedById: userId,
+    approvedBy: userId,
+    // A rollback of a rollback puts back what THAT one put back.
+    rollbackOf: deployment.rollbackOf ?? deployment.id,
+  });
+  if (!inserted.success) return appError(inserted.error);
+  if (!inserted.data.inserted) {
+    return appError(
+      new AppError(
+        "Another retry or rollback of this deployment was started at the same moment; try again",
+        "DEPLOYMENT_RETRY_EXISTS",
+        409,
+      ),
+    );
+  }
+  const rollback = inserted.data.deployment;
+
+  const message: DeployQueueMessage = {
+    kind: "deployment",
+    projectId: project.id,
+    deploymentId: rollback.id,
+  };
+  try {
+    await queue.send(message);
+  } catch (error) {
+    logger.error(
+      "Rollback row was created but could not be enqueued",
+      error instanceof Error ? error : undefined,
+      { deploymentId: rollback.id, projectId: project.id },
+    );
+    const recorded = await recordDeployRequest(c.env, logger, { message, project: project.name });
+    if (!recorded) {
+      return internalError(
+        "Rollback was recorded but could not be started, and the request could not be saved for recovery",
+      );
+    }
+  }
+
+  await recordAudit(c.env.DB, logger, {
+    action: "deployment.rolled_back",
+    actorType: "user",
+    actorId: userId,
+    subject: rollback.id,
+    project,
+    detail: {
+      project: project.name,
+      name: rollback.name,
+      commitSha: rollback.commitSha,
+      attempt: rollback.attempt,
+      rollbackOf: rollback.rollbackOf,
+      version: deployment.version ?? null,
+    },
+  });
+
+  if (!json) {
+    return c.redirect(`/${project.namespace}/${project.slug}/deployments/${rollback.id}`, 302);
+  }
+  return ok({ deployment: toResponse(rollback, true) }, 201);
+});
+
+/** Most step logs one deployment can have: a pipeline environment's step limit. */
+const MAX_DEPLOY_LOG_STEPS = 16;
+
+/**
+ * GET /api/deployments/:id/log — A pipeline deployment's full log
+ *
+ * The steps' output as the executor kept it, one step after another. Project
+ * writers only, for the reason `logTail` is: a deploy log is whatever the
+ * project's deploy commands printed.
+ *
+ * The log lives in the executor's bucket and is served to this Worker alone,
+ * on a signed request; this route is where it is decided who may read it.
+ */
+deploymentApp.get("/:id/log", async (c) => {
+  const logger = routeLogger(c);
+  const loaded = await loadDeployment(c, logger);
+  if ("response" in loaded) return loaded.response;
+  const { deployment, project } = loaded;
+
+  if (
+    !(await canWriteProject(
+      c.env.DB,
+      project,
+      credentialBindingFrom(c),
+      c.get("userId"),
+      c.get("agentOwnerId"),
+    ))
+  ) {
+    return refuseProjectAccess(credentialBindingFrom(c), project, () =>
+      notFound("Deployment", deployment.id),
+    );
+  }
+  if (deployment.target !== PIPELINE_TARGET) {
+    return appError(
+      new AppError(
+        "Only a pipeline deployment has a step log; see the deployment's logTail",
+        "LOG_NOT_AVAILABLE",
+        404,
+      ),
+    );
+  }
+  const executor = ciExecutorConfig(c.env);
+  if (executor.status !== "configured") {
+    return appError(new AppError(executor.reason, "CI_EXECUTOR_UNAVAILABLE", 503));
+  }
+
+  // Steps are stored one object each, `<deployment id>-<index>`, and a step
+  // that never started has none: stop at the first gap.
+  const bodies: ReadableStream<Uint8Array>[] = [];
+  for (let index = 0; index < MAX_DEPLOY_LOG_STEPS; index++) {
+    const log = await fetchCiLog(executor, logger, `${deployment.id}-${index}`);
+    if (log.status === "unavailable") {
+      if (bodies.length > 0) break;
+      return appError(new AppError(log.reason, "CI_EXECUTOR_UNAVAILABLE", 503));
+    }
+    if (log.status === "missing" || log.body === null) break;
+    bodies.push(log.body);
+  }
+  if (bodies.length === 0) {
+    return appError(new AppError("No log is stored for this deployment yet", "LOG_NOT_FOUND", 404));
+  }
+
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  const pump = (async () => {
+    for (const body of bodies) await body.pipeTo(writable, { preventClose: true });
+    await writable.close();
+  })().catch((error) => {
+    logger.warn("Deployment log stream ended early", {
+      deploymentId: deployment.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return writable.abort(error).catch(() => undefined);
+  });
+  // Keeps the copy alive after the response is returned. Without a context
+  // (a test, a sub-request) the stream is still pulled by whoever reads it.
+  getWaitUntil(c)?.(pump);
+  return new Response(readable, {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+      // A log is whatever the deploy commands printed; a browser must never
+      // treat it as a document.
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Cache-Control": "private, no-store",
+    },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The executor's report. Mounted at /api/deploy-reports.
+// ---------------------------------------------------------------------------
+
+const deployCallback = new Hono<{ Bindings: Env }>();
+
+/**
+ * POST /api/deploy-reports/:id — The CI executor reports a pipeline
+ * deployment's outcome.
+ *
+ * Like the check-run callback, it carries no Stratum credential: the HMAC
+ * over the body, made with the instance's `CI_EXECUTOR_SECRET`, is the
+ * authentication, and every failure before it verifies is the same `401`. It
+ * is mounted on the public app only, so no MCP tool call can reach it.
+ */
+deployCallback.post("/:id", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    path: c.req.path,
+    method: c.req.method,
+  });
+  const read = await readTextWithLimit(c, MAX_DEPLOY_REPORT_BODY_BYTES, logger);
+  if (read.tooLarge) {
+    return payloadTooLarge(`request body too large (max ${MAX_DEPLOY_REPORT_BODY_BYTES} bytes)`);
+  }
+  const outcome = await applyDeployReport(c.env, logger, {
+    deploymentId: c.req.param("id"),
+    rawBody: read.text,
+    signatureHeader: c.req.header("X-Stratum-Signature"),
+  });
+  switch (outcome.kind) {
+    case "unauthenticated":
+      return c.json({ error: "Invalid signature", code: "INVALID_SIGNATURE" }, 401);
+    case "invalid":
+      return c.json({ error: outcome.message, code: "INVALID_REPORT" }, 400);
+    case "conflict":
+      return c.json({ error: outcome.message, code: "DEPLOYMENT_NOT_RUNNING" }, 409);
+    case "error":
+      return internalError(outcome.message);
+    default:
+      return ok({ applied: true, status: outcome.deployment.status });
+  }
+});
+
+export {
+  projectApp as projectDeploymentsRouter,
+  deploymentApp as deploymentsRouter,
+  deployCallback as deployCallbackRouter,
+};
