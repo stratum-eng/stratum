@@ -155,6 +155,16 @@ It holds no D1 binding, no session store, and no deploy credential.
   approval only when `package.json` or the test configuration changes" cannot
   be expressed yet. That rule is the better fit and is listed below as a
   follow-up.
+
+  `requiredApprovals` needs a second person. Stratum records an agent's owner
+  as the author of the agent's change and does not count the author's own
+  approval. A project with one writer, whose agents author its changes, can
+  therefore merge nothing once `requiredApprovals` is set: the only person
+  able to approve is the one whose approval is excluded. Such a project either
+  adds a second reviewer with write access, or runs without
+  `requiredApprovals` and accepts that a change can alter what its own gate
+  runs. Stratum's own project has to make this choice before it gates on the
+  executor.
 - **Reconstructed, then verified.** The job clones at `baseSha`, applies the
   diff, and checks that the resulting tree is the head's tree before any step
   runs. A mismatch fails the job. The executor reads one repository at one
@@ -177,9 +187,14 @@ It holds no D1 binding, no session store, and no deploy credential.
     missing base refuses the merge.
   - **It is a check before the merge, not part of it.** The head is read, and
     then the merge runs. A second merge landing between the two is not caught.
-    Merges for one project are already serialized through a Durable Object, so
-    the fix is to make the comparison inside that serialized step; until that
-    is done the window exists and is small.
+    The fix is to make the comparison atomically with the ref update, on every
+    path that moves the default branch. There are three, and they differ: the
+    plain merge goes through a per-project Durable Object, where the comparison
+    can move inside the serialized step; a squash merge does not go through
+    that object; and a batch merge compares each of its changes with the head
+    it read at the start, so every change after the first is judged against a
+    head the batch has itself already moved. Until all three are covered the
+    window exists.
   - **A force merge bypasses it**, like every other protection, where the
     policy sets `allowForce`. A project that gates on the executor leaves
     `allowForce` off. Testing the proposed merge tree instead is the
@@ -280,8 +295,8 @@ what it is good at.
   per-project concurrency and monthly usage limits that sit under it.
 - Path-specific approval rules in the merge policy, so that a change touching
   gate-defining files needs approval without requiring it for every change.
-- Moving the fresh-base comparison inside the serialized merge step, which
-  makes it atomic with the merge.
+- Making the fresh-base comparison atomic with the ref update on all three
+  merge paths: plain, squash, and each item of a batch.
 - Whether to test the proposed merge tree (base tip plus the change) instead
   of the change's head, which would remove the dependence on
   `requireFreshBase`.
