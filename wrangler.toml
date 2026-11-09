@@ -16,6 +16,23 @@ main = "src/index.ts"
 compatibility_date = "2026-04-29"
 compatibility_flags = ["nodejs_compat"]
 
+# --- EU-only (or US-only) deployment ------------------------------------------
+# Follow "Deploying EU-only" in docs/user-guide/trust.md IN ORDER before the
+# first deploy; the pieces that live in this file are marked "EU-only:" below.
+# It is for a FRESH instance: every storage jurisdiction is fixed at creation,
+# and DO_JURISDICTION makes existing Durable Object state unreachable.
+#
+# EU-only: serve on a custom domain only. Cloudflare's Regional Services does
+# not cover *.workers.dev, so that hostname must not exist. `preview_urls` has
+# to be set explicitly as well — disabling workers_dev alone does not disable
+# version/preview URLs, which are served on workers.dev too.
+# These three are per environment. If you deploy with `--env <name>`, set them
+# inside [env.<name>] instead: the named environments below set
+# `workers_dev = true` and their own routes, and do not inherit these.
+# workers_dev = false
+# preview_urls = false
+# routes = [{ pattern = "stratum.example.eu", custom_domain = true }]
+
 # Durable Object migrations — defined once, inherited by all environments.
 [[migrations]]
 tag = "v1"
@@ -55,6 +72,10 @@ enabled = true
 head_sampling_rate = 0.1
 
 # --- Bindings: replace the ids with your own Cloudflare resources -------------
+# EU-only: create the namespace with a jurisdiction BEFORE the first project
+# exists (REST API; see docs/user-guide/trust.md). A namespace that does not
+# exist yet is created automatically, unrestricted, by the first repo in it,
+# and a namespace's jurisdiction can never be changed.
 [[artifacts]]
 binding = "ARTIFACTS"
 namespace = "stratum"
@@ -62,6 +83,9 @@ namespace = "stratum"
 [[kv_namespaces]]
 binding = "STATE"
 id = "0000000000000000000000000000000a"  # replace: wrangler kv namespace create STATE
+# EU-only: npx wrangler@latest kv namespace create STATE --jurisdiction=eu
+# Covers where KV data is durably stored; Cloudflare says cached copies can
+# still sit outside the jurisdiction.
 
 # Request rate limits (src/middleware/rate-limit.ts). Counted per Cloudflare
 # location, in memory: a check costs no KV round trip, which the KV counter it
@@ -92,6 +116,8 @@ simple = { limit = 20, period = 60 }
 binding = "DB"
 database_name = "stratum"
 database_id = "00000000-0000-0000-0000-00000000000a"  # replace: wrangler d1 create stratum
+# EU-only: wrangler d1 create stratum --jurisdiction=eu
+# (not --location=weur: a location hint is best-effort, not a guarantee)
 migrations_dir = "migrations"
 
 [[analytics_engine_datasets]]
@@ -115,7 +141,12 @@ dataset = "stratum_requests"
 [[r2_buckets]]
 binding = "BACKUPS"
 bucket_name = "stratum-backups"
+# EU-only: wrangler r2 bucket create stratum-backups --jurisdiction=eu
+# and name the jurisdiction on EVERY r2 binding (REPO_OBJECTS too, if bound):
+# jurisdiction = "eu"
 
+# EU-only: Cloudflare documents no location control for Workers AI inference.
+# Remove this binding to keep the `llm` evaluator from running on it.
 [ai]
 binding = "AI"
 
@@ -139,6 +170,12 @@ name = "USAGE_METER"
 class_name = "UsageMeter"
 script_name = "stratum"
 
+# EU-only: create EVERY queue below, dead-letter queues included, with a
+# jurisdiction before the first deploy:
+#   npx wrangler@latest queues create <name> --jurisdiction eu
+# That restricts where Queues stores and processes the messages. It does NOT
+# restrict where this Worker's queue() handler runs — Cloudflare offers no
+# control for that, nor for the cron handlers under [triggers].
 [[queues.producers]]
 binding = "EVENTS_QUEUE"
 queue = "stratum-events"
@@ -249,6 +286,15 @@ DEV_LOGIN_ENABLED = "true"
 # cold path. Flip to "true" to enable the fast-forward ref authority (and to run
 # the benchmark "after" number). This is the kill switch / rollback.
 REPO_DO_ENABLED = "false"
+# EU-only: restrict every Durable Object (all four classes) to a Cloudflare
+# jurisdiction: "eu", "us" or "fedramp". Unset, or set to the empty string, =
+# no restriction. Otherwise the value must match exactly — any other non-empty
+# value makes every request answer 503 rather than run unrestricted. A
+# restricted namespace addresses DIFFERENT objects, so set this
+# before the first deploy and never change it afterwards. Named envs do NOT
+# inherit top-level vars: deploying with --env requires it in that env's
+# [env.<name>.vars] block too, or the deployed Worker is silently unrestricted.
+# DO_JURISDICTION = "eu"
 # Set these to your own host when self-hosting (and register the callback URLs
 # in your GitHub/Google OAuth apps):
 OAUTH_REDIRECT_URI = "http://localhost:8787/auth/github/callback"

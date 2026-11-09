@@ -631,6 +631,46 @@ opted in. The hosted instance sets it in both `[env.production.vars]` and
 environment you deploy. It is independent of `STRATUM_TELEMETRY_DISABLED`, which
 still switches telemetry off for everyone regardless of any account's setting.
 
+#### `DO_JURISDICTION`
+
+Restricts every Durable Object — all four classes — to a Cloudflare
+jurisdiction. Accepted values are `eu`, `us` and `fedramp`; unset (the default,
+and what production and staging run) means no restriction.
+
+```toml
+[vars]
+DO_JURISDICTION = "eu"
+```
+
+- **It is for a fresh deployment.** A jurisdiction-restricted namespace
+  addresses different objects than the unrestricted one, so setting or changing
+  this on a deployment that has already run leaves its existing Durable Object
+  state unreachable and still stored where it was. See
+  [Do not switch an existing deployment](../user-guide/trust.md#do-not-switch-an-existing-deployment)
+  for what each class holds.
+- **The value must match exactly.** `EU`, `europe` or a value with whitespace is
+  rejected: `configGuardMiddleware` answers `503` to every request, `/health`
+  included, and logs the reason, and `durableObjectNamespace` throws in queue
+  and cron handlers when they reach for a Durable Object. A typo takes the
+  deployment down instead of leaving it unrestricted. The one value that is
+  not rejected is the empty string: `DO_JURISDICTION = ""` means unset, and the
+  deployment runs unrestricted.
+- **Named environments do not inherit it.** Like every var above, it must be
+  declared in each `[env.<name>.vars]` block you deploy. Set only under
+  top-level `[vars]`, it has no effect on `wrangler deploy --env=…`, and nothing
+  can warn about that — to the Worker, unset is the valid default.
+- **New Durable Object code must use the helper.** Read a namespace with
+  `durableObjectNamespace(env, "REPO_DO")` (`src/utils/durable-objects.ts`),
+  never `env.REPO_DO`. `tests/durable-object-jurisdiction.test.ts` fails on a
+  direct read, and on a binding added to `wrangler.toml` or `Env` without being
+  registered in `DURABLE_OBJECT_BINDINGS`.
+
+This variable is one step of several. The full, ordered procedure — storage
+jurisdictions, queues, `workers_dev = false`, Regional Services — and the list
+of what it cannot guarantee (queue consumers and cron handlers run wherever
+Cloudflare schedules them) is in
+[Deploying EU-only](../user-guide/trust.md#deploying-eu-only-self-hosted).
+
 ### Per-Environment Configuration
 
 ```typescript

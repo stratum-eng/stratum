@@ -327,6 +327,18 @@ export interface Env {
   MAX_BACKUP_BYTES?: string;
   /** Gates the RepoDO fast-forward path (ADR 004). Off -> classic cold merge. */
   REPO_DO_ENABLED?: string;
+  /**
+   * Restricts every Durable Object to a Cloudflare jurisdiction: `eu`, `us` or
+   * `fedramp`. Unset (the default) means no restriction.
+   *
+   * Read in exactly one place, `durableObjectNamespace`
+   * (src/utils/durable-objects.ts), which every call site goes through. A
+   * restricted namespace addresses DIFFERENT objects than the unrestricted one,
+   * so this is a setting for a fresh deployment: turning it on later strands
+   * existing Durable Object state (docs/user-guide/trust.md). An unsupported
+   * value makes every request answer 503 rather than run unrestricted.
+   */
+  DO_JURISDICTION?: string;
   /** "true" routes a `git push` to a project's default branch through the
    * change/eval gate (ADR 005 slice 2b) instead of refusing it. Staging-first
    * rollout flag; off in production until validated end-to-end. */

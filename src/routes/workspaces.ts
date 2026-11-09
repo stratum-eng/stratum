@@ -37,6 +37,7 @@ import {
   credentialBindingFrom,
   refuseProjectAccess,
 } from "../utils/authz";
+import { durableObjectNamespace } from "../utils/durable-objects";
 import { createLogger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 import {
@@ -608,10 +609,11 @@ app.post("/:name/commit", async (c) => {
           error: error instanceof Error ? error.message : String(error),
         });
       });
-      if (c.env.REPO_DO) {
+      const repoDo = durableObjectNamespace(c.env, "REPO_DO");
+      if (repoDo) {
         // Also seed the per-repo DO's local hot index so the batch-merge path reads
         // staged trees from SQLite (microseconds) instead of R2 (~30ms/change).
-        const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(project.id)) as unknown as {
+        const stub = repoDo.get(repoDo.idFromName(project.id)) as unknown as {
           stageTree(workspace: string, value: ArrayBuffer): Promise<void>;
         };
         await stub

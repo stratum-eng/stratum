@@ -1,5 +1,6 @@
 import { usageMeterName } from "../queue/usage-meter";
 import type { Env, ProjectEntry, WorkspaceEntry } from "../types";
+import { durableObjectNamespace } from "../utils/durable-objects";
 import { type AppError, toAppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
@@ -504,7 +505,14 @@ export async function deleteProjectCascade(
     // 4) Durable Objects. RepoDO is keyed by project.id; MergeQueue is keyed
     // by change.project (see routes/changes.ts), which historically holds the
     // bare name OR the id depending on the creating path — purge every form.
-    if (!(await purgeDurableObject(env.REPO_DO, target.projectId, "RepoDO", logger))) {
+    if (
+      !(await purgeDurableObject(
+        durableObjectNamespace(env, "REPO_DO"),
+        target.projectId,
+        "RepoDO",
+        logger,
+      ))
+    ) {
       residuals.push(`do:RepoDO:${target.projectId}`);
     }
     // Under a name collision the name/slug-addressed MergeQueue DO is shared with
@@ -518,7 +526,14 @@ export async function deleteProjectCascade(
       residuals.push("do:MergeQueue:name-forms-skipped(name-collision)");
     }
     for (const key of mergeQueueKeys) {
-      if (!(await purgeDurableObject(env.MERGE_QUEUE, key, "MergeQueue", logger))) {
+      if (
+        !(await purgeDurableObject(
+          durableObjectNamespace(env, "MERGE_QUEUE"),
+          key,
+          "MergeQueue",
+          logger,
+        ))
+      ) {
         residuals.push(`do:MergeQueue:${key}`);
       }
     }
@@ -966,7 +981,14 @@ async function resolveOrgOwnership(
   // is positively known to be paid), which is a different object this cannot
   // name. Purging a shared counter here would erase a stranger's allowance.
   const meterName = usageMeterName("org", org.id);
-  if (!(await purgeDurableObject(env.USAGE_METER, meterName, "UsageMeter", logger))) {
+  if (
+    !(await purgeDurableObject(
+      durableObjectNamespace(env, "USAGE_METER"),
+      meterName,
+      "UsageMeter",
+      logger,
+    ))
+  ) {
     // The orgs row is what a re-drive finds this org by (step 4 selects on
     // `owner_id`), so dropping it now would strand the counter permanently:
     // nothing would ever name `org:<id>` again, and the residual would name a
@@ -1088,7 +1110,14 @@ export async function deleteAccountCascade(
     // residual, which retains the users row for a re-drive rather than
     // stranding a counter under a deleted account.
     const userMeterName = usageMeterName("user", userId);
-    if (!(await purgeDurableObject(env.USAGE_METER, userMeterName, "UsageMeter", logger))) {
+    if (
+      !(await purgeDurableObject(
+        durableObjectNamespace(env, "USAGE_METER"),
+        userMeterName,
+        "UsageMeter",
+        logger,
+      ))
+    ) {
       residuals.push(`do:UsageMeter:${userMeterName}`);
     }
     // The private-project charge index is keyed on the same subject and names

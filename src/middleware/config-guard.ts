@@ -1,6 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 import { parseLlmProviders } from "../evaluation/llm-providers";
 import type { Env } from "../types";
+import { parseDoJurisdiction } from "../utils/durable-objects";
 import { createLogger } from "../utils/logger";
 
 /**
@@ -89,17 +90,52 @@ export function llmProvidersConfigError(env: Pick<Env, "LLM_PROVIDERS">): string
   return null;
 }
 
+/**
+ * Returns a human-readable error when `DO_JURISDICTION` is set to something
+ * that is not a Durable Object jurisdiction, else null.
+ *
+ * Unlike its siblings this one is FATAL (see the middleware). The others
+ * describe a feature that is off when the operator thinks it is on; this one
+ * describes a residency restriction that is off when the operator thinks it is
+ * on, and the cost of carrying on is state written outside the region that
+ * cannot be moved back in afterwards.
+ */
+export function doJurisdictionConfigError(env: Pick<Env, "DO_JURISDICTION">): string | null {
+  const parsed = parseDoJurisdiction(env.DO_JURISDICTION);
+  return parsed.success ? null : parsed.error;
+}
+
 // Log the config problems at most once per isolate rather than on every request.
 let hasLoggedConfigError = false;
+let hasLoggedJurisdictionError = false;
 
 /**
  * Surfaces an incoherent RepoDO/R2, entitlements or LLM-provider configuration
  * loudly in Workers Logs on the first request after a bad deploy, instead of
- * only when a later merge throws — or, for entitlements, never. Non-fatal:
- * reads and the UI still work in every case, so we log rather than reject the
- * request.
+ * only when a later merge throws — or, for entitlements, never. Those three are
+ * non-fatal: reads and the UI still work in every case, so we log rather than
+ * reject the request. An unusable `DO_JURISDICTION` is the exception and
+ * rejects every request — see `doJurisdictionConfigError`.
  */
 export const configGuardMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  // Checked on every request, not behind the once-per-isolate flag below: the
+  // refusal has to apply to every request, and the check is a string compare.
+  // Only the log line is rate-limited.
+  const jurisdictionProblem = doJurisdictionConfigError(c.env);
+  if (jurisdictionProblem) {
+    if (!hasLoggedJurisdictionError) {
+      hasLoggedJurisdictionError = true;
+      createLogger({ component: "config-guard" }).error(jurisdictionProblem);
+    }
+    // 503 for everything, health check included, so a deploy with a mistyped
+    // jurisdiction fails its smoke test instead of serving traffic through
+    // unrestricted Durable Objects. The body names the variable and nothing
+    // else: the configured value stays in the logs.
+    return c.text(
+      "Service unavailable: DO_JURISDICTION is misconfigured. See the Worker logs.",
+      503,
+    );
+  }
   if (!hasLoggedConfigError) {
     // Set before the checks, not inside the `problems.length` branch: a
     // correctly configured deploy has no problems to log, so the flag would

@@ -192,4 +192,33 @@ describe("magic-link admission", () => {
     expect(names.filter((n) => n.startsWith("email:"))).toHaveLength(1);
     expect(names).toContain("ip:203.0.113.16");
   });
+
+  it("counts in the jurisdiction-restricted namespace when DO_JURISDICTION is set", async () => {
+    // A real call site, end to end: the unrestricted binding refuses every
+    // call, so the cap can only be enforced if the route went through
+    // `durableObjectNamespace` and addressed the EU subnamespace instead.
+    const restricted = makeMagicLinkLimiters();
+    const jurisdiction = vi.fn(() => restricted.namespace);
+    const unrestricted = {
+      jurisdiction,
+      idFromName: () => {
+        throw new Error("the unrestricted namespace was addressed");
+      },
+      get: () => {
+        throw new Error("the unrestricted namespace was addressed");
+      },
+    } as unknown as DurableObjectNamespace;
+    const { env, send } = makeHarness({ namespace: unrestricted });
+    env.DO_JURISDICTION = "eu";
+
+    for (let i = 0; i < EMAIL_LIMIT; i++) {
+      expect(rateLimited(await post(env, "restricted@example.com", "203.0.113.17"))).toBe(false);
+    }
+    // Refused, not failed open: the unrestricted namespace throwing would have
+    // been swallowed as "unavailable" and admitted this send.
+    expect(rateLimited(await post(env, "restricted@example.com", "203.0.113.17"))).toBe(true);
+    expect(send).toHaveBeenCalledTimes(EMAIL_LIMIT);
+    expect(jurisdiction).toHaveBeenCalledWith("eu");
+    expect(restricted.calls.some((call) => call.endsWith(".reserve"))).toBe(true);
+  });
 });
