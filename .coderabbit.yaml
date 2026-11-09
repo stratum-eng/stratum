@@ -1,0 +1,41 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# Merged into the CodeRabbit settings configured in its web UI, not a
+# replacement for them: without `inheritance: true` this file would override
+# every UI setting. Keep it to what has to live in version control.
+inheritance: true
+
+reviews:
+  pre_merge_checks:
+    custom_checks:
+      # The judgment half of the docs rule. The "Docs & Changelog" PR check
+      # (scripts/pr-docs.ts) enforces it by path; this catches behaviour
+      # changes outside those paths. Start in warning mode; switch to "error"
+      # once it has proven itself, which withholds approval until resolved.
+      - name: "User-facing changes are documented"
+        mode: "warning"
+        instructions: |
+          Pass/fail criteria for Stratum, an open-source code forge whose public docs are the
+          canonical pages under docs/user-guide/ and docs/api/ (published at docs.usestratum.dev).
+
+          FAIL when the PR changes something a user can observe and none of docs/user-guide/**
+          or docs/api/** is updated to match. User-observable means any of:
+          - an HTTP API route, request or response shape, status code, or error code
+          - an MCP tool, its arguments, or its results
+          - .stratum/policy.yaml keys or evaluator/policy behaviour
+          - a CLI command, flag, or output (cli/)
+          - configuration, environment variables, or limits a self-hoster sets
+          - a user-visible behaviour change made outside those places, for example in
+            src/services/ or src/storage/, such as a new limit, default, or failure mode
+
+          Also FAIL when docs/user-guide/** or docs/api/** describes behaviour this PR changes
+          and the page is left stale.
+
+          PASS when nothing user-observable changes (refactors, tests, CI, internal docs under
+          docs/developer/, docs/adr/, docs/runbooks/), or when the docs are updated to match.
+          Also PASS when the PR description has a line "No docs needed: <reason>" and the
+          reason is credible for the diff; if the reason does not hold up, FAIL and say why.
+
+          Do not count website/src/content/docs/** as documentation: it is generated from docs/
+          and edited copies are overwritten. When failing, name the user-facing change and the
+          docs page that should change.
