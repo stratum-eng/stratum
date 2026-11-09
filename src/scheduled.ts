@@ -10,6 +10,7 @@ import { sweepOverdueDeployments } from "./services/deploy-reports";
 import { runEvaluationHealthCheck } from "./services/evaluation-health";
 import { sweepStuckEvaluations } from "./services/evaluation-run";
 import { purgeExpiredAgentSignups } from "./storage/agent-signups";
+import { purgeExpiredLinkStates } from "./storage/github-app-link-states";
 import { cleanupOldImports } from "./storage/imports";
 import { sweepExpiredAuthorizationCodes } from "./storage/oauth";
 import { purgeExpiredOidcStates } from "./storage/sso";
@@ -27,6 +28,7 @@ export type ScheduledJob =
   | "oauth-code-sweep"
   | "oidc-state-purge"
   | "agent-signup-purge"
+  | "github-link-state-purge"
   | "evaluation-sweep"
   | "check-deadline-sweep"
   | "mirror-sweep"
@@ -94,6 +96,7 @@ export function jobsForCron(cron: string): ScheduledJob[] {
         "oidc-state-purge",
         "agent-signup-purge",
         "evaluation-health",
+        "github-link-state-purge",
       ];
     default:
       return [];
@@ -111,6 +114,7 @@ const JOB_RUNNERS: JobRunners = {
   "project-sync": (env) => syncAllProjects(env),
   "oidc-state-purge": (env, logger) => purgeExpiredOidcStates(env.DB, logger),
   "agent-signup-purge": (env, logger) => purgeExpiredAgentSignups(env.DB, logger),
+  "github-link-state-purge": (env, logger) => purgeExpiredLinkStates(env.DB, logger),
   "import-cleanup": (env, logger) => cleanupOldImports(env.DB, IMPORT_RETENTION_DAYS, logger),
   "oauth-code-sweep": (env, logger) => sweepExpiredAuthorizationCodes(env.DB, logger),
   "evaluation-sweep": (env, logger) => sweepStuckEvaluations(env, logger),

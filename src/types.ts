@@ -239,6 +239,16 @@ export interface Env {
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   /**
+   * The GitHub App's own OAuth client ID and secret — NOT the login OAuth
+   * app's `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`. Linking an installation
+   * sends the person through the app's user-to-server OAuth and asks GitHub
+   * what they manage right now (#442, src/github/user-access.ts). When either
+   * is unset, linking is refused outright: there is no weaker rule to fall
+   * back to. Existing links keep working and can still be removed.
+   */
+  GITHUB_APP_CLIENT_ID?: string;
+  GITHUB_APP_CLIENT_SECRET?: string;
+  /**
    * Operator bindings from a GitHub owner to the Stratum owner allowed to act
    * on its repos without an installation link: comma-separated
    * `githubOwner=org:<orgId>` / `githubOwner=user:<userId>` entries. Ids, not

@@ -102,10 +102,11 @@ export const BACKUP_TABLES: readonly string[] = [
   "project_secrets",
   "deployments",
   // GitHub App installations and their Stratum owner links (migration 059).
-  // Not reconstructible: the installer — the only proof that lets anyone link
-  // an installation — came from an `installation.created` webhook GitHub will
-  // not send again, so a restore without it leaves every installation
-  // unlinkable short of reinstalling the app. No foreign keys, so order is free.
+  // Not reconstructible: GitHub sends `installation.created` once, and a link
+  // can only be made to an installation that is recorded here, so a restore
+  // without this table leaves every installation unlinkable short of
+  // reinstalling the app — and drops the links projects are pushing through.
+  // No foreign keys, so order is free.
   "github_app_installations",
   // Which project is the canonical target of each GitHub repo (migration
   // 060). Re-derivable by re-claiming, but which project wins a repo after a
@@ -148,6 +149,12 @@ export const BACKUP_EXCLUDED_TABLES: readonly string[] = [
   // and holds no credential, only the hash of the agent's poll secret. The
   // account it creates is a normal `users` row, backed up as such.
   "agent_signups",
+  // The CSRF state of an installation-link round trip to GitHub, and the
+  // display-only list of what GitHub last said a session could link (migration
+  // 073). Both live ten minutes; a restored row is expired, and a restored
+  // state names a session hash no restored cookie would be trusted with.
+  "github_app_link_states",
+  "github_app_access_snapshots",
 ];
 
 const PAGE_SIZE = 500;

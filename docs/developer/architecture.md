@@ -445,11 +445,20 @@ routes only to the canonical project.
 The link is the guard against a confused deputy. A project's source URL is
 caller-controlled, so without it any user could import another tenant's repo
 and push to it through that tenant's installation. Links are made at
-`/github/app/setup` (the app's Setup URL) or `POST /api/github/installations/:id/link`.
-Proof of control is the installer recorded from the HMAC-verified
-`installation.created` webhook (`sender.id`), or the account itself for
-personal installations, matched against the caller's OAuth-verified
-`users.github_id`. Installation ids are cached in KV at
+`/github/app/setup`, whose forms post to `POST /api/github/installations/:id/link`.
+Proof of control is GitHub's answer at link time (#442,
+`src/github/user-access.ts`): the link request issues a single-use `state`
+bound to the browser session (`github_app_link_states`, migration 073) and
+sends the person through the app's user-to-server OAuth; `/github/app/callback`
+exchanges the code (`GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET`) and
+requires that `GET /user/installations` lists the installation and that the
+person is an active `admin` of the organization it is on
+(`GET /user/memberships/orgs/:org`), or is the personal account it is on. The
+token's user must also be the caller's OAuth-verified `users.github_id`. The
+token lives only in that request, is never written or logged, and is revoked
+on the way out. The installer recorded from the `installation.created` webhook
+(`sender.id`) is an audit fact and not an authorization input. Without the two
+variables linking is refused (501), never downgraded. Installation ids are cached in KV at
 `github_installation:{owner}/{repo}` (24 h TTL; "not installed" for 10 min) and
 invalidated by `installation` / `installation_repositories` webhooks; tokens at
 `github_inst_token:{installationId}` until 5 min before GitHub expires them.

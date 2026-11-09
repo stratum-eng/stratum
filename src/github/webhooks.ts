@@ -564,8 +564,8 @@ function installationFacts(
   }
   const sender = data.sender as { id?: unknown } | undefined;
   // Only the event that created the installation names its installer; any
-  // later sender is just whoever changed it, and must not become the person
-  // allowed to link it.
+  // later sender is just whoever changed it. The installer is kept for the
+  // audit trail only — it decides nothing about who may link (#442).
   const installer =
     eventType === "installation" && data.action === "created" && typeof sender?.id === "number"
       ? String(sender.id)
@@ -582,8 +582,9 @@ function installationFacts(
 /**
  * Keeps the installation record (migration 059) and the KV caches in step with
  * `installation` / `installation_repositories` events. These arrive through the
- * HMAC-verified endpoint, which is what lets the recorded installer serve as
- * proof of control when someone links the installation to a Stratum owner.
+ * HMAC-verified endpoint, which is what makes the record trustworthy as a
+ * description of the installation: which account it is on is what a link is
+ * later checked against, with GitHub, for the person asking (#442).
  *
  * Every action also invalidates KV: a stale positive or negative entry is
  * wrong either way, and a re-lookup is one cheap API call.
@@ -605,7 +606,7 @@ export async function handleInstallationChange(
     ...repoFullNames(data.repositories_added),
     ...repoFullNames(data.repositories_removed),
   ];
-  // A failed invalidation must not skip the D1 write either: the installer
+  // A failed invalidation must not skip the D1 write either: the installation
   // record is what the link flow reads, and GitHub does not redeliver after
   // our 200. Apply the write, then rethrow so the router records the failure.
   let invalidationFailure: { error: unknown } | undefined;

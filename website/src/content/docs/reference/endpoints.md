@@ -1527,14 +1527,52 @@ neither receive its events nor push or report to it, until the holder is
 deleted or loses its authorization. A promotion from a non-canonical project
 answers `409`.
 
-Linking proves control on GitHub, not just in Stratum: only the GitHub user who
-installed the app (or, for an installation on a personal GitHub account, that
-account) can link it, matched against the GitHub account linked to your Stratum
-account. Sign in with GitHub once to link one.
+Linking proves control on GitHub, not just in Stratum, and proves it **at the
+moment of linking**. Stratum sends you to GitHub to authorize the app, then asks
+GitHub what you manage right now:
 
-The app's **Setup URL** is `/github/app/setup`. GitHub sends you there after
-installing, and the page lists your installations with a form to link each one.
-It needs no JavaScript.
+- An installation on a GitHub **organization** can be linked by a current
+  **owner** of that organization: an active member whose role is `admin`.
+- An installation on a **personal** GitHub account can be linked by that
+  account.
+
+GitHub must also list the installation as one you can reach. An installation on
+any other kind of account (an enterprise) cannot be linked; use an
+[operator binding](#operator-bindings). Who installed the
+app is recorded for the audit trail and decides nothing: an owner who did not
+install it can link it, and someone who installed it and has since left the
+organization, or lost the owner role, cannot. The GitHub account that authorizes
+must be the one connected to your Stratum account; sign in with GitHub once to
+connect one.
+
+The answer is used for that one request. Stratum does not store the GitHub user
+token it is given, does not log it, and asks GitHub to revoke it before the
+request ends. A link, once made, is not re-checked when someone later leaves
+the GitHub organization; unlink it, or suspend or uninstall the app on GitHub.
+
+Linking is **off until the operator sets `GITHUB_APP_CLIENT_ID` and
+`GITHUB_APP_CLIENT_SECRET`** (the GitHub App's own client ID and secret, not the
+sign-in OAuth app's). Without both, every link attempt is refused with `501`
+`NOT_CONFIGURED`. There is no weaker rule to fall back to. Unlinking, and links
+that already exist, keep working.
+
+### The setup page
+
+`/github/app/setup` lists the installations linked to you or to an org you
+administer, with a form to link, move, or unlink each. It needs no JavaScript.
+
+- **Find installations I can link** asks GitHub which installations you manage
+  and lists them (up to 30), for that browser session, for ten minutes. The
+  list is a convenience: every link is still confirmed with GitHub when you
+  make it, and an installation it leaves out can be linked by its number.
+- Arriving with `?installation_id=N`, as GitHub sends you after installing,
+  offers that installation by number. Nothing about it is shown until GitHub
+  confirms it is yours.
+
+Each link is one round trip: the form posts to Stratum, Stratum redirects to
+GitHub's authorization page, and GitHub returns to `/github/app/callback`,
+which lands you back on the setup page with the outcome. If the app is already
+authorized for your GitHub account, GitHub returns at once without a prompt.
 
 Users only. These endpoints are unreachable with a project- or org-bound token.
 Acting on an organization (linking to it, unlinking from it, moving a link
@@ -1545,12 +1583,14 @@ second-factor policy. Otherwise the request is refused with `403`
 ### List installations
 `GET /api/github/installations`
 
-Installations you control on GitHub, plus those linked to you or to an org you
-administer.
+Installations linked to you or to an org you administer. A browser session
+also sees the installations GitHub said it could link the last time it asked
+from the setup page, for ten minutes; an API token never does.
 
 ```json
 {
   "githubLinked": true,
+  "linkingConfigured": true,
   "installations": [
     {
       "installationId": 777,
@@ -1564,6 +1604,12 @@ administer.
 }
 ```
 
+`linkingConfigured` is `false` when the operator has not set the two variables
+above. `canLink` means only that this caller may **start** a link (a browser
+session, with a GitHub account connected, on a deployment where linking is
+configured); GitHub is asked afresh every time. It is always `false` for an API
+token.
+
 ### Link an installation
 `POST /api/github/installations/{installationId}/link`
 
@@ -1571,19 +1617,65 @@ administer.
 { "org": "acme" }
 ```
 
-Omit `org` (or send `""`) to link it to your personal account. An org must be
-one you administer, or the request is a 400. An installation you can't prove
-control of is a 404, the same as one that doesn't exist. Each installation
-serves one Stratum owner. Moving an existing link is a 403 (`LINKED_ELSEWHERE`)
-unless you are also the current owner or an admin of the current owner's org,
-so having installed the app never lets you take a link away from the account
-its admins chose.
+Starts the round trip; it links nothing by itself. Omit `org` (or send `""`) to
+link the installation to your personal account. It needs a **browser session**:
+an API token cannot be walked through GitHub's authorization page.
 
-The installer is recorded once, when GitHub reports the installation, and is
-not re-checked against later org membership. If the person who installed the
-app leaves the GitHub organization, an organization owner should link the
-installation to the org (or suspend or uninstall the app on GitHub) so a stale
-installer cannot link it elsewhere.
+A form post is answered with a `303` to GitHub. A JSON request is answered with
+the URL to send the browser to:
+
+```json
+{ "ok": true, "authorizeUrl": "https://github.com/login/oauth/authorize?client_id=…&redirect_uri=…&state=…" }
+```
+
+Refused before anyone is sent to GitHub (a form post gets a `303` back to the
+setup page carrying the same code as `?notice=`, in lower case):
+
+| Status | `code` | Meaning |
+|--------|--------|---------|
+| `501` | `NOT_CONFIGURED` | The operator has not set `GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET` |
+| `403` | `BROWSER_REQUIRED` | The request was authenticated by a token, not a browser session |
+| `403` | `GITHUB_ACCOUNT_REQUIRED` | Your Stratum account has no GitHub account connected |
+| `400` | `BAD_TARGET` | `org` is not an org you administer |
+| `403` | `SECOND_FACTOR_REQUIRED` / `IP_NOT_ALLOWED` | The target org's policy is not met by this session |
+
+This request says nothing about the installation itself, so an installation id
+cannot be probed with it: an id that does not exist is answered the same as one
+that does.
+
+#### The callback
+`GET /github/app/callback`
+
+The GitHub App's **Callback URL**. GitHub returns here with a `code` and the
+`state` Stratum issued. The `state` is single-use, expires after ten minutes,
+and is bound to the browser session that started the link: presented twice, or
+in any other session, it is refused and nothing changes. Stratum then exchanges
+the code, checks your current access as described above, and redirects (`303`)
+to `/github/app/setup?notice=<code>`:
+
+| `notice` | Meaning |
+|----------|---------|
+| `linked` | The installation is linked |
+| `access_checked` | (From **Find installations I can link**) the list was refreshed |
+| `not_found` | GitHub does not list that installation for you, or it does not exist. The two are deliberately indistinguishable |
+| `not_authorized` | You do not manage the account it is installed on right now: GitHub lists it for you but you are not an owner of that organization (or are not that personal account), or you hold its Stratum link and GitHub no longer lists it for you |
+| `linked_elsewhere` | It is linked to a Stratum owner you do not hold. Moving a link takes the current owner, or an admin of the current owner's org, as well as control on GitHub |
+| `bad_target` | You stopped administering the target org while at GitHub |
+| `second_factor_required` / `ip_not_allowed` | An org policy on the target, or on the org the link is being moved away from, is not met |
+| `github_account_mismatch` | You authorized as a different GitHub account than the one connected to your Stratum account |
+| `authorization_denied` | You cancelled on GitHub |
+| `state_invalid` | The `state` was missing from this session, expired, or already used |
+| `github_unavailable` | GitHub could not be asked. Nothing is linked on a guess; try again |
+| `not_configured` | The operator removed the credentials mid-flight |
+
+Each installation serves one Stratum owner. Controlling the GitHub account
+never lets you take a link away from the Stratum account its admins chose:
+they unlink it first.
+
+A callback that carries a `code` but no `state` is the redirect GitHub makes
+straight after an install. Stratum does not redeem that code. It sends you to
+the setup page for that installation, where you link it with a round trip of
+your own.
 
 ### Unlink an installation
 `POST /api/github/installations/{installationId}/unlink`

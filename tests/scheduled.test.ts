@@ -15,6 +15,7 @@ const noopRunners: JobRunners = {
   "oidc-state-purge": () => Promise.resolve(),
   "agent-signup-purge": () => Promise.resolve(),
   "evaluation-health": () => Promise.resolve(),
+  "github-link-state-purge": () => Promise.resolve(),
   "import-cleanup": () => Promise.resolve(),
   "oauth-code-sweep": () => Promise.resolve(),
   "evaluation-sweep": () => Promise.resolve(),
@@ -39,6 +40,7 @@ describe("jobsForCron", () => {
       "oidc-state-purge",
       "agent-signup-purge",
       "evaluation-health",
+      "github-link-state-purge",
     ]);
     expect(jobs).not.toContain("backup");
   });

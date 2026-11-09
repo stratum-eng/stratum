@@ -35,6 +35,11 @@ export interface GitHubInstallation {
   accountId: string;
   /** GitHub's account type: "User" or "Organization". */
   accountType: string;
+  /**
+   * Who installed the app, from the `installation.created` webhook. An audit
+   * fact only: it is never an input to who may see or link the installation
+   * (#442) — that is decided by asking GitHub at link time.
+   */
   installerGithubId?: string;
   suspendedAt?: string;
   owner?: StratumOwnerRef;
@@ -197,30 +202,42 @@ export async function getInstallation(
 }
 
 /**
- * Installations a user may see on the setup page: ones they can prove control
- * of on GitHub, plus ones linked to them or to an org they administer.
+ * Installations a user may see on the setup page: ones linked to them or to an
+ * org they administer, plus ones GitHub said THIS session could link when it
+ * last asked (migration 073's display-only snapshot).
+ *
+ * Who installed the app is deliberately not a way onto this list (#442): the
+ * installer is an audit fact, and GitHub's current answer is the only thing
+ * that makes an unlinked installation someone's to link.
+ *
+ * @param db - D1 database
+ * @param user - The viewer
+ * @param sessionHash - SHA-256 of the viewer's session cookie; absent for a bearer credential
+ * @param logger - Request logger
+ * @returns The visible installations, by account login
  */
 export async function listInstallationsVisibleTo(
   db: D1Database,
-  user: { id: string; githubId?: string | undefined },
+  user: { id: string },
+  sessionHash: string | undefined,
   logger: Logger,
 ): Promise<Result<GitHubInstallation[], AppError>> {
   try {
     // Plain `?` placeholders with repeated binds, not numbered `?1`/`?2`:
     // node:sqlite on the engines-floor Node (22.13) cannot bind numbered
     // parameters (#340), and the test suite runs this SQL there.
-    const githubId = user.githubId ?? null;
     const { results } = await db
       .prepare(
         `SELECT * FROM github_app_installations
-          WHERE (? IS NOT NULL AND (installer_github_id = ?
-                 OR (account_type = 'User' AND account_id = ?)))
-             OR (stratum_owner_type = 'user' AND stratum_owner_id = ?)
+          WHERE (stratum_owner_type = 'user' AND stratum_owner_id = ?)
              OR (stratum_owner_type = 'org' AND stratum_owner_id IN
                   (SELECT org_id FROM org_members WHERE user_id = ? AND role = 'admin'))
+             OR installation_id IN
+                  (SELECT installation_id FROM github_app_access_snapshots
+                    WHERE session_hash = ? AND expires_at > ?)
           ORDER BY account_login`,
       )
-      .bind(githubId, githubId, githubId, user.id, user.id)
+      .bind(user.id, user.id, sessionHash ?? null, Math.floor(Date.now() / 1000))
       .all<InstallationRow>();
     return ok(results.map(rowToInstallation));
   } catch (error) {
@@ -230,20 +247,6 @@ export async function listInstallationsVisibleTo(
     });
     return err(storageError("Failed to list GitHub App installations", error));
   }
-}
-
-/**
- * Whether this GitHub identity controls the installation: it installed it,
- * or the installation is on its own personal account. Only a verified
- * `users.github_id` may be passed — that is what makes this a proof.
- */
-export function githubIdentityControls(
-  installation: GitHubInstallation,
-  githubId: string | undefined,
-): boolean {
-  if (!githubId) return false;
-  if (installation.installerGithubId === githubId) return true;
-  return installation.accountType === "User" && installation.accountId === githubId;
 }
 
 export async function linkInstallation(

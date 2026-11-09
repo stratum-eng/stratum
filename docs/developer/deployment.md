@@ -363,18 +363,36 @@ npx wrangler secret put GOOGLE_CLIENT_SECRET
 # downloads, so convert it first:
 #   openssl pkcs8 -topk8 -nocrypt -in app.private-key.pem -out app.pkcs8.pem
 #
-# Set the app's "Setup URL" to https://<host>/github/app/setup (tick "Redirect
-# on update"). An installation token is only used for projects whose owner the
-# installation is LINKED to there, or whom an operator binding below names.
+# An installation token is only used for projects whose owner the installation
+# is LINKED to at /github/app/setup, or whom an operator binding below names.
 # Without one of the two, any user could import another org's repo and act on
-# it with that org's installation. Only the GitHub user who installed the app
-# can link it (the installation.created webhook's sender), or, for an
-# installation on a personal GitHub account, that account's owner. An
-# installation on an ORGANIZATION made before this webhook handling existed
-# has no recorded installer: reinstall the app (preferred), or bind its owner
-# below. A personal-account installation can be linked as is.
+# it with that org's installation.
 npx wrangler secret put GITHUB_APP_ID
 npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app.pkcs8.pem
+# Linking is authorized by asking GitHub, at link time, what the person manages
+# NOW: a current owner of the GitHub org the app is installed on (or the
+# personal account itself) can link it; who installed it decides nothing. That
+# takes the app's user-to-server OAuth, so on the GitHub App's settings page:
+#   - "Callback URL": https://<host>/github/app/callback. Give each
+#     environment its own app: an app may list several callbacks, but GitHub's
+#     post-install redirect only ever goes to the first.
+#   - tick "Request user authorization (OAuth) during installation". GitHub
+#     then sends people to the Callback URL after installing and greys out the
+#     "Setup URL" field; the callback forwards them to /github/app/setup.
+#     (Left unticked, set "Setup URL" to https://<host>/github/app/setup with
+#     "Redirect on update". Linking works either way; it just asks for the
+#     authorization on the first link instead of during the install.)
+#   - no extra permissions: the two calls made with the user's token
+#     (GET /user/installations, GET /user/memberships/orgs/:org) need none.
+# Then set the app's own client ID and a client secret generated on that same
+# page. These are NOT GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET above, which
+# belong to the sign-in OAuth App. Until both are set, every link attempt is
+# refused with 501 NOT_CONFIGURED and the setup page says so; there is no
+# fallback rule. Existing links and unlinking keep working. The user token is
+# used inside the callback request only: never stored, never logged, revoked on
+# the way out.
+npx wrangler secret put GITHUB_APP_CLIENT_ID
+npx wrangler secret put GITHUB_APP_CLIENT_SECRET
 # Optional operator bindings: comma-separated githubOwner=org:<orgId> or
 # githubOwner=user:<userId> entries. Each lets that Stratum org or user (and,
 # for a user, their agents) act on that GitHub owner's repos without an
@@ -431,6 +449,10 @@ npx wrangler secret put GITHUB_CLIENT_ID --env=staging
 npx wrangler secret put GITHUB_CLIENT_SECRET --env=staging
 npx wrangler secret put GOOGLE_CLIENT_ID --env=staging
 npx wrangler secret put GOOGLE_CLIENT_SECRET --env=staging
+# The staging GitHub App's own client ID and secret (see above); its Callback
+# URL is https://<staging host>/github/app/callback.
+npx wrangler secret put GITHUB_APP_CLIENT_ID --env=staging
+npx wrangler secret put GITHUB_APP_CLIENT_SECRET --env=staging
 ```
 
 Each provider is independent, and neither blocks magic-link sign-in.
