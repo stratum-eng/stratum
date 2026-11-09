@@ -336,7 +336,16 @@ this procedure does not change that.
 The same steps apply to `us` or `fedramp` by substituting the jurisdiction,
 except Artifacts, which documents only `eu` and `us`.
 
-Do these in order. Steps 1–4 must be finished **before the first deploy**.
+Do these in order. Steps 1–5 must be finished **before the first deploy**.
+
+**Every name in steps 1 to 3 is the top-level template's**, which is what a
+bare `wrangler deploy` binds. A named environment binds different ones: for
+`[env.staging]` the bucket is `stratum-backups-staging`, the queues are
+`stratum-events-staging` and so on, and the D1 database and KV namespace
+have their own ids. Read the names out of the environment you will deploy,
+in `wrangler.toml`, and create exactly those. A resource created under
+another name is never used, and the deploy either fails or binds an
+existing resource that has no jurisdiction.
 
 1. **Create the storage with an EU jurisdiction.** The `--jurisdiction` flag on
    `kv namespace create` and `queues create` needs a recent Wrangler (present in
