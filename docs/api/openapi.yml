@@ -645,6 +645,57 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/projects/{namespace}/{slug}/tags:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+    get:
+      operationId: listProjectTags
+      tags: [projects]
+      summary: List the repository's tags
+      description: >
+        Reads the remote's ref advertisement, so a listing normally does not
+        clone the repository. An annotated tag listed for the first time has its
+        message, tagger and date read by cloning once; they are kept after that.
+        Capped at 200, keeping the highest-sorting names; `truncated` reports
+        when the list was cut.
+      security: [{ bearerAuth: [] }, {}]
+      responses:
+        "200":
+          description: Tag listing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  namespace: { type: string }
+                  slug: { type: string }
+                  path: { type: string }
+                  tags:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        oid:
+                          type: string
+                          description: The tag object for an annotated tag, the target for a lightweight one.
+                        targetSha:
+                          type: [string, "null"]
+                          description: The commit the tag resolves to, or null when it could not be determined.
+                        annotated: { type: boolean }
+                        message: { type: string }
+                        tagger: { type: string }
+                        timestamp:
+                          type: integer
+                          description: Tagger time in epoch seconds.
+                        unresolvable: { type: boolean }
+                  truncated: { type: boolean }
+                  totalTagCount: { type: integer }
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /api/projects/{namespace}/{slug}/branches:
     parameters:
       - $ref: "#/components/parameters/Namespace"
