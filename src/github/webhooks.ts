@@ -19,6 +19,7 @@ import {
   upsertInstallation,
 } from "../storage/github-installations";
 import { createImportJob, getLatestImportDepth } from "../storage/imports";
+import { isPushMirrorEnabled } from "../storage/push-mirrors";
 import { getWorkspace } from "../storage/state";
 import { getSyncStatus, setSyncInProgress } from "../storage/sync";
 import { type Env, projectDefaultBranch } from "../types";
@@ -118,6 +119,17 @@ async function handlePush(
   }
 
   const project = projectResult.data;
+
+  // Forge mode (#417): a project that mirrors TO this repository does not sync
+  // FROM it. Its own mirror pushes arrive here as push events, and so would a
+  // commit someone made directly on GitHub — which is divergence for the
+  // mirror to report, not history for a webhook to pull in unreviewed.
+  if (await isPushMirrorEnabled(env.DB, logger, project.id)) {
+    logger.debug("Project mirrors to this repo; skipping webhook-triggered sync", {
+      projectId: project.id,
+    });
+    return;
+  }
 
   // Resolve once, up front: the guard and the queued job must agree on which
   // branch is "default". Comparing against the raw sourceDefaultBranch while

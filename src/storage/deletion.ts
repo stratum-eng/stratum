@@ -91,6 +91,10 @@ const PROJECT_ID_ONLY_TABLES = [
   // GitHub issue import (migration 071): the run log and the number map.
   "github_issue_imports",
   "github_issue_map",
+  // Push mirror (migration 075): left behind, the row would keep its target
+  // repository reserved (one mirror per repo) and keep the sweep nudging a
+  // project that no longer exists.
+  "push_mirrors",
 ] as const;
 
 /** Tables keyed by the globally-unique (namespace, slug) tuple. */

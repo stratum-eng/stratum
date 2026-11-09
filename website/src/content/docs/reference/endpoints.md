@@ -125,6 +125,84 @@ Capped at 200, keeping the highest-sorting names; `truncated` says so explicitly
 and `totalTagCount` is the number the repository actually has. Readable by anyone
 who can read the project.
 
+### Push mirror
+
+Keeps a GitHub repository a read-only, fast-forward-only copy of the project's
+default branch and tags. The [push mirror guide](/guides/push-mirror/)
+covers setup, the GitHub App permissions it needs, and recovery.
+
+Every endpoint is for **project admins**: the project's owner, or an owner or
+admin of the organization that owns it. A writer who is not an admin gets `403`,
+anyone else `404`, and an agent `401`.
+
+#### Get the mirror
+`GET /api/projects/{namespace}/{slug}/mirror`
+
+```json
+{
+  "mirror": {
+    "repo": "acme/widgets",
+    "url": "https://github.com/acme/widgets",
+    "enabled": true,
+    "state": "ok",
+    "pending": false,
+    "lastPushedSha": "9f2c1e7a…",
+    "lastPushedAt": "2026-11-09T10:15:02.000Z",
+    "lastAttemptAt": "2026-11-09T10:15:00.000Z",
+    "lastError": null,
+    "nextAttemptAt": null,
+    "attempts": 0
+  }
+}
+```
+
+`mirror` is `null` when the project has none. `state` is one of `idle`,
+`pushing`, `ok`, `retrying`, `failed`, `diverged`. `pending` is true while a
+push has been requested and has not completed.
+
+The same object is the `mirror` field of
+`GET /api/projects/{namespace}/{slug}/sync/status`, for anyone who can read the
+project. Readers without write access do not get `lastError`, `nextAttemptAt`
+or `attempts`.
+
+#### Configure the mirror
+`PUT /api/projects/{namespace}/{slug}/mirror`
+
+```json
+{ "repo": "acme/widgets", "enabled": true }
+```
+
+`repo` is `owner/repository` on GitHub. `enabled` defaults to `true`. `POST` to
+the same path does the same thing.
+
+An enabled mirror is checked against GitHub before it is saved, and saving
+queues a push. Enabling a mirror also stops the project syncing from its source
+and promoting changes to GitHub pull requests (`409 PUSH_MIRROR_ENABLED` on
+those endpoints).
+
+| Status | `code` | Meaning |
+|---|---|---|
+| `400` | `invalid-repo` | `repo` is not `owner/repository` |
+| `403` | `not-authorized` | The App installation is not linked to the project's owner |
+| `403` | `no-permission` | The App lacks **Contents: read and write** on the repository |
+| `409` | `not-installed` | The App is not installed on the repository |
+| `409` | `taken` | The repository is connected to another Stratum project |
+| `409` | `deleting` | The project is being deleted |
+| `502` | `github` | GitHub could not be reached |
+| `503` | `not-configured` | The GitHub App is not configured on this instance |
+
+#### Resume the mirror
+`POST /api/projects/{namespace}/{slug}/mirror/resume`
+
+Clears a `failed` or `diverged` state and queues a push. Returns `202` with the
+mirror. It never forces: a repository that is still diverged is reported as
+diverged again. On a healthy mirror it queues a push now.
+
+#### Remove the mirror
+`DELETE /api/projects/{namespace}/{slug}/mirror`
+
+Deletes the configuration and status. The GitHub repository is not changed.
+
 ### Browsing a branch
 
 `GET .../files`, `.../content`, and `.../log` accept `?ref=<branch>`, defaulting
@@ -1137,6 +1215,14 @@ installation. An installation that is neither linked nor covered by a binding
 grants nothing, and a caller the installation refuses is **not** handed the
 instance-wide `GITHUB_TOKEN` instead: that credential is reserved for owners the
 operator binds explicitly.
+
+A [push mirror](/guides/push-mirror/) uses the app too, and only
+the app: it never falls back to `GITHUB_TOKEN`. For each push it asks for an
+installation token limited to the mirror repository, so the app needs the
+**Contents: read and write** repository permission there, and **Workflows: read
+and write** if the project has files under `.github/workflows/`. A project that
+mirrors to a repository holds it as its canonical project, exactly as a project
+imported from it does.
 
 The same rule decides which project receives a repository's webhook events
 (push, pull request, review), and every repository has **one canonical

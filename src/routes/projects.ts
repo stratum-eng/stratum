@@ -64,6 +64,7 @@ import {
   releaseNamespaceClaim,
 } from "../storage/project-namespace";
 import { listProvenance } from "../storage/provenance";
+import { getPushMirror, isPushMirrorEnabled } from "../storage/push-mirrors";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import {
   getProjectById,
@@ -136,6 +137,7 @@ import {
   validateCloneDepth,
 } from "../utils/validation";
 import { renderNewProjectPage } from "./form-pages";
+import { type PushMirrorView, toPushMirrorView } from "./mirror";
 
 const DEFAULT_FILES: Record<string, string> = {
   "README.md": "# My Project\n\nCreated with Stratum.\n",
@@ -2536,6 +2538,24 @@ app.post("/:namespace/:slug/sync", async (c) => {
   }
 
   const project = projectResult.data;
+
+  // Forge mode (#417): with a push mirror enabled, GitHub is this project's
+  // read-only copy, not an upstream it follows. Pulling from it here would
+  // quietly make it a second place to write.
+  if (await isPushMirrorEnabled(c.env.DB, logger, project.id)) {
+    if (!isJson) {
+      return c.redirect(`/${namespace}/${slug}?sync=error&reason=push-mirror`);
+    }
+    return c.json(
+      {
+        error:
+          "This project mirrors to GitHub, so it does not sync from its source. Disable the mirror to sync again.",
+        code: "PUSH_MIRROR_ENABLED",
+      },
+      409,
+    );
+  }
+
   const sourceUrl = getProjectSourceUrl(project);
 
   if (!sourceUrl) {
@@ -2764,9 +2784,30 @@ app.get("/:namespace/:slug/sync/status", async (c) => {
   const sourceUrl = getProjectSourceUrl(project);
   const provider = getProjectProvider(project);
 
+  // Push mirror (#417). Anyone who can read the project sees where it is
+  // mirrored and how far the mirror has got; the failure detail and retry
+  // schedule are for people who can act on them.
+  const mirrorResult = await getPushMirror(c.env.DB, logger, project.id);
+  let mirror: Partial<PushMirrorView> | null = null;
+  if (mirrorResult.success && mirrorResult.data) {
+    const view = toPushMirrorView(mirrorResult.data);
+    if (await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)) {
+      mirror = view;
+    } else {
+      const {
+        lastError: _lastError,
+        nextAttemptAt: _nextAttemptAt,
+        attempts: _attempts,
+        ...rest
+      } = view;
+      mirror = rest;
+    }
+  }
+
   logger.debug("Sync status retrieved", { namespace, slug });
 
   return ok({
+    mirror,
     namespace,
     slug,
     sourceUrl,

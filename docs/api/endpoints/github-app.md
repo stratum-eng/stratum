@@ -12,6 +12,14 @@ grants nothing, and a caller the installation refuses is **not** handed the
 instance-wide `GITHUB_TOKEN` instead: that credential is reserved for owners the
 operator binds explicitly.
 
+A [push mirror](../../user-guide/push-mirror.md) uses the app too, and only
+the app: it never falls back to `GITHUB_TOKEN`. For each push it asks for an
+installation token limited to the mirror repository, so the app needs the
+**Contents: read and write** repository permission there, and **Workflows: read
+and write** if the project has files under `.github/workflows/`. A project that
+mirrors to a repository holds it as its canonical project, exactly as a project
+imported from it does.
+
 The same rule decides which project receives a repository's webhook events
 (push, pull request, review), and every repository has **one canonical
 project**. The first authorized project to act on a repository, or to receive

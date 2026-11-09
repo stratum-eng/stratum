@@ -1,4 +1,5 @@
 import type { FC } from "hono/jsx";
+import type { PushMirrorView } from "../../routes/mirror";
 import type { IssueImportRun } from "../../storage/github-issue-import";
 import type { ProjectSecretSummary } from "../../storage/project-secrets";
 import { FieldError, fieldAttrs } from "../components/field-error";
@@ -51,7 +52,36 @@ interface ProjectSettingsProps {
     latestRun: IssueImportRun | null;
     notice?: string;
   };
+  /**
+   * The push mirror card (#417), present only for project admins — the same
+   * people the mirror routes admit. `current` is null until one is configured;
+   * `notice` is the outcome of the last form post.
+   */
+  mirror?: {
+    current: PushMirrorView | null;
+    defaultBranch: string;
+    notice?: string;
+  };
   user?: { id: string; email: string; username: string } | null;
+}
+
+/** What a mirror state means, in the words the settings page uses. */
+function describeMirrorState(mirror: PushMirrorView): string {
+  if (!mirror.enabled) return "Disabled — nothing is pushed.";
+  switch (mirror.state) {
+    case "idle":
+      return mirror.pending ? "Waiting for its first push." : "Idle.";
+    case "pushing":
+      return "Pushing now.";
+    case "ok":
+      return mirror.pending ? "Up to date as of the last push; another is queued." : "Up to date.";
+    case "retrying":
+      return `The last push failed; retrying (attempt ${mirror.attempts + 1}).`;
+    case "failed":
+      return "Failed. The next merge retries it, or resume it below.";
+    case "diverged":
+      return "Diverged — the GitHub repository has history this project does not. Pushing is stopped until you resume the mirror.";
+  }
 }
 
 /** One line describing an import run's state, counters included. */
@@ -78,6 +108,7 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
   secretError,
   secretErrorField,
   issueImport,
+  mirror,
   user,
 }) => {
   const nameError = secretErrorField === "name" ? secretError : undefined;
@@ -122,6 +153,118 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
               Sync settings &amp; history
             </a>
           </div>
+        </div>
+      )}
+
+      {mirror && (
+        <div class="card" id="mirror">
+          <h3 style={{ marginTop: 0 }}>GitHub mirror</h3>
+          <p class="settings-help">
+            Keep a read-only copy of this project on GitHub. After every merge, Stratum pushes{" "}
+            <code>{mirror.defaultBranch}</code> and the project's tags to the repository below. It
+            only ever fast-forwards: it never force-pushes and never deletes a branch or tag there.
+            While the mirror is enabled the project does not sync from its source or open GitHub
+            pull requests.
+          </p>
+          {mirror.notice !== undefined && <p class="settings-help">{mirror.notice}</p>}
+          {mirror.current && (
+            <dl class="detail-list">
+              <dt>Status</dt>
+              <dd>
+                <strong>{mirror.current.state}</strong> — {describeMirrorState(mirror.current)}
+              </dd>
+              <dt>Mirror</dt>
+              <dd>
+                <a href={mirror.current.url} target="_blank" rel="noopener noreferrer">
+                  {mirror.current.repo}
+                </a>
+              </dd>
+              <dt>Last pushed</dt>
+              <dd>
+                {mirror.current.lastPushedSha !== null ? (
+                  <>
+                    <code>{mirror.current.lastPushedSha.slice(0, 12)}</code>
+                    {mirror.current.lastPushedAt !== null &&
+                      ` at ${new Date(mirror.current.lastPushedAt).toLocaleString()}`}
+                  </>
+                ) : (
+                  "Nothing yet"
+                )}
+              </dd>
+              {mirror.current.lastAttemptAt !== null && (
+                <>
+                  <dt>Last attempt</dt>
+                  <dd>{new Date(mirror.current.lastAttemptAt).toLocaleString()}</dd>
+                </>
+              )}
+              {mirror.current.nextAttemptAt !== null && (
+                <>
+                  <dt>Next retry</dt>
+                  <dd>{new Date(mirror.current.nextAttemptAt).toLocaleString()}</dd>
+                </>
+              )}
+              {mirror.current.lastError !== null && (
+                <>
+                  <dt>Last error</dt>
+                  <dd class="settings-help-error">{mirror.current.lastError}</dd>
+                </>
+              )}
+            </dl>
+          )}
+          <form
+            method="post"
+            action={`/api/projects/${project.namespace}/${project.slug}/mirror`}
+            class="secret-form"
+          >
+            <div class="secret-field">
+              <label>
+                GitHub repository
+                <input
+                  type="text"
+                  name="repo"
+                  placeholder="owner/repository"
+                  value={mirror.current?.repo ?? ""}
+                  required
+                  autocomplete="off"
+                />
+              </label>
+            </div>
+            <div class="secret-field">
+              <label>
+                Enabled
+                <input
+                  type="checkbox"
+                  name="enabled"
+                  checked={mirror.current ? mirror.current.enabled : true}
+                />
+              </label>
+            </div>
+            <button type="submit" class="btn">
+              {mirror.current ? "Save mirror" : "Set up mirror"}
+            </button>
+          </form>
+          {mirror.current && (
+            <div class="action-row">
+              <form
+                method="post"
+                action={`/api/projects/${project.namespace}/${project.slug}/mirror/resume`}
+              >
+                <button type="submit" class="btn">
+                  {mirror.current.state === "diverged" || mirror.current.state === "failed"
+                    ? "Resume mirror"
+                    : "Push now"}
+                </button>
+              </form>
+              <form
+                method="post"
+                action={`/api/projects/${project.namespace}/${project.slug}/mirror/delete`}
+              >
+                <button type="submit" class="btn btn-danger">
+                  Remove mirror
+                </button>
+              </form>
+            </div>
+          )}
         </div>
       )}
 

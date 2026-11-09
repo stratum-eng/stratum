@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { syncOrImportProject } from "../services/project-sync";
+import { isPushMirrorEnabled } from "../storage/push-mirrors";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { listProjects, setProject } from "../storage/state";
 import { checkForSyncUpdates, getProjectSourceUrl, updateProjectAfterSync } from "../storage/sync";
@@ -36,6 +37,14 @@ export async function syncAllProjects(
 
     const sourceUrl = getProjectSourceUrl(project);
     if (!sourceUrl) continue;
+
+    // Forge mode (#417): a project with a push mirror enabled publishes to
+    // GitHub and does not follow it, whatever its auto-sync flag still says
+    // from before the mirror was turned on.
+    if (await isPushMirrorEnabled(env.DB, logger, project.id)) {
+      skipped++;
+      continue;
+    }
 
     const projectLogger = logger.child({ projectName: project.name, sourceUrl });
 

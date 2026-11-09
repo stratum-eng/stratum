@@ -4,6 +4,7 @@ import { llmProviderCatalog } from "../evaluation/llm-providers";
 import type { EvalPolicy } from "../evaluation/types";
 import { resolveGitHubToken } from "../github/app-auth";
 import { GitHubClient } from "../github/client";
+import { requestPushMirror } from "../github/mirror";
 import { buildEvaluationReport, reportEvaluationToGitHub } from "../github/sync";
 import { runPostMergeCheck } from "../merge/post-merge";
 import { checkMergeProtection } from "../merge/protection";
@@ -56,6 +57,7 @@ import {
 import { parseRepoUrl } from "../storage/git-providers";
 import { projectPrincipal } from "../storage/github-installations";
 import { recordProvenance } from "../storage/provenance";
+import { isPushMirrorEnabled } from "../storage/push-mirrors";
 import { getProject, getWorkspace } from "../storage/state";
 import { getProjectSourceUrl } from "../storage/sync";
 import type { Change, Env, ProjectEntry } from "../types";
@@ -835,6 +837,14 @@ app.post("/changes/:id/merge", async (c) => {
       via: repoDo ? "repo-do" : "merge-queue",
     });
 
+    // Push mirror (#417). Asked for here, once the merge has landed, and before
+    // the post-merge check, which can run for minutes. The mirror pushes
+    // whatever the branch is when it runs, so asking early costs nothing if the
+    // check then reverts: the revert is a new commit on top, and is requested
+    // again below. Never throws, and a project with no mirror is one no-op
+    // UPDATE.
+    await requestPushMirror(c.env, logger, change.projectId ?? project.id, "change merged");
+
     if (force) {
       const auditResult = await recordAudit(c.env.DB, logger, {
         action: "merge.forced",
@@ -862,6 +872,10 @@ app.post("/changes/:id/merge", async (c) => {
     // `change.merged` event emitted above. That event fires before the check
     // runs, and a post-merge failure auto-reverts the merge, so an
     // event-triggered deploy would publish the commit Stratum just reverted.
+    if (postMergeViaQueue.status === "reverted") {
+      await requestPushMirror(c.env, logger, change.projectId ?? project.id, "merge reverted");
+    }
+
     await enqueueMergeDeploy(c.env, logger, {
       projectId: change.projectId ?? project.id,
       changeId: id,
@@ -1034,6 +1048,9 @@ app.post("/changes/:id/merge", async (c) => {
     commit,
   });
 
+  // Push mirror (#417): same placement and reasoning as the queue path above.
+  await requestPushMirror(c.env, logger, change.projectId ?? project.id, "change merged");
+
   if (force) {
     const auditResult = await recordAudit(c.env.DB, logger, {
       action: "merge.forced",
@@ -1054,6 +1071,10 @@ app.post("/changes/:id/merge", async (c) => {
     { changeId: id, mergeCommit: commit, policy: mergePolicy },
     logger,
   );
+
+  if (postMerge.status === "reverted") {
+    await requestPushMirror(c.env, logger, change.projectId ?? project.id, "merge reverted");
+  }
 
   // Same ordering constraint as the queue path above: the deploy trigger hangs
   // off the post-merge result, not the `change.merged` event, because a failed
@@ -1341,6 +1362,13 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   );
   if (!mergeResult.success) return internalError(mergeResult.error.message);
   const batchMs = Date.now() - tBatch;
+
+  // Push mirror (#417): the batch has been pushed to the project, so the
+  // default branch moved if anything in it merged. One request covers the
+  // whole batch — the mirror pushes the branch tip, not individual commits.
+  if (mergeResult.data.some((r) => r.merged)) {
+    await requestPushMirror(c.env, logger, project.id, "batch merged");
+  }
 
   // Bookkeeping after a durable push (deferred): status + provenance, and GC both the
   // SQLite hot index (DO) and the R2 mirror of the staged tree.
@@ -1923,6 +1951,21 @@ app.post("/changes/:id/github-pr", async (c) => {
   // of the codebase uses: sourceUrl wins. A project migrated off githubUrl
   // keeps the stale value, and this URL is what the branch is force-pushed to,
   // so preferring the legacy field would publish to the wrong repository.
+  // A project is in layer mode or forge mode, not both (#417). With a push
+  // mirror enabled its GitHub repository is a read-only copy: a pull request
+  // opened there could only ever be merged on GitHub, which is exactly the
+  // divergence the mirror then stops on.
+  if (await isPushMirrorEnabled(c.env.DB, logger, project.id)) {
+    return c.json(
+      {
+        error:
+          "This project mirrors to GitHub, so changes merge in Stratum and are not promoted to GitHub pull requests",
+        code: "PUSH_MIRROR_ENABLED",
+      },
+      409,
+    );
+  }
+
   const repoUrl = getProjectSourceUrl(project);
   if (!repoUrl) return badRequest("Project is not connected to GitHub");
   const parsedRepo = parseRepoUrl(repoUrl);

@@ -36,6 +36,7 @@ import {
   getRepoLink,
   replaceRepoLink,
 } from "../storage/github-repo-links";
+import { mirrorTargetsRepo } from "../storage/push-mirrors";
 import { getProjectByPath, listProjects } from "../storage/state";
 import type { Env, ProjectEntry } from "../types";
 import type { AppError } from "../utils/errors";
@@ -264,7 +265,7 @@ async function linkedProject(
 
 /**
  * May the current holder of a repo link keep it? It must still exist, still
- * point at the repo, and still be authorized through the owner binding or a
+ * point at the repo (as its source, or as its push-mirror target), and still be authorized through the owner binding or a
  * link to an installation on the owner's account. Any lookup failure keeps the
  * holder in place: displacing on an error would let a transient fault hand a
  * repo to someone else.
@@ -278,7 +279,17 @@ async function holderStillValid(
 ): Promise<boolean> {
   const holder = await linkedProject(env, link, logger);
   if (!holder.success) return true;
-  if (!holder.data || !sourceMatchesRepo(holder.data, owner, repo)) return false;
+  if (!holder.data) return false;
+  // A project points at a repo by importing from it or by mirroring to it
+  // (#417). Without the second, a mirror-only project — one with no source URL
+  // at all — would hold its target only until any other project named the same
+  // repo as a source, and then lose the right to push to its own mirror.
+  if (
+    !sourceMatchesRepo(holder.data, owner, repo) &&
+    !(await mirrorTargetsRepo(env.DB, logger, holder.data.id, owner, repo))
+  ) {
+    return false;
+  }
   const decision = await authorizeForRepo(
     env,
     owner,

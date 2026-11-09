@@ -111,7 +111,15 @@ export type AuditAction =
   | "org.ip_access_denied"
   // GitHub issue import (#421): copies a repository's issues into the project
   // using the instance's GitHub credential, so who started one is recorded.
-  | "issues.github_import_started";
+  | "issues.github_import_started"
+  // Push mirror (#417). Configuring one decides where a project's history is
+  // published, and resuming one is the only thing that clears a divergence, so
+  // both name who did it. `mirror.diverged` is written by the system when a
+  // push finds the target holding history the project does not.
+  | "mirror.configured"
+  | "mirror.removed"
+  | "mirror.resumed"
+  | "mirror.diverged";
 
 export interface AuditEntry {
   id: string;

@@ -86,6 +86,26 @@ export interface GitHubCallTarget {
    * naming the same repo cannot both push to it or report on it.
    */
   project?: RepoLinkProject;
+  /**
+   * Ask for a token that can reach ONLY `repo`, with only these permissions,
+   * instead of the installation-wide one.
+   *
+   * An installation token normally covers every repository the installation
+   * does. That is more than a job pushing to one repository should hold in
+   * memory beside a clone, so the push mirror narrows it. Setting this also
+   * makes the App the only acceptable credential: the instance PAT cannot be
+   * narrowed, so a call that asked for a narrow token never falls back to it.
+   */
+  repoScope?: {
+    permissions: Record<string, "read" | "write">;
+    /**
+     * Asked for when the installation has them, dropped when it does not.
+     * GitHub refuses the whole token request if it names one permission the
+     * App was not granted, so a permission that is only sometimes needed
+     * cannot go in `permissions` without breaking every App that lacks it.
+     */
+    optionalPermissions?: Record<string, "read" | "write">;
+  };
 }
 
 export type InstallationLookup = { installed: true; installationId: number } | { installed: false };
@@ -206,12 +226,16 @@ export async function createAppJwt(
 
 async function githubFetch(
   path: string,
-  init: { method: "GET" | "POST"; authorization: string },
+  init: { method: "GET" | "POST"; authorization: string; body?: unknown },
 ): Promise<Result<Response, AppError>> {
   try {
     const response = await fetch(`${GITHUB_API_BASE}${path}`, {
       method: init.method,
-      headers: githubHeaders(init.authorization),
+      headers: {
+        ...githubHeaders(init.authorization),
+        ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
       signal: AbortSignal.timeout(GITHUB_API_TIMEOUT_MS),
     });
     return ok(response);
@@ -328,23 +352,42 @@ async function mintInstallationToken(
   installationId: number,
   owner: string,
   repo: string,
+  repoScope?: GitHubCallTarget["repoScope"],
   nowMs: number = Date.now(),
 ): Promise<Result<InstallationToken, AppError>> {
-  const cached = parseCachedToken(await env.STATE.get(tokenKey(installationId)));
-  // KV expiry is eventually consistent, so the margin is re-checked here
-  // rather than trusted to have evicted a near-dead token.
-  if (cached && Date.parse(cached.expiresAt) - nowMs > TOKEN_EXPIRY_MARGIN_S * 1000) {
-    return ok(cached);
+  // A narrowed token is minted fresh and never cached: the cache is keyed by
+  // installation, and a narrow token stored there would be handed to the next
+  // caller that needs the whole installation (or the reverse).
+  if (!repoScope) {
+    const cached = parseCachedToken(await env.STATE.get(tokenKey(installationId)));
+    // KV expiry is eventually consistent, so the margin is re-checked here
+    // rather than trusted to have evicted a near-dead token.
+    if (cached && Date.parse(cached.expiresAt) - nowMs > TOKEN_EXPIRY_MARGIN_S * 1000) {
+      return ok(cached);
+    }
   }
 
   const jwt = await createAppJwt(env, nowMs);
   if (!jwt.success) return jwt;
 
-  const response = await githubFetch(`/app/installations/${installationId}/access_tokens`, {
-    method: "POST",
-    authorization: `Bearer ${jwt.data}`,
-  });
+  const requestToken = (permissions?: Record<string, "read" | "write">) =>
+    githubFetch(`/app/installations/${installationId}/access_tokens`, {
+      method: "POST",
+      authorization: `Bearer ${jwt.data}`,
+      ...(permissions ? { body: { repositories: [repo], permissions } } : {}),
+    });
+
+  const optional = repoScope?.optionalPermissions;
+  let response = await requestToken(
+    repoScope ? { ...repoScope.permissions, ...(optional ?? {}) } : undefined,
+  );
   if (!response.success) return response;
+  // 422 is GitHub refusing the SHAPE of the request: a permission the App was
+  // not granted. Try once more without the optional ones before giving up.
+  if (response.data.status === 422 && repoScope && optional && Object.keys(optional).length > 0) {
+    response = await requestToken(repoScope.permissions);
+    if (!response.success) return response;
+  }
 
   if (!response.data.ok) {
     const message = await githubErrorMessage(response.data);
@@ -352,6 +395,22 @@ async function mintInstallationToken(
       // The cached installation was uninstalled without us seeing the webhook.
       // Drop it so the next call re-resolves instead of failing forever.
       await env.STATE.delete(installationKey(owner, repo));
+    }
+    if (response.data.status === 422 && repoScope) {
+      // Still refused with only the required permissions: the App cannot do
+      // what was asked on this repository, and will not be able to in a minute.
+      return err(
+        new AppError(
+          `The GitHub App lacks a permission this needs on ${owner}/${repo} (${Object.entries(
+            repoScope.permissions,
+          )
+            .map(([name, level]) => `${name}: ${level}`)
+            .join(", ")}): ${message}`,
+          "GITHUB_APP_PERMISSION_DENIED",
+          403,
+          { installationId },
+        ),
+      );
     }
     return err(
       new AppError(
@@ -376,7 +435,7 @@ async function mintInstallationToken(
   }
 
   const ttl = Math.floor((Date.parse(expiresAt) - nowMs) / 1000) - TOKEN_EXPIRY_MARGIN_S;
-  if (ttl >= KV_MIN_TTL_S) {
+  if (!repoScope && ttl >= KV_MIN_TTL_S) {
     await env.STATE.put(tokenKey(installationId), JSON.stringify({ token, expiresAt }), {
       expirationTtl: ttl,
     });
@@ -413,9 +472,16 @@ export async function resolveGitHubToken(
       return ok({ ...appToken.data, source: "app" });
     }
     const { code } = appToken.error;
-    if (code === "GITHUB_APP_NOT_AUTHORIZED" || code === "GITHUB_REPO_NOT_CANONICAL") {
+    if (
+      code === "GITHUB_APP_NOT_AUTHORIZED" ||
+      code === "GITHUB_REPO_NOT_CANONICAL" ||
+      code === "GITHUB_APP_PERMISSION_DENIED"
+    ) {
       return appToken;
     }
+    // A caller that asked for a narrowed token gets the App's own answer —
+    // not installed, or a mint that failed — rather than a broader credential.
+    if (target.repoScope) return appToken;
     if (code === "GITHUB_APP_NOT_INSTALLED") {
       logger.debug("GitHub App not installed on repo", { owner, repo });
     } else {
@@ -426,6 +492,19 @@ export async function resolveGitHubToken(
         code,
       });
     }
+  }
+
+  if (target.repoScope) {
+    // The PAT is not a substitute for a narrowed token: it cannot be limited
+    // to one repository.
+    return err(
+      new AppError(
+        "This needs the GitHub App, which is not configured on this instance",
+        "GITHUB_APP_NOT_CONFIGURED",
+        400,
+        { owner, repo },
+      ),
+    );
   }
 
   if (!env.GITHUB_TOKEN) {
@@ -527,7 +606,7 @@ async function resolveAppToken(
   }
   const canonical = await requireCanonical(env, target, logger);
   if (!canonical.success) return canonical;
-  return mintInstallationToken(env, installationId, owner, repo);
+  return mintInstallationToken(env, installationId, owner, repo, target.repoScope);
 }
 
 /**

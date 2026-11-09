@@ -769,7 +769,7 @@ const DEFAULT_SHALLOW_DEPTH = 50;
 /** The shape `getRemoteInfo` nests advertised refs into: each `/`-separated
  * path segment of the ref becomes a nested key, with the oid (or symref
  * target) only at the leaf. See {@link flattenRefTree}. */
-type RemoteRefTree = { [segment: string]: string | RemoteRefTree };
+export type RemoteRefTree = { [segment: string]: string | RemoteRefTree };
 
 /**
  * `getRemoteInfo` builds an object TREE out of the flat ref list it gets from
@@ -781,7 +781,10 @@ type RemoteRefTree = { [segment: string]: string | RemoteRefTree };
  * expected). This walks the tree back down, rejoining segments with "/", to
  * recover the true `name -> oid` pairs regardless of nesting depth.
  */
-function flattenRefTree(node: RemoteRefTree | undefined, prefix = ""): Record<string, string> {
+export function flattenRefTree(
+  node: RemoteRefTree | undefined,
+  prefix = "",
+): Record<string, string> {
   const out: Record<string, string> = {};
   if (!node) return out;
   for (const [segment, value] of Object.entries(node)) {

@@ -1,4 +1,5 @@
 import { runBackup } from "./backup/run-backup";
+import { sweepPushMirrors } from "./github/mirror";
 import { sweepDeletionJobs } from "./queue/deletion-runner";
 import { sweepStaleEvents } from "./queue/event-consumer";
 import { runImportSweep } from "./queue/import-sweep";
@@ -25,7 +26,8 @@ export type ScheduledJob =
   | "oidc-state-purge"
   | "agent-signup-purge"
   | "evaluation-sweep"
-  | "check-deadline-sweep";
+  | "check-deadline-sweep"
+  | "mirror-sweep";
 
 /** How long a finished import job is kept before `import-cleanup` prunes it. */
 const IMPORT_RETENTION_DAYS = 30;
@@ -52,6 +54,10 @@ const IMPORT_RETENTION_DAYS = 30;
  *
  * `check-deadline-sweep` (#414) is a single indexed UPDATE: check runs still
  * `queued` or `running` past their deadline become `errored`.
+ *
+ * `mirror-sweep` (#417) re-sends push-mirror nudges the queue lost: one indexed
+ * query and a bounded batch of queue sends. With no mirror queue bound it
+ * pushes a few mirrors inline instead, which is the only way they move then.
  */
 export function jobsForCron(cron: string): ScheduledJob[] {
   switch (cron) {
@@ -63,6 +69,7 @@ export function jobsForCron(cron: string): ScheduledJob[] {
         "oauth-code-sweep",
         "evaluation-sweep",
         "check-deadline-sweep",
+        "mirror-sweep",
       ];
     case "0 4 * * *":
       return ["backup"];
@@ -94,6 +101,7 @@ const JOB_RUNNERS: JobRunners = {
   "oauth-code-sweep": (env, logger) => sweepExpiredAuthorizationCodes(env.DB, logger),
   "evaluation-sweep": (env, logger) => sweepStuckEvaluations(env, logger),
   "check-deadline-sweep": (env, logger) => sweepOverdueChecks(env, logger),
+  "mirror-sweep": (env, logger) => sweepPushMirrors(env, logger),
 };
 
 /**

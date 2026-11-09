@@ -28,6 +28,7 @@
     ["/", "Stratum documentation home"],
     ["/guides/getting-started/", "From zero to a merged, evaluation-gated change"],
     ["/guides/importing/", "Importing a repository from GitHub"],
+    ["/guides/push-mirror/", "Mirroring a project to GitHub: a read-only, fast-forward-only copy"],
     ["/guides/code-review/", "Comment threads, line anchors, and review verdicts"],
     ["/guides/issues/", "The built-in issue tracker"],
     ["/guides/ci-integration/", "Bring your own CI via the webhook evaluator"],

@@ -21,6 +21,7 @@ import { handleEvaluationQueue } from "./queue/evaluation-queue";
 import { handleEventQueue } from "./queue/event-consumer";
 import type { EventQueueMessage } from "./queue/events";
 import { handleImportQueue } from "./queue/import-queue";
+import { handleMirrorQueue } from "./queue/mirror-queue";
 import { agentSignupRouter } from "./routes/agent-signup";
 import { agentsRouter } from "./routes/agents";
 import { auditRouter, orgAuditRouter } from "./routes/audit";
@@ -43,6 +44,7 @@ import { loginRouter } from "./routes/login";
 import { mcpRouter } from "./routes/mcp";
 import { mcpOAuthRouter } from "./routes/mcp-oauth";
 import { metricsRouter } from "./routes/metrics";
+import { mirrorRouter } from "./routes/mirror";
 import { oauthSignupRouter } from "./routes/oauth-signup";
 import { orgSecurityRouter } from "./routes/org-security";
 import { orgSsoRouter } from "./routes/org-sso";
@@ -276,6 +278,8 @@ app.route("/api/projects", issuesRouter);
 // order, so the narrower :namespace/:slug/{secrets,deployments} paths have to be
 // offered first or the broader project routes shadow them.
 app.route("/api/projects", projectDeploymentsRouter);
+// Push mirror (#417): :namespace/:slug/mirror, ahead of projectsRouter like the above.
+app.route("/api/projects", mirrorRouter);
 app.route("/api/projects", projectsRouter);
 app.route("/api/deployments", deploymentsRouter);
 app.route("/api/workspaces", workspacesRouter);
@@ -383,6 +387,8 @@ export default {
       await handleEventQueue(batch as MessageBatch<EventQueueMessage>, env);
     } else if (queueName.startsWith("stratum-deploys")) {
       await handleDeployQueue(batch, env);
+    } else if (queueName.startsWith("stratum-mirrors")) {
+      await handleMirrorQueue(batch, env);
     } else if (queueName.startsWith("stratum-evaluations")) {
       await handleEvaluationQueue(
         batch,
