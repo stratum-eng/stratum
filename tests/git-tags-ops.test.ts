@@ -687,6 +687,27 @@ describe("listRepoTags", () => {
     ]);
   });
 
+  it("stops reading cached details at the first batch with a miss", async () => {
+    const advertisedTags: Record<string, string> = {};
+    for (let i = 0; i < 60; i++) {
+      const name = `t${String(i).padStart(3, "0")}`;
+      advertisedTags[name] = i.toString(16).padStart(40, "0");
+      advertisedTags[`${name}^{}`] = "a".repeat(40);
+    }
+    mockGetRemoteInfo.mockResolvedValue(remoteInfoWithTags(advertisedTags));
+    mockClone.mockRejectedValue(new Error("clone reached"));
+    const detailCache = { get: vi.fn(async () => null), put: vi.fn(async () => {}) };
+
+    const result = await listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+      detailCache,
+    });
+    // The miss sent the listing to the clone, without reading all 60 first.
+    expect(result.success).toBe(false);
+    expect(mockClone).toHaveBeenCalledTimes(1);
+    expect(detailCache.get.mock.calls.length).toBeLessThan(60);
+    expect(detailCache.get.mock.calls.length).toBeGreaterThan(0);
+  });
+
   it("stores what a clone read, so the next listing does not clone", async () => {
     let tagOid = "";
     let commitOid = "";

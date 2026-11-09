@@ -4388,6 +4388,9 @@ export type TagDetailCache = {
   put(oid: string, details: TagObjectDetails): Promise<void>;
 };
 
+/** Tag-detail cache reads kept in flight at once while building a listing. */
+const TAG_DETAIL_READ_BATCH = 20;
+
 /**
  * Builds a tag listing from the ref advertisement alone, or returns null when
  * it cannot: an annotated tag whose details are not in `cache`.
@@ -4401,19 +4404,30 @@ async function tagsFromAdvertisement(
   advertised: AdvertisedRefs,
   cache: TagDetailCache | undefined,
 ): Promise<RepoTagEntry[] | null> {
-  const entries = await Promise.all(
-    names.map(async (name): Promise<RepoTagEntry | null> => {
-      const oid = advertised.tags[name] as string;
-      const peeled = advertised.peeledTags[name];
-      if (peeled === undefined) {
-        return { name, oid, targetSha: oid, annotated: false, unresolvable: false };
-      }
-      const details = cache ? await cache.get(oid) : null;
-      if (details === null) return null;
-      return { name, oid, targetSha: peeled, annotated: true, ...details, unresolvable: false };
-    }),
-  );
-  return entries.every((entry): entry is RepoTagEntry => entry !== null) ? entries : null;
+  // In batches, stopping at the first miss: one uncached tag sends the whole
+  // listing to the clone, so reads past it are paid for and thrown away.
+  const entries: RepoTagEntry[] = [];
+  for (let start = 0; start < names.length; start += TAG_DETAIL_READ_BATCH) {
+    const batch = await Promise.all(
+      names
+        .slice(start, start + TAG_DETAIL_READ_BATCH)
+        .map(async (name): Promise<RepoTagEntry | null> => {
+          const oid = advertised.tags[name] as string;
+          const peeled = advertised.peeledTags[name];
+          if (peeled === undefined) {
+            return { name, oid, targetSha: oid, annotated: false, unresolvable: false };
+          }
+          const details = cache ? await cache.get(oid) : null;
+          if (details === null) return null;
+          return { name, oid, targetSha: peeled, annotated: true, ...details, unresolvable: false };
+        }),
+    );
+    for (const entry of batch) {
+      if (entry === null) return null;
+      entries.push(entry);
+    }
+  }
+  return entries;
 }
 
 /**
