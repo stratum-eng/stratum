@@ -8,11 +8,19 @@
 # evaluated; if it does not, the steps would be testing something nobody
 # reviewed, so nothing runs.
 #
+# A deploy job (STRATUM_JOB_PROFILE=deploy, #416) is simpler: it runs a commit
+# that is already on the default branch, so there is no diff to apply and no
+# tree to reproduce — git's own object ids are the proof that the checkout is
+# the commit that was asked for. Everything about the diff below is skipped,
+# and only in that mode: a CI job without HEAD_TREE_SHA still refuses to run.
+#
 # Exit codes: 0 ready; 3 the tree could not be reproduced; anything else, the
 # checkout could not be built at all.
 set -euo pipefail
 
-: "${BASE_SHA:?}" "${HEAD_TREE_SHA:?}"
+PROFILE="${STRATUM_JOB_PROFILE:-ci}"
+: "${BASE_SHA:?}"
+if [ "$PROFILE" != "deploy" ]; then : "${HEAD_TREE_SHA:?}"; fi
 REMOTE="${STRATUM_GIT_REMOTE:-https://git.stratum.internal/repo.git}"
 WORKSPACE="${STRATUM_WORKSPACE:-/workspace}"
 DIFF="${STRATUM_DIFF:-/job/change.diff}"
@@ -35,6 +43,15 @@ if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
   exit 4
 fi
 git checkout --quiet --detach "$BASE_SHA"
+
+if [ "$PROFILE" = "deploy" ]; then
+  if [ "$(git rev-parse HEAD)" != "$BASE_SHA" ]; then
+    echo "prepare: the checkout is not commit $BASE_SHA"
+    exit 4
+  fi
+  echo "prepare: checkout ready at commit $BASE_SHA"
+  exit 0
+fi
 
 # An empty diff is a change identical to its base; `git apply` refuses one.
 if [ -s "$DIFF" ]; then

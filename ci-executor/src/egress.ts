@@ -6,7 +6,7 @@
  * HERE, in the Worker, as a `fetch()` on one of the two entrypoints below.
  * Nothing leaves the container that this file did not send.
  *
- * Two rules shape both handlers:
+ * Two rules shape every handler:
  *
  * 1. An intercept is matched on the TLS server name, but the URL the handler
  *    sees is built from the `Host` header — which the code in the container
@@ -18,7 +18,7 @@
  *    URL Stratum named and nowhere a response points.
  */
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { GIT_HOST } from "./config";
+import { GIT_HOST, readDeploySecret } from "./config";
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -169,6 +169,89 @@ export async function handleAllowedEgress(
   }
 }
 
+export interface CredentialProxyProps {
+  /** The one hostname the credential is for. */
+  host: string;
+  /** NAME of the secret on this Worker. The value is never in props or storage. */
+  secret: string;
+}
+
+/**
+ * Headers a deploy job may not choose: anything that authenticates. The
+ * credential on the upstream request is the executor's, and only that one.
+ * The `x-auth-*` names are Cloudflare's other API authentication headers.
+ */
+const CREDENTIAL_HEADERS = [
+  "authorization",
+  "cookie",
+  "x-auth-key",
+  "x-auth-email",
+  "x-auth-user-service-key",
+];
+
+/**
+ * Send a deploy job's request to the one host a credential is for, with that
+ * credential attached here, outside the container (#416, ADR 012).
+ *
+ * The same rules as the repository proxy, for the same reason — the request's
+ * `Host` is written by code in the container, so reaching this handler proves
+ * nothing about where the request is meant to go:
+ *
+ * - the scheme must be https and the hostname exactly `props.host`;
+ * - the upstream URL is built from `props.host`, taking only the path and
+ *   query from the container;
+ * - whatever credential the container sent is dropped and replaced;
+ * - a redirect is never followed, and is not passed back either: the next hop
+ *   would not get the credential, so a tool that followed it would fail in a
+ *   way that reads as an authentication problem. It is refused by name.
+ *
+ * `token` is passed in so the function stays pure for tests; in the Worker it
+ * is read from the secret store for this one request.
+ */
+export async function handleCredentialedEgress(
+  request: Request,
+  props: CredentialProxyProps,
+  token: string | undefined,
+  fetchImpl: FetchLike = fetch,
+): Promise<Response> {
+  const url = httpsRequestUrl(request);
+  if (url === null) return refusal(400, "only https requests are allowed");
+  if (url.hostname !== props.host) {
+    return refusal(403, `this credential is for '${props.host}' and is sent nowhere else`);
+  }
+  if (token === undefined || token === "") {
+    return refusal(503, `deploy secret ${props.secret} is not set on the executor`);
+  }
+
+  const headers = new Headers(request.headers);
+  for (const name of [...HOP_BY_HOP, ...CREDENTIAL_HEADERS]) headers.delete(name);
+  headers.set("Authorization", `Bearer ${token}`);
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+
+  let response: Response;
+  try {
+    response = await fetchImpl(`https://${props.host}${url.pathname}${url.search}`, {
+      method: request.method,
+      headers,
+      body: hasBody ? request.body : null,
+      // Never "follow": the next hop would receive the Authorization header.
+      redirect: "manual",
+    });
+  } catch {
+    return refusal(502, `'${props.host}' could not be reached`);
+  }
+  if (response.status >= 300 && response.status < 400) {
+    return refusal(
+      502,
+      `'${props.host}' answered with a redirect, which is not followed with a credential`,
+    );
+  }
+
+  const out = new Headers(response.headers);
+  for (const name of [...HOP_BY_HOP, "set-cookie"]) out.delete(name);
+  return new Response(response.body, { status: response.status, headers: out });
+}
+
 /** The repository, as the container sees it. One instance per job, by props. */
 export class GitProxy extends WorkerEntrypoint<unknown, GitProxyProps> {
   override fetch(request: Request): Promise<Response> {
@@ -180,5 +263,20 @@ export class GitProxy extends WorkerEntrypoint<unknown, GitProxyProps> {
 export class EgressAllowlist extends WorkerEntrypoint<unknown, AllowlistProps> {
   override fetch(request: Request): Promise<Response> {
     return handleAllowedEgress(request, this.ctx.props);
+  }
+}
+
+/**
+ * A host a deploy job reaches with the executor's credential. Registered only
+ * by the deploy profile's own Durable Object class; the credential is read
+ * from this Worker's secret store per request and never enters a job.
+ */
+export class DeployCredentialProxy extends WorkerEntrypoint<unknown, CredentialProxyProps> {
+  override fetch(request: Request): Promise<Response> {
+    return handleCredentialedEgress(
+      request,
+      this.ctx.props,
+      readDeploySecret(this.env, this.ctx.props.secret),
+    );
   }
 }

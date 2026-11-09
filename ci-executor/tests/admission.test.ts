@@ -147,3 +147,74 @@ describe("slot release", () => {
     expect(admission().nextWake()).toBeNull();
   });
 });
+
+describe("deploy jobs", () => {
+  const DEPLOY = { ...REQUEST, priority: true };
+  const withDeploys = (maxConcurrent: number, maxQueued: number, maxQueuedPriority: number) =>
+    new Admission(emptyAdmissionState(), { maxConcurrent, maxQueued, maxQueuedPriority });
+
+  it("count against the same cap as CI jobs: there is no reserved slot", () => {
+    const a = withDeploys(2, 5, 2);
+    expect(a.submit("ci-1", REQUEST, T0).decision).toBe("start");
+    expect(a.submit("deploy-1", DEPLOY, T0).decision).toBe("start");
+    expect(a.submit("deploy-2", DEPLOY, T0).decision).toBe("queued");
+    expect(Object.keys(a.state.running)).toHaveLength(2);
+
+    // And with no deploys about, CI may use every slot.
+    const b = withDeploys(2, 5, 2);
+    expect(b.submit("ci-1", REQUEST, T0).decision).toBe("start");
+    expect(b.submit("ci-2", REQUEST, T0).decision).toBe("start");
+  });
+
+  it("take the next free slot ahead of every waiting CI job", () => {
+    const a = withDeploys(1, 5, 2);
+    a.submit("ci-running", REQUEST, T0);
+    a.submit("ci-waiting-1", REQUEST, T0);
+    a.submit("ci-waiting-2", REQUEST, T0);
+    expect(a.submit("deploy-1", DEPLOY, T0)).toEqual({ decision: "queued", position: 1 });
+
+    expect(a.release("ci-running", T0 + MINUTE).start).toEqual(["deploy-1"]);
+    // CI resumes in its own order once the deploy is done.
+    expect(a.release("deploy-1", T0 + 2 * MINUTE).start).toEqual(["ci-waiting-1"]);
+  });
+
+  it("keep their own order among themselves", () => {
+    const a = withDeploys(1, 5, 3);
+    a.submit("ci-running", REQUEST, T0);
+    a.submit("deploy-1", DEPLOY, T0);
+    expect(a.submit("deploy-2", DEPLOY, T0)).toEqual({ decision: "queued", position: 2 });
+    expect(a.release("ci-running", T0 + MINUTE).start).toEqual(["deploy-1"]);
+    expect(a.release("deploy-1", T0 + 2 * MINUTE).start).toEqual(["deploy-2"]);
+  });
+
+  it("are not refused because CI's queue is full, and do not use it up", () => {
+    const a = withDeploys(1, 2, 1);
+    a.submit("ci-running", REQUEST, T0);
+    a.submit("ci-waiting-1", REQUEST, T0);
+    a.submit("ci-waiting-2", REQUEST, T0);
+    expect(a.submit("ci-waiting-3", REQUEST, T0).decision).toBe("refused");
+
+    expect(a.submit("deploy-1", DEPLOY, T0).decision).toBe("queued");
+    // The deploy queue has its own bound.
+    const refused = a.submit("deploy-2", DEPLOY, T0);
+    expect(refused.decision).toBe("refused");
+    expect(refused).toMatchObject({ reason: expect.stringContaining("deploy job(s) queued") });
+  });
+
+  it("hold their slot on the same terms: until released, or their time runs out", () => {
+    const a = withDeploys(1, 2, 2);
+    a.submit("deploy-1", DEPLOY, T0);
+    a.submit("ci-1", REQUEST, T0);
+    // Nothing starts beside a running deploy.
+    expect(a.sweep(T0 + 5 * MINUTE).start).toEqual([]);
+    const swept = a.sweep(T0 + 10 * MINUTE + RELEASE_GRACE_MS);
+    expect(swept.timedOut).toEqual(["deploy-1"]);
+    expect(swept.start).toEqual(["ci-1"]);
+  });
+
+  it("are refused with no deploy queue configured, when no slot is free", () => {
+    const a = new Admission(emptyAdmissionState(), { maxConcurrent: 1, maxQueued: 5 });
+    a.submit("ci-running", REQUEST, T0);
+    expect(a.submit("deploy-1", DEPLOY, T0).decision).toBe("refused");
+  });
+});

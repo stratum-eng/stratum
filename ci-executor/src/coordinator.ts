@@ -18,7 +18,8 @@ import {
   pendingStarts,
 } from "./admission";
 import { type Env, readConfig } from "./config";
-import type { JobRunner } from "./job-object";
+import { DEPLOY_JOB_ID_PREFIX } from "./dispatch";
+import type { DeployRunner, JobRunner } from "./job-object";
 
 const STATE_KEY = "admission";
 /** Promoted jobs that have not yet confirmed they were told to start. */
@@ -32,6 +33,7 @@ export class Coordinator extends DurableObject<Env> {
     return new Admission(state, {
       maxConcurrent: config.config.maxConcurrentJobs,
       maxQueued: config.config.maxQueuedJobs,
+      maxQueuedPriority: config.config.maxQueuedDeployJobs,
     });
   }
 
@@ -64,7 +66,15 @@ export class Coordinator extends DurableObject<Env> {
     );
   }
 
-  private job(jobId: string): DurableObjectStub<JobRunner> {
+  /**
+   * The object that owns a job. A deploy job's id says so, because the two
+   * profiles live in different classes and the admission state holds ids only.
+   */
+  private job(jobId: string): DurableObjectStub<JobRunner> | DurableObjectStub<DeployRunner> {
+    if (jobId.startsWith(DEPLOY_JOB_ID_PREFIX)) {
+      const deploys = this.env.DEPLOY_JOB as unknown as DurableObjectNamespace<DeployRunner>;
+      return deploys.get(deploys.idFromName(jobId));
+    }
     const namespace = this.env.JOB as unknown as DurableObjectNamespace<JobRunner>;
     return namespace.get(namespace.idFromName(jobId));
   }

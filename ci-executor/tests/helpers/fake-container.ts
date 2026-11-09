@@ -11,8 +11,8 @@
  * - An intercept is a hostname and a `Fetcher`, registered before or after
  *   `start()`; registering a hostname again replaces its handler.
  *
- * Inside, it plays the part of `container/agent.mjs`: `write`, `start` and
- * `poll`. What a step "does" is scripted per test with {@link script}.
+ * Inside, it plays the part of `container/agent.mjs`: `write`, `start`,
+ * `poll` and `read`. What a step "does" is scripted per test with {@link script}.
  *
  * It records everything that crosses into the container — the start options,
  * every argv, every environment, every byte of stdin — so a test can assert on
@@ -30,6 +30,8 @@ export interface StepScript {
     timedOut?: boolean;
     durationMs?: number;
   };
+  /** Files the step leaves behind once it has exited: path to content. */
+  writes?: Record<string, string>;
 }
 
 export interface RecordedExec {
@@ -136,6 +138,11 @@ export class FakeContainer implements JobContainer {
         result = { state: "missing" };
       } else {
         const script = this.scripts.get(id) ?? { output: "", exit: { exitCode: 0 } };
+        if (script.exit) {
+          for (const [path, content] of Object.entries(script.writes ?? {})) {
+            this.files.set(path, content);
+          }
+        }
         const bytes = encoder.encode(script.output ?? "");
         const offset = Number(args[1]);
         const chunk = bytes.slice(offset, offset + Number(args[2]));
@@ -149,6 +156,17 @@ export class FakeContainer implements JobContainer {
           chunk: Buffer.from(chunk).toString("base64"),
         };
       }
+    } else if (command === "read") {
+      const content = this.files.get(args[0] ?? "");
+      result =
+        content === undefined
+          ? { exists: false }
+          : {
+              exists: true,
+              content: Buffer.from(encoder.encode(content).slice(0, Number(args[1]))).toString(
+                "base64",
+              ),
+            };
     } else {
       return {
         output: async () => ({

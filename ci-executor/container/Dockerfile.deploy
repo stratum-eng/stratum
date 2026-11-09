@@ -1,0 +1,21 @@
+# The image every deploy job runs in (#416): the CI image plus the two tools a
+# smoke test reaches for. It is a separate image, for a separate container
+# application, because deploy jobs are a separate profile (ADR 012): they run
+# a merged commit, and requests they make to a few named hosts leave with the
+# operator's credential attached OUTSIDE this container. Nothing in this image
+# holds a credential, and none is ever passed into it.
+#
+# NODE_VERSION follows container/Dockerfile; keep the two on the same line so
+# a project is deployed with the Node it was tested with.
+ARG NODE_VERSION=26
+FROM node:${NODE_VERSION}-bookworm-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates curl jq \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY agent.mjs prepare.sh trust-ca.sh entrypoint.sh /opt/stratum/
+RUN chmod 0755 /opt/stratum/*.sh /opt/stratum/agent.mjs && mkdir -p /job/out /workspace
+
+WORKDIR /workspace
+ENTRYPOINT ["/opt/stratum/entrypoint.sh"]

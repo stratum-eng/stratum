@@ -9,6 +9,8 @@
 //   agent.mjs start <id> <timeoutSeconds> <cwd>   script on stdin; returns at once
 //   agent.mjs poll  <id> <offset> <maxBytes>      one JSON line: state + a log chunk
 //   agent.mjs write <path>                        stdin to a file (the change's diff)
+//   agent.mjs read  <path> <maxBytes>             one JSON line: a small file, base64
+//                                                 (what a deploy step recorded)
 //
 // Nothing here is a security boundary. Every process in the container runs with
 // root's capabilities, so the code a step runs can kill this supervisor, forge
@@ -165,9 +167,30 @@ async function write(path) {
   process.stdout.write(`${JSON.stringify({ written: true })}\n`);
 }
 
+function read(path, maxBytesArg) {
+  if (!path) fail("read needs a path");
+  const maxBytes = Math.min(Math.max(0, Number(maxBytesArg) || 0), 64 * 1024);
+  // A directory, a device or a missing file is "nothing was recorded".
+  if (!existsSync(path) || !statSync(path).isFile()) {
+    process.stdout.write(`${JSON.stringify({ exists: false })}\n`);
+    return;
+  }
+  const length = Math.min(maxBytes, statSync(path).size);
+  const buffer = Buffer.alloc(length);
+  if (length > 0) {
+    const fd = openSync(path, "r");
+    readSync(fd, buffer, 0, length, 0);
+    closeSync(fd);
+  }
+  process.stdout.write(
+    `${JSON.stringify({ exists: true, content: buffer.toString("base64") })}\n`,
+  );
+}
+
 const [command, ...args] = process.argv.slice(2);
 if (command === "start") await start(...args);
 else if (command === "supervise") supervise(...args);
 else if (command === "poll") poll(...args);
 else if (command === "write") await write(...args);
+else if (command === "read") read(...args);
 else fail(`unknown command '${command}'`);

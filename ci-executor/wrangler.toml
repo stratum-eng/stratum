@@ -1,9 +1,15 @@
 # Stratum's first-party CI executor (#415, ADR 012).
 #
 # A separate Worker from Stratum, deployed separately, because it runs code
-# from changes nobody has reviewed. It is bound to exactly three things: its
-# two Durable Object classes and one bucket for logs. No D1, no KV, no
+# from changes nobody has reviewed. It is bound to exactly two kinds of thing:
+# its own Durable Object classes and one bucket for logs. No D1, no KV, no
 # Artifacts, no service binding back to Stratum.
+#
+# Deploy jobs (#416) run here too, under a separate profile: their own Durable
+# Object class and container application (DeployRunner, below), started only
+# for a merge that has passed its gates. Their credentials are Wrangler
+# secrets on THIS Worker, named DEPLOY_CRED_*, and are attached to requests
+# for specific hosts outside the container. See [vars] DEPLOY_TARGETS.
 #
 # Deploying it is described step by step in docs/user-guide/ci.md.
 "$schema" = "./node_modules/wrangler/config-schema.json"
@@ -46,6 +52,37 @@ CI_GIT_HOST_SUFFIX = ".artifacts.cloudflare.net"
 # Most output kept per step, in bytes. Beyond it the log keeps its start and end.
 CI_LOG_MAX_BYTES = "1048576"
 
+# Deploy jobs that may wait for a slot. They share CI_MAX_CONCURRENT_JOBS (one
+# cap for the whole executor) but take a freed slot ahead of waiting CI jobs,
+# and wait in this queue, not CI's.
+DEPLOY_MAX_QUEUED_JOBS = "4"
+# Which projects and environments this executor deploys. Unset or "{}" means
+# none: every deploy job is refused. JSON, keyed by Stratum PROJECT ID, then
+# environment name. `secret` is the NAME of a Wrangler secret on this Worker
+# and must start with DEPLOY_CRED_; the value never appears here, in a job, or
+# in Stratum. `env` is plain configuration, not secrets. Example:
+#
+#   DEPLOY_TARGETS = '''
+#   {
+#     "prj_abc123": {
+#       "staging": {
+#         "credentials": [{ "host": "api.cloudflare.com", "secret": "DEPLOY_CRED_STAGING" }],
+#         "env": { "CLOUDFLARE_ACCOUNT_ID": "0123456789abcdef0123456789abcdef" },
+#         "allowHosts": ["my-app-staging.example.workers.dev"]
+#       },
+#       "production": {
+#         "credentials": [{ "host": "api.cloudflare.com", "secret": "DEPLOY_CRED_PRODUCTION" }],
+#         "env": { "CLOUDFLARE_ACCOUNT_ID": "0123456789abcdef0123456789abcdef" },
+#         "allowHosts": ["my-app.example.workers.dev"]
+#       }
+#     }
+#   }
+#   '''
+#
+# then, once per secret named above:
+#   wrangler secret put DEPLOY_CRED_STAGING
+#   wrangler secret put DEPLOY_CRED_PRODUCTION
+
 # The secret shared with Stratum is NOT a var:
 #   wrangler secret put CI_EXECUTOR_SECRET
 
@@ -58,15 +95,32 @@ scheduling_policy = "durable_object"
 [containers.images.ci]
 dockerfile = "./container/Dockerfile"
 
+# The deploy profile: its own container application, for its own Durable
+# Object class, with its own image. A CI job is never started in it.
+[[containers]]
+class_name = "DeployRunner"
+scheduling_policy = "durable_object"
+
+[containers.images.deploy]
+dockerfile = "./container/Dockerfile.deploy"
+
 [[durable_objects.bindings]]
 name = "JOB"
 class_name = "JobRunner"
+
+[[durable_objects.bindings]]
+name = "DEPLOY_JOB"
+class_name = "DeployRunner"
 
 [[durable_objects.bindings]]
 name = "COORDINATOR"
 class_name = "Coordinator"
 
 [exports.JobRunner]
+type = "durable-object"
+storage = "sqlite"
+
+[exports.DeployRunner]
 type = "durable-object"
 storage = "sqlite"
 

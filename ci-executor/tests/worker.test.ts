@@ -8,9 +8,16 @@ import { type Env, MAX_DISPATCH_BYTES } from "../src/config";
 import type { Job } from "../src/dispatch";
 import worker from "../src/index";
 import { logSigningInput } from "../src/logs";
-import { sendReport } from "../src/report";
+import { sendDeployReport, sendReport } from "../src/report";
 import { sign } from "../src/signature";
-import { HEAD_SHA, REPO_PASSWORD, SECRET, STRATUM, dispatchBody } from "./helpers/fixtures";
+import {
+  HEAD_SHA,
+  REPO_PASSWORD,
+  SECRET,
+  STRATUM,
+  deployDispatchBody,
+  dispatchBody,
+} from "./helpers/fixtures";
 
 const EXECUTOR = "https://ci-executor.internal";
 
@@ -333,5 +340,189 @@ describe("reporting to Stratum", () => {
       throw new Error("network");
     };
     expect(await sendReport(SECRET, JOB, REPORT, unreachable)).toBe("retry");
+  });
+});
+
+describe("POST /jobs with a deploy dispatch", () => {
+  const DEPLOY_ENV_TOKEN = "cf-deploy-token-VERYSECRET-0123456789";
+  let deployAccepted: Array<{ jobId: string; job: Job }>;
+
+  beforeEach(() => {
+    deployAccepted = [];
+    Object.assign(env, {
+      DEPLOY_TARGETS: JSON.stringify({
+        prj_app: {
+          staging: { credentials: [{ host: "api.cloudflare.com", secret: "DEPLOY_CRED_STAGING" }] },
+        },
+      }),
+      DEPLOY_CRED_STAGING: DEPLOY_ENV_TOKEN,
+      DEPLOY_JOB: namespace({
+        accept: async (jobId: string, job: Job) => {
+          deployAccepted.push({ jobId, job });
+          calls.push("deploy-accept");
+          return true;
+        },
+        begin: async () => {
+          calls.push("deploy-begin");
+        },
+        discard: async () => {
+          calls.push("deploy-discard");
+        },
+      }),
+    });
+  });
+
+  const deployBody = (overrides: Record<string, unknown> = {}) =>
+    JSON.stringify(deployDispatchBody(Date.now(), overrides));
+
+  it("goes to the deploy class, never the CI one, and is admitted with priority", async () => {
+    const response = await postJob(deployBody());
+
+    expect(response.status).toBe(202);
+    expect(calls).toEqual(["deploy-accept", "submit", "deploy-begin"]);
+    expect(accepted).toEqual([]);
+    expect(deployAccepted[0]?.jobId.startsWith("deploy-")).toBe(true);
+    expect(submitted[0]?.jobId).toBe(deployAccepted[0]?.jobId);
+    expect(submitted[0]?.request.priority).toBe(true);
+    // What the job object is handed names the secret and does not hold it.
+    expect(deployAccepted[0]?.job.profile.credentials).toEqual([
+      { host: "api.cloudflare.com", secret: "DEPLOY_CRED_STAGING" },
+    ]);
+    expect(JSON.stringify(deployAccepted[0]?.job)).not.toContain(DEPLOY_ENV_TOKEN);
+  });
+
+  it("a CI dispatch is not given priority and still goes to the CI class", async () => {
+    await postJob(body());
+    expect(calls).toEqual(["accept", "submit", "begin"]);
+    expect(submitted[0]?.request.priority).toBeUndefined();
+    expect(deployAccepted).toEqual([]);
+  });
+
+  it("is refused, and nothing stored, when the executor has no target for it", async () => {
+    const response = await postJob(deployBody({ environment: "production" }));
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("INVALID_DISPATCH");
+    expect(response.body.error).toContain("no deploy target");
+    expect(calls).toEqual([]);
+  });
+
+  it("is refused when the secret its target names is not set", async () => {
+    Object.assign(env, { DEPLOY_CRED_STAGING: undefined });
+    const response = await postJob(deployBody());
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain("DEPLOY_CRED_STAGING");
+    expect(calls).toEqual([]);
+  });
+
+  it("needs the same signature as any dispatch", async () => {
+    expect((await postJob(deployBody(), "sha256=deadbeef")).status).toBe(401);
+    expect(calls).toEqual([]);
+  });
+
+  it("answers 429 and forgets the job when the deploy queue is full", async () => {
+    decision = { decision: "refused", reason: "2 job(s) running and 4 deploy job(s) queued" };
+    const response = await postJob(deployBody());
+    expect(response.status).toBe(429);
+    expect(calls).toEqual(["deploy-accept", "submit", "deploy-discard"]);
+  });
+
+  it("reports a broken DEPLOY_TARGETS on /health without failing CI's health", async () => {
+    Object.assign(env, { DEPLOY_TARGETS: "{not json" });
+    const response = await worker.fetch(new Request(`${EXECUTOR}/health`), env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      deploy: { ok: false, reason: "DEPLOY_TARGETS is not valid JSON" },
+    });
+    // And CI jobs are still accepted.
+    expect((await postJob(body())).status).toBe(202);
+  });
+});
+
+describe("a deploy report", () => {
+  it("is one signed POST to the deployment's callback, carrying the outcome and no credential", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const outcome = await sendDeployReport(
+      SECRET,
+      {
+        callbackUrl: `${STRATUM}/api/deployments/callback`,
+        headSha: HEAD_SHA,
+        deploy: { deploymentId: "dep_1", projectId: "prj_app", environment: "staging", env: {} },
+      },
+      {
+        checkRunId: "dep_1",
+        status: "passed",
+        sequence: 1,
+        summary: "All 3 steps passed.",
+        detailsUrl: `${STRATUM}/@owner/app/deployments/dep_1`,
+        deploy: {
+          steps: [{ name: "deploy", status: "passed" }],
+          version: "v-123",
+          logTail: "ok\n",
+        },
+      },
+      async (url, init) => {
+        requests.push({ url, init });
+        return new Response("{}", { status: 200 });
+      },
+    );
+
+    expect(outcome).toBe("delivered");
+    expect(requests[0]?.url).toBe(`${STRATUM}/api/deployments/callback/dep_1`);
+    const sentBody = String(requests[0]?.init.body);
+    expect(JSON.parse(sentBody)).toMatchObject({
+      deploymentId: "dep_1",
+      commitSha: HEAD_SHA,
+      environment: "staging",
+      status: "succeeded",
+      version: "v-123",
+      logTail: "ok\n",
+    });
+    expect(new Headers(requests[0]?.init.headers).get("X-Stratum-Signature")).toBe(
+      await sign(SECRET, sentBody),
+    );
+    expect(requests[0]?.init.redirect).toBe("manual");
+  });
+
+  it("maps a failed or errored job to a failed deployment, saying which", async () => {
+    const bodies: string[] = [];
+    const send = (status: "failed" | "errored") =>
+      sendDeployReport(
+        SECRET,
+        { callbackUrl: `${STRATUM}/api/deployments/callback`, headSha: HEAD_SHA },
+        { checkRunId: "dep_1", status, sequence: 1, detailsUrl: "" },
+        async (_url, init) => {
+          bodies.push(String(init.body));
+          return new Response("{}", { status: 200 });
+        },
+      );
+    await send("failed");
+    await send("errored");
+    expect(bodies.map((raw) => JSON.parse(raw).status)).toEqual(["failed", "failed"]);
+    expect(bodies.map((raw) => JSON.parse(raw).cause)).toEqual(["failed", "errored"]);
+  });
+
+  it("retries when Stratum is unreachable or busy, and stops when the row no longer waits", async () => {
+    const answer = (status: number) =>
+      sendDeployReport(
+        SECRET,
+        { callbackUrl: `${STRATUM}/api/deployments/callback`, headSha: HEAD_SHA },
+        { checkRunId: "dep_1", status: "passed", sequence: 1, detailsUrl: "" },
+        async () => new Response("{}", { status }),
+      );
+    expect(await answer(503)).toBe("retry");
+    expect(await answer(429)).toBe("retry");
+    expect(await answer(409)).toBe("drop");
+    expect(await answer(401)).toBe("drop");
+    expect(
+      await sendDeployReport(
+        SECRET,
+        { callbackUrl: `${STRATUM}/api/deployments/callback`, headSha: HEAD_SHA },
+        { checkRunId: "dep_1", status: "passed", sequence: 1, detailsUrl: "" },
+        async () => {
+          throw new Error("network");
+        },
+      ),
+    ).toBe("retry");
   });
 });
