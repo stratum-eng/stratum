@@ -46,9 +46,9 @@ describe("optOutReason", () => {
   it("rejects an unfilled <placeholder> as the reason", () => {
     expect(optOutReason("No changelog: <explain why it is not needed>", "No changelog")).toBeNull();
     expect(optOutReason("No docs needed: <reason here>.", "No docs needed")).toBeNull();
-    expect(optOutReason("No docs needed: renames <Foo> to <Bar> internally", "No docs needed")).toBe(
-      "renames <Foo> to <Bar> internally",
-    );
+    expect(
+      optOutReason("No docs needed: renames <Foo> to <Bar> internally", "No docs needed"),
+    ).toBe("renames <Foo> to <Bar> internally");
   });
 
   it("ignores the phrase mid-sentence", () => {
