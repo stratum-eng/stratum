@@ -112,10 +112,10 @@ Each tag is:
 | `message`, `tagger`, `timestamp` | Annotated tags only: the tag's message, its tagger as `Name <email>`, and the tagger time in epoch seconds. |
 | `unresolvable` | `true` when the tag's object or target could not be read. The tag is still listed. |
 
-Read from the remote's ref advertisement, so a listing normally does not clone
-the repository. The exception is an annotated tag being listed for the first
-time: its message, tagger and date are read by cloning once, then kept, so that
-one request is slower. `unresolvable` can only be `true` on such a request.
+Tag names come from the remote's ref advertisement, so a listing normally does
+not clone the repository. The exception is a tag being listed for the first
+time: it is read by cloning once and remembered, so the first request after a
+new tag is pushed is slower. `unresolvable` can only be `true` on such a request.
 
 Capped at 200, keeping the highest-sorting names; `truncated` says so explicitly
 and `totalTagCount` is the number the repository actually has. Readable by anyone

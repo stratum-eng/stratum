@@ -654,9 +654,9 @@ paths:
       tags: [projects]
       summary: List the repository's tags
       description: >
-        Reads the remote's ref advertisement, so a listing normally does not
-        clone the repository. An annotated tag listed for the first time has its
-        message, tagger and date read by cloning once; they are kept after that.
+        Tag names come from the remote's ref advertisement, so a listing
+        normally does not clone the repository. A tag listed for the first time
+        is read by cloning once and remembered.
         Capped at 200, keeping the highest-sorting names; `truncated` reports
         when the list was cut.
       security: [{ bearerAuth: [] }, {}]

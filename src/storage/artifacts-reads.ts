@@ -25,7 +25,7 @@ import { type Result, err, ok } from "../utils/result";
 import {
   type RepoView,
   type TagDetailCache,
-  type TagObjectDetails,
+  type TagDetails,
   artifactsRepoNameFromRemote,
   getCommitLog,
   listFilesInRepo,
@@ -198,14 +198,17 @@ const TAG_DETAILS_TTL_SECONDS = 30 * 24 * 60 * 60;
 /** A tag message longer than this is not stored; that tag is read by cloning. */
 const TAG_DETAILS_MAX_BYTES = 64 * 1024;
 
-function parseTagDetails(raw: string): TagObjectDetails | null {
+function parseTagDetails(raw: string): TagDetails | null {
   const parsed: unknown = JSON.parse(raw);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-  const { message, tagger, timestamp } = parsed as Record<string, unknown>;
+  const { annotated, targetSha, message, tagger, timestamp } = parsed as Record<string, unknown>;
+  if (typeof annotated !== "boolean" || typeof targetSha !== "string") return null;
   if (message !== undefined && typeof message !== "string") return null;
   if (tagger !== undefined && typeof tagger !== "string") return null;
   if (timestamp !== undefined && typeof timestamp !== "number") return null;
   return {
+    annotated,
+    targetSha,
     ...(message !== undefined ? { message } : {}),
     ...(tagger !== undefined ? { tagger } : {}),
     ...(timestamp !== undefined ? { timestamp } : {}),

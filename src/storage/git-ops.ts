@@ -4368,24 +4368,30 @@ export interface ListRepoTagsResult {
   totalTagCount: number;
 }
 
-/** What an annotated tag's own object says, as shown in a tag listing. */
-export interface TagObjectDetails {
+/** What a tag listing shows for one tag, beyond its name and the oid its ref holds. */
+export interface TagDetails {
+  annotated: boolean;
+  /** The object the tag resolves to, after peeling any tag objects. */
+  targetSha: string;
+  /** Annotated tags only. */
   message?: string;
   tagger?: string;
   timestamp?: number;
 }
 
 /**
- * Annotated-tag details keyed by the TAG OBJECT's oid.
+ * Tag details keyed by the oid the tag's REF holds: the tag object for an
+ * annotated tag, the target for a lightweight one.
  *
- * The oid is a hash of the object, so an entry is correct for as long as it is
- * kept: moving or re-creating a tag gives it a new oid and so a new key.
+ * Everything in {@link TagDetails} follows from that one object, and an oid is
+ * a hash of its object, so an entry is correct for as long as it is kept:
+ * moving or re-creating a tag gives it a new oid and so a new key.
  */
 export type TagDetailCache = {
   /** The details stored for `oid`, or null on a miss or any failure. */
-  get(oid: string): Promise<TagObjectDetails | null>;
+  get(oid: string): Promise<TagDetails | null>;
   /** Best-effort store; never throws. */
-  put(oid: string, details: TagObjectDetails): Promise<void>;
+  put(oid: string, details: TagDetails): Promise<void>;
 };
 
 /** Longest a listing waits for its tag details to be stored before answering. */
@@ -4395,18 +4401,22 @@ export const TAG_DETAIL_STORE_TIMEOUT_MS = 2_000;
 const TAG_DETAIL_READ_BATCH = 20;
 
 /**
- * Builds a tag listing from the ref advertisement alone, or returns null when
- * it cannot: an annotated tag whose details are not in `cache`.
+ * Builds a tag listing from advertised refs and cached details, or returns
+ * null when any tag's details are not in `cache`.
  *
- * The advertisement carries every tag's name and oid and, for an annotated tag,
- * the commit it peels to. Only the message, tagger and date live in the tag
- * object, and those are what the cache supplies.
+ * The advertisement is trusted for names and ref oids only. Whether a tag is
+ * annotated, and what it peels to, come from the cache — that is, from a clone
+ * that read the object — and not from the remote's `<name>^{}` entries: a
+ * remote that left those out would otherwise turn every annotated tag into a
+ * lightweight one pointing at its tag object, with nothing to show for it.
  */
 async function tagsFromAdvertisement(
   names: string[],
   advertised: AdvertisedRefs,
   cache: TagDetailCache | undefined,
 ): Promise<RepoTagEntry[] | null> {
+  if (names.length === 0) return [];
+  if (!cache) return null;
   // In batches, stopping at the first miss: one uncached tag sends the whole
   // listing to the clone, so reads past it are paid for and thrown away.
   const entries: RepoTagEntry[] = [];
@@ -4416,13 +4426,8 @@ async function tagsFromAdvertisement(
         .slice(start, start + TAG_DETAIL_READ_BATCH)
         .map(async (name): Promise<RepoTagEntry | null> => {
           const oid = advertised.tags[name] as string;
-          const peeled = advertised.peeledTags[name];
-          if (peeled === undefined) {
-            return { name, oid, targetSha: oid, annotated: false, unresolvable: false };
-          }
-          const details = cache ? await cache.get(oid) : null;
-          if (details === null) return null;
-          return { name, oid, targetSha: peeled, annotated: true, ...details, unresolvable: false };
+          const details = await cache.get(oid);
+          return details === null ? null : { name, oid, ...details, unresolvable: false };
         }),
     );
     for (const entry of batch) {
@@ -4436,17 +4441,18 @@ async function tagsFromAdvertisement(
 /**
  * Lists the tags in a repository.
  *
- * Read from the ref advertisement — one handshake, no object data — whenever
- * that is enough: always for lightweight tags, and for annotated tags once
- * their details are in `opts.detailCache`. Cloning to list tags cost seconds on
- * every request, including for a repository with no tags at all.
+ * Tag names and ref oids come from the ref advertisement — one handshake, no
+ * object data — and the rest of each entry from `opts.detailCache`. A
+ * repository with no tags, or whose tags have all been listed before, is not
+ * cloned. Cloning to list tags cost seconds on every request, including for a
+ * repository with no tags at all.
  *
- * Only an annotated tag whose details are not cached yet needs its tag object,
- * and that takes the clone below: shallow, followed by a tags-only fetch
- * (per-tag `singleBranch` fetches, never a whole-branches pull). A tag whose
- * target lies outside the shallow window is then reported with
- * `unresolvable: true` rather than raising; see `collectRepoTags`. What the
- * clone reads is stored in the cache, so the next listing does not repeat it.
+ * A tag that has not been listed before needs its object read, and that takes
+ * the clone below: shallow, followed by a tags-only fetch (per-tag
+ * `singleBranch` fetches, never a whole-branches pull). A tag whose target
+ * lies outside the shallow window is then reported with `unresolvable: true`
+ * rather than raising; see `collectRepoTags`. What the clone resolves is
+ * stored in the cache, so the next listing does not repeat it.
  *
  * Either way the listing is capped at {@link MAX_TAGS}, keeping the
  * highest-sorting names; a remote with more comes back with `truncated: true`
@@ -4507,19 +4513,23 @@ export async function listRepoTags(
   if (detailCache) {
     // Bounded: the listing is already in hand, and a store that hangs must not
     // hold the response. Whatever is not stored in time is read again by the
-    // next listing.
+    // next listing. A tag that did not resolve is not stored at all, so a later
+    // listing gets another chance at it.
+    const resolved = collected.data.flatMap((tag) =>
+      tag.unresolvable || tag.targetSha === null ? [] : [{ ...tag, targetSha: tag.targetSha }],
+    );
     const stored = await fromPromise(
       withTimeout(
         Promise.all(
-          collected.data
-            .filter((tag) => tag.annotated)
-            .map((tag) =>
-              detailCache.put(tag.oid, {
-                ...(tag.message !== undefined ? { message: tag.message } : {}),
-                ...(tag.tagger !== undefined ? { tagger: tag.tagger } : {}),
-                ...(tag.timestamp !== undefined ? { timestamp: tag.timestamp } : {}),
-              }),
-            ),
+          resolved.map((tag) =>
+            detailCache.put(tag.oid, {
+              annotated: tag.annotated,
+              targetSha: tag.targetSha,
+              ...(tag.message !== undefined ? { message: tag.message } : {}),
+              ...(tag.tagger !== undefined ? { tagger: tag.tagger } : {}),
+              ...(tag.timestamp !== undefined ? { timestamp: tag.timestamp } : {}),
+            }),
+          ),
         ),
         TAG_DETAIL_STORE_TIMEOUT_MS,
         "listRepoTags: storing tag details",
