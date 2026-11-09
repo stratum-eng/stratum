@@ -287,9 +287,10 @@ DEV_LOGIN_ENABLED = "true"
 # the benchmark "after" number). This is the kill switch / rollback.
 REPO_DO_ENABLED = "false"
 # EU-only: restrict every Durable Object (all four classes) to a Cloudflare
-# jurisdiction: "eu", "us" or "fedramp". Unset = no restriction. The value must
-# match exactly — anything else makes every request answer 503 rather than run
-# unrestricted. A restricted namespace addresses DIFFERENT objects, so set this
+# jurisdiction: "eu", "us" or "fedramp". Unset, or set to the empty string, =
+# no restriction. Otherwise the value must match exactly — any other non-empty
+# value makes every request answer 503 rather than run unrestricted. A
+# restricted namespace addresses DIFFERENT objects, so set this
 # before the first deploy and never change it afterwards. Named envs do NOT
 # inherit top-level vars: deploying with --env requires it in that env's
 # [env.<name>.vars] block too, or the deployed Worker is silently unrestricted.
