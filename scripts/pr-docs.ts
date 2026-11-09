@@ -35,6 +35,9 @@ const FRAGMENT = /^changelog\.d\/(?!README\.md$)[^/]+\.md$/;
 /** A reason must say something, not just tick a box. */
 const MIN_REASON_LENGTH = 10;
 
+/** A template placeholder copied as-is, such as `<explain why>`, is not a reason. */
+const PLACEHOLDER = /^<[^<>]*>\.?$/;
+
 export interface ChangedFile {
   path: string;
   /** GitHub's file status: added, modified, removed, renamed, ... */
@@ -77,7 +80,7 @@ export function optOutReason(body: string, label: string): string | null {
   const line = new RegExp(`^[\\t ]*(?:[-*][\\t ]+)?${escaped}:[\\t ]*(.*)$`, "gim");
   for (const match of visible.matchAll(line)) {
     const reason = match[1]?.trim() ?? "";
-    if (reason.length >= MIN_REASON_LENGTH) return reason;
+    if (reason.length >= MIN_REASON_LENGTH && !PLACEHOLDER.test(reason)) return reason;
   }
   return null;
 }
