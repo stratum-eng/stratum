@@ -565,8 +565,16 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           echo "Deploying Worker: ${{ env.WORKER_NAME }}"
-          DEPLOY_OUTPUT=$(npx wrangler deploy --config wrangler.preview.toml 2>&1)
+          # Capture the status instead of letting `bash -e` exit inside the
+          # substitution: that skipped the echo below and left failed deploys
+          # with nothing in the log but "exit code 1".
+          STATUS=0
+          DEPLOY_OUTPUT=$(npx wrangler deploy --config wrangler.preview.toml 2>&1) || STATUS=$?
           echo "$DEPLOY_OUTPUT"
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::wrangler deploy failed (exit $STATUS); its output is above"
+            exit "$STATUS"
+          fi
 
           WORKERS_DEV_URL=$(echo "$DEPLOY_OUTPUT" | grep -oE 'https://[a-zA-Z0-9-]+\.[a-zA-Z0-9-]+\.workers\.dev' | head -1)
           if [ -z "$WORKERS_DEV_URL" ]; then
