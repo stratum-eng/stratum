@@ -17,3 +17,11 @@
 --
 -- Additive and nullable: existing rows are untouched and stay project checks.
 ALTER TABLE checks ADD COLUMN ci_config_digest TEXT;
+
+-- "Has this project ever run first-party CI?" — asked by the merge gate only
+-- when the base branch cannot be read at all, to tell a project with no CI
+-- from one whose ci.yaml is temporarily out of reach. Partial, so it costs
+-- nothing for the rows of projects' own runners.
+CREATE INDEX IF NOT EXISTS idx_checks_ci_project
+  ON checks (project_id)
+  WHERE ci_config_digest IS NOT NULL;

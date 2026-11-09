@@ -309,6 +309,38 @@ export async function listChecksForChange(
 }
 
 /**
+ * Whether first-party CI has ever been dispatched for this change's project
+ * (#415) — or, for a change that predates project ids, for the change itself.
+ *
+ * The merge gate asks this only when the base branch could not be read, where
+ * "the project has no `.stratum/ci.yaml`" and "the file is out of reach" look
+ * the same. A project that has run CI before is not one to wave through on the
+ * strength of a failed read; a project that never has is unaffected.
+ */
+export async function projectHasCiRuns(
+  db: D1Database,
+  logger: Logger,
+  change: { id: string; projectId?: string },
+): Promise<Result<boolean, Error>> {
+  try {
+    const row = await db
+      .prepare(
+        `SELECT 1 AS found FROM checks
+         WHERE ci_config_digest IS NOT NULL AND (project_id = ? OR change_id = ?)
+         LIMIT 1`,
+      )
+      .bind(change.projectId ?? "", change.id)
+      .first<{ found: number }>();
+    return ok(row !== null);
+  } catch (error) {
+    logger.error("Failed to look for first-party check runs", toError(error), {
+      changeId: change.id,
+    });
+    return err(toError(error));
+  }
+}
+
+/**
  * The newest attempt of each check name on one revision of a change — what
  * the merge gate and the change page read. A run for any other revision is
  * simply not in the answer, which is how a new revision invalidates the old

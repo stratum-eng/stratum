@@ -125,6 +125,15 @@ export interface EvalPolicy {
    */
   ci?: CiConfig;
   /**
+   * True when NOTHING could be read from the base branch, so whether it has a
+   * `.stratum/ci.yaml` is unknown rather than "no". The policy loader has
+   * always treated an unreadable repository as one with no config — an empty
+   * repository fails its clone too, and must stay usable — but "unknown" must
+   * not open a gate that is known to exist: while this is set the merge gate
+   * refuses every change of a project that has ever run first-party CI.
+   */
+  ciUnverified?: true;
+  /**
    * Post-merge deploys declared under `deploys:`, after sanitization. Only
    * entries that passed every rule in `sanitizeDeploys` appear here; anything
    * rejected is in `deployRejections` instead, never silently absent.

@@ -209,8 +209,9 @@ export async function loadPolicy(
  * file" must not quietly become "no required checks". So does a read that
  * failed while the same repository answered for the policy file — that is a
  * blip on one read, not a repository with no CI. When NOTHING could be read
- * the old rule stands (treated as absent), because that is also what an empty
- * repository looks like and it has to stay usable.
+ * the file's existence is unknown: that is also what an empty repository looks
+ * like, which has to stay usable, so the policy is marked `ciUnverified` and
+ * the merge gate decides per project — one that has run CI before is refused.
  */
 function attachCiConfig(
   policy: EvalPolicy,
@@ -231,8 +232,15 @@ function attachCiConfig(
   if (file.status === "missing") return policy;
   if (file.status === "failed") {
     if (!repositoryReadable) {
-      logger.warn("CI configuration load failed; treating as absent", { error: file.reason });
-      return policy;
+      // Nothing answered, which is also what an empty repository looks like,
+      // so this cannot block every merge. It is recorded as unknown instead:
+      // the merge gate refuses every change of a project that has run
+      // first-party CI before, until the file can be read again (see
+      // `EvalPolicy.ciUnverified`).
+      logger.warn("CI configuration load failed with the repository unreadable", {
+        error: file.reason,
+      });
+      return { ...policy, ciUnverified: true };
     }
     return blocked(
       `CI configuration ${CI_CONFIG_PATH} could not be read from the base branch; merges are blocked until it can be.`,
@@ -353,6 +361,9 @@ export function parsePolicyContent(
       // from `.stratum/ci.yaml` after validation; a `ci:` key written here
       // would otherwise ride the spread onto the policy unvalidated.
       ci: _rawCi,
+      // Likewise loader-only: whether the base could be read is not something
+      // a policy file gets to assert.
+      ciUnverified: _rawCiUnverified,
       ...policy
     } = {
       ...DEFAULT_POLICY,

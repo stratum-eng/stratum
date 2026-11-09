@@ -144,6 +144,8 @@ let logRequests: Array<{ path: string; verified: boolean }>;
 let basePolicy: string;
 /** `.stratum/ci.yaml` on the project's default branch; undefined when absent. */
 let baseCi: string | undefined;
+/** When set, every read of the project's repository fails, as a failed clone does. */
+let repositoryUnreadable: boolean;
 let workspaceTip: string;
 /** The project's current head, or null when it cannot be read. */
 let projectHead: string | null;
@@ -269,6 +271,7 @@ beforeEach(async () => {
   executorAnswer = () => Response.json({ state: "running" }, { status: 202 });
   basePolicy = BASE_POLICY;
   baseCi = BASE_CI;
+  repositoryUnreadable = false;
   workspaceTip = "tip-1";
   projectHead = "base-1";
   diffText = "diff --git a/x b/x\n+hello\n";
@@ -285,6 +288,12 @@ beforeEach(async () => {
     _token: string,
     path: string,
   ) => {
+    if (repositoryUnreadable && remote === PROJECT_REMOTE) {
+      return {
+        success: false,
+        error: new AppError("Failed to clone repository", "EXTERNAL_SERVICE_ERROR", 502),
+      };
+    }
     const files: Record<string, string | undefined> =
       remote === PROJECT_REMOTE
         ? { ".stratum/policy.yaml": basePolicy, ".stratum/ci.yaml": baseCi }
@@ -656,6 +665,58 @@ describe("the merge gate fails closed when the checks are not the base's steps",
     const merge = await mergeChange(id);
     expect(merge.status).toBe(403);
     expect(merge.body.reasons?.join("\n")).toMatch(/\.stratum\/ci\.yaml is present but invalid/);
+  });
+
+  it("blocks a revision CI ran on while the base cannot be read at all", async () => {
+    const { id, job } = await createChange();
+    if (!job) throw new Error("no job was dispatched");
+    await report(job, "lint", "passed");
+    await report(job, "test", "failed");
+    expect((await mergeChange(id)).body.reasons).toEqual(["Required check 'test' failed"]);
+
+    // Every read of the base now fails. The loader cannot tell this from a
+    // repository with no config, and falls back to the default policy — which
+    // must not turn a failed required step into a mergeable change.
+    repositoryUnreadable = true;
+    const merge = await mergeChange(id);
+    expect(merge.status).toBe(403);
+    expect(merge.body.reasons).toEqual([
+      "This project runs first-party CI, but .stratum/ci.yaml could not be read from the base branch to confirm which steps are required; try again",
+    ]);
+
+    repositoryUnreadable = false;
+    expect((await mergeChange(id)).body.reasons).toEqual(["Required check 'test' failed"]);
+  });
+
+  it("blocks a change opened while the base was unreadable, in a project that runs CI", async () => {
+    // The project has run first-party CI before.
+    const earlier = await createChange();
+    await passAll(earlier.job);
+
+    // This change is opened during the outage: no steps could be read, so
+    // none were dispatched, and it has no check runs of its own to fail on.
+    repositoryUnreadable = true;
+    const { id, job } = await createChange();
+    expect(job).toBeUndefined();
+    expect(await listChecks(id)).toEqual([]);
+
+    const merge = await mergeChange(id);
+    expect(merge.status).toBe(403);
+    expect(merge.body.reasons?.[0]).toMatch(/^This project runs first-party CI, but/);
+
+    // Once the base is back, it is the ordinary "never ran under this file".
+    repositoryUnreadable = false;
+    expect((await mergeChange(id)).body.reasons?.[0]).toMatch(/have not run for the evaluated/);
+  });
+
+  it("leaves a repository that cannot be read, and never ran CI, as usable as before", async () => {
+    // What an empty repository looks like: nothing can be read, nothing was
+    // ever dispatched. Blocking here would make a new project unmergeable.
+    baseCi = undefined;
+    const { id } = await createChange();
+    repositoryUnreadable = true;
+
+    expect((await mergeChange(id)).status).toBe(200);
   });
 
   it("is cleared by re-evaluating, which runs the steps the base declares now", async () => {

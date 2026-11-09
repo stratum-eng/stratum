@@ -416,7 +416,14 @@ than the text above. Nothing here reverses a decision.
   the trust model is the one stated under "What a job is".
 - **Read failures.** A `ci.yaml` that cannot be read while the same repository
   answers for the policy file blocks merges. If no file can be read at all, the
-  loader still falls back to the default policy with no CI, as it always has
-  for the policy file: an empty repository fails its clone too and has to stay
-  usable. That pre-existing fallback is the weaker of the two behaviours and is
-  not changed here.
+  loader cannot tell "no config" from "repository unavailable" — an empty
+  repository fails its clone too and has to stay usable — so it still falls
+  back to the default policy, as it always has for the policy file. For CI that
+  fallback is bounded: the policy is marked unverified, and while it is, the
+  merge gate refuses every change of a project that has ever dispatched a
+  first-party check run. So neither a failed step nor a change opened during
+  the outage can merge because a read failed. A project that has never run
+  first-party CI is unaffected — which is also every empty repository. The
+  policy file's own `merge:` rules are still lost to a total read failure, as
+  before this change; closing that needs a way to tell an empty repository from
+  an unreachable one, and is not attempted here.

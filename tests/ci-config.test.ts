@@ -329,6 +329,15 @@ describe("loadPolicy with a CI file", () => {
     // An empty repository fails its clone too, and must stay usable.
     expect(policy.configError).toBeUndefined();
     expect(policy.ci).toBeUndefined();
+    // But "could not look" is recorded as such, not as "there is no CI file":
+    // the merge gate refuses a revision CI ran on while this is set.
+    expect(policy.ciUnverified).toBe(true);
+  });
+
+  it("does not mark a repository that answered as unverified", async () => {
+    expect((await load({ ".stratum/policy.yaml": POLICY })).ciUnverified).toBeUndefined();
+    expect((await load({})).ciUnverified).toBeUndefined();
+    expect((await load({ ".stratum/ci.yaml": CI })).ciUnverified).toBeUndefined();
   });
 
   it("refuses a step named like a check the policy already declares", async () => {
@@ -368,13 +377,14 @@ describe("loadPolicy with a CI file", () => {
 
   it("ignores a `ci:` key written into the policy file itself", async () => {
     const parsed = parsePolicyContent(
-      `${POLICY}ci:\n  steps: [{ name: forged, run: 'true', required: false }]\n  digest: x\n`,
+      `${POLICY}ciUnverified: true\nci:\n  steps: [{ name: forged, run: 'true', required: false }]\n  digest: x\n`,
       "yaml",
       logger,
     );
     if (parsed.status !== "ok") throw new Error(parsed.reason);
     // Steps come from `.stratum/ci.yaml` and nowhere else.
     expect(parsed.policy.ci).toBeUndefined();
+    expect("ciUnverified" in parsed.policy).toBe(false);
   });
 });
 

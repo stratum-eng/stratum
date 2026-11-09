@@ -28,7 +28,7 @@
   without the executor behaves exactly as before unless a project adds a
   `.stratum/ci.yaml`, in which case its checks are `errored` with a summary
   saying what is missing. The release adds migration
-  `077_checks_ci_config_digest.sql` (one nullable column).
+  `077_checks_ci_config_digest.sql` (one nullable column and one index).
 
 ### Changed
 - **`merge.requireFreshBase` now refuses a merge it cannot verify.** A change

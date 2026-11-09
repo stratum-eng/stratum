@@ -242,8 +242,13 @@ about every ten seconds.
   Re-evaluating the change runs the steps the base declares now. The same
   happens when a `ci.yaml` is added to a project that has open changes: they
   must be re-evaluated before they can merge.
-- If the file cannot be read from the default branch, or is invalid, merges are
-  blocked until it can be.
+- If the file is invalid, or cannot be read from the default branch, merges are
+  blocked until it can be. If the default branch cannot be read **at all** —
+  Stratum cannot then tell a project with no CI from one whose repository is
+  unavailable — every merge in a project that has run first-party CI before is
+  refused ("…could not be read from the base branch to confirm which steps are
+  required; try again"), and a project that never has is treated as it always
+  was.
 
 A change to the policy or CI file on the default branch can take up to a minute
 to be seen by the merge gate.

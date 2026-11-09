@@ -2,7 +2,7 @@ import { CI_CONFIG_PATH, type CiConfig, requiredCiStepNames } from "../evaluatio
 import { diffTouchesProtectedConfig } from "../evaluation/policy-loader";
 import type { EvalPolicy } from "../evaluation/types";
 import { countApprovals } from "../storage/change-reviews";
-import { type CheckRun, latestChecksForRevision } from "../storage/checks";
+import { type CheckRun, latestChecksForRevision, projectHasCiRuns } from "../storage/checks";
 import { listEvalRuns } from "../storage/eval-runs";
 import type { Change } from "../types";
 import { AppError } from "../utils/errors";
@@ -46,7 +46,12 @@ export async function checkMergeProtection(
   // has no merge block at all (SA-3), so we can't early-return on a missing merge.
   // Nor on a project whose only gate is its `.stratum/ci.yaml` (#415): every
   // step in that file is a required check whether or not a policy file exists.
-  if (!merge && !change.touchesProtectedConfig && policy.ci === undefined) {
+  if (
+    !merge &&
+    !change.touchesProtectedConfig &&
+    policy.ci === undefined &&
+    policy.ciUnverified !== true
+  ) {
     return ok({ allowed: true, reasons: [] });
   }
 
@@ -106,7 +111,7 @@ export async function checkMergeProtection(
   }
 
   const requiredChecks = requiredCheckNames(policy);
-  if (requiredChecks.length > 0 || policy.ci !== undefined) {
+  if (requiredChecks.length > 0 || policy.ci !== undefined || policy.ciUnverified === true) {
     // Read for the evaluated revision only (#414). A change with nothing
     // pinned has no checks to read, and every required one is then missing.
     let latest: CheckRun[] = [];
@@ -128,6 +133,17 @@ export async function checkMergeProtection(
     // and "failed" under one is not this gate's failure either.
     const stale = staleCiSteps(latest, policy.ci);
     if (stale.length > 0) reasons.push(ciMismatchReason(stale));
+    // The base branch could not be read at all, so its step list is unknown.
+    // For a project that runs first-party CI, "unknown" must not mean "no
+    // steps required": a failed step would stop gating for as long as the read
+    // fails, and a change opened during the outage would never be tested at
+    // all. Asked of the project, not of this revision — a revision evaluated
+    // while the base was unreadable has no runs to find.
+    if (policy.ciUnverified === true) {
+      const ran = await projectHasCiRuns(db, logger, change);
+      if (!ran.success) return err(new AppError(ran.error.message, "DATABASE_ERROR", 500));
+      if (ran.data) reasons.push(CI_UNVERIFIED_REASON);
+    }
     reasons.push(
       ...requiredCheckReasons(
         latest,
@@ -236,6 +252,8 @@ export function staleCiSteps(
     .filter((step) => byName.get(step.name)?.ciConfigDigest !== ci.digest)
     .map((step) => step.name);
 }
+
+const CI_UNVERIFIED_REASON = `This project runs first-party CI, but ${CI_CONFIG_PATH} could not be read from the base branch to confirm which steps are required; try again`;
 
 function ciMismatchReason(stale: string[]): string {
   const names = stale.map((name) => `'${name}'`).join(", ");

@@ -28,6 +28,16 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
+/**
+ * Names a step sees that nobody passed it: bash sets the first four, macOS
+ * injects the fifth into every process, and Node on Linux exports the last to
+ * its children. None carries anything from the job.
+ */
+const RUNTIME_SET = ["PWD", "SHLVL", "_", "OLDPWD", "__CF_USER_TEXT_ENCODING", "UV_USE_IO_URING"];
+
+/** These tests wait on real processes and real timeouts; an emulated CPU is slow. */
+const SLOW = 30_000;
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface Poll {
@@ -93,25 +103,33 @@ describe("agent.mjs", () => {
     expect(text(done)).not.toContain("after");
   });
 
-  it("kills a step at its time limit, along with everything it started", async () => {
-    const jobDir = tempDir();
-    // A background child that would write a marker if it survived the step.
-    const marker = join(jobDir, "survivor");
-    agent(jobDir, ["start", "s0", "1", jobDir], `(sleep 3; touch ${marker}) &\nsleep 60\n`);
-    const done = await waitForExit(jobDir, "s0");
+  it(
+    "kills a step at its time limit, along with everything it started",
+    async () => {
+      const jobDir = tempDir();
+      // A background child that would write a marker if it survived the step.
+      const marker = join(jobDir, "survivor");
+      agent(jobDir, ["start", "s0", "1", jobDir], `(sleep 3; touch ${marker}) &\nsleep 60\n`);
+      const done = await waitForExit(jobDir, "s0");
 
-    expect(done.exit?.timedOut).toBe(true);
-    expect(done.exit?.exitCode).not.toBe(0);
-    await sleep(3500);
-    expect(() => readFileSync(marker)).toThrow();
-  });
+      expect(done.exit?.timedOut).toBe(true);
+      expect(done.exit?.exitCode).not.toBe(0);
+      await sleep(3500);
+      expect(() => readFileSync(marker)).toThrow();
+    },
+    SLOW,
+  );
 
-  it("kills a step that ignores SIGTERM", async () => {
-    const jobDir = tempDir();
-    agent(jobDir, ["start", "s0", "1", jobDir], "trap '' TERM\nwhile true; do sleep 0.1; done\n");
-    const done = await waitForExit(jobDir, "s0");
-    expect(done.exit).toMatchObject({ timedOut: true, signal: "SIGKILL" });
-  });
+  it(
+    "kills a step that ignores SIGTERM",
+    async () => {
+      const jobDir = tempDir();
+      agent(jobDir, ["start", "s0", "1", jobDir], "trap '' TERM\nwhile true; do sleep 0.1; done\n");
+      const done = await waitForExit(jobDir, "s0");
+      expect(done.exit).toMatchObject({ timedOut: true, signal: "SIGKILL" });
+    },
+    SLOW,
+  );
 
   it("gives the step the environment it was started with and no more", async () => {
     const jobDir = tempDir();
@@ -121,10 +139,7 @@ describe("agent.mjs", () => {
       .trim()
       .split("\n")
       .map((line) => line.split("=")[0])
-      // bash sets the first four itself; macOS injects the last into every process.
-      .filter(
-        (name) => !["PWD", "SHLVL", "_", "OLDPWD", "__CF_USER_TEXT_ENCODING"].includes(name ?? ""),
-      );
+      .filter((name) => !RUNTIME_SET.includes(name ?? ""));
     expect(names.sort()).toEqual(
       ["CI", "ONLY_THIS", "PATH", "STRATUM_JOB_DIR", "STRATUM_KILL_GRACE_MS"].sort(),
     );
