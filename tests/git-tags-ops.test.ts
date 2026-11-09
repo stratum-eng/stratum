@@ -4,6 +4,7 @@ import { snapshotRepo, walkRepoObjects } from "../src/backup/repo-snapshot";
 import {
   MAX_TAGS,
   type NodeFS,
+  TAG_DETAIL_STORE_TIMEOUT_MS,
   cloneRepo,
   collectRepoTags,
   listRepoTags,
@@ -755,6 +756,52 @@ describe("listRepoTags", () => {
     expect(mockClone).toHaveBeenCalledTimes(1);
     // Both paths describe the tag identically.
     expect(second).toEqual(first);
+  });
+
+  it("answers without waiting for a cache store that never finishes", async () => {
+    // Only the timeout clock is faked: the in-memory git work still needs real
+    // turns of the event loop to run.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let tagOid = "";
+      let commitOid = "";
+      mockClone.mockImplementation(async ({ fs, dir }: { fs: NodeFS; dir: string }) => {
+        const { shas } = await buildRepo(dir, [{ "a.txt": "one" }], fs);
+        commitOid = shas[0] as string;
+        await git.annotatedTag({ fs, dir, ref: "ann", object: commitOid, message: "m\n", tagger });
+        tagOid = await git.resolveRef({ fs, dir, ref: "refs/tags/ann" });
+      });
+      mockFetch.mockResolvedValue({});
+      await mockClone({ fs: new MemoryFS().toNodeFS() as unknown as NodeFS, dir: "/repo" });
+      mockGetRemoteInfo.mockResolvedValue(remoteInfoWithTags({ ann: tagOid, "ann^{}": commitOid }));
+      const detailCache = {
+        get: async () => null,
+        put: () => new Promise<void>(() => {}),
+      };
+
+      const pending = listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+        detailCache,
+      });
+      let settled = false;
+      void pending.finally(() => {
+        settled = true;
+      });
+      for (let turn = 0; turn < 200 && !settled; turn++) {
+        await new Promise((resolve) => setImmediate(resolve));
+        await vi.advanceTimersByTimeAsync(TAG_DETAIL_STORE_TIMEOUT_MS / 4);
+      }
+      const result = await pending;
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.data.tags.map((t) => t.name)).toEqual(["ann"]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "Tag details were not all stored",
+        expect.objectContaining({ remote: "https://r.example/repo.git" }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("propagates a failure to read the advertisement", async () => {

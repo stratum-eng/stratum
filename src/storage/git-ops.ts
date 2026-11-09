@@ -4388,6 +4388,9 @@ export type TagDetailCache = {
   put(oid: string, details: TagObjectDetails): Promise<void>;
 };
 
+/** Longest a listing waits for its tag details to be stored before answering. */
+export const TAG_DETAIL_STORE_TIMEOUT_MS = 2_000;
+
 /** Tag-detail cache reads kept in flight at once while building a listing. */
 const TAG_DETAIL_READ_BATCH = 20;
 
@@ -4502,17 +4505,32 @@ export async function listRepoTags(
 
   const detailCache = opts.detailCache;
   if (detailCache) {
-    await Promise.all(
-      collected.data
-        .filter((tag) => tag.annotated)
-        .map((tag) =>
-          detailCache.put(tag.oid, {
-            ...(tag.message !== undefined ? { message: tag.message } : {}),
-            ...(tag.tagger !== undefined ? { tagger: tag.tagger } : {}),
-            ...(tag.timestamp !== undefined ? { timestamp: tag.timestamp } : {}),
-          }),
+    // Bounded: the listing is already in hand, and a store that hangs must not
+    // hold the response. Whatever is not stored in time is read again by the
+    // next listing.
+    const stored = await fromPromise(
+      withTimeout(
+        Promise.all(
+          collected.data
+            .filter((tag) => tag.annotated)
+            .map((tag) =>
+              detailCache.put(tag.oid, {
+                ...(tag.message !== undefined ? { message: tag.message } : {}),
+                ...(tag.tagger !== undefined ? { tagger: tag.tagger } : {}),
+                ...(tag.timestamp !== undefined ? { timestamp: tag.timestamp } : {}),
+              }),
+            ),
         ),
+        TAG_DETAIL_STORE_TIMEOUT_MS,
+        "listRepoTags: storing tag details",
+      ),
     );
+    if (!stored.success) {
+      logger.warn("Tag details were not all stored", {
+        remote,
+        error: stored.error instanceof Error ? stored.error.message : String(stored.error),
+      });
+    }
   }
 
   const truncated = cloneResult.data.tagsTruncated ?? false;
