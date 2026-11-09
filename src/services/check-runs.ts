@@ -134,6 +134,7 @@ function callbackUrlFor(env: Pick<Env, "APP_URL">, requestOrigin?: string): stri
   }
 }
 
+/** The dispatch request's timeout: the entry's `timeoutMs`, clamped, or the default. */
 function dispatchTimeoutMs(entry: ChecksEvaluatorConfig): number {
   const raw = entry.timeoutMs;
   if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_CHECK_DISPATCH_TIMEOUT_MS;
@@ -276,6 +277,7 @@ async function dispatchEntry(
   });
 }
 
+/** The policy's `checks` evaluator entries, in file order. */
 function checksEntries(policy: EvalPolicy): ChecksEvaluatorConfig[] {
   return policy.evaluators.filter(
     (entry): entry is ChecksEvaluatorConfig => entry.type === "checks",
@@ -488,6 +490,10 @@ export type CheckReportOutcome =
 
 const SIGNATURE_PATTERN = /^sha256=([0-9a-f]{64})$/i;
 
+/**
+ * Parse and validate a runner's report for `checkId`. Returns the report, or
+ * the reason it is malformed. Called only after the signature has verified.
+ */
 function parseReport(raw: string, checkId: string): CheckReportBody | string {
   let parsed: unknown;
   try {

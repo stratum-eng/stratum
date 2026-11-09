@@ -209,7 +209,7 @@ vetted by anyone. A name you do not recognise should be disconnected.
 
 ## The tools
 
-Thirty-eight tools cover the full contribution loop, from creating or importing
+Forty tools cover the full contribution loop, from creating or importing
 a project to promoting a change to GitHub, plus organization management. Project
 arguments take a `namespace/slug` reference (`@acme/api` and `acme/api` both
 work); organization arguments take the org's slug (`acme` or `@acme`). Every

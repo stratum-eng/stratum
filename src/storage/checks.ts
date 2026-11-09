@@ -29,6 +29,7 @@ export const TERMINAL_CHECK_STATUSES: readonly CheckStatus[] = ["passed", "faile
 export const REPORTABLE_CHECK_STATUSES = ["running", "passed", "failed", "errored"] as const;
 export type ReportableCheckStatus = (typeof REPORTABLE_CHECK_STATUSES)[number];
 
+/** Whether a check in this status has finished and can no longer change. */
 export function isTerminalCheckStatus(status: CheckStatus): boolean {
   return TERMINAL_CHECK_STATUSES.includes(status);
 }
@@ -122,6 +123,7 @@ interface CheckRow {
   deadline_at: string;
 }
 
+/** Maps a `checks` row to the public `CheckRun`, omitting unset nullable columns. */
 function rowToCheck(row: CheckRow): CheckRun {
   return {
     id: row.id,
@@ -144,6 +146,7 @@ function rowToCheck(row: CheckRow): CheckRun {
   };
 }
 
+/** Normalizes a thrown value so the logger always receives an `Error`. */
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }

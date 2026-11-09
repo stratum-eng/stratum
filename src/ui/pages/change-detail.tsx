@@ -78,6 +78,7 @@ function statusBadgeClass(status: string): string {
   }
 }
 
+/** The badge class for a check's status, so each state reads at a glance. */
 function checkBadgeClass(status: CheckStatus): string {
   switch (status) {
     case "queued":

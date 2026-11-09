@@ -43,7 +43,7 @@ merge:
 |---|---|---|
 | `url` | yes | Where the dispatch request is POSTed. Must be a public `http(s)` address; redirects are not followed. |
 | `secretRef` | yes | Name of the [project secret](/guides/ci-integration/#the-signing-secret) that signs the dispatch **and** verifies the runner's reports. Same rules as the webhook evaluator: it must start with `WEBHOOK_`. A literal `secret` is refused. |
-| `checks` | yes | The check names this endpoint reports: 1–64 characters of letters, digits, `.`, `_`, `-` or `/`. At most 32 names per policy file. |
+| `checks` | yes | The check names this endpoint reports: 1–64 characters of letters, digits, `.`, `_`, `-` or `/`, starting with a letter or a digit (`-lint` and `.test` are refused). A bad name here drops this evaluator entry; a bad name in `merge.requiredChecks` invalidates the policy file. At most 32 names per policy file. |
 | `timeoutMs` | no | Timeout for the dispatch request. Default 10 000, clamped to 1 000–120 000. |
 | `deadlineMs` | no | How long a check may stay `queued` or `running`. Default 1 800 000 (30 minutes), clamped to 60 000–21 600 000 (6 hours). |
 
