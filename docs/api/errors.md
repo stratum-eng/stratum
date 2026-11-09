@@ -100,6 +100,10 @@ codes are in the [OpenAPI specification](openapi.yml).
 - `PINNED_SHA_UNREACHABLE` — the pinned commit is not reachable in the clone
 - `PUSH_TIMEOUT` — `504` during restore. The push **may still land** — do not
   assume it failed
+- `EXTERNAL_NOT_IMPORTED` — `409`; the change is `external`: it stands for a
+  pull request on the project's GitHub mirror that nobody has imported. It
+  cannot be merged or evaluated, with or without `force`. Import it with
+  `POST /api/changes/{id}/import`.
 - `EVALUATION_PENDING` — `409`; the change is still `evaluating`, so there is no
   verdict to merge on. Refused even with `force`: force bypasses a failing
   verdict, never a missing one. Poll the change and merge once it has one.

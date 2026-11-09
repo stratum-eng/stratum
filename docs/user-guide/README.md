@@ -16,6 +16,7 @@ Welcome to Stratum! This guide helps you get started.
 - [Getting Started](getting-started.md) — the whole flow, end to end
 - [Importing from GitHub](importing.md) — import, sync, and what doesn't come across
 - [Mirroring a project to GitHub](push-mirror.md) — a read-only, fast-forward-only copy on GitHub
+- [Pull requests on the mirror](mirror-pull-requests.md) — bringing a contributor's GitHub pull request in as a change
 - [Code Review](code-review.md) — comment threads, line anchors, and review verdicts
 - [Issues](issues.md) — the built-in tracker, and linking issues to changes
 - [CI Integration (Bring Your Own CI)](ci-integration.md) — the webhook evaluator

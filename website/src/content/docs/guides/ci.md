@@ -189,6 +189,19 @@ that impossible. A dependency's install script can send the checkout to a
 registry it is allowed to reach. That is why the job holds nothing but the
 checkout.
 
+### Pull requests from the mirror
+
+A change that began as a [pull request on the project's GitHub
+mirror](/guides/mirror-pull-requests/) gets no job until a maintainer imports it.
+After that its job is the same kind as any other: the same image, the same
+allowlist, no credential but the read of the project's repository, and the
+steps of the default branch's `.stratum/ci.yaml`, never the pull request's.
+
+The job is marked as external in the dispatch. The executor refuses an external
+job under any profile but `ci`. That is true of every job today, because `ci`
+is the only profile. The rule is there so that a future deploy or publish
+profile cannot be reached from a stranger's pull request.
+
 ## Results
 
 Each step's check ends in one of three states:

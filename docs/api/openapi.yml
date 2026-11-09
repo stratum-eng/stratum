@@ -1054,6 +1054,20 @@ paths:
                   description: >
                     A disabled mirror keeps its configuration and status and
                     pushes nothing. Enabling it again queues a push.
+                acceptPullRequests:
+                  type: boolean
+                  description: >
+                    Bring pull requests opened against the mirror's default
+                    branch into the project as `external` changes. Off for a
+                    new mirror. Left unchanged when omitted. Needs the GitHub
+                    App's Pull requests permission (read and write) and its
+                    `pull_request` webhook event.
+                requireContributorAgreement:
+                  type: boolean
+                  description: >
+                    Require the maintainer importing a pull request to confirm
+                    the contributor agreement. Off for a new mirror. Left
+                    unchanged when omitted.
       responses:
         "200":
           description: Mirror saved
@@ -2456,7 +2470,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [open, evaluating, needs_changes, accepted, approved, promoted, merged, rejected]
+            enum: [open, evaluating, external, needs_changes, accepted, approved, promoted, merged, rejected]
         - name: limit
           in: query
           schema: { type: integer, default: 100, maximum: 500 }
@@ -2490,6 +2504,11 @@ paths:
         single push. At most 80 changes per request. Requires the RepoDO
         backend to be enabled. `force` is deny-by-default and must be allowed
         by the project policy (`merge.allowForce: true`).
+
+        A change that came from a pull request on the mirror is skipped, so
+        that its commits are kept; merge it on its own. When nothing is
+        eligible the `400` response carries the `skipped` list with a reason
+        for each change.
       requestBody:
         required: true
         content:
@@ -2589,10 +2608,104 @@ paths:
                     items:
                       type: object
                       description: Per-kind cost summary for this change
+                  externalPullRequest:
+                    $ref: "#/components/schemas/ExternalPullRequest"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/changes/{id}/import:
+    parameters:
+      - $ref: "#/components/parameters/ChangeId"
+    post:
+      operationId: importChange
+      tags: [changes]
+      summary: Import an external change's pull request
+      description: |
+        Brings the commits of a pull request on the project's GitHub mirror
+        into the change's workspace and starts the change's evaluation. This
+        is what turns an `external` change into an ordinary one.
+
+        A person with write access to the project only. An agent credential is
+        refused with `401`.
+
+        The pull request is read from GitHub again: it must be open against
+        the default branch of the mirror, and its head must be `headSha` when
+        that is given. Its commits are fetched from the mirror repository and
+        checked against the limits (100 commits, 300 changed files, 5 MB of
+        changed content, 20 MB fetched), and refused if they add a submodule
+        or a Git LFS pointer or conflict with the default branch. A refusal is
+        recorded on the change (`externalPullRequest.refusal`) and nothing is
+        brought in.
+
+        The importing user becomes the change's author of record, so their own
+        approval does not count towards the approvals the change needs.
+
+        A form-encoded request is answered with a redirect to the change page
+        instead of JSON.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agreementConfirmed:
+                  type: boolean
+                  description: >
+                    The caller confirms that the pull request's author has
+                    agreed to the project's contributor agreement. Required
+                    when the mirror sets `requireContributorAgreement`; recorded
+                    in the audit log.
+                headSha:
+                  type: string
+                  description: >
+                    The pull request head the caller looked at. The import is
+                    refused if the pull request has moved since.
+      responses:
+        "202":
+          description: Imported; the change is being evaluated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [change, externalPullRequest, evaluation]
+                properties:
+                  change: { $ref: "#/components/schemas/Change" }
+                  externalPullRequest: { $ref: "#/components/schemas/ExternalPullRequest" }
+                  evaluation:
+                    type: object
+                    properties:
+                      runId: { type: string }
+                      mode:
+                        type: string
+                        enum: [queued, inline]
+                        description: >
+                          `inline` means the evaluation has already run and
+                          `change` carries its verdict.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The change is not `external` (`NOT_EXTERNAL`); the pull request has
+            new commits (`PR_HEAD_MOVED`) or is no longer open against the
+            default branch (`PR_NOT_OPEN`); or the mirror no longer accepts
+            pull requests (`EXTERNAL_IMPORT_UNAVAILABLE`)
+        "422":
+          description: >
+            The contributor agreement was not confirmed
+            (`CONTRIBUTOR_AGREEMENT_REQUIRED`), or the pull request cannot be
+            imported as it stands — `code` is one of `PR_TOO_MANY_COMMITS`,
+            `PR_TOO_MANY_FILES`, `PR_TOO_LARGE`, `PR_UNRELATED_HISTORY`,
+            `PR_CONFLICTS`, `PR_EMPTY`, `SUBMODULES_UNSUPPORTED`,
+            `LFS_UNSUPPORTED`
+        "502":
+          description: GitHub could not be reached
 
   /api/changes/{id}/merge:
     parameters:
@@ -2606,7 +2719,12 @@ paths:
         forcing, which the project policy must allow). Branch protection,
         stale-base (`requireFreshBase`), and stale-workspace (SEC-2) gates run
         before the merge. A change still `evaluating` is refused with `409`
-        `EVALUATION_PENDING`, with or without force.
+        `EVALUATION_PENDING`, with or without force, and an `external` change
+        with `409` `EXTERNAL_NOT_IMPORTED`.
+
+        A change that came from a pull request on the mirror keeps its commits
+        when it merges; with `strategy=squash` the squash commit names their
+        authors in `Co-authored-by` trailers.
       parameters:
         - name: force
           in: query
@@ -2724,6 +2842,8 @@ paths:
       summary: Re-run evaluation for a change
       description: |
         Users only. Merged, rejected, or promoted changes cannot be re-evaluated.
+        An `external` change is refused with `409` `EXTERNAL_NOT_IMPORTED`:
+        importing it is what starts its evaluation.
 
         With an evaluation queue bound this re-enqueues: the change moves to
         `evaluating` under a new run, which supersedes any run still in flight
@@ -7107,10 +7227,17 @@ components:
         workspace: { type: string }
         status:
           type: string
-          enum: [open, evaluating, needs_changes, accepted, approved, promoted, merged, rejected, reverted]
+          enum: [open, evaluating, external, needs_changes, accepted, approved, promoted, merged, rejected, reverted]
           description: |
             `evaluating` means an evaluation run is queued or running and no
             verdict exists yet; it is never mergeable.
+
+            `external` means the change stands for a pull request opened on the
+            project's GitHub mirror that a maintainer has not imported yet. It
+            cannot be evaluated, reviewed or merged, even by force; importing
+            it (`POST /api/changes/{id}/import`) is the only way forward. An
+            imported change returns to `external` when its pull request gets
+            new commits.
         agentId: { type: string }
         evalScore: { type: number }
         evalPassed: { type: boolean }
@@ -7440,6 +7567,93 @@ components:
         attempts:
           type: integer
           description: Consecutive failed attempts. Project writers only.
+        acceptPullRequests:
+          type: boolean
+          description: >
+            Whether a pull request opened against the mirror's default branch
+            becomes an `external` change in the project.
+        requireContributorAgreement:
+          type: boolean
+          description: >
+            Whether importing such a pull request needs a maintainer to
+            confirm the contributor agreement.
+
+    ExternalPullRequest:
+      type: object
+      description: >
+        The pull request, on the project's GitHub mirror, that a change stands
+        for. `title`, `author` and `commitAuthors` are text chosen by the pull
+        request's author: display them as text.
+      required: [repo, number, url, author, title, headSha, importedHeadSha, state, refusal, closure]
+      properties:
+        repo:
+          type: string
+          description: The mirror repository, as `owner/repository`
+        number: { type: integer }
+        url: { type: string, format: uri }
+        author:
+          type: string
+          description: GitHub login of whoever opened the pull request
+        title: { type: string }
+        headSha:
+          type: string
+          description: The newest head commit GitHub reported
+        importedHeadSha:
+          type: [string, "null"]
+          description: The head commit the workspace holds; null before the first import
+        commits:
+          type: [integer, "null"]
+          description: GitHub's count of the pull request's commits
+        changedFiles:
+          type: [integer, "null"]
+          description: GitHub's count of the files it changes
+        state:
+          type: string
+          enum: [open, closed, merged]
+          description: The pull request's state on GitHub, as last seen
+        refusal:
+          description: Why the newest head cannot be imported, or null
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [code, reason]
+              properties:
+                code:
+                  type: string
+                  enum: [PR_TOO_MANY_COMMITS, PR_TOO_MANY_FILES, PR_TOO_LARGE, PR_UNRELATED_HISTORY, PR_CONFLICTS, PR_EMPTY, SUBMODULES_UNSUPPORTED, LFS_UNSUPPORTED]
+                reason: { type: string }
+        importedBy:
+          type: [string, "null"]
+          description: The user who last imported it
+        importedAt: { type: [string, "null"], format: date-time }
+        agreementConfirmedBy:
+          type: [string, "null"]
+          description: The user who confirmed the contributor agreement
+        agreementConfirmedAt: { type: [string, "null"], format: date-time }
+        commitAuthors:
+          type: array
+          description: Authors of the imported commits
+          items:
+            type: object
+            required: [name, email]
+            properties:
+              name: { type: string }
+              email: { type: string }
+        closure:
+          type: object
+          description: Closing the pull request on GitHub after the change merged
+          required: [state, error]
+          properties:
+            state:
+              type: string
+              enum: [none, commented, done, failed]
+              description: |
+                `none` — nothing done yet. `commented` — the link to the change
+                is posted, and the pull request is closed in a later pass if
+                GitHub has not marked it merged. `done` — the pull request is
+                merged or closed. `failed` — Stratum could not comment on or
+                close it; `error` says why.
+            error: { type: [string, "null"] }
 
     IssueImportRun:
       type: object

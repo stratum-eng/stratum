@@ -129,7 +129,9 @@ anyone else `404`, and an agent `401`.
     "lastAttemptAt": "2026-11-09T10:15:00.000Z",
     "lastError": null,
     "nextAttemptAt": null,
-    "attempts": 0
+    "attempts": 0,
+    "acceptPullRequests": false,
+    "requireContributorAgreement": false
   }
 }
 ```
@@ -147,11 +149,22 @@ or `attempts`.
 `PUT /api/projects/{namespace}/{slug}/mirror`
 
 ```json
-{ "repo": "acme/widgets", "enabled": true }
+{
+  "repo": "acme/widgets",
+  "enabled": true,
+  "acceptPullRequests": true,
+  "requireContributorAgreement": true
+}
 ```
 
 `repo` is `owner/repository` on GitHub. `enabled` defaults to `true`. `POST` to
 the same path does the same thing.
+
+`acceptPullRequests` brings pull requests opened against the mirror's default
+branch into the project as `external` changes, and `requireContributorAgreement`
+makes importing one need a maintainer's confirmation. Both are off for a new
+mirror and are left unchanged when omitted. See
+[Pull requests on the mirror](../../user-guide/mirror-pull-requests.md).
 
 The target is checked against GitHub before it is saved, whether or not the
 mirror is enabled; only disabling an existing mirror skips the check. Saving an

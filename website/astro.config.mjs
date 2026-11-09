@@ -175,6 +175,7 @@ export default defineConfig({
             { label: "Getting started", slug: "guides/getting-started" },
             { label: "Importing from GitHub", slug: "guides/importing" },
             { label: "Mirroring to GitHub", slug: "guides/push-mirror" },
+            { label: "Pull requests on the mirror", slug: "guides/mirror-pull-requests" },
             { label: "Code review", slug: "guides/code-review" },
             { label: "Issues", slug: "guides/issues" },
             { label: "CI integration", slug: "guides/ci-integration" },
