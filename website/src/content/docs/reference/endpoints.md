@@ -113,9 +113,12 @@ Each tag is:
 | `unresolvable` | `true` when the tag's object or target could not be read. The tag is still listed. |
 
 Tag names come from the remote's ref advertisement, so a listing normally does
-not clone the repository. The exception is a tag being listed for the first
-time: it is read by cloning once and remembered, so the first request after a
-new tag is pushed is slower. `unresolvable` can only be `true` on such a request.
+not clone the repository. The exception is a tag whose details are not stored
+yet. The repository is cloned to read it, and the details are then remembered.
+The first request after a new tag is pushed is therefore slower. A tag that could
+not be resolved, or whose message is over 64 KB, is not remembered. Every
+request that lists such a tag clones the repository again, and `unresolvable`
+can be `true` on any of those requests.
 
 Capped at 200, keeping the highest-sorting names; `truncated` says so explicitly
 and `totalTagCount` is the number the repository actually has. Readable by anyone

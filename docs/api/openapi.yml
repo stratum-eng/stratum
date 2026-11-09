@@ -655,8 +655,9 @@ paths:
       summary: List the repository's tags
       description: >
         Tag names come from the remote's ref advertisement, so a listing
-        normally does not clone the repository. A tag listed for the first time
-        is read by cloning once and remembered.
+        normally does not clone the repository. A tag whose details are not
+        stored yet is read by cloning, and remembered unless it could not be
+        resolved or its message is over 64 KB.
         Capped at 200, keeping the highest-sorting names; `truncated` reports
         when the list was cut.
       security: [{ bearerAuth: [] }, {}]

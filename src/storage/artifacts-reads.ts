@@ -238,7 +238,7 @@ export function kvTagDetailCache(kv: KVNamespace, scope: string, logger: Logger)
     },
     async put(oid, details) {
       const body = JSON.stringify(details);
-      if (body.length > TAG_DETAILS_MAX_BYTES) return;
+      if (new TextEncoder().encode(body).byteLength > TAG_DETAILS_MAX_BYTES) return;
       try {
         await kv.put(key(oid), body, { expirationTtl: TAG_DETAILS_TTL_SECONDS });
       } catch (error) {

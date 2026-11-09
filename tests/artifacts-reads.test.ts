@@ -448,6 +448,17 @@ describe("kvTagDetailCache", () => {
     expect(store.size).toBe(0);
   });
 
+  it("measures the size limit in bytes, not characters", async () => {
+    const { kv, store } = memoryKV();
+    // 30,000 characters, 90,000 bytes of UTF-8.
+    await kvTagDetailCache(kv, "proj_1", logger).put(OID, {
+      annotated: true,
+      targetSha: TARGET,
+      message: "\u6f22".repeat(30_000),
+    });
+    expect(store.size).toBe(0);
+  });
+
   it("survives a KV that throws on read and on write", async () => {
     const kv = {
       get: async () => {
