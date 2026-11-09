@@ -4144,20 +4144,27 @@ export async function getDiffBetweenRepos(
   if (!workspaceFilesResult.success) return err(workspaceFilesResult.error);
   if (!baseFilesResult.success) return err(baseFilesResult.error);
 
-  const workspaceFiles = workspaceFilesResult.data;
-  const baseFiles = baseFilesResult.data;
+  // Read only the blobs that differ. Equal oids are equal content, which the
+  // diff skips anyway, and reading every file on both sides held two whole
+  // trees in memory at once: on a repository of a few hundred files that ran
+  // the evaluation consumer out of memory, which kills the isolate before it
+  // can fail the run closed and leaves the change stuck in `evaluating`.
+  const baseOids = new Map(baseFilesResult.data.map(([path, oid]) => [path, oid]));
+  const workspaceOids = new Map(workspaceFilesResult.data.map(([path, oid]) => [path, oid]));
+  const baseChanged = [...baseOids].filter(([path, oid]) => workspaceOids.get(path) !== oid);
+  const workspaceChanged = [...workspaceOids].filter(([path, oid]) => baseOids.get(path) !== oid);
 
   const baseContent = new Map<string, string>();
   const workspaceContent = new Map<string, string>();
 
   await Promise.all([
-    ...baseFiles.map(async ([path]) => {
+    ...baseChanged.map(async ([path]) => {
       const contentResult = await readFileAtCommit(baseFs, baseOid, path, logger);
       if (contentResult.success) {
         baseContent.set(path, contentResult.data);
       }
     }),
-    ...workspaceFiles.map(async ([path]) => {
+    ...workspaceChanged.map(async ([path]) => {
       const contentResult = await readFileAtCommit(workspaceFs, workspaceOid, path, logger);
       if (contentResult.success) {
         workspaceContent.set(path, contentResult.data);

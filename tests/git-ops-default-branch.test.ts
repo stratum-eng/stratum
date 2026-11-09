@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
     fetch: [] as any[],
     // biome-ignore lint/suspicious/noExplicitAny: raw call capture
     push: [] as any[],
+    readBlob: [] as string[],
   },
 }));
 
@@ -98,6 +99,11 @@ vi.mock("isomorphic-git", async (importOriginal) => {
       });
       return { defaultBranch: `refs/heads/${ref}`, fetchHead: null, fetchHeadDescription: null };
     },
+    // biome-ignore lint/suspicious/noExplicitAny: mock of isomorphic-git readBlob
+    readBlob: async (args: any) => {
+      h.calls.readBlob.push(args.filepath);
+      return real.readBlob(args);
+    },
     // biome-ignore lint/suspicious/noExplicitAny: mock of isomorphic-git push
     push: async (args: any) => {
       h.calls.push.push(args);
@@ -156,6 +162,7 @@ beforeEach(() => {
   h.servers.clear();
   h.calls.clone.length = 0;
   h.calls.fetch.length = 0;
+  h.calls.readBlob.length = 0;
   h.calls.push.length = 0;
 });
 
@@ -601,6 +608,37 @@ describe("getDiffBetweenRepos", () => {
     });
     expect(result.data.workspaceOid).toBe(wsTip);
     expect(result.data.workspaceSha).toBe(wsTip);
+  });
+
+  it("reads only the files that differ, not both whole trees", async () => {
+    const shared = Object.fromEntries(
+      Array.from({ length: 40 }, (_, i) => [`src/file-${i}.txt`, `content ${i}\n`]),
+    );
+    h.servers.set("https://r/base.git", {
+      branch: "trunk",
+      commits: [{ ...shared, "a.txt": "line1\n", "gone.txt": "bye\n" }],
+    });
+    h.servers.set("https://r/fork.git", {
+      branch: "trunk",
+      commits: [{ ...shared, "a.txt": "line1\nline2\n", "new.txt": "hi\n" }],
+    });
+    const result = await getDiffBetweenRepos(
+      "https://r/base.git",
+      "btok",
+      "https://r/fork.git",
+      "wtok",
+      logger,
+      "trunk",
+    );
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    // a.txt on both sides, gone.txt on the base, new.txt on the workspace.
+    expect([...h.calls.readBlob].sort()).toEqual(["a.txt", "a.txt", "gone.txt", "new.txt"]);
+    expect(result.data.diff).toContain("+line2");
+    expect(result.data.diff).toContain("diff --git a/new.txt b/new.txt");
+    expect(result.data.diff).toContain("diff --git a/gone.txt b/gone.txt");
+    expect(result.data.diff).not.toContain("src/file-");
   });
 
   it("#274: returns the base commit the diff was computed against, pinned to that clone", async () => {
