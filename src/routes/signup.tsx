@@ -1,7 +1,9 @@
 import { Hono } from "hono";
+import { telemetryConsentAtSignup } from "../analytics/consent";
 import { betaGateEnabled } from "../beta/gate";
 import type { Env } from "../types";
 import { SourceFooter } from "../ui/components/source-footer";
+import { TelemetryConsentField } from "../ui/components/telemetry-consent";
 import { StylesheetLinks } from "../ui/stylesheet";
 import { inviteFromAuthorizeTarget, pendingOAuthAuthorize } from "../utils/post-login-redirect";
 
@@ -181,6 +183,9 @@ export const SIGNUP_PAGE_CSS = `
 						color: #ccc;
 						cursor: pointer;
 					}
+					.consent-group .checkbox-group {
+						padding-bottom: 0.25rem;
+					}
 					.submit-btn {
 						padding: 0.875rem;
 						background: #1a3a6e;
@@ -337,6 +342,7 @@ app.get("/", (c) => {
   const successCode = c.req.query("success");
   const prefillEmail = c.req.query("email") ?? "";
   const betaGate = betaGateEnabled(c.env);
+  const askTelemetryConsent = telemetryConsentAtSignup(c.env);
   // Signing up to connect an editor (#410): the consent screen is where this
   // ends, and an invite the MCP client put on its authorization URL pre-fills.
   const pendingAuthorize = pendingOAuthAuthorize(c);
@@ -495,6 +501,8 @@ app.get("/", (c) => {
                       Keep me signed in for 30 days
                     </label>
                   </div>
+
+                  {askTelemetryConsent ? <TelemetryConsentField /> : null}
 
                   <div class="submit-status" id="submitStatus" />
                   <button type="submit" class="submit-btn" id="submitBtn">

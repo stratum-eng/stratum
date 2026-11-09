@@ -1,5 +1,11 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
+import {
+  TELEMETRY_CONSENT_FIELD,
+  newAccountTelemetryOptOut,
+  telemetryConsentAtSignup,
+  telemetryConsentGiven,
+} from "../analytics/consent";
 import type { AuthKind } from "../analytics/events";
 import { admitAndDeliverCodes, betaGateEnabled, validateInviteCode } from "../beta/gate";
 import { getMagicLinkEmail } from "../email/templates";
@@ -22,6 +28,7 @@ import { usernameNamespaceTaken } from "../storage/project-namespace";
 import { createUser, getUserByEmail, getUserByUsername } from "../storage/users";
 import type { Env } from "../types";
 import { SOURCE_FOOTER_HTML_INLINE } from "../ui/components/source-footer";
+import { TELEMETRY_CONSENT_HTML_INLINE } from "../ui/components/telemetry-consent";
 import { auditAuthFailure } from "../utils/auth-audit";
 import { hashToken } from "../utils/crypto";
 import { getWaitUntil } from "../utils/execution-ctx";
@@ -266,6 +273,10 @@ app.post("/send-signup", async (c) => {
   const rememberMe = body.rememberMe === "true";
   const inviteCode =
     typeof body.inviteCode === "string" ? body.inviteCode.trim().toUpperCase() : "";
+  // Only recorded where the form asked. With the setting off no box was shown,
+  // so a hand-crafted field is not allowed to leave a mark on the link.
+  const telemetryConsent =
+    telemetryConsentAtSignup(c.env) && telemetryConsentGiven(body[TELEMETRY_CONSENT_FIELD]);
 
   // Validate email format
   const emailValidation = validateEmail(email, logger);
@@ -355,6 +366,7 @@ app.post("/send-signup", async (c) => {
         createdAt: Date.now(),
         rememberMe,
         inviteCode,
+        ...(telemetryConsent ? { telemetryConsent: true } : {}),
         ...bound,
       },
       15 * 60,
@@ -651,6 +663,7 @@ ${wrongCode ? '<p role="alert" style="color:#b00020">That code doesn\'t match. C
 <label for="userCode" style="display:block;margin-bottom:0.5rem">Code from your agent</label>
 <input id="userCode" name="userCode" required autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX" style="font:1.25rem ui-monospace,monospace;letter-spacing:0.15em;text-align:center;padding:0.5rem;width:12rem;margin-bottom:1rem">
 <br>
+${telemetryConsentAtSignup(c.env) ? TELEMETRY_CONSENT_HTML_INLINE : ""}
 <button type="submit" style="padding:0.6rem 1.4rem;font-size:1rem;border:0;border-radius:0.5rem;background:#111;color:#fff;cursor:pointer">Approve and create account</button>
 </form>
 ${SOURCE_FOOTER_HTML_INLINE}
@@ -769,7 +782,15 @@ app.post("/verify", async (c) => {
 
       const account = await createAccountFromSignupLink(
         c,
-        { email, username, inviteCode, source: "magic_link" },
+        {
+          email,
+          username,
+          inviteCode,
+          source: "magic_link",
+          // The legacy one-field `/send` form mints signup links too and never
+          // asks, so its links carry no consent and land here as `false`.
+          telemetryConsent: tokenData.telemetryConsent === true,
+        },
         logger,
       );
       if (!account.ok) return emailAuthRedirect(c, "error", account.code, account.path);
@@ -785,7 +806,19 @@ app.post("/verify", async (c) => {
     }
 
     if (intent === "agent-signup") {
-      return await completeAgentSignup(c, tokenData, emailHash, rememberMe, logger);
+      // The agent that asked for this account cannot consent on its human's
+      // behalf: nothing in POST /api/agent-signup is read as consent. The
+      // approval page is the first time a person is present, so the box (and
+      // the answer) live on this request's own form.
+      const telemetryConsent = telemetryConsentGiven(form[TELEMETRY_CONSENT_FIELD]);
+      return await completeAgentSignup(
+        c,
+        tokenData,
+        emailHash,
+        rememberMe,
+        telemetryConsent,
+        logger,
+      );
     }
 
     if (intent === "login") {
@@ -933,17 +966,24 @@ type AccountCreation = { ok: true; userId: string } | { ok: false; code: string;
  * The caller has already handled an email that now belongs to an account.
  *
  * @param c - Request context
- * @param input - The verified email, chosen username, invite code, and the
- *   funnel source recorded with the beta admission
+ * @param input - The verified email, chosen username, invite code, the
+ *   funnel source recorded with the beta admission, and whether the person
+ *   ticked the telemetry consent box (only read when the instance asks)
  * @param logger - Request logger
  * @returns The new user's id, or the error code and page to send the browser to
  */
 async function createAccountFromSignupLink(
   c: Context<{ Bindings: Env }>,
-  input: { email: string; username: string; inviteCode: string; source: string },
+  input: {
+    email: string;
+    username: string;
+    inviteCode: string;
+    source: string;
+    telemetryConsent: boolean;
+  },
   logger: Logger,
 ): Promise<AccountCreation> {
-  const { email, username, inviteCode, source } = input;
+  const { email, username, inviteCode, source, telemetryConsent } = input;
   const emailHash = hashEmail(email);
 
   // Closed-beta gate: re-validate the invite code before creating the account.
@@ -978,7 +1018,9 @@ async function createAccountFromSignupLink(
   }
 
   // Create new user with selected username
-  const createResult = await createUser(c.env.DB, email, logger, username);
+  const createResult = await createUser(c.env.DB, email, logger, username, {
+    telemetryOptOut: newAccountTelemetryOptOut(c.env, telemetryConsent),
+  });
   if (!createResult.success && createResult.error.statusCode === 409) {
     logger.warn("Username taken at insert during signup verification", { username });
     return { ok: false, code: "username_taken", path: "/auth/signup" };
@@ -1020,6 +1062,7 @@ async function createAccountFromSignupLink(
  * @param tokenData - The consumed magic-link payload
  * @param emailHash - Log-safe digest of the address
  * @param rememberMe - Session persistence carried by the link
+ * @param telemetryConsent - Whether the approval form's consent box was ticked
  * @param logger - Request logger
  * @returns The redirect to send the browser on
  */
@@ -1028,6 +1071,7 @@ async function completeAgentSignup(
   tokenData: MagicLinkPayload,
   emailHash: string,
   rememberMe: boolean,
+  telemetryConsent: boolean,
   logger: Logger,
 ): Promise<Response> {
   const { email, username, inviteCode = "", agentSignupId } = tokenData;
@@ -1055,7 +1099,7 @@ async function completeAgentSignup(
 
   const account = await createAccountFromSignupLink(
     c,
-    { email, username, inviteCode, source: "agent_signup" },
+    { email, username, inviteCode, source: "agent_signup", telemetryConsent },
     logger,
   );
   if (!account.ok) return emailAuthRedirect(c, "error", account.code, account.path);

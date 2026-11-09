@@ -302,6 +302,8 @@ describe("closed-beta gate: SSO signup", () => {
           "octo@example.com",
           expect.anything(),
           "chosen",
+          // Consent-at-signup is off in this suite, so the account is created opted in.
+          { telemetryOptOut: false },
         );
         expect(admissions).toEqual([
           {

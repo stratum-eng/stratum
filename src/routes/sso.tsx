@@ -1,6 +1,7 @@
 import { type Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import { newAccountTelemetryOptOut } from "../analytics/consent";
 import { readBodyCapped } from "../services/oidc-discovery";
 import { completeBrowserSignIn } from "../services/second-factor";
 import { deriveUsernameBase, findAvailableUsername, randomHex } from "../services/sso-usernames";
@@ -655,11 +656,12 @@ function isDisabled(user: User): boolean {
  * the login closed — falling through could provision a duplicate account.
  */
 async function resolveSsoUser(
-  db: D1Database,
+  env: Env,
   logger: Logger,
   connection: SsoConnection,
   claims: IdTokenClaims,
 ): Promise<ResolutionResult> {
+  const db = env.DB;
   const identityLookup = await getIdentityByIssuerSubject(
     db,
     logger,
@@ -722,12 +724,15 @@ async function resolveSsoUser(
     // domain (DNS-proven org ownership) substitutes for an invite code.
     const base = deriveUsernameBase(claims.email);
     let username = await findAvailableUsername(db, logger, base);
-    let created = await createUser(db, claims.email, logger, username);
+    // No form stands between the IdP and this account, so there is nobody to
+    // ask: an instance that asks at signup creates it opted out (#257).
+    const createOptions = { telemetryOptOut: newAccountTelemetryOptOut(env, false) };
+    let created = await createUser(db, claims.email, logger, username, createOptions);
     if (!created.success) {
       // A concurrent first login (or username claim) can win the UNIQUE race;
       // re-derive and retry exactly once before failing.
       username = await findAvailableUsername(db, logger, base);
-      created = await createUser(db, claims.email, logger, username);
+      created = await createUser(db, claims.email, logger, username, createOptions);
     }
     if (!created.success) {
       // The email UNIQUE race: the racing login created the account — adopt it.
@@ -927,7 +932,7 @@ app.get("/callback", async (c) => {
     return ssoErrorRedirect(c, extraction.refusal);
   }
 
-  const resolution = await resolveSsoUser(c.env.DB, logger, connection, extraction.claims);
+  const resolution = await resolveSsoUser(c.env, logger, connection, extraction.claims);
   if ("kind" in resolution) {
     if (resolution.kind === "redirect") {
       await auditSsoFailure(resolution.code, resolution.userId);

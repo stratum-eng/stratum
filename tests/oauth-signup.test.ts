@@ -717,6 +717,8 @@ describe("OAuth signup: choosing a username", () => {
         "octo@example.com",
         expect.anything(),
         "chosen",
+        // Consent-at-signup is off in this suite, so the account is created opted in.
+        { telemetryOptOut: false },
       );
       expect(linkGitHub).toHaveBeenCalledWith(
         env.DB,
@@ -752,6 +754,8 @@ describe("OAuth signup: choosing a username", () => {
         "jane@example.com",
         expect.anything(),
         "jane",
+        // Consent-at-signup is off in this suite, so the account is created opted in.
+        { telemetryOptOut: false },
       );
       expect(linkGitHub).not.toHaveBeenCalled();
       // No "keep me signed in": a one-day cookie, as with a magic link.
@@ -939,6 +943,8 @@ describe("OAuth signup: choosing a username", () => {
           "jane@example.com",
           expect.anything(),
           "jane",
+          // Consent-at-signup is off in this suite, so the account is created opted in.
+          { telemetryOptOut: false },
         );
         expect(admitAndDeliverCodes).toHaveBeenCalledWith(
           env,

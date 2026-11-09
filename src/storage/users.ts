@@ -68,12 +68,24 @@ function hashEmail(email: string): string {
   return Math.abs(hash).toString(16).slice(0, 8);
 }
 
+export interface CreateUserOptions {
+  /**
+   * Create the account already opted out of telemetry (#257). Written by the
+   * INSERT itself rather than a follow-up UPDATE, so there is no moment at
+   * which an account that never consented exists opted in — the sign-up
+   * `auth_completed` event reads this row straight after.
+   */
+  telemetryOptOut?: boolean;
+}
+
 export async function createUser(
   db: D1Database,
   email: string,
   logger: Logger,
   preferredUsername?: string,
+  options: CreateUserOptions = {},
 ): Promise<Result<CreateUserResult, AppError>> {
+  const telemetryOptOut = options.telemetryOptOut === true;
   logger.debug("Creating user", { emailHash: hashEmail(email), preferredUsername });
   try {
     const id = newId("usr");
@@ -122,9 +134,9 @@ export async function createUser(
     // this name (createOrg and renameUser guard the other directions).
     const inserted = await db
       .prepare(
-        "INSERT INTO users (id, email, username, token_hash) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM orgs WHERE slug = ?)",
+        "INSERT INTO users (id, email, username, token_hash, telemetry_opt_out) SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM orgs WHERE slug = ?)",
       )
-      .bind(id, email, username, tokenHash, username)
+      .bind(id, email, username, tokenHash, telemetryOptOut ? 1 : 0, username)
       .run();
     if ((inserted.meta?.changes ?? 0) === 0) {
       return err(new AppError("That username is already taken.", "CONFLICT", 409, { username }));
@@ -137,6 +149,7 @@ export async function createUser(
       tokenHash,
       createdAt: new Date().toISOString(),
     };
+    if (telemetryOptOut) user.telemetryOptOut = true;
 
     logger.info("User created", { userId: id, username, emailHash: hashEmail(email) });
     return ok({ user, plaintext });

@@ -336,6 +336,12 @@ own credential: it acts with your access, it is recorded as the agent in
 provenance, and it can never submit a review, so approvals stay yours. Revoke it
 from **Settings** like any other agent.
 
+Nothing in the request is read as telemetry consent. On an instance that asks
+for it at signup (`TELEMETRY_CONSENT_AT_SIGNUP = "true"`, as the hosted instance
+does), the approval page shows you the same unticked box as the signup form, and
+the account is created opted out unless you tick it yourself. See
+[Can I turn off telemetry?](../user-guide/faq.md#can-i-turn-off-telemetry).
+
 The endpoint carries the same limits as the web signup form: the per-address
 and per-IP email caps, the closed-beta invite code where the instance requires
 one, and 15-minute single-use approval links. A request lasts 30 minutes, and is

@@ -325,6 +325,15 @@ ENTITLEMENTS_ENFORCE = "0"
 # it in that env's own [env.<name>.vars] block below.
 # STRATUM_TELEMETRY_DISABLED = "true"
 
+# Ask for telemetry consent at signup (#257). "true" shows an unticked box on
+# the signup forms and creates each NEW account opted out unless it was ticked;
+# accounts made with nobody to ask (SCIM, SSO just-in-time) start opted out.
+# Unset, the default, leaves signup as it was: no box, new accounts opted in.
+# Existing accounts are never changed either way. Like every var here it is
+# per-env: the hosted instance sets it in [env.production.vars] and
+# [env.staging.vars] below.
+# TELEMETRY_CONSENT_AT_SIGNUP = "true"
+
 # Secrets — set via: wrangler secret put <NAME>
 # POSTHOG_API_KEY =  # telemetry sends route patterns only, never concrete paths
 # GITHUB_CLIENT_ID =
@@ -496,6 +505,9 @@ STRATUM_ENVIRONMENT = "production"
 # envs don't inherit top-level vars, so a top-level-only setting never reaches
 # `wrangler deploy --env=production`.
 # STRATUM_TELEMETRY_DISABLED = "true"
+# Telemetry is opt-in for new accounts on the hosted instance (#257): signup
+# asks, and an unticked box means opted out. See the top-level [vars] comment.
+TELEMETRY_CONSENT_AT_SIGNUP = "true"
 # The /dev-login session backdoor is local-only. Declare it "false" explicitly
 # here (named envs don't inherit the top-level "true") so the route is provably
 # inert in production — and so wrangler stops warning about the missing override.
@@ -712,6 +724,8 @@ POSTHOG_HOST = "https://app.posthog.com"
 STRATUM_ENVIRONMENT = "staging"
 # Telemetry kill switch; must be declared per-env (see env.production.vars).
 # STRATUM_TELEMETRY_DISABLED = "true"
+# Opt-in telemetry for new accounts, as in production (#257).
+TELEMETRY_CONSENT_AT_SIGNUP = "true"
 # Local-only session backdoor; explicitly off on staging (see env.production.vars).
 DEV_LOGIN_ENABLED = "false"
 # RepoDO + R2 merge path (ADR 004). "true" on staging: workspace commits stage to
