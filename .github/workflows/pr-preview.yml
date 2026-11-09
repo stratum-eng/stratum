@@ -48,6 +48,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A `number` input still accepts 12.5 or 1e3, and this value names
+          # the resources about to be deleted.
+          if ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::pr_number must be a positive whole number, got '$PR_NUMBER'."
+            exit 1
+          fi
           STATE=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state --jq .state)
           if [ "$STATE" = "OPEN" ]; then
             echo "::error::PR #$PR_NUMBER is open; its preview is live. Close the PR instead."
@@ -100,19 +106,19 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/queues"
-          LIST=$(curl -sf "${API}?name=${{ env.EVAL_QUEUE_NAME }}" \
+          LIST=$(curl -sf "${API}?name=${EVAL_QUEUE_NAME}" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || { echo "❌ Could not list queues"; exit 1; }
-          QUEUE_ID=$(echo "$LIST" | jq -r --arg n "${{ env.EVAL_QUEUE_NAME }}" '[.result[]? | select(.queue_name == $n) | .queue_id] | first // empty')
+          QUEUE_ID=$(echo "$LIST" | jq -r --arg n "$EVAL_QUEUE_NAME" '[.result[]? | select(.queue_name == $n) | .queue_id] | first // empty')
           if [ -z "$QUEUE_ID" ]; then
             echo "Queue not found, so there is no consumer to remove"
             exit 0
           fi
           CONSUMERS=$(curl -sf "${API}/${QUEUE_ID}/consumers" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || { echo "❌ Could not list consumers"; exit 1; }
-          IDS=$(echo "$CONSUMERS" | jq -r --arg w "${{ env.WORKER_NAME }}" \
+          IDS=$(echo "$CONSUMERS" | jq -r --arg w "$WORKER_NAME" \
             '.result[]? | select((.script_name // .script // "") == $w) | .consumer_id')
           if [ -z "$IDS" ]; then
-            echo "${{ env.WORKER_NAME }} is not a consumer of ${{ env.EVAL_QUEUE_NAME }}"
+            echo "$WORKER_NAME is not a consumer of $EVAL_QUEUE_NAME"
             exit 0
           fi
           for ID in $IDS; do
