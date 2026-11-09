@@ -277,8 +277,8 @@ jobs:
           RUN_ID=""
           for attempt in $(seq 1 20); do
             RUN_ID="$(gh run list --workflow pr-checks.yml --branch "$BRANCH" --event workflow_dispatch \
-              --json databaseId,headSha --jq --arg sha "$HEAD_SHA" \
-              '[.[] | select(.headSha == $sha)][0].databaseId // empty')"
+              --json databaseId,headSha |
+              jq -r --arg sha "$HEAD_SHA" '[.[] | select(.headSha == $sha)][0].databaseId // empty')"
             [ -n "$RUN_ID" ] && break
             sleep 6
           done
