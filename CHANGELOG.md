@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-09
+
 ### Breaking
 - **Stratum is no longer MIT-licensed.** The server, the web UI, `docs/`, and the
   `website/` sources are now **AGPL-3.0-or-later**; the `@stratum-eng/cli` and `@stratum-eng/agent` packages are
@@ -40,9 +42,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   right to license contributions under other terms, without which no commercial
   license for Stratum could exist. Contributions merged before this change were
   made under MIT and stay that way.
+- **The sandbox evaluator no longer runs npm lifecycle scripts.** Dependency installs now pass
+  `--ignore-scripts`, because the evaluated tree is untrusted and a `preinstall`/`postinstall`
+  would otherwise execute before any human review. Projects whose build genuinely needs them
+  (native modules, a `prepare` step) opt back in with `allowInstallScripts: true` on the
+  `sandbox` evaluator in `.stratum/policy.yaml`. Note the usual symptom is *not* a failing
+  install: a native module installs unbuilt and then fails when the test command loads it.
+- **The default sandbox install timeout drops from 120s to 90s**, so the per-phase defaults sum
+  to exactly the new total budget and an unconfigured project is never truncated.
+- Re-evaluating an existing change (`POST /changes/:id/evaluate`) runs under the new default, so
+  a change that passed before this release may fail on re-evaluation.
+- **Evaluation runs off the request path.** On an instance with the new evaluation
+  queue (the hosted one has it), `POST /api/projects/{name}/changes` answers `202`
+  with the change in a new `evaluating` status and no verdict, and
+  `POST /api/changes/{id}/evaluate` re-enqueues and answers `202` the same way.
+  Poll `GET /api/changes/{id}` until the status becomes `accepted` or
+  `needs_changes`. API clients that read `eval` from the creation response must
+  handle its absence. Without the queue, or if enqueueing fails, evaluation runs
+  inline and the responses are unchanged (`201` / `200` with the verdict). The UI
+  shows `evaluating` with a Refresh link (it reloads itself only for signed-out
+  viewers, so a draft comment is never lost); the MCP tools and the CLI and
+  reference agent understand it too (`stratum change create --wait`).
+- **A change still `evaluating` cannot be merged**, even with `force` — the merge
+  answers `409 EVALUATION_PENDING`. Nor can one whose evaluation ended without a
+  verdict (`409 EVALUATION_MISSING`); re-evaluate it first. Once the verdict is
+  recorded, merge protection behaves exactly as before.
+- **Approvals wait for the verdict.** `approve` on an `evaluating` change answers
+  `409 EVALUATION_PENDING`, and an approval is recorded only if the change is
+  still as the reviewer loaded it — otherwise `409 REVIEW_STALE`. A
+  `request_changes` made while evaluation is pending is kept: the change lands on
+  `needs_changes` even if the evaluation passes.
+- **Promoting during a re-evaluation** answers `409 EVALUATION_PENDING`; the
+  GitHub PR is still opened and linked, and promoting again re-pushes to it.
 
 ### Added
-
 - **Browser analytics, opt-in and redacted.** `app.usestratum.dev` and the docs
   site sent no browser events at all, so pageviews, autocaptured interactions
   and rageclicks were invisible and the docs-to-signup funnel could not be
@@ -78,54 +111,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is dropped in the browser, so a name built from a repository or file name
   cannot be reported even by mistake. It is the one browser event Stratum sends
   itself rather than configuring PostHog to send.
-
-### Fixed
-
-- **`api_request` reported the wrong route for most pages.** `routePath(c, -1)`
-  returns the last *registered* route matching a path, not the one that
-  answered it, and `uiRouter`'s `/:namespace/:slug` catch-all is mounted last —
-  so `/auth/signup`, `/settings`, `/new` and others were all recorded as
-  `/:namespace/:slug`. Route breakdowns and the `surface` derived from them
-  were correspondingly wrong. Both patterns are source-code literals, so
-  nothing private was ever exposed; the data was simply mislabelled. Historical
-  events are not corrected.
-
-### Security
-- **The closed-beta gate can no longer be routed around by an SSO signup.** The
-  gate is enforced on the `/auth/signup/complete` form every OAuth signup passes
-  through, and that check held — but `upsertGitHubUser` still carried a branch
-  that *created* an account outright, and the only thing keeping the GitHub
-  callback out of it was a second copy of the same lookup, in a different file,
-  under a comment asserting the branch was unreachable. Two copies of one
-  decision is a gate that opens the moment they disagree, and a callback is
-  exactly where a matching rule gets tweaked (an email normalized, a soft-deleted
-  account skipped). The lookup now lives in one place: `signInGitHubUser` matches
-  by GitHub id or verified email, links the identity, and creates nothing — an
-  identity with no account comes back as `null` and the callback parks it for the
-  gated form. Account creation for every signup method — magic link, GitHub,
-  Google — now has exactly one door. No behaviour changes for a live deployment:
-  the create branch was already dead, and sign-in is untouched.
-- **GitHub sign-in no longer trusts an unverified email.** The callback picked
-  the primary address, verified or not, and fell back to *any* address on the
-  account. That address then matched (and linked to) an existing Stratum
-  account, so anyone could add a victim's email to their own GitHub profile,
-  leave it unverified, and sign in as the victim; it also created new accounts
-  under addresses nobody had proven. Only a verified address is used now, for
-  matching and for creation alike, and an account with none is refused (`422`).
-  The closed-beta path already worked this way; the open-signup path did not.
-- **Minting an agent token from the settings form requires a browser session.**
-  `POST /settings/agents` and `POST /settings/agents/:id/delete` loaded the user
-  but never checked *how* they authenticated, so a scoped `read_write` API token
-  could post to the form and receive a fresh agent token — a credential that
-  outlives the token that minted it, which is exactly the circularity #254 closed
-  for `/settings/tokens`. Both are now behind the same session-only guard.
-  This closes the browser form only: `POST /api/agents` and
-  `DELETE /api/agents/:id` still accept any authenticated caller, so the
-  capability is not gone. Closing that too is a breaking change for automation
-  that provisions agents with an API token, and is left as a deliberate decision
-  rather than folded into this change.
-
-### Added
 - **Every response offers its own source.** A footer carrying the running
   version, the license, and a link to the source now renders in the shared
   layout and on every standalone document — sign-in, sign-up, OAuth consent, the
@@ -306,9 +291,844 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   claimed agents can submit `request_changes` verdicts: the server refuses
   every review verdict from an agent token (`src/routes/reviews.ts` requires a
   user), so an agent's feedback channel is change comments.
+- **Enterprise single sign-on (OIDC) per organization.** An org admin or owner
+  configures one OIDC connection with `PUT /api/orgs/{slug}/sso`, proves ownership
+  of its email domains with a DNS TXT record, and enables it. Members then sign in
+  at `/auth/sso` with the org slug or their work email (authorization code + PKCE);
+  first-time users on a verified domain are provisioned into the org. Requires the
+  `SSO_ENCRYPTION_SECRET` secret; the SSO endpoints answer `501` without it. SSO
+  does not yet lock out the other sign-in methods.
+- **SCIM 2.0 user provisioning at `/scim/v2`.** Each SSO connection gets its own
+  `stratum_scim_*` bearer token. Identity providers can create, adopt, update, and
+  deactivate users. Deactivation is reversible: it disables every credential the
+  account holds and deletes its browser sessions. Reactivation restores the
+  account's tokens, agents, and OAuth grants; the user signs in again for a new
+  session. SCIM Groups are not implemented.
+- **Organization audit log.** Org admins and owners can read their org's audit
+  trail at `GET /api/orgs/{slug}/audit` (filter by action, actor, and time
+  range; cursor-paginated) and download it as NDJSON at
+  `GET /api/orgs/{slug}/audit/export` for windows of up to 90 days. Events about
+  the org, its SSO/SCIM configuration, and projects it owns are scoped to it;
+  plain members get `403` and non-members `404`. Events recorded before this
+  release are not attributed to an org and stay in the instance-wide view.
+- **More events are audited:** org creation, members added and removed, member
+  role changes, teams created and deleted, and team membership changes.
+- **Failed authentication is audited** when the attempt identifies a real
+  account or org: a revoked or expired API token or MCP OAuth token, a token or
+  agent whose account is disabled or being deleted, a reused or expired magic
+  link, and SSO callbacks refused after reaching an org's connection. Unknown
+  credentials are not recorded, and repeats for the same credential or account
+  are collapsed to one entry per minute.
+- **Passkeys as a second factor.** Add a passkey (WebAuthn: Touch ID, Windows
+  Hello, a password manager, or a security key) at **Settings → Security**. After
+  that, signing in with a magic link, GitHub, Google, or SSO also asks for the
+  passkey before the session starts. Your first passkey comes with ten one-time
+  recovery codes, shown once, so a lost device does not lock you out. Passkeys can
+  be renamed and removed. Managing them requires a recent sign-in. The JSON API is
+  at `/api/users/me/passkeys`.
+- **Organizations can require a second factor.** An org admin sets
+  `PUT /api/orgs/{slug}/security` `{"requireSecondFactor": true}`. A member's
+  session that has not passed a second factor then gets
+  `403 SECOND_FACTOR_REQUIRED` on **that org's** projects and org endpoints, with
+  a link to set up a passkey. Members' personal projects, other organizations,
+  and account settings are never affected. A session that signed in through the
+  org's own SSO satisfies that org's requirement (the IdP's MFA is trusted).
+- **Members can leave an organization.** `DELETE /api/orgs/{slug}/members/{own
+  id}` works for any member, including when the org's policy blocks them. The
+  owner cannot leave.
+- New audit events: `passkey.registered`, `passkey.renamed`, `passkey.removed`,
+  `second_factor.succeeded`, `recovery_code.used`, `recovery_codes.regenerated`,
+  and `org.second_factor_policy_changed` (in the org's audit log). A failed
+  second factor is recorded as `auth.failed` (method `passkey` or
+  `recovery_code`), with the same once-a-minute deduplication as other failed
+  sign-ins.
+- Optional `APP_URL` setting binds passkeys to one origin on instances reachable
+  under more than one hostname.
+- **Trust and data-residency page.** It documents Stratum's architecture, the
+  subprocessors it uses, where data is stored (no jurisdiction is set today), what
+  is encrypted, and how backups are retained. It states plainly that there is no
+  SOC 2, ISO, DPA or SLA yet. See `docs.usestratum.dev/guides/trust/`.
+- **Guide: running a webhook-evaluator executor safely.** It covers process and
+  filesystem isolation for each evaluation, time and size limits that fit inside
+  the evaluator timeout, keeping credentials out of reach of the code under
+  evaluation, git-specific hazards, and reference setups. See
+  `docs.usestratum.dev/guides/webhook-executor/`.
+- **A webhook's signing secret can now be regenerated in place.** The webhooks page has a
+  "Regenerate secret" button on each webhook (with a confirm), backed by
+  `POST /api/projects/{namespace}/{slug}/webhooks/{id}/regenerate-secret`. The new secret
+  is shown once, exactly as on creation, and the webhook keeps its id, configuration and
+  delivery history — previously a lost secret meant deleting and recreating the webhook.
+  The old secret stops working immediately, so update your receivers with the new one.
+  Each regeneration is recorded in the audit log as `webhook.secret_rotated`.
+- **API tokens can be limited to one project or one organization.** When
+  creating a token (Settings → API tokens, or `POST /api/users/me/tokens` with
+  `project: "@owner/repo"` or `org: "slug"`), you can bind it to a single
+  project, or to the projects an organization owns. A bound token answers every
+  other project — public ones included — exactly as if it did not exist, over
+  the API, MCP, and git alike, and it cannot reach account-level endpoints
+  (usage, token and agent creation, organization administration, bulk import,
+  the admin API, the web UI), which refuse it with `403
+  TOKEN_BINDING_EXCLUDES_ROUTE`. A project-bound token cannot create projects;
+  an organization-bound one can only create them in its organization. Binding is
+  independent of the read/write scope, and existing tokens are unchanged:
+  without a binding a token stays account-wide. The settings token list now
+  shows what each token can reach. Requires migration 057.
+- **`changelog.d/` fragment files replace direct `## [Unreleased]` edits.** Every PR
+  that needs a changelog entry now adds one new file under `changelog.d/` instead of
+  editing the shared `Unreleased` section — the single most frequent source of PR
+  merge conflicts in this repo. `npm run release:prepare` folds every fragment into
+  `Unreleased` (inferring the version bump from their groups, same as before) before
+  cutting the release, then deletes the fragments it consumed. `npm run release:check`
+  validates fragment structure too, and now also rejects an `Unreleased` entry written
+  above the first `### Group` heading, which would otherwise be dropped from the cut
+  release without a word. Existing `Unreleased` content and already-open PRs that still
+  edit it directly keep working unchanged, so long as each entry sits under a group —
+  fragments are an additional source folded in at release time, not a forced migration.
+  See `changelog.d/README.md`.
+- **Bring your own model for the merge gate.** The `llm` evaluator has only ever
+  been able to call the instance's Workers AI binding, so the reviewer model was
+  the operator's choice and the tokens were the operator's bill. A project can
+  now run that gate on its own account: the operator lists named providers in a
+  new `LLM_PROVIDERS` variable (`anthropic`, or anything OpenAI-compatible), the
+  project stores its key in the same encrypted per-project secret store deploys
+  already use, and `.stratum/policy.yaml` names the provider it wants:
+
+  ```yaml
+  evaluators:
+    - type: llm
+      provider: anthropic
+      model: claude-sonnet-4-5
+      threshold: 0.7
+  ```
+
+  Self-hosting, this is yours to configure and costs you nothing to ignore:
+  with `LLM_PROVIDERS` unset — the default — the binding is the only option and
+  every path below is inert.
+
+  Three things are worth knowing before you switch. **A policy may never name a
+  URL**, only select a provider the operator configured, because a base URL
+  chosen by repository content turns the Worker into a request-forgery
+  primitive pointed at a host of the author's choosing — the `llm` entry is a
+  whitelist of `provider`, `model`, `threshold` and `maxDiffChars`, and
+  `model` is required whenever `provider` is set. **Everything fails closed**:
+  an unconfigured provider name, a missing or undecryptable key, an instance
+  with no `DEPLOY_SECRET_KEY`, or a provider that answers with a redirect fails
+  the gate with a reason saying which, and never quietly falls back to the
+  operator's binding. And **any project writer can spend the owner's credit** by
+  opening changes; the hourly evaluation ceiling still applies, and your own key
+  does not lift it. Rotating `DEPLOY_SECRET_KEY` — already documented as making
+  every stored deploy secret undecryptable — now also blocks the gate on BYOK
+  projects until each re-enters its key. The threat model is
+  `docs/adr/008-llm-provider-byok-threat-model.md`.
+
+- **See what you are spending.** A new `/settings/usage` page shows this
+  account's consumption against its allowances for the current period, what is
+  left, and when it resets; `GET /api/users/me/usage` and a nineteenth MCP tool,
+  `stratum_get_usage`, return the same figures, so an agent that can see 12% of
+  its allowance left can batch its changes or ask its human instead of
+  discovering the wall by hitting it. Crossing 80% of a meter raises a banner and
+  sends one email per crossing. Spend on a project's own provider key is reported
+  separately and never counted against an allowance. The billing surface is
+  **read-only everywhere** — no endpoint and no tool can raise a limit, buy
+  capacity, or store a provider key, for the same reason agent tokens cannot
+  submit review verdicts. Self-hosted, the page reads "unlimited" and no banner
+  or email is ever sent.
+
+- **Metered allowances — inert unless you connect a billing service.** Stratum
+  can now check usage against a plan: an entitlements seam behind
+  `BILLING_SERVICE_URL` + `BILLING_SERVICE_SECRET`, a `UsageMeter` Durable Object
+  holding the monthly counters and a bucketed sliding `evaluations_per_hour`
+  window, and checks at the LLM evaluator, the deploy consumer, the request
+  limiter and private-project creation. **With those two variables unset — every
+  self-hosted deployment — none of it does anything**: every allowance reads as
+  unlimited, the meter binding is never touched, and nothing can be refused. Even
+  configured, every decision is observe-only (recorded, then admitted) unless
+  `ENTITLEMENTS_ENFORCE=1`. Plan definitions and payment live outside this
+  repository. One design note that outlives the billing service: a limit is
+  checked against the **person who ran the evaluation**, not the project's owner,
+  so an allowance follows you across your own and your organizations' projects,
+  and creating another organization does not hand you a fresh one. The one
+  exception is an organization whose plan is positively known to pool usage:
+  its projects draw on the organization's allowance instead. A private project
+  you create in an organization that does not pool counts against your own
+  limit; organizations you are merely a member of never do. No backfill is
+  needed or possible: nothing before this release recorded who was charged for
+  an organization's private project, so those count only toward an organization
+  that pools, and personal private projects count as before.
+- **Organizations can restrict access to their own networks.** An org admin sets
+  `PUT /api/orgs/{slug}/security` `{"ipAllowlist": ["203.0.113.0/24", "2001:db8::/32"]}`
+  (IPv4 and IPv6, up to 100 ranges). Requests from outside those ranges then get
+  `403 IP_NOT_ALLOWED` on **that org's** projects (including git clone and push,
+  and MCP tool calls), on its `/api/orgs/{slug}/` endpoints, and on linking,
+  unlinking or moving a GitHub App installation for the org. This applies to
+  every credential: sessions, API tokens, agent tokens, and OAuth grants.
+  Members' personal projects, other organizations, anonymous reads of public
+  projects, the SSO sign-in flow, and SCIM are not affected. An empty list,
+  which is the default, means no restriction. Saving a list that excludes your
+  own address is refused (`409 IP_ALLOWLIST_SELF_LOCKOUT`) unless you send
+  `"allowSelfLockout": true`. See the new "Organization IP allowlists" guide.
+- New audit events in the org's audit log: `org.ip_allowlist_changed`, and
+  `org.ip_access_denied`, which is sampled to at most one entry per member per
+  org every 10 minutes.
+- **Import a repository straight into an organization.** `POST /api/projects/@org/repo/import`
+  now accepts an organization namespace when you have write access to that organization
+  (an org admin, or a member of a team with write permission), and the project is owned by
+  the organization, as if it had been created with `"org"`. A read-only member, a
+  non-member, or an organization that doesn't exist gets `403`. Retrying, cancelling and
+  deleting the import, and manually syncing the project, follow the same rule. A private
+  import counts toward the private-project limit just as creating one there does.
+- **MCP tools to create and import projects.** `stratum_create_project` and
+  `stratum_import_project` (both with an optional `org`) and `stratum_get_import_status`.
+- **MCP tools for the rest of the change loop.** `stratum_evaluate_change` re-runs a
+  change's gates, `stratum_comment_change` and `stratum_list_change_comments` give agents
+  their feedback channel, `stratum_promote_change` opens the GitHub PR,
+  `stratum_get_sync_status` and `stratum_sync_project` keep an imported project current,
+  and `stratum_list_branches` lists branches.
+- **MCP tools for organizations.** `stratum_create_org`, `stratum_list_orgs`,
+  `stratum_get_org`, `stratum_add_org_member`, `stratum_remove_org_member`,
+  `stratum_create_team`, `stratum_list_teams` and `stratum_add_team_member`. They call the
+  same routes as the REST API, so the same people can do the same things. A read-only
+  (`mcp:read`) grant can use every list and get tool but none of the tools that change
+  anything.
+- `GET /api/users/me` now includes the caller's `username`.
+- **`stratum_workspace_remote`: push to a workspace from a local checkout over MCP.**
+  The new MCP tool (and `POST /api/workspaces/{namespace}/{slug}/workspaces/{name}/remote-credential`
+  behind it) returns the workspace's git remote and a short-lived `stratum_git_`
+  credential, so an agent can `git push` instead of sending whole files through
+  `stratum_commit`, with no long-lived token set up out of band. The credential works
+  only for `git fetch` and `git push` on that one workspace, and is refused on the
+  project URL, other workspaces, the REST API and `/mcp`. It lasts an hour at most,
+  never outlives the credential that minted it, and stops working the moment that
+  credential is revoked. Minting needs write access (an `mcp:read` grant is refused)
+  and is audited as `workspace_remote.credential_minted`. Requires D1 migration 065.
+- **MCP connections can act as an agent, so MCP work has agent provenance.** The
+  consent screen now asks who the application connects as: a new agent (the
+  default, named after the application, e.g. "Claude Code on my-laptop"), one of
+  your existing agents, or you. A connection bound to an agent works as that
+  agent, acting for you. Changes it opens show the agent in their provenance and
+  in the activity feed, and every agent-token rule applies: no merge, reject,
+  review verdict or issue triage. An agent created on the consent screen has no
+  token of its own, so disconnecting the application, or the connection reaching
+  its 180-day limit, ends the agent's access too. `stratum_whoami`
+  (`GET /api/users/me`) reports `actingAs: "agent"` with the agent and its owner,
+  or `actingAs: "user"`.
+- **Sign up straight from "connect your editor".** When adding Stratum's MCP server
+  sends a first-time visitor to sign in, the page now offers **Create an account**,
+  and verifying the signup email returns them to the consent screen instead of
+  the dashboard. An `invite` parameter on the client's authorization URL pre-fills the
+  invite code on instances running the invite gate. A sign-in link requested from
+  the same page also returns to the consent screen.
+- **`stratum signup` in the CLI.** An agent can sign its human up in one command:
+  `stratum signup --email you@example.com --username you [--invite CODE] [--agent-name NAME]`.
+  It prints the code the human types on the approval page, waits for them to approve from the
+  email, and stores the new agent token the same way `stratum login --key` does. It exits
+  non-zero with a clear message when the address already has an account (use `stratum login`),
+  the username is taken, the invite code is invalid, or the request expires.
+- **`timeoutMs` for the `llm` evaluator** (default 30s, clamped to 1s–120s). A model
+  that has not answered by then fails the gate closed with score 0.
+- **Every evaluator runs under its own deadline**, so one that hangs fails closed on
+  its own and the others still report. A run whose consumer never reports back is
+  re-dispatched by the five-minute sweep, and failed closed (`needs_changes`,
+  "Evaluation did not complete") after two re-dispatches.
+- **Pinned projects in every backup run.** Set `BACKUP_PINNED_PROJECTS` to a
+  comma-separated list of `@namespace/slug` projects, and each backup run
+  snapshots them in addition to the rotating slice. They do not use up any
+  `MAX_REPOS_PER_RUN` slots, and they are never snapshotted twice in one run.
+  The run manifest lists them under `repos.pinned`. Malformed entries are
+  skipped with a warning, and unknown entries are listed under
+  `repos.pinnedMissing`. The backup runbook now also has a quarterly restore
+  drill and a drill log.
+- **Import a project's GitHub issues into its issue tracker.** Project admins can
+  run it from the **Import GitHub issues** card in project settings, or with
+  `POST /api/projects/{namespace}/{slug}/issues/import/github`. It copies each
+  issue's title, body, state, labels, timestamps and comments, links every
+  imported issue and comment back to GitHub, and skips pull requests. Authors
+  with a linked Stratum account are attributed to it; others are shown by their
+  GitHub login. `#123` references are rewritten to the imported numbers. The
+  import runs in the background, waits out GitHub rate limits, and is safe to
+  re-run: it updates what it already imported instead of duplicating it, so it
+  can catch a project up right before switching over. Public repositories only
+  for now. It needs a GitHub credential that may act for the project's owner,
+  the same as every other GitHub call: a linked GitHub App installation or an
+  operator binding. Requires D1 migration `071_github_issue_import.sql`.
+- **Agents can sign their humans up.** `POST /api/agent-signup` takes an email, a username,
+  and the agent's name, emails that address an approval link that names the agent, and gives
+  the agent a short code to show its human. Following the link and typing the code creates the
+  account (same invite gate and username rules as the signup form) and
+  signs the person in; the agent, polling `POST /api/agent-signup/poll`, then receives its
+  own agent token under the new account. The code is never emailed, so nobody can get an
+  account approved for an address that isn't theirs. Nothing is created until approval, an
+  address that already has an account is refused rather than attached to, and the send caps
+  of the web form apply. Operators can turn it off with `AGENT_SIGNUP_DISABLED=1`.
+- **Outbound GitHub calls can authenticate as a GitHub App.** Set `GITHUB_APP_ID` and
+  `GITHUB_APP_PRIVATE_KEY` (PKCS#8) and Stratum uses a short-lived installation token for
+  project sync, pushing and opening promoted PRs, and evaluation verdict comments and commit
+  statuses, instead of one instance-wide personal access token.
+- **GitHub App installations are linked to the Stratum account they serve.** A project uses an
+  installation only when that installation is linked to the project's owner. Link one from the
+  app's setup page (`/github/app/setup`) or `POST /api/github/installations/{id}/link`; only the
+  GitHub user who installed the app can link it. An org admin whose session does not meet the
+  org's second-factor policy cannot link to, unlink from, or move a link away from that org until
+  they sign in with a passkey (`SECOND_FACTOR_REQUIRED`).
+- **Each GitHub repository has one canonical Stratum project.** Webhook events reach, and
+  promotions and evaluation reports come from, only the first authorized project to act on the
+  repository. A project that merely names the repository in its source URL gets neither. A
+  promotion from another project answers `409`.
+- **Admins can restore a repository from a backup.**
+  `POST /api/admin/restore/{runTs}/repos/{projectId}` recreates a project's repository
+  from a backup run, and needs `force` to overwrite one that exists. With
+  `{ "drill": true }` it restores to a scratch repository, compares every ref with the
+  backup, and deletes it, without touching the project's repository. Every attempt is
+  audited as `backup.repo_restore`. Database and KV restore have no route yet.
+
+### Fixed
+- **`api_request` reported the wrong route for most pages.** `routePath(c, -1)`
+  returns the last *registered* route matching a path, not the one that
+  answered it, and `uiRouter`'s `/:namespace/:slug` catch-all is mounted last —
+  so `/auth/signup`, `/settings`, `/new` and others were all recorded as
+  `/:namespace/:slug`. Route breakdowns and the `surface` derived from them
+  were correspondingly wrong. Both patterns are source-code literals, so
+  nothing private was ever exposed; the data was simply mislabelled. Historical
+  events are not corrected.
+- **A post-merge deploy cannot be lost or run twice.** Four fixes to the new
+  deployment path, all invisible until they bite: the deploy queue ran two
+  messages per isolate, and two concurrent Vercel deploys exceeded the isolate's
+  memory before a terminal status could be written, stranding rows at `running`
+  (`max_concurrency` is now 1); the runner had no deadline, so its storage lease
+  could expire mid-upload and let a second consumer publish the same commit (it
+  now gives up strictly before the lease can); a queue send that failed silently
+  dropped the deploy — after a merge there was no row to recover at all, and
+  after approve or retry the row sat `queued` forever while the response advised
+  a retry that could not work (the request is now recorded durably and picked up
+  by the existing five-minute sweep); and several rejected `deploys:` entries
+  collapsed into one row, so only one of their reasons survived — a rejection
+  sharing a name with a valid entry could even take that entry's row and stop it
+  deploying. Every rejected entry now gets its own `failed` row.
+
+- **The CLI credential file is now `0600` in a `0700` directory on existing
+  installs, not only new ones.** It holds a bearer token in plaintext, and
+  earlier releases left it world-readable at `0644`. Passing `mode` to
+  `writeFile`/`mkdir` does not fix an existing file — POSIX honours `mode` only
+  when the call creates the node — so the write now goes through a temp file and
+  `rename`, which replaces the inode and carries the right permissions with it.
+- **A `stratum` session can no longer be destroyed by running two commands at
+  once.** Refresh tokens rotate on every use, and presenting a retired one is
+  treated as theft: the server revokes the whole grant, logging you out
+  everywhere. Two processes refreshing concurrently both held the same token, so
+  parallel commands after an idle hour would systematically do exactly that.
+  Rotation now takes a cross-process lock and re-reads the stored credential
+  inside it, so a process that waited adopts the winner's token instead of
+  replaying its own.
+- **A crash or `^C` while the CLI wrote its credential no longer loses the
+  session.** The file was truncated in place, and after a rotation the new
+  refresh token exists only on disk, so a torn write was unrecoverable. Writes
+  are now atomic.
+- **The CLI refuses to send credentials over plaintext or off-origin.** `--host`
+  must be `https` (loopback excepted), and every endpoint named in a host's
+  OAuth discovery document must share that host's origin, so a tampered document
+  cannot redirect the authorization code or refresh token elsewhere.
+- **OAuth requests no longer hang indefinitely.** Every call in the login and
+  refresh path carries a timeout; without one, an unreachable host hung not just
+  `login` but every command, because a refresh re-enters discovery.
+- **A stray request to the CLI's loopback port no longer cancels a login.** Any
+  page open in the browser can reach `127.0.0.1`; a request with a mismatched
+  `state` is now ignored and the listener keeps waiting, per RFC 8252.
+- **A failed token refresh reports its actual cause.** A network failure was
+  reported as `session expired`, sending users to re-authenticate over a problem
+  that re-authenticating could not fix.
+- **The header fits a phone.** Signed in, the nav's five links were laid out in
+  one unwrappable row, so below about 460px the row ran past the viewport, the
+  page scrolled sideways, and the wordmark and "logout" were clipped off either
+  edge. Below 640px the links now collapse behind a "menu" button next to the
+  wordmark and open as a full-width list beneath it. The toggle is a checkbox
+  driven purely by CSS, so it works with scripts disabled and keeps its place in
+  the tab order. Wider screens, the signed-out header and the docs site's header
+  (which shares this stylesheet) are unchanged.
+- **Settings tables and the invite table fit a phone.** The API token,
+  connected-app and agent tables were not in the sideways-scrolling wrapper the
+  invite table used, so a settings page with two tokens was 741px wide at a
+  390px viewport. All four now scroll inside the card. The invite share link,
+  which was allowed to break at any character and wrapped to 300px-tall rows,
+  stays on one line inside that scroll; an email in the Account list wraps
+  instead of running past the card edge.
+- **Claude Code can connect to the MCP server.** `claude mcp add` registers
+  `http://localhost:<port>/callback` as its OAuth redirect, and the
+  authorization server refused the name outright — only the loopback IP
+  literals were accepted — so every registration from the CLI failed with
+  `invalid_redirect_uri` before a browser ever opened. `localhost` is now
+  accepted as loopback (every current browser resolves it internally, without
+  DNS), and a loopback redirect may use a different port at authorization time
+  than the one it registered with, as RFC 8252 §7.3 requires of a server that
+  serves native apps. Nothing else about redirect matching is relaxed: host,
+  path, query and scheme are still compared exactly, and `localhost` and
+  `127.0.0.1` do not stand in for each other.
+- **Approving an MCP connection in Chrome, Edge or Safari now completes it.**
+  The consent screen shipped the site-wide `form-action 'self'` policy, and
+  those browsers enforce that directive against the redirect that answers the
+  consent form, not just against the form's own action. Clicking Allow minted
+  an authorization code the browser then refused to deliver to the client, so
+  the page sat there and the connector never connected. Firefox does not check
+  redirects, which is why the flow appeared to work in one browser and not
+  another. Naming the client's registered redirect origin turned out not to be
+  enough either: the browsers apply the directive to every hop of the redirect
+  chain, and Claude's callback redirects onward again, so the connection still
+  stalled on a consent page that appeared to reload. The consent page now
+  carries no `form-action` at all; it has no user-controlled markup and its
+  only form targets `/oauth/authorize`, so the directive protected nothing
+  there. Every other response keeps `'self'`.
+- **The consent screen's Allow button no longer looks disabled.** It used
+  near-black text on the deep-navy accent; it now uses the same colour pair as
+  every other primary button.
+- **The MCP `401` challenge names the scopes the endpoint needs**
+  (`scope="mcp:read mcp:write"`, RFC 6750 §3). A client that takes its scope
+  from the challenge asks for read and write up front rather than authorizing
+  read-only and failing on its first commit. A client that asks for nothing
+  still gets `mcp:read`.
+- Approvals are dismissed when the evaluated **base** moves, not only when the
+  tip does. A change re-evaluated against a newer base kept approvals that were
+  granted against different code.
+- **Import jobs can no longer wedge forever.** A scheduled sweep now moves stalled imports to a
+  terminal state on its own — previously recovery only ran if somebody happened to open the
+  project's progress page, so an abandoned job could show "Import in Progress" with a `CANCELLING`
+  badge indefinitely. A cancel that never finished lands in `cancelled`; anything else that stopped
+  progressing becomes `failed` with an explanatory error. Jobs that were never picked up off the
+  queue are reaped too, under a longer grace period.
+- **Stall detection never actually fired.** Both the sweep and the existing on-demand recovery
+  compared `updated_at` against SQLite's `datetime('now', …)`, which formats timestamps with a
+  space, while every job row stores an ISO-8601 string. Compared as text, `'T'` sorts after `' '`,
+  so no row matched until the UTC date itself rolled over — silently delaying recovery by up to a
+  day. Both now compare ISO instants, and migration 043 normalises any legacy timestamps.
+- **The import status `syncing` was never actually saved.** It was missing from the `import_jobs`
+  status constraint, so the write the queue consumer makes when a sync begins failed silently on
+  every run and the job kept reading as `queued` long after it had started. The constraint now
+  admits every status the code can produce (migration 043), and the write reports failures instead
+  of discarding them.
+- A cancellation that the sweep finished is now recognised as cancelled by the queue consumer, which
+  previously treated it as a failure — emailing the user about a failure they never had and, on the
+  sync path, restarting the work they had cancelled.
+- An import in its sync phase now shows as in progress, with a spinner, a Cancel button and live
+  updates. Because `syncing` could never previously be stored, the progress card had no case for it
+  and would have rendered a running import as though nothing were happening.
+- On-demand stall recovery now updates the job it actually selected. It picked the stalest row but
+  wrote back by project, which resolves to the newest row — so on a project with more than one
+  import it could fail a healthy running job and leave the wedged one in place.
+- **"Sync Now" no longer appears on an empty repository**, where it sat next to "Not synced" and an
+  in-progress import badge — three claims that could not all be true at once. It still appears when
+  the file listing merely failed, which is when it is most needed.
+- `STRATUM_TELEMETRY_DISABLED` had no effect on `deploy:production` or `deploy:staging`. It was
+  declared only under top-level `[vars]`, which named wrangler environments replace rather than
+  inherit, so self-hosters who set it were still sending telemetry. It is now declared per
+  environment.
+- The active-token cap counted expired tokens, so a user whose tokens had all
+  lapsed could not create a replacement without first revoking each dead row by
+  hand. Expired and revoked tokens now both free their slot.
+- **The backup format and restore now handle repositories whose only refs are
+  tags.** A snapshot of a repository with an unborn `HEAD` but with tags now keeps
+  its tags and every object only they reach, instead of being reported `empty`, and
+  its repo manifest simply omits `tipSha`. Restoring it recreates the tags without
+  inventing a default branch, and the restore plan accepts a manifest that has no
+  `tipSha` but does carry tags. The scheduled backup still clones the default
+  branch first, so a remote with no default branch still fails at the clone and is
+  recorded as an error for that repository. Existing backups, which always record a
+  `tipSha`, restore exactly as before. Repositories with neither commits nor tags are
+  still skipped as `empty`.
+- **An organization's second-factor policy now also applies when a credential is created.** A
+  session that had not met an org's "require a second factor" policy could still create an
+  API token, an agent token, a new legacy key or an MCP/CLI connection. These are never asked
+  for a second factor when used, so they then reached that org's projects. Creating any
+  credential that could reach the org is now refused with `403 SECOND_FACTOR_REQUIRED` until
+  the session meets the policy: an unbound token, a token bound to the org or one of its
+  projects (public ones included), an agent, a rotated legacy key, or OAuth consent. A token bound to your own
+  projects, or to an org without the policy, can still be created. Credentials created before
+  the policy was turned on are unaffected; review and revoke them from Settings if needed.
+- **Staged-tree copies can now be expired in R2.** The copy of each workspace
+  commit that the fast merge path keeps now lives under its own `staged-sha/`
+  prefix, so a bucket lifecycle rule can expire it. That covers copies for
+  rejected changes, intermediate commits and abandoned workspaces. Merges still
+  delete their own copy right away. **Operators must add the rule to each bucket
+  bound as `REPO_OBJECTS`.** Until they do, copies still accumulate. See
+  `docs/runbooks/staged-tree-retention.md`.
+- **A policy with more than one `webhook` evaluator now contacts every receiver.** Each
+  `webhook` entry built its own evaluator but re-derived its configuration at evaluation
+  time by searching the policy for the first entry of that type, so a policy declaring
+  two receivers sent both requests to the first URL, signed both with the first secret,
+  and applied the first entry's `timeoutMs` to both — while the second receiver was
+  never contacted and nothing logged a word about it. Each evaluator is now handed the
+  entry it was built for.
+- **A failing evaluator can no longer be masked by a passing duplicate of the same
+  type.** `requiredEvaluators` read the single latest `eval_runs` row per evaluator type,
+  so when one type ran more than once in the same evaluation — two webhook receivers, two
+  `diff` evaluators — only one verdict reached the merge gate, and a change one receiver
+  had rejected could merge. Every run of a type in the newest evaluation round is now
+  folded with AND, matching the rule the manual-conflict-resolution path already applied.
+  A later passing re-evaluation still clears an earlier failure.
+- **An evaluation round is now identified rather than inferred from its timestamp.**
+  `eval_runs` rows carry a `round_id` (migration 048) shared by every run of one
+  evaluation pass. Round identity was previously "these rows share a `ran_at`", which
+  two passes can do — a change's initial evaluation and a re-evaluation, or two
+  concurrent `POST /changes/:id/evaluate` calls, since that route takes no lock — and
+  reading them as one round could AND a superseded failure into a later passing round,
+  leaving the change blocked until someone re-evaluated again. Rows written before the
+  migration keep the old timestamp grouping.
+- **A manual conflict resolution can no longer be committed onto a base it was not
+  evaluated against.** The resolution route evaluated the proposed content against one
+  clone of the project, then `resolveConflict` took a second clone and committed onto
+  whatever tip that one saw. If a push landed on the default branch in between, the
+  resolution was committed cleanly on top of content the evaluator suite had never seen —
+  no error, and the audit record named the evaluated revision as the commit's parent when
+  it was not. The evaluated base is now pinned through to the commit, and a project that
+  moved is refused with `409 STALE_PROJECT` ("re-resolve against the current revision")
+  instead of being silently committed. That covers the narrow race as well as the common
+  case: if the project moves between the check and the push, the remote refuses the
+  commit, and that rejection now reports `STALE_PROJECT` too rather than a `502` that
+  reads as an upstream outage. `accept-project` and `accept-workspace` re-stage content
+  already committed on one side of the conflict and are unaffected.
+- **`npm run release:prepare` now bumps `package-lock.json` along with `package.json`.**
+  The lockfile's root `version` and `packages[""].version` were never updated, so they
+  fell one release further behind on every cut. Only those two fields are edited;
+  dependencies are not re-resolved. `npm run release:check` (which the Release
+  workflow runs) now fails when either lockfile version disagrees with
+  `package.json`.
+- **The test suite passes on every Node version `engines` claims to support.** Opening an
+  issue was the one place in `src/` that used numbered SQL parameters (`?1`, `?9`), which
+  `node:sqlite` — the engine behind the D1 test harness — cannot bind on older 22.x
+  releases: on 22.14.0 the statement throws `column index out of range`, taking 43 tests
+  red on a clean checkout while CI's floating `node-version: "22"` resolved to a newer
+  release and stayed green. The statement now uses anonymous `?` placeholders and binds
+  the three reused values twice, which every 22.x binds and D1 has always accepted. A new
+  `Unit Tests (engines floor)` PR check runs the whole suite at exactly the declared
+  floor (22.13.0) so the supported range cannot drift silently again, and a `.nvmrc`
+  points `nvm use` at a supported major.
+- **Google sign-in works outside production.** Only `[env.production.vars]` declared
+  `GOOGLE_REDIRECT_URI`, and the Google routes require it, so `/auth/google` answered
+  `501` on staging and under `wrangler dev` however the secrets were set — named
+  environments replace top-level `[vars]` rather than inheriting them. Staging and
+  local now declare their own callback.
+- **A Google sign-in returns to the page it started from.** `/auth/google` now accepts
+  `?next=` the way `/auth/github` already did, carried through the round trip on the
+  OAuth state record and honoured by the callback and by the username step a new
+  account goes through. It previously always landed on `/` unless the MCP consent
+  screen had remembered a destination.
+- **A policy file is bounded, and an unusable `llm` entry says why.**
+  `evaluators:` now takes at most 16 entries, the cap `deploys:` has always had
+  and for the same reason — one merge must not amplify into an unbounded number
+  of external calls. An entry that names a provider must also name a `model`,
+  since the default is a Workers AI model id that fails every call against any
+  other provider. The merge-blocking reason now names the provider (or the field)
+  that made the entry unusable instead of only counting entries. A verdict
+  truncated at the provider's token cap records the tokens the provider reported
+  for it, rather than recording a charged call as free.
+- **A deploy refusal can no longer overwrite a deployment that is running.** The
+  paths that write a terminal status without claiming the row first — a failed
+  guard, a superseded commit, and now an exhausted allowance — run before
+  `claimDeployment`, and `running` is not a terminal status, so a redelivery of
+  the same message could land `failed` on a row another delivery was mid-deploy
+  on and clear its lease. Those writes are now refused against a claimed row,
+  and the `deployment.failed` event they emit is withheld when the write does
+  not land: an event announcing a failure for a deploy that is about to succeed
+  is the one a webhook consumer acts on.
+- **The commented `LLM_PROVIDERS` example carries the API version path.** The
+  provider appends `/messages` (or `/chat/completions`) to `baseUrl`, so the
+  `https://api.anthropic.com` shown in `wrangler.toml` would have 404'd on every
+  call; it is `https://api.anthropic.com/v1` now. A `baseUrl` is also stored
+  normalized, so a trailing `#` or `?` — both of which pass the "no fragment, no
+  query" check — cannot swallow the path the provider appends.
+- **A project's overview page no longer takes 30–45 seconds to load.** When its cached
+  snapshot had expired — which, after seven days, was every project — the page cloned the
+  repository three times per view, once each for the file list, the commit log, and the
+  README, spending ~24s of CPU on a modest repository and approaching the Workers CPU limit.
+  It now reads all three from a single clone and caches the result against the exact commit
+  it describes. A later view reuses that cache only when its commit matches the branch tip
+  advertised for that request, so views of an unchanged branch skip the clone entirely and a
+  push or merge is picked up on the next view.
+- **`deployment.succeeded` and `deployment.failed` are emitted only once the terminal
+  status is actually recorded.** The deploy runner emitted the terminal event even
+  when writing the deployment's terminal status to the database failed, or when the
+  row had already been finished by another owner. Webhook consumers could then act on
+  an outcome the deployment record did not show (the row stayed `running`). No event
+  is emitted now unless the write landed; the failure is logged instead.
+- **The private-project limit now applies to imports.** Importing a repository
+  (`POST /api/projects/{namespace}/{slug}/import`) and bulk import
+  (`POST /api/bulk-import`) both check the account's private-project limit, as
+  creating a project already did. A bulk import checks the whole batch at once:
+  if its private repositories would go past the limit, it answers `403` and
+  imports none of them. Public repositories and projects that already exist do
+  not count.
+- **Bulk import rejects ambiguous batches.** An entry whose `visibility` is
+  neither `private` nor `public`, or two entries that would import into the same
+  project, now get `400` instead of being accepted.
+- **Concurrent creations can no longer go past the private-project limit.**
+  Creating, importing or bulk-importing private projects at the same time could
+  admit more than the plan allows, because each request counted existing
+  projects before the others had written theirs. Bulk import made this much
+  larger: several batches sent back to back were each checked against the same
+  starting total. Each admitted creation now holds its place until its project
+  is written or fails, so a second request sees it. A held place that is never
+  released lapses after 3 minutes for a single creation or import, and after 15
+  minutes for a bulk import. If the usage meter cannot be reached, the limit is checked against
+  existing projects only, as before.
+- **Backup retention no longer prunes the last healthy run.** Retention used to keep
+  the newest `BACKUP_RETENTION` complete runs whether or not they were restorable, so
+  a stretch of failed runs (a misconfigured secret, an R2 permissions change) could
+  leave only unrestorable backups. It now reads `healthy` from each run's manifest:
+  unhealthy runs no longer take `BACKUP_RETENTION` slots (they still age out after
+  that many complete runs), and the newest healthy run is always kept. Worst-case
+  backup storage can therefore reach about twice the retention window. Manifests without a `healthy`
+  field count toward the window as before. If a manifest cannot be read from R2,
+  that run prunes nothing.
+- Change creation latency no longer depends on how long the evaluators take, and
+  the `llm` evaluator can no longer hold a request open without bound.
+- **The docs and agent skills no longer say evaluation runs synchronously at change
+  creation.** On an instance with an evaluation queue, a new change comes back
+  `evaluating` and its verdict lands afterwards, and an agent following the old
+  `stratum-merge-gate` skill would act before it arrived. A gated `git push` still
+  evaluates on the request.
+- **Two published files still said MIT after the AGPL relicense**: the source-repository
+  link description in the docs site's `llms.txt`, and the `license` field of the MCP
+  server card at `/.well-known/mcp/server-card.json`. Both now say `AGPL-3.0-or-later`.
+- `docs/api/openapi.yml` reported `info.version: 1.0.0`; it now tracks the release
+  version (`0.2.0`). `@stratum-eng/agent` was still at `0.1.0` and moves to `0.2.0`
+  alongside `@stratum-eng/cli`.
+- `agent/README.md` told readers to `npx @stratum-eng/agent`, which is not published;
+  both client READMEs now say to build from source until it is.
+- `AGENTS.md` claimed `pr-checks.yml` ends in a staging deploy and smoke test. It
+  deliberately deploys nothing; the description now matches the workflow.
+- The machine-readable documentation index at `docs.usestratum.dev/index.md` was
+  missing the Deployments, Authentication, and Error codes pages.
+- **A project's overview page no longer stalls for several seconds after every push.** The
+  per-commit view cache added in #379 was only ever served for the branch's current tip, so
+  the first view after any push or merge waited for a full clone (8s on a modest repository).
+  The page now shows the last cached view straight away, with a note naming the commit it
+  shows, and refreshes the cache in the background, so the next view is current. Only a
+  branch that has never been viewed waits for a clone. A burst of viewers starts one refresh
+  between them, not one each. The page's other independent lookups (import progress, sync
+  status, write access, snapshot) now run in parallel, not one after another.
+- **Signing up no longer ends on a "page not found".** Confirming a new account
+  from the email link now opens the dashboard, which shows how to create or import
+  a first project. An agent-initiated signup opens Settings, with a notice saying
+  whether the agent's request was approved. A plain signup, and an approved
+  agent signup, used to redirect to `/welcome`, which does not exist; an agent
+  signup that missed the hand-off already went to Settings, and now says whether
+  the request expired or approving it failed, and how to connect the agent
+  instead.
+
+### Security
+- **The closed-beta gate can no longer be routed around by an SSO signup.** The
+  gate is enforced on the `/auth/signup/complete` form every OAuth signup passes
+  through, and that check held — but `upsertGitHubUser` still carried a branch
+  that *created* an account outright, and the only thing keeping the GitHub
+  callback out of it was a second copy of the same lookup, in a different file,
+  under a comment asserting the branch was unreachable. Two copies of one
+  decision is a gate that opens the moment they disagree, and a callback is
+  exactly where a matching rule gets tweaked (an email normalized, a soft-deleted
+  account skipped). The lookup now lives in one place: `signInGitHubUser` matches
+  by GitHub id or verified email, links the identity, and creates nothing — an
+  identity with no account comes back as `null` and the callback parks it for the
+  gated form. Account creation for every signup method — magic link, GitHub,
+  Google — now has exactly one door. No behaviour changes for a live deployment:
+  the create branch was already dead, and sign-in is untouched.
+- **GitHub sign-in no longer trusts an unverified email.** The callback picked
+  the primary address, verified or not, and fell back to *any* address on the
+  account. That address then matched (and linked to) an existing Stratum
+  account, so anyone could add a victim's email to their own GitHub profile,
+  leave it unverified, and sign in as the victim; it also created new accounts
+  under addresses nobody had proven. Only a verified address is used now, for
+  matching and for creation alike, and an account with none is refused (`422`).
+  The closed-beta path already worked this way; the open-signup path did not.
+- **Minting an agent token from the settings form requires a browser session.**
+  `POST /settings/agents` and `POST /settings/agents/:id/delete` loaded the user
+  but never checked *how* they authenticated, so a scoped `read_write` API token
+  could post to the form and receive a fresh agent token — a credential that
+  outlives the token that minted it, which is exactly the circularity #254 closed
+  for `/settings/tokens`. Both are now behind the same session-only guard.
+  This closes the browser form only: `POST /api/agents` and
+  `DELETE /api/agents/:id` still accept any authenticated caller, so the
+  capability is not gone. Closing that too is a breaking change for automation
+  that provisions agents with an API token, and is left as a deliberate decision
+  rather than folded into this change.
+- **Webhooks are scoped on project id alone (#235).** `webhookBelongsToProject`
+  and `listWebhooks` still matched `project_id = ? OR (project_id IS NULL AND
+  project = ?)`, so a pre-migration-025 row could be read, modified and
+  delivered to by a same-named project in another namespace. `listWebhooks` now
+  takes the project id rather than its name, so a name-scoped lookup is not
+  expressible at the call site, and `createWebhook` requires `projectId` so no
+  new unstamped row can undo the backfill.
+- Policy files are now validated per evaluator, not just spread onto the defaults. `sandbox` and
+  `webhook` timeouts are clamped into range, `sandbox.command` is rejected if it is blank,
+  over-length, or contains a newline (which a shell would read as a second command), a `webhook`
+  entry without a `url` is dropped, and malformed `evaluators` entries are dropped instead of
+  crashing evaluator construction. An out-of-range value is clamped with a warning; it does not
+  block merges.
+- **`minScore` is clamped to `[0, 1]` and replaced when rejected.** Previously the raw value from
+  the policy file survived validation, so `minScore: -.inf` (or the string `"-5"`) made
+  `score >= minScore` true for every score — accepting changes whose evaluators had all scored 0.
+- A policy containing an unusable evaluator entry now fails the merge gate closed with a
+  `configError` rather than dropping that entry and proceeding on the survivors. Silently removing
+  one gate while its siblings remain would let a change through on the rest — a `webhook` whose
+  `url` was typo'd previously reached the evaluator and blocked. An unrecognised evaluator *type*
+  is unaffected; it is still passed through and rejected downstream.
+- A YAML alias cycle in a policy file no longer causes the whole file to be treated as absent.
+  Serializing a rejected entry for a log line could throw, and the fallback silently discarded the
+  file's `merge` protection — dropping `requiredApprovals` and re-enabling force-merge.
+- Sandbox evaluation of a pinned commit no longer clones a workspace's entire reachable
+  history into memory: `readRepoFiles` now clones shallow and grows the fetch window only
+  as far as needed to reach the pinned commit, capped at 500 commits, instead of an
+  unbounded full-history clone (#246).
+- Every network call in `src/storage/git-ops.ts` — `git clone`, `git fetch`, `git push`,
+  and `git getRemoteInfo` (clone, tag enumeration/fetches, workspace merge fetches and
+  pushes, pinned-commit deepening, GitHub sync, backup restore) — now has a wall-clock
+  timeout, so a stalling remote can no longer hold a request open indefinitely (#332).
+- `readTreeAtCommit` now caps the total bytes it will materialize across a commit's tree
+  at 50 MB, on top of the existing 10 MB per-file cap — bounds tree *size*, independent of
+  the history-depth bound #246 already added (#333).
+- Backup restore's rollback no longer deletes a freshly restored repo when a push merely
+  timed out rather than being confirmed rejected — a timeout doesn't cancel the underlying
+  push, so it could still land after the timeout fired, and deleting on that ambiguous a
+  signal risked destroying already-landed `main`/tags. `pushMain`/`pushTags` now surface a
+  distinctly-coded `PUSH_TIMEOUT` error so the caller can tell the two cases apart (#332).
+- **A scoped token can no longer mint a credential that outlives its own
+  revocation.** `POST /settings/rotate-token` and `POST /api/users/me/rotate-token`
+  refuse a scoped token, because the legacy key they mint never expires and cannot
+  be revoked individually. Browser sessions and the legacy credential itself still
+  rotate, so existing automation is unaffected.
+- **Token management requires a browser session, not an API token.** A
+  `read_write` token that could mint siblings and revoke them would make
+  revocation circular. `GET /settings` requires a session too — it previously
+  rendered token metadata to a caller the JSON routes refused.
+- **Docs said agent tokens were "short-lived".** They are not: the `agents` table
+  has no expiry column and `getAgentByToken` performs no expiry check, so an
+  agent token is valid until the agent is deleted. The claim appeared in the
+  README, the getting-started guide, the FAQ, `CURRENT_CAPABILITIES.md`, and the
+  published authentication reference, and would have led an operator to assume a
+  leaked agent token lapsed on its own.
+- **A disabled account cannot authenticate by any route.** Legacy and scoped API
+  tokens, MCP OAuth access tokens, agent tokens, session cookies, git over HTTPS,
+  and every sign-in flow (magic link, GitHub, Google, SSO, and completing a parked
+  OAuth signup) refuse it.
+- **GitHub sign-in links to an existing account only through a verified email,**
+  and never links onto a disabled or deleting account.
+- **The audit log is append-only at the database.** Updates and deletes on
+  `audit_log` are rejected by triggers, except the account-erasure rewrite of an
+  erased person's actor id to `deleted-user`.
+- API tokens, the legacy API key, agent tokens, MCP OAuth grants, SCIM tokens,
+  and git over HTTPS are **not** subject to the second factor. They are not all
+  scoped: the legacy key and agent tokens carry full account access. Revoke,
+  rotate, or disable any you no longer trust.
+- **Recovery codes** are 12 characters (about 59 bits). They are stored as
+  per-user hashes, keyed with HMAC when the optional `RECOVERY_CODE_PEPPER`
+  secret is set. Each code works once.
+- **`POST /api/changes/{id}/github-pr` checks write access before reporting the
+  change's state.** A caller without write access used to learn whether a
+  change was accepted from the `400` it got; it now gets the same refusal as
+  for any other change.
+- **Closed an open redirect in post-login destinations.** The same-origin check on
+  `next` examined the path as written, but the redirect used the path after URL
+  normalization, which resolves dot segments: `/auth/github?next=/.//evil.example`
+  passed the check and then sent a freshly signed-in user to `//evil.example`. The
+  normalized path is now checked as well, for every sign-in route.
+- **A project secret can no longer escape through an error message.** A stored
+  value containing CR, LF or NUL made the outbound provider request's header
+  construction throw a `TypeError` that quotes the offending value; that message
+  became an evaluation reason, which is persisted on the change and rendered —
+  world-readably, for a public project. Both ends are closed: the store rejects
+  control characters in a value, and the provider builds its headers where a
+  failure maps to a constant that interpolates nothing.
+- **The LLM provider request no longer follows redirects.** The allowlist
+  validates the host a request is *sent* to; a 3xx from an allowlisted host used
+  to move the prompt (the diff and the policy) to an unvalidated one, re-sending
+  the body on 307/308 with the project's `x-api-key` attached, which the Fetch
+  spec does not strip cross-origin. A redirect is now a failed evaluation.
+- **Credential stripping covers the whole policy, recursively.** Fields whose
+  name says "credential" were removed only from the top level of each evaluator
+  entry, so one written at the top of `.stratum/policy.yaml`, or nested inside an
+  entry of an unmodelled type, reached the review model and the body POSTed to a
+  policy-supplied webhook URL. The word list also missed common names —
+  `auth`, plurals such as `tokens` and `apiKeys`, `pwd`, `pat`, `hmac`, `sig` —
+  while keeping innocuous ones like `keystone`.
+- **One host filter, not two — which also closed a pre-existing SSRF hole in the
+  webhook evaluator.** The LLM provider allowlist had its own copy of the
+  private-address check, and it had drifted: CGNAT (`100.64/10`), the
+  `.internal`/`.local` suffixes (GCP's metadata endpoint is
+  `metadata.google.internal`), everything in `fe80::/10` not spelled `fe80`, and
+  IPv4-compatible IPv6 (`[::127.0.0.1]`, which the URL parser rewrites to
+  `[::7f00:1]`) all got through. Both callers now share one filter, which
+  expands an IPv6 literal rather than matching its spelling. The webhook
+  evaluator's URL check — which has shipped for far longer, and accepts a URL
+  straight from `.stratum/policy.yaml` — had the last two gaps too, so a
+  `webhook` entry pointed at `[::127.0.0.1]` or at `feb0::…` used to reach the
+  loopback and link-local addresses it was written to refuse. Both are refused
+  now. The filter also refuses the non-global ranges that are neither RFC 1918
+  nor obviously local — IPv4 multicast, `240.0.0.0/4` (nominally reserved, and
+  used for real internal addressing inside more than one cloud provider), the
+  RFC 2544 benchmark block, `192.0.0.0/24` and the TEST-NETs; IPv6 multicast
+  (`ff02::1` is all-nodes on the local link), site-local, and `2001:db8::/32`.
+  The bare-label rule moved into that shared filter as well: `metadata` is
+  the metadata endpoint's short name on both AWS and GCP, DNS is what makes it
+  an address, and the webhook check had the rule while the provider allowlist
+  did not.
+- **A policy declaring two `llm` entries is refused.** The BYOK provider was
+  resolved from the first entry while an evaluator was built for every entry, so
+  `[{llm}, {llm, provider: …}]` silently ran twice on the operator's Workers AI
+  bill — the fail-open this work exists to prevent. Both the parser and the
+  provider resolution now refuse rather than choosing one.
+- The shared outbound-host filter now rejects the non-global IPv6 ranges it was
+  still accepting: discard-only (`100::/64`), IETF protocol assignments
+  (`2001::/23`, which covers benchmarking and Teredo), 6to4 (`2002::/16`) and
+  the NAT64 prefixes (`64:ff9b::/96`, `64:ff9b:1::/48`). The IPv4 half already
+  refused its equivalents, so webhook delivery and BYOK provider URLs were
+  applying two different rules through one filter.
+- **Webhook evaluators can sign with a project secret instead of a literal in
+  the policy file.** A `webhook` entry in `.stratum/policy.yaml` now accepts
+  `secretRef: <NAME>`, resolved at evaluation time from the project's encrypted
+  secret store (the one deploys use). A literal `secret` is readable by anyone
+  with repository read access — and by the code under evaluation — so anyone
+  could forge a signature your receiver accepts. If you used one, store the value
+  as a project secret, switch to `secretRef`, and rotate it. A reference that
+  does not resolve (missing, empty, undecryptable, or no `DEPLOY_SECRET_KEY`)
+  fails the evaluation closed without contacting the receiver; it never sends
+  unsigned or signs with an empty key. The name must start with `WEBHOOK_`, so a
+  policy cannot sign with a deploy credential or a BYOK provider key; any other
+  name fails the policy file closed.
+- The client address for the allowlist comes only from `CF-Connecting-IP`.
+  `X-Forwarded-For` is never read. A request with no client address is refused
+  by a restricted org.
+- The consent-screen destination is bound to the magic link server-side and only
+  honoured in the browser that requested the link. Opening the link on another
+  device signs you in but shows "you're signed up; reconnect your editor" rather
+  than presenting a consent screen to whoever opened it. The destination must be
+  same-origin and exactly `/oauth/authorize`.
+- **Account deletion now erases the user from the whole audit log.** Previously only the
+  actor was anonymized, so an entry could still name the erased account by id or email as
+  its subject or as a complete value in its detail. Every such reference is now rewritten
+  to `deleted-user`; an identifier inside longer free text, and usernames, are not.
+  Migration 069 replaces the append-only trigger so the database also allows those subject
+  and detail rewrites, only for an account that is being deleted, and still rejects every
+  other edit and every delete. The existing rewrite of an actor to `deleted-user` is
+  unchanged and does not check for a deleting account.
+- **A scoped API token or OAuth grant can no longer create agents.** `POST /api/agents`
+  mints an agent token, which never expires and is not tied to the credential that
+  created it, so a scoped token or an MCP client's OAuth grant that could call it would
+  survive its own revocation. It now returns `403 SESSION_REQUIRED` for those callers,
+  the same rule the legacy-key rotate routes already follow. Browser sessions and the
+  legacy API key are unaffected; the settings page already required a session.
+- **A username can no longer be taken over an organization's or another account's
+  namespace.** Users and organizations share the `@name` namespace, but renaming an
+  account (and signing up) only checked other usernames. Renaming to an org's slug, or
+  to a name whose namespace still held another account's projects, gave the account a
+  namespace it did not own, and the import routes, which authorize by that namespace,
+  then accepted it. Renames, signups, org creation and `GET /api/users/check-username` now
+  treat an org slug, a live project claim, or existing projects under `@name` as taken.
+  The user/org check also sits inside the rename's `UPDATE` and the org's `INSERT`, so a
+  concurrent rename and org creation cannot both claim the same name.
+- **The OAuth authorize endpoint is no longer an open redirect.** Client registration is
+  open, so anyone could register a client whose redirect URI was their own site and then
+  link users to `/oauth/authorize` with a malformed request, which bounced them straight
+  to that site from Stratum's domain. Invalid authorization requests (bad
+  `response_type`, PKCE, scope or resource) and a declined consent now show a Stratum
+  page naming the OAuth error, with a "Return to <host>" link that carries the error and
+  `state` back to the client only when the user chooses to follow it.
 
 ### Changed
-
 - **Product analytics now answers questions instead of just counting requests.**
   Telemetry sent two events with almost no properties: a request event carrying
   a route pattern, and a repository-activity event carrying only its type, the
@@ -409,80 +1229,137 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still wins when present.
 - `isScopedTokenCaller` is now `cannotMintLegacyCredential`, and covers OAuth
   grants as well as scoped tokens.
-
-### Fixed
-- **A post-merge deploy cannot be lost or run twice.** Four fixes to the new
-  deployment path, all invisible until they bite: the deploy queue ran two
-  messages per isolate, and two concurrent Vercel deploys exceeded the isolate's
-  memory before a terminal status could be written, stranding rows at `running`
-  (`max_concurrency` is now 1); the runner had no deadline, so its storage lease
-  could expire mid-upload and let a second consumer publish the same commit (it
-  now gives up strictly before the lease can); a queue send that failed silently
-  dropped the deploy — after a merge there was no row to recover at all, and
-  after approve or retry the row sat `queued` forever while the response advised
-  a retry that could not work (the request is now recorded durably and picked up
-  by the existing five-minute sweep); and several rejected `deploys:` entries
-  collapsed into one row, so only one of their reasons survived — a rejection
-  sharing a name with a valid entry could even take that entry's row and stop it
-  deploying. Every rejected entry now gets its own `failed` row.
-
-- **The CLI credential file is now `0600` in a `0700` directory on existing
-  installs, not only new ones.** It holds a bearer token in plaintext, and
-  earlier releases left it world-readable at `0644`. Passing `mode` to
-  `writeFile`/`mkdir` does not fix an existing file — POSIX honours `mode` only
-  when the call creates the node — so the write now goes through a temp file and
-  `rename`, which replaces the inode and carries the right permissions with it.
-- **A `stratum` session can no longer be destroyed by running two commands at
-  once.** Refresh tokens rotate on every use, and presenting a retired one is
-  treated as theft: the server revokes the whole grant, logging you out
-  everywhere. Two processes refreshing concurrently both held the same token, so
-  parallel commands after an idle hour would systematically do exactly that.
-  Rotation now takes a cross-process lock and re-reads the stored credential
-  inside it, so a process that waited adopts the winner's token instead of
-  replaying its own.
-- **A crash or `^C` while the CLI wrote its credential no longer loses the
-  session.** The file was truncated in place, and after a rotation the new
-  refresh token exists only on disk, so a torn write was unrecoverable. Writes
-  are now atomic.
-- **The CLI refuses to send credentials over plaintext or off-origin.** `--host`
-  must be `https` (loopback excepted), and every endpoint named in a host's
-  OAuth discovery document must share that host's origin, so a tampered document
-  cannot redirect the authorization code or refresh token elsewhere.
-- **OAuth requests no longer hang indefinitely.** Every call in the login and
-  refresh path carries a timeout; without one, an unreachable host hung not just
-  `login` but every command, because a refresh re-enters discovery.
-- **A stray request to the CLI's loopback port no longer cancels a login.** Any
-  page open in the browser can reach `127.0.0.1`; a request with a mismatched
-  `state` is now ignored and the listener keeps waiting, per RFC 8252.
-- **A failed token refresh reports its actual cause.** A network failure was
-  reported as `session expired`, sending users to re-authenticate over a problem
-  that re-authenticating could not fix.
-- **The header fits a phone.** Signed in, the nav's five links were laid out in
-  one unwrappable row, so below about 460px the row ran past the viewport, the
-  page scrolled sideways, and the wordmark and "logout" were clipped off either
-  edge. Below 640px the links now collapse behind a "menu" button next to the
-  wordmark and open as a full-width list beneath it. The toggle is a checkbox
-  driven purely by CSS, so it works with scripts disabled and keeps its place in
-  the tab order. Wider screens, the signed-out header and the docs site's header
-  (which shares this stylesheet) are unchanged.
-- **Settings tables and the invite table fit a phone.** The API token,
-  connected-app and agent tables were not in the sideways-scrolling wrapper the
-  invite table used, so a settings page with two tokens was 741px wide at a
-  390px viewport. All four now scroll inside the card. The invite share link,
-  which was allowed to break at any character and wrapped to 300px-tall rows,
-  stays on one line inside that scroll; an email in the Account list wraps
-  instead of running past the card edge.
-- **Claude Code can connect to the MCP server.** `claude mcp add` registers
-  `http://localhost:<port>/callback` as its OAuth redirect, and the
-  authorization server refused the name outright — only the loopback IP
-  literals were accepted — so every registration from the CLI failed with
-  `invalid_redirect_uri` before a browser ever opened. `localhost` is now
-  accepted as loopback (every current browser resolves it internally, without
-  DNS), and a loopback redirect may use a different port at authorization time
-  than the one it registered with, as RFC 8252 §7.3 requires of a server that
-  serves native apps. Nothing else about redirect matching is relaxed: host,
-  path, query and scheme are still compared exactly, and `localhost` and
-  `127.0.0.1` do not stand in for each other.
+- **The docs site and the app share one header.** `docs.usestratum.dev` was rendering
+  Starlight's default header — a different wordmark, typeface, height and link treatment from
+  the one at `app.usestratum.dev`, so the two halves of the product did not look related.
+  The docs site now renders the app's header: the same `stratum` wordmark, chrome and accent
+  links, with search, theme and GitHub controls sized to sit on it, plus a `sign in` link back
+  to the app. It is shared rather than copied — `src/ui/nav-css.ts` owns the rules and
+  `website/scripts/mirror-header.mjs` generates the site's `header.css` from them, with the
+  docs build and the test suite failing on a stale copy.
+- **The docs home is a documentation page, not a second landing page.** It dropped the
+  six marketing feature cards, then the splash hero itself: `docs.usestratum.dev/` now
+  renders with the sidebar like every other page, opens with what the site is, and points
+  at the three guides and three reference pages a reader starts from — the pitch lives at
+  `usestratum.dev`, which the page links to. The header wordmark goes there too, the way
+  the app's wordmark goes to the app, and a new "Overview" sidebar entry keeps the docs
+  home reachable. `public/index.md`, the hand-maintained Markdown twin agents read, matches.
+- Repository-activity analytics events no longer carry `project`, the concrete project name; they
+  carry the opaque `projectId` instead. Dashboards grouping on `project` must switch to
+  `projectId` — old `project` references receive no new data. Events for projects created before
+  `projectId` dual-write carry no project property at all, so they group under nothing rather
+  than under a name.
+- `GET /api/admin/audit` now returns `nextCursor` for pagination and accepts
+  `org`, `since`, `until`, and `cursor` filters. Existing `action`, `actor`, and
+  `limit` parameters and the `entries` field are unchanged.
+- **The signed-in name in the top bar is now an account menu.** Profile, settings and logout
+  sit under your name instead of as separate links in the bar; "new project" stays in the bar.
+  The menu needs no JavaScript, works from the keyboard, and on phones opens in place inside
+  the existing menu.
+- **Form errors now show inline, under the field they are about.** The new-project and import
+  form, the settings forms (display name, username, API tokens, agents), the webhook form and
+  the deploy-secret form no longer pop the browser's validation bubbles. A refused submission
+  comes back with the reason under the field and the field marked invalid for screen readers.
+  The new-project, import, settings and webhook forms also come back with what you submitted
+  still filled in, including an API token's scope and project or organization limit and every
+  checked webhook event. The deploy-secret form shows the reason but does not refill. Values are
+  only ever refilled from the submission itself, never from a link, so nobody can send you a
+  form that is already filled in. Submitting the new-project form with a malformed or
+  already-used name, or an import with an unsupported URL, now gets the form back instead of a
+  raw JSON error; API callers still get JSON.
+- **Every cost record now names who pays for it, and LLM token counts are the
+  real ones.** `cost_records` gains `owner_id`, `owner_type` and `source`
+  (`platform` or `byok`), and a new `usage_periods` table keeps the owner-scoped
+  monthly totals those roll up into — migrations 053 and 054, applied like any
+  other. Attribution is **always on**, self-hosted included, because it is a
+  ledger rather than a paywall: expect a small number of additional D1 writes per
+  evaluated change, and a `USAGE_METER` Durable Object binding in `wrangler.toml`
+  that is created on deploy and never contacted unless a billing service is
+  configured. Token accounting stopped guessing at the same time: Workers AI
+  reports `prompt_tokens`/`completion_tokens` and those are now recorded as-is,
+  where every LLM cost record used to be a `~4 chars/token` estimate. The
+  estimate survives only as a per-response fallback for a provider that omits the
+  counts, and a record built that way still says `estimated`.
+- **SCIM user lookups are faster for large organizations.** `GET /scim/v2/Users` now
+  filters (`userName eq` / `externalId eq`) and pages (`startIndex` / `count`) in the
+  database, instead of loading every user in the connection's scope and filtering in
+  memory. The `userName eq` and `externalId eq` lookups identity providers run during
+  every sync now use an index rather than reading the whole scope. Results, ordering, `totalResults`, and filter matching rules are unchanged.
+- `GET`/`PUT /api/orgs/{slug}/security` responses, and org objects from
+  `/api/orgs/{slug}`, now include `ipAllowlist`. `GET /api/orgs` omits it, since
+  that path is not restricted to an org's networks. `PUT` accepts `requireSecondFactor` and `ipAllowlist`
+  independently, so either can be sent alone.
+- The OAuth consent screen now lists what a read-write MCP grant covers, including project
+  creation and import and organization management.
+- **New MCP connections act as an agent by default.** Such a connection can open
+  changes, push and comment, but cannot merge, reject, approve or list your
+  projects, because those actions are reserved for you. To keep the previous
+  behaviour, choose "Me" on the consent screen.
+- **Settings → Connected applications shows who each connection acts as.**
+  Connections made before this release keep acting as you and are labelled
+  "You (no agent provenance)". Reconnect to choose an agent.
+- **Audit entries about a member name them in `detail.userId`, not `subject`.** Org and
+  team membership events now carry the org or team id as `subject`, and SCIM provisioning
+  events carry the SSO connection id. Entries written before this release keep the user id
+  in `subject`; filter on `detail.userId` to find newer ones.
+- **Approvals are made by a signed-in human.** An `approve` review verdict now needs a browser
+  session (or the legacy user key). Scoped API tokens and OAuth grants, which is what MCP
+  clients and `stratum login` use and what agents are handed, get `403 SESSION_REQUIRED` with
+  the change's URL to approve on instead. They can still request changes and comment, which can
+  only block a merge. `stratum change review --verdict approve` and the MCP
+  `stratum_review_change` tool now point you to the browser.
+- **Repository pages, file views and commit history no longer clone the repository.** They
+  now read through the Artifacts read API (`log`, `readTree`, `readFile`) instead of
+  downloading and unpacking the repository inside the Worker. Directory listings are
+  stored under their Git tree hash, so after a push only the directories on the changed
+  paths are read again; on a repository the size of Stratum's that is a few calls instead
+  of 44. If the read API fails, or a tree has more than 500 uncached directories, the page
+  falls back to cloning as before. Each native read also checks that the repository it
+  opened is the one the project's remote names.
+- The self-hosting docs now say Stratum needs the Workers Paid plan.
+- **Upgrade note: `GITHUB_TOKEN` now needs operator bindings.** The instance personal access
+  token is used only for projects whose owner is bound to the repository's GitHub owner in
+  `GITHUB_ALLOWED_OWNERS`, as comma-separated `githubOwner=org:<orgId>` or
+  `githubOwner=user:<userId>` entries. Bindings name stable ids, never `@namespace` names,
+  which can be renamed or deleted and reclaimed. Find an org's id with `GET /api/orgs/{slug}`
+  or `SELECT id FROM orgs WHERE slug = '...'`. An instance that relies on `GITHUB_TOKEN` must
+  add these bindings when upgrading, or GitHub sync, PR promotion and evaluation reports stop
+  for its projects. The former `GITHUB_APP_ALLOWED_OWNERS` is still read, but a bare owner (or
+  any other form) is now ignored instead of admitting every project. A caller the GitHub App refuses never falls
+  back to the personal access token.
+- **The npm packages moved to the `@stratum-eng` scope.** `@stratum/cli` and
+  `@stratum/agent` are now `@stratum-eng/cli` and `@stratum-eng/agent` — the
+  `@stratum` scope on npm belongs to an unrelated owner. Install and `npx`
+  invocations change accordingly (`npx @stratum-eng/agent ...`); nothing else
+  about the packages, their binaries (`stratum`, `stratum-agent`), or their APIs
+  changes. Neither package was ever published under the old names, so there is
+  nothing to migrate off.
+- **Stratum describes itself as the open-source, agent-first code forge everywhere.**
+  The README, docs site, OpenAPI `info`, package manifests, CLI `--help`, agent-skill
+  discovery files, and the signup page all carried different one-liners ("governance
+  layer", "code collaboration platform for the AI engineering era", "code hosting for
+  the AI engineering era", "agent operations platform"). They now share one: Stratum is
+  the open-source, agent-first code forge, with the GitHub layer as the adoption path.
+  The second run mode is called **forge mode** in every document (it was "alternative
+  mode" in the guides and "standalone forge" in the README), and the deep-link anchor
+  in the getting-started guide changed accordingly.
+- The trust page no longer calls the restore path tested end to end. Its restore functions
+  have tests, but the live push has to be proven by a drill on staging.
+- **Every page responds roughly a quarter of a second faster.** The request rate
+  limiter counted each request in KV, with a read and an awaited write before any route
+  ran — about 250ms even for the stylesheet. Standard limits now use Cloudflare's
+  native rate limiting, which keeps counts in memory at each location; limits with no
+  matching binding (a plan's own rate, or a self-host without the bindings) still use
+  the KV counter. The stylesheet and favicon are no longer rate limited. Limits are now
+  approximate per Cloudflare location, and a successful response no longer reports
+  `X-RateLimit-Remaining` or `X-RateLimit-Reset`; a `429` still carries `Retry-After`.
+- **The stylesheet is cached.** Pages link it at a content-versioned URL served with a
+  one-year immutable cache, so later page views no longer download it again.
+- **Fonts load in parallel with the stylesheet** instead of after it: the font is linked
+  from the page head with pre-connected origins rather than `@import`ed from the CSS.
+- **The dashboard reads only your own projects.** It used to read every project in the
+  instance and then filter to yours; it now lists your namespace and your organizations'
+  namespaces, and reads nothing at all for a signed-out visitor.
 
 ### Removed
 - **The standalone `mcp/` package (`@stratum/mcp`).** It was a stdio process
@@ -563,158 +1440,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-scoped-token model, and the published FAQ and import guide were each
   missing whole sections.
 
-### Breaking
-- **The sandbox evaluator no longer runs npm lifecycle scripts.** Dependency installs now pass
-  `--ignore-scripts`, because the evaluated tree is untrusted and a `preinstall`/`postinstall`
-  would otherwise execute before any human review. Projects whose build genuinely needs them
-  (native modules, a `prepare` step) opt back in with `allowInstallScripts: true` on the
-  `sandbox` evaluator in `.stratum/policy.yaml`. Note the usual symptom is *not* a failing
-  install: a native module installs unbuilt and then fails when the test command loads it.
-- **The default sandbox install timeout drops from 120s to 90s**, so the per-phase defaults sum
-  to exactly the new total budget and an unconfigured project is never truncated.
-- Re-evaluating an existing change (`POST /changes/:id/evaluate`) runs under the new default, so
-  a change that passed before this release may fail on re-evaluation.
-
-### Fixed
-- **Approving an MCP connection in Chrome, Edge or Safari now completes it.**
-  The consent screen shipped the site-wide `form-action 'self'` policy, and
-  those browsers enforce that directive against the redirect that answers the
-  consent form, not just against the form's own action. Clicking Allow minted
-  an authorization code the browser then refused to deliver to the client, so
-  the page sat there and the connector never connected. Firefox does not check
-  redirects, which is why the flow appeared to work in one browser and not
-  another. Naming the client's registered redirect origin turned out not to be
-  enough either: the browsers apply the directive to every hop of the redirect
-  chain, and Claude's callback redirects onward again, so the connection still
-  stalled on a consent page that appeared to reload. The consent page now
-  carries no `form-action` at all; it has no user-controlled markup and its
-  only form targets `/oauth/authorize`, so the directive protected nothing
-  there. Every other response keeps `'self'`.
-- **The consent screen's Allow button no longer looks disabled.** It used
-  near-black text on the deep-navy accent; it now uses the same colour pair as
-  every other primary button.
-- **The MCP `401` challenge names the scopes the endpoint needs**
-  (`scope="mcp:read mcp:write"`, RFC 6750 §3). A client that takes its scope
-  from the challenge asks for read and write up front rather than authorizing
-  read-only and failing on its first commit. A client that asks for nothing
-  still gets `mcp:read`.
-- Approvals are dismissed when the evaluated **base** moves, not only when the
-  tip does. A change re-evaluated against a newer base kept approvals that were
-  granted against different code.
-- **Import jobs can no longer wedge forever.** A scheduled sweep now moves stalled imports to a
-  terminal state on its own — previously recovery only ran if somebody happened to open the
-  project's progress page, so an abandoned job could show "Import in Progress" with a `CANCELLING`
-  badge indefinitely. A cancel that never finished lands in `cancelled`; anything else that stopped
-  progressing becomes `failed` with an explanatory error. Jobs that were never picked up off the
-  queue are reaped too, under a longer grace period.
-- **Stall detection never actually fired.** Both the sweep and the existing on-demand recovery
-  compared `updated_at` against SQLite's `datetime('now', …)`, which formats timestamps with a
-  space, while every job row stores an ISO-8601 string. Compared as text, `'T'` sorts after `' '`,
-  so no row matched until the UTC date itself rolled over — silently delaying recovery by up to a
-  day. Both now compare ISO instants, and migration 043 normalises any legacy timestamps.
-- **The import status `syncing` was never actually saved.** It was missing from the `import_jobs`
-  status constraint, so the write the queue consumer makes when a sync begins failed silently on
-  every run and the job kept reading as `queued` long after it had started. The constraint now
-  admits every status the code can produce (migration 043), and the write reports failures instead
-  of discarding them.
-- A cancellation that the sweep finished is now recognised as cancelled by the queue consumer, which
-  previously treated it as a failure — emailing the user about a failure they never had and, on the
-  sync path, restarting the work they had cancelled.
-- An import in its sync phase now shows as in progress, with a spinner, a Cancel button and live
-  updates. Because `syncing` could never previously be stored, the progress card had no case for it
-  and would have rendered a running import as though nothing were happening.
-- On-demand stall recovery now updates the job it actually selected. It picked the stalest row but
-  wrote back by project, which resolves to the newest row — so on a project with more than one
-  import it could fail a healthy running job and leave the wedged one in place.
-- **"Sync Now" no longer appears on an empty repository**, where it sat next to "Not synced" and an
-  in-progress import badge — three claims that could not all be true at once. It still appears when
-  the file listing merely failed, which is when it is most needed.
-- `STRATUM_TELEMETRY_DISABLED` had no effect on `deploy:production` or `deploy:staging`. It was
-  declared only under top-level `[vars]`, which named wrangler environments replace rather than
-  inherit, so self-hosters who set it were still sending telemetry. It is now declared per
-  environment.
-- The active-token cap counted expired tokens, so a user whose tokens had all
-  lapsed could not create a replacement without first revoking each dead row by
-  hand. Expired and revoked tokens now both free their slot.
-
-### Changed
-- **The docs site and the app share one header.** `docs.usestratum.dev` was rendering
-  Starlight's default header — a different wordmark, typeface, height and link treatment from
-  the one at `app.usestratum.dev`, so the two halves of the product did not look related.
-  The docs site now renders the app's header: the same `stratum` wordmark, chrome and accent
-  links, with search, theme and GitHub controls sized to sit on it, plus a `sign in` link back
-  to the app. It is shared rather than copied — `src/ui/nav-css.ts` owns the rules and
-  `website/scripts/mirror-header.mjs` generates the site's `header.css` from them, with the
-  docs build and the test suite failing on a stale copy.
-- **The docs home is a documentation page, not a second landing page.** It dropped the
-  six marketing feature cards, then the splash hero itself: `docs.usestratum.dev/` now
-  renders with the sidebar like every other page, opens with what the site is, and points
-  at the three guides and three reference pages a reader starts from — the pitch lives at
-  `usestratum.dev`, which the page links to. The header wordmark goes there too, the way
-  the app's wordmark goes to the app, and a new "Overview" sidebar entry keeps the docs
-  home reachable. `public/index.md`, the hand-maintained Markdown twin agents read, matches.
-- Repository-activity analytics events no longer carry `project`, the concrete project name; they
-  carry the opaque `projectId` instead. Dashboards grouping on `project` must switch to
-  `projectId` — old `project` references receive no new data. Events for projects created before
-  `projectId` dual-write carry no project property at all, so they group under nothing rather
-  than under a name.
-
-### Security
-- **Webhooks are scoped on project id alone (#235).** `webhookBelongsToProject`
-  and `listWebhooks` still matched `project_id = ? OR (project_id IS NULL AND
-  project = ?)`, so a pre-migration-025 row could be read, modified and
-  delivered to by a same-named project in another namespace. `listWebhooks` now
-  takes the project id rather than its name, so a name-scoped lookup is not
-  expressible at the call site, and `createWebhook` requires `projectId` so no
-  new unstamped row can undo the backfill.
-- Policy files are now validated per evaluator, not just spread onto the defaults. `sandbox` and
-  `webhook` timeouts are clamped into range, `sandbox.command` is rejected if it is blank,
-  over-length, or contains a newline (which a shell would read as a second command), a `webhook`
-  entry without a `url` is dropped, and malformed `evaluators` entries are dropped instead of
-  crashing evaluator construction. An out-of-range value is clamped with a warning; it does not
-  block merges.
-- **`minScore` is clamped to `[0, 1]` and replaced when rejected.** Previously the raw value from
-  the policy file survived validation, so `minScore: -.inf` (or the string `"-5"`) made
-  `score >= minScore` true for every score — accepting changes whose evaluators had all scored 0.
-- A policy containing an unusable evaluator entry now fails the merge gate closed with a
-  `configError` rather than dropping that entry and proceeding on the survivors. Silently removing
-  one gate while its siblings remain would let a change through on the rest — a `webhook` whose
-  `url` was typo'd previously reached the evaluator and blocked. An unrecognised evaluator *type*
-  is unaffected; it is still passed through and rejected downstream.
-- A YAML alias cycle in a policy file no longer causes the whole file to be treated as absent.
-  Serializing a rejected entry for a log line could throw, and the fallback silently discarded the
-  file's `merge` protection — dropping `requiredApprovals` and re-enabling force-merge.
-- Sandbox evaluation of a pinned commit no longer clones a workspace's entire reachable
-  history into memory: `readRepoFiles` now clones shallow and grows the fetch window only
-  as far as needed to reach the pinned commit, capped at 500 commits, instead of an
-  unbounded full-history clone (#246).
-- Every network call in `src/storage/git-ops.ts` — `git clone`, `git fetch`, `git push`,
-  and `git getRemoteInfo` (clone, tag enumeration/fetches, workspace merge fetches and
-  pushes, pinned-commit deepening, GitHub sync, backup restore) — now has a wall-clock
-  timeout, so a stalling remote can no longer hold a request open indefinitely (#332).
-- `readTreeAtCommit` now caps the total bytes it will materialize across a commit's tree
-  at 50 MB, on top of the existing 10 MB per-file cap — bounds tree *size*, independent of
-  the history-depth bound #246 already added (#333).
-- Backup restore's rollback no longer deletes a freshly restored repo when a push merely
-  timed out rather than being confirmed rejected — a timeout doesn't cancel the underlying
-  push, so it could still land after the timeout fired, and deleting on that ambiguous a
-  signal risked destroying already-landed `main`/tags. `pushMain`/`pushTags` now surface a
-  distinctly-coded `PUSH_TIMEOUT` error so the caller can tell the two cases apart (#332).
-- **A scoped token can no longer mint a credential that outlives its own
-  revocation.** `POST /settings/rotate-token` and `POST /api/users/me/rotate-token`
-  refuse a scoped token, because the legacy key they mint never expires and cannot
-  be revoked individually. Browser sessions and the legacy credential itself still
-  rotate, so existing automation is unaffected.
-- **Token management requires a browser session, not an API token.** A
-  `read_write` token that could mint siblings and revoke them would make
-  revocation circular. `GET /settings` requires a session too — it previously
-  rendered token metadata to a caller the JSON routes refused.
-- **Docs said agent tokens were "short-lived".** They are not: the `agents` table
-  has no expiry column and `getAgentByToken` performs no expiry check, so an
-  agent token is valid until the agent is deleted. The claim appeared in the
-  README, the getting-started guide, the FAQ, `CURRENT_CAPABILITIES.md`, and the
-  published authentication reference, and would have led an operator to assume a
-  leaked agent token lapsed on its own.
+### Deprecated
+- **The webhook evaluator's literal `secret` field.** It still signs requests
+  for now, and logs a warning each time. When an entry sets both `secret` and
+  `secretRef`, `secretRef` wins and the literal is ignored — never used as a
+  fallback.
 
 ## [0.2.0] - 2026-08-29
 
@@ -801,6 +1531,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes, GitHub import/sync, server-rendered web UI, email and GitHub OAuth authentication,
   API tokens, agent identities, and provenance tracking.
 
-[Unreleased]: https://github.com/stratum-eng/stratum/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/stratum-eng/stratum/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/stratum-eng/stratum/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/stratum-eng/stratum/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/stratum-eng/stratum/releases/tag/v0.1.0
