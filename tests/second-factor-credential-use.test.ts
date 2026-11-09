@@ -481,6 +481,26 @@ describe("the rule is the session's rule", () => {
     }
   });
 
+  it("reads an unrecognised factor as no factor at all", async () => {
+    // A row restored from elsewhere, or written by a newer release.
+    const token = await mintToken(cookies.passkey);
+    raw.prepare("UPDATE api_tokens SET minted_second_factor = 'totp'").run();
+    const odd = await session("usr_alice");
+    raw
+      .prepare("UPDATE sessions SET second_factor = 'totp' WHERE id = ?")
+      .run(await hashToken(odd.slice("stratum_session=".length)));
+    setPolicy("acme", true);
+
+    await expectRefused(await withBearer(ORG_PROJECT, token));
+    expect((await withCookie(ORG_PROJECT, odd)).status).toBe(403);
+    // And it is counted among the credentials the policy refuses.
+    const policy = await withCookie("/api/orgs/acme/security", cookies.bobPasskey);
+    const impact = ((await policy.json()) as { secondFactorImpact: { apiTokens: number } })
+      .secondFactorImpact;
+    expect(impact.apiTokens).toBeGreaterThanOrEqual(1);
+    raw.prepare("DELETE FROM api_tokens WHERE minted_second_factor = 'totp'").run();
+  });
+
   it("turning the policy off restores every credential", async () => {
     const token = await mintToken(cookies.plain);
     setPolicy("acme", true);

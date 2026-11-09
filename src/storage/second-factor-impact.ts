@@ -2,6 +2,7 @@ import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 import { isExpired } from "./api-tokens";
+import { unknownFactorSql } from "./credential-factors";
 
 /**
  * How many live credentials an org's "require a second factor" policy refuses
@@ -46,7 +47,7 @@ const MEMBERS_CTE = `WITH members(user_id) AS (
 /** A credential row's factors do not satisfy the org. Binds the org id once.
  * Mirrors `unmetPolicyOrgsSql`. */
 function unsatisfied(secondFactor: string, ssoOrgId: string): string {
-  return `${secondFactor} IS NULL AND (${ssoOrgId} IS NULL OR ${ssoOrgId} != ?)`;
+  return `${unknownFactorSql(secondFactor)} AND (${ssoOrgId} IS NULL OR ${ssoOrgId} != ?)`;
 }
 
 /**

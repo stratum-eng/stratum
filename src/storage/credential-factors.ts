@@ -43,7 +43,11 @@ export function unmetPolicyOrgsSql(columns: {
   ssoOrgId: string;
 }): string {
   const { userId, secondFactor, ssoOrgId } = columns;
-  return `CASE WHEN ${secondFactor} IS NULL THEN (
+  // "No second factor" is anything but a known kind, not only NULL. A value
+  // this version does not recognise (a restored row, a column written by a
+  // newer release) must not read as a factor: `parseSecondFactor` already
+  // drops it, and if the SQL kept it the unmet set would silently be empty.
+  return `CASE WHEN ${unknownFactorSql(secondFactor)} THEN (
             SELECT group_concat(o.id || ':' || o.slug, ',') FROM orgs o
              WHERE o.require_second_factor = 1
                AND (${ssoOrgId} IS NULL OR o.id != ${ssoOrgId})
@@ -51,6 +55,14 @@ export function unmetPolicyOrgsSql(columns: {
                     OR EXISTS (SELECT 1 FROM org_members m
                                 WHERE m.org_id = o.id AND m.user_id = ${userId}))
           ) END`;
+}
+
+/**
+ * SQL for "this column does not hold a second factor this version knows".
+ * The list is the SQL twin of {@link parseSecondFactor}; keep them in step.
+ */
+export function unknownFactorSql(secondFactor: string): string {
+  return `COALESCE(${secondFactor}, '') NOT IN ('passkey', 'recovery_code')`;
 }
 
 /** `id:slug,id:slug` (ids are `org_<hex>`, slugs are `[a-z0-9-]`, so both

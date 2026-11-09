@@ -35,10 +35,16 @@ info:
     without a second factor (or this org's SSO) gets the same
     `403 SECOND_FACTOR_REQUIRED` on that org's resources, and keeps the rest
     of its access; creating it again from a session that meets the policy
-    restores it. The policy also applies when a credential is minted: a
-    session that has not met it gets `403 SECOND_FACTOR_REQUIRED` from token
-    creation (unless the token is bound to a target outside the policy org),
-    agent creation, legacy-key rotation and OAuth consent.
+    restores it. What is withheld, for a session or a credential, is the
+    access that membership grants. Three things stay open: reading the org's
+    PUBLIC projects, which need no membership; reading the policy
+    (`GET /api/orgs/{slug}/security`); and leaving the org. The policy also
+    applies when a credential is minted: a session that has not met it gets
+    `403 SECOND_FACTOR_REQUIRED` from token creation (unless the token is
+    bound to a target outside the policy org), agent creation and legacy-key
+    rotation. OAuth consent is a browser page and answers differently:
+    `/oauth/authorize` renders an HTML explanation with status `400` and
+    issues no code.
 
     Authentication: most endpoints accept a Stratum API token (user or agent)
     as a `Authorization: Bearer <token>` header. Browser requests may instead be
