@@ -155,6 +155,33 @@ describe("a job that runs to the end", () => {
     expect(await h.machine.tick()).toBeNull();
   });
 
+  it("keeps its slot until the container is actually gone", async () => {
+    const h = harness();
+    await h.begin();
+    // Every teardown fails for a while: the container is still running.
+    h.container.failDestroys = 3;
+    await h.run();
+
+    // It was retried until it worked, and only then was the slot given back.
+    expect(h.container.destroys.filter((reason) => reason === "job finished")).toHaveLength(4);
+    expect(h.container.running).toBe(false);
+    expect(h.control.released).toBe(1);
+    expect(h.storage.data.size).toBe(0);
+  });
+
+  it("does not release its slot while the container will not stop", async () => {
+    const h = harness();
+    await h.begin();
+    h.container.failDestroys = Number.POSITIVE_INFINITY;
+    // Drive it well past the point a job would have finished.
+    let delay: number | null = 0;
+    for (let i = 0; i < 200 && delay !== null; i++) delay = await h.machine.tick();
+
+    expect(h.container.running).toBe(true);
+    expect(h.control.released).toBe(0);
+    expect(delay).not.toBeNull();
+  });
+
   it("runs the steps' own commands, at the repository root, and writes the diff whole", async () => {
     const diff = `diff --git a/big b/big\n${"+x".repeat(1_200_000)}\n`;
     const h = harness({ job: { diff } });

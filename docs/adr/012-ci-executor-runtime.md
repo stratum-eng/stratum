@@ -399,6 +399,14 @@ than the text above. Nothing here reverses a decision.
 
 ### Where the implementation is narrower
 
+- **Slots and the coordinator.** A job keeps its slot until its container is
+  confirmed gone: a failed teardown is retried and the slot is not released
+  while the container still runs. The coordinator does not ask jobs for their
+  state, as the decision above describes. It takes a slot back on its own
+  clock, when the job's wall-clock limit plus a grace period has passed. That
+  bounds a lost job object, but it is a timer and not a confirmation, so a
+  container that outlives both its limit and its teardown can briefly run
+  beside its replacement.
 - **Non-text files.** The change diff is built from files decoded as UTF-8, so
   a change that adds or modifies a binary file cannot be reconstructed. Its
   tree does not verify and its checks are `errored`. Fails closed, as intended,

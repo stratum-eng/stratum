@@ -763,6 +763,16 @@ export class JobMachine {
    */
   private async finish(state: JobState): Promise<number | null> {
     await this.destroyContainer("job finished");
+    if (this.deps.container.running) {
+      // The slot stands for a live container, not for a job believed to be
+      // over (ADR 012). Giving it back now would let another job start beside
+      // this one, and a run of failed teardowns would carry the executor past
+      // its cap. So the slot is kept and the destroy retried until the
+      // container is gone. The coordinator's own clock is the only thing that
+      // can take the slot back sooner, when the job's time plus grace runs out.
+      await this.save(state);
+      return RETRY_INTERVAL_MS;
+    }
     const pastDeadline = this.deps.now() > state.job.deadline;
     if (state.outbox.length > 0 && state.sendFailures < MAX_SEND_FAILURES && !pastDeadline) {
       // Stratum is unreachable. The results are kept and retried; past the

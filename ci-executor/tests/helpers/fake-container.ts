@@ -66,6 +66,8 @@ export class FakeContainer implements JobContainer {
   broken = false;
   /** When set, `start()` throws: a container that cannot be started. */
   failStart = false;
+  /** How many more `destroy()` calls throw and leave the container running. */
+  failDestroys = 0;
 
   /** Say what the step with this agent id (`prepare`, `s0`, `s1`, …) does. */
   script(id: string, script: StepScript): void {
@@ -87,6 +89,10 @@ export class FakeContainer implements JobContainer {
 
   async destroy(reason?: unknown): Promise<void> {
     this.destroys.push(reason);
+    if (this.failDestroys > 0) {
+      this.failDestroys--;
+      throw new Error("the container did not stop");
+    }
     this.events.push("destroy");
     this.running = false;
     this.started = new Map();
