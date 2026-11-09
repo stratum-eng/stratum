@@ -1,0 +1,304 @@
+name: Release Autopilot
+
+# Cuts, merges and publishes a release with nobody in the loop, when there are
+# unreleased changes. See "Autopilot" in docs/developer/releasing.md.
+#
+# Everything here uses GITHUB_TOKEN, and two consequences shape the design:
+#
+#   - Events it raises start no workflows, so its PR gets no PR Checks and its
+#     merge does not trigger ci.yml or release.yml. `main` also requires no
+#     status checks, so nothing outside this file would stop a bad merge. Hence
+#     `verify` gates the exact tree being shipped, and `cut` starts the follow-on
+#     workflows explicitly: workflow_dispatch is the one event that still fires.
+#   - Actions must be allowed to create pull requests (repository settings).
+#
+# Stop it by setting the repository variable RELEASE_AUTOPILOT to `off`.
+
+run-name: ${{ inputs.dry_run && 'Release Autopilot (DRY RUN - ships nothing)' || 'Release Autopilot' }}
+
+on:
+  schedule:
+    - cron: "17 14 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan and run the gates, but open, merge and publish nothing"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-autopilot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    if: >
+      github.repository == 'stratum-eng/stratum' &&
+      (github.event_name != 'schedule' || vars.RELEASE_AUTOPILOT != 'off')
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: write
+    outputs:
+      action: ${{ steps.plan.outputs.action }}
+      version: ${{ steps.plan.outputs.version }}
+      bump: ${{ steps.plan.outputs.bump }}
+      hold: ${{ steps.plan.outputs.hold }}
+      sha: ${{ steps.plan.outputs.sha }}
+      date: ${{ steps.plan.outputs.date }}
+    steps:
+      - name: Checkout the default branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Plan
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          finish() { echo "action=none" >> "$GITHUB_OUTPUT"; echo "$1" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
+
+          # Repair before anything new: a version that never published would
+          # otherwise be buried by the next one, which is how v0.2.0 was lost.
+          LATEST="$(npm run --silent release:latest)"
+          if ! git rev-parse --quiet --verify "refs/tags/v$LATEST^{commit}" > /dev/null ||
+            ! gh release view "v$LATEST" > /dev/null 2>&1; then
+            if [ "$DRY_RUN" = "true" ]; then finish "v$LATEST is unpublished; a real run would retry it."; fi
+            gh workflow run release.yml --ref main -f version="$LATEST"
+            finish "v$LATEST is unpublished, so its publish was retried instead of cutting a new version."
+          fi
+
+          # One of our own PRs left open means an earlier run died before merging,
+          # and it is stale by now, so replace it. Anything held or written by a
+          # person is theirs to finish.
+          OPEN="$(gh pr list --state open --json number,headRefName,author,labels \
+            --jq '[.[] | select(.headRefName | startswith("release/"))]')"
+          if [ "$(jq length <<< "$OPEN")" -gt 0 ]; then
+            if [ "$(jq '[.[] | select(
+                  .author.login != "app/github-actions" or
+                  any(.labels[]; .name == "release-hold"))] | length' <<< "$OPEN")" -gt 0 ]; then
+              finish "A held or hand-opened release PR is open, so nothing was cut."
+            fi
+            if [ "$DRY_RUN" != "true" ]; then
+              # The branch stays: this job can't delete it, and `cut` force-pushes over it.
+              jq -r '.[].number' <<< "$OPEN" | xargs -I{} gh pr close {} \
+                --comment "Stale: an autopilot run did not finish this release. Cutting it again."
+            fi
+          fi
+
+          PLAN="$(npm run --silent release:plan)"
+          if [ "$(jq -r .pending <<< "$PLAN")" != "true" ]; then finish "Nothing unreleased."; fi
+          {
+            echo "action=cut"
+            echo "version=$(jq -r .version <<< "$PLAN")"
+            echo "bump=$(jq -r .bump <<< "$PLAN")"
+            echo "hold=$(jq -r '.hold // ""' <<< "$PLAN")"
+            echo "sha=$(git rev-parse HEAD)"
+            echo "date=$(date -u +%F)"
+          } >> "$GITHUB_OUTPUT"
+          echo "Plan: $PLAN" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # `npm ci` runs dependency lifecycle scripts, so it stays in a read-only job.
+  # `cut` re-derives the same files from the same commit rather than taking an
+  # artifact from here, which a dependency's install script could have altered.
+  verify:
+    name: Verify the release tree
+    needs: plan
+    if: needs.plan.outputs.action == 'cut'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the planned commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Prepare the release
+        env:
+          RELEASE_DATE: ${{ needs.plan.outputs.date }}
+        run: npm run --silent release:prepare -- --date "$RELEASE_DATE"
+
+      - name: Check the release files agree
+        run: npm run --silent release:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test:coverage
+
+  cut:
+    name: Open, merge and publish
+    needs: [plan, verify]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+      issues: write
+    steps:
+      # Credentials persist because this job pushes. It installs nothing, so no
+      # third-party code runs alongside them.
+      - name: Checkout the planned commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Commit and open the PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          BUMP: ${{ needs.plan.outputs.bump }}
+          HOLD: ${{ needs.plan.outputs.hold }}
+          RELEASE_DATE: ${{ needs.plan.outputs.date }}
+          PLANNED_SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # The gates ran on the planned commit, and a merge would combine this
+          # release with whatever has landed since. Stop rather than ship a tree
+          # nothing has gated. In the seconds left before the merge this can't see,
+          # release.yml still gates the merged commit before tagging it.
+          if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$PLANNED_SHA" ]; then
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::main moved after the gates ran, so nothing was cut. The next run starts again."
+            exit 0
+          fi
+
+          npm run --silent release:prepare -- --date "$RELEASE_DATE"
+
+          # This commit merges with no review, so it must be exactly what a
+          # release is expected to touch.
+          UNEXPECTED="$(git status --porcelain | cut -c4- | grep -vE '^(CHANGELOG\.md|package\.json|package-lock\.json|src/version\.ts|changelog\.d/.*)$' || true)"
+          if [ -n "$UNEXPECTED" ]; then
+            echo "::error::The release touched unexpected files: $UNEXPECTED"
+            exit 1
+          fi
+          if [ "$(node -p "require('./package.json').version")" != "$VERSION" ]; then
+            echo "::error::Planned v$VERSION but prepare produced something else"
+            exit 1
+          fi
+
+          BRANCH="release/v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --create "$BRANCH"
+          git add -A CHANGELOG.md package.json package-lock.json src/version.ts changelog.d
+          git commit --quiet -m "chore(release): v$VERSION"
+          # Forced because a run that died before opening its PR leaves this branch
+          # behind with no PR to close, and it would otherwise block every later run.
+          git push --quiet --force --set-upstream origin "$BRANCH"
+
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          BODY="Autopilot cut **v$VERSION** ($BUMP bump). PR Checks do not start on this PR; the gates ran on this exact tree in [this run]($RUN_URL)."
+          if [ -n "$HOLD" ]; then
+            BODY="$BODY
+
+          **Held for a person:** $HOLD. Read the \`CHANGELOG.md\` section in this diff, since it ships verbatim as the release notes. Merging this PR publishes the release."
+          fi
+          URL="$(gh pr create --base main --head "$BRANCH" --title "chore(release): v$VERSION" --body "$BODY")"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$HOLD" ]; then
+            gh label create release-hold --force --color D93F0B \
+              --description "A release that waits for a person to merge it"
+            gh pr edit "$URL" --add-label release-hold
+            echo "::notice::v$VERSION is held for a person: $HOLD. $URL"
+          fi
+
+      - name: Merge
+        if: needs.plan.outputs.hold == '' && steps.pr.outputs.moved != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.pr.outputs.url }}
+          HEAD_SHA: ${{ steps.pr.outputs.head }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          # GitHub computes mergeability after the PR opens, so an immediate
+          # merge can be refused on a PR that is fine a few seconds later.
+          for attempt in 1 2 3 4 5 6; do
+            # Not --delete-branch: that also switches local branches, which can
+            # fail in this shallow checkout after the merge has already happened.
+            if gh pr merge "$URL" --squash --match-head-commit "$HEAD_SHA"; then
+              gh api --method DELETE "repos/$GH_REPO/git/refs/heads/release/v$VERSION" ||
+                echo "::warning::Could not delete release/v$VERSION"
+              exit 0
+            fi
+            echo "Merge attempt $attempt refused; retrying"
+            sleep 15
+          done
+          echo "::error::Could not merge $URL"
+          exit 1
+
+      # These would normally follow from the push to main, but GITHUB_TOKEN's
+      # merge starts nothing. ci.yml keeps staging ahead of production and
+      # carries the new version to the page footer.
+      - name: Start publish and deploy
+        if: needs.plan.outputs.hold == '' && steps.pr.outputs.moved != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -uo pipefail
+          # One failing must not stop the other. A failure still fails this job,
+          # which opens the tracking issue, and the next run retries a publish.
+          FAILED=0
+          gh workflow run release.yml --ref main -f version="$VERSION" || FAILED=1
+          gh workflow run ci.yml --ref main || FAILED=1
+          exit "$FAILED"
+
+  alert:
+    name: Report a blocked release
+    needs: [plan, verify, cut]
+    if: ${{ failure() && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/release-alert.sh open "Release Autopilot"

@@ -86,8 +86,8 @@ end up editing the same lines. Use a [Keep a Changelog](https://keepachangelog.c
 group (`Breaking`, `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`). That text
 becomes the release notes verbatim, so write it for someone deciding whether to upgrade.
 
-Releases are cut from the changelog with `npm run release:pr`, and merging the PR it opens
-publishes the release. Maintainers: see
+Releases are cut from the changelog automatically by the daily **Release Autopilot** workflow.
+A release with `Breaking` or `Removed` entries waits for a maintainer to merge it. See
 [`docs/developer/releasing.md`](docs/developer/releasing.md).
 
 ## Documentation
