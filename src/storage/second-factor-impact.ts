@@ -31,16 +31,22 @@ export interface SecondFactorImpact {
   accountKeys: number;
 }
 
-/** Members of the org, including its owner, whose accounts are live. `?1` is the org id. */
+/**
+ * Members of the org, including its owner, whose accounts are live. Binds the
+ * org id TWICE. Anonymous placeholders, not numbered ones: those are valid in
+ * D1 but are bound differently by the `node:sqlite` of the oldest Node this
+ * project supports, which the tests run on.
+ */
 const MEMBERS_CTE = `WITH members(user_id) AS (
     SELECT u.id FROM users u
      WHERE u.deleting_at IS NULL AND u.disabled_at IS NULL
-       AND (u.id = (SELECT owner_id FROM orgs WHERE id = ?1)
-            OR EXISTS (SELECT 1 FROM org_members m WHERE m.org_id = ?1 AND m.user_id = u.id)))`;
+       AND (u.id = (SELECT owner_id FROM orgs WHERE id = ?)
+            OR EXISTS (SELECT 1 FROM org_members m WHERE m.org_id = ? AND m.user_id = u.id)))`;
 
-/** A credential row's factors do not satisfy org `?1`. Mirrors `unmetPolicyOrgsSql`. */
+/** A credential row's factors do not satisfy the org. Binds the org id once.
+ * Mirrors `unmetPolicyOrgsSql`. */
 function unsatisfied(secondFactor: string, ssoOrgId: string): string {
-  return `${secondFactor} IS NULL AND (${ssoOrgId} IS NULL OR ${ssoOrgId} != ?1)`;
+  return `${secondFactor} IS NULL AND (${ssoOrgId} IS NULL OR ${ssoOrgId} != ?)`;
 }
 
 /**
@@ -58,6 +64,8 @@ export async function countSecondFactorImpact(
   orgId: string,
   orgProjectIds: ReadonlySet<string>,
 ): Promise<Result<SecondFactorImpact, AppError>> {
+  // Two for `MEMBERS_CTE`, one for `unsatisfied`, in the order they appear.
+  const orgIdBinds = [orgId, orgId, orgId];
   try {
     const [tokens, agents, grants, keys] = await Promise.all([
       db
@@ -68,7 +76,7 @@ export async function countSecondFactorImpact(
             WHERE t.purpose = 'api' AND t.revoked_at IS NULL
               AND ${unsatisfied("t.minted_second_factor", "t.minted_sso_org_id")}`,
         )
-        .bind(orgId)
+        .bind(...orgIdBinds)
         .all<{
           user_id: string;
           expires_at: string | null;
@@ -83,7 +91,7 @@ export async function countSecondFactorImpact(
             WHERE a.credential != 'oauth_grant'
               AND ${unsatisfied("a.minted_second_factor", "a.minted_sso_org_id")}`,
         )
-        .bind(orgId)
+        .bind(...orgIdBinds)
         .all<{ user_id: string }>(),
       db
         .prepare(
@@ -93,7 +101,7 @@ export async function countSecondFactorImpact(
             WHERE t.revoked_at IS NULL
               AND ${unsatisfied("t.minted_second_factor", "t.minted_sso_org_id")}`,
         )
-        .bind(orgId)
+        .bind(...orgIdBinds)
         .all<{
           user_id: string;
           refresh_expires_at: string | null;
@@ -106,7 +114,7 @@ export async function countSecondFactorImpact(
              FROM users u JOIN members ON members.user_id = u.id
             WHERE ${unsatisfied("u.token_minted_second_factor", "u.token_minted_sso_org_id")}`,
         )
-        .bind(orgId)
+        .bind(...orgIdBinds)
         .first<{ n: number }>(),
     ]);
 
