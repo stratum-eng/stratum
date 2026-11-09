@@ -3,20 +3,28 @@ name: PR Preview Environment
 on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
+  # Re-runs the cleanup for one closed PR, for previews an earlier cleanup
+  # left behind. Deploys never run from here.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Number of the closed PR whose preview to delete
+        required: true
+        type: number
 
 concurrency:
-  group: pr-preview-${{ github.event.number }}
+  group: pr-preview-${{ github.event.number || inputs.pr_number }}
   cancel-in-progress: false
 
 env:
-  PR_NUMBER: ${{ github.event.number }}
-  PREVIEW_SUBDOMAIN: pr-${{ github.event.number }}
-  DB_NAME: stratum-pr-${{ github.event.number }}
-  WORKER_NAME: stratum-pr-${{ github.event.number }}
+  PR_NUMBER: ${{ github.event.number || inputs.pr_number }}
+  PREVIEW_SUBDOMAIN: pr-${{ github.event.number || inputs.pr_number }}
+  DB_NAME: stratum-pr-${{ github.event.number || inputs.pr_number }}
+  WORKER_NAME: stratum-pr-${{ github.event.number || inputs.pr_number }}
   # Per-PR, like the database: queue names are account-level, and a shared
   # queue would hand one preview's evaluation runs to another preview's
   # consumer, whose D1 has no such change (#412).
-  EVAL_QUEUE_NAME: stratum-evaluations-pr-${{ github.event.number }}
+  EVAL_QUEUE_NAME: stratum-evaluations-pr-${{ github.event.number || inputs.pr_number }}
 
 jobs:
   # =======================================================================
@@ -27,13 +35,36 @@ jobs:
     runs-on: ubuntu-latest
     # Fork PRs never get a preview (see deploy job), so there is nothing to clean up.
     if: >
-      github.event.action == 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
       pull-requests: write
     steps:
+      - name: Refuse a PR that is still open
+        id: guard
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A `number` input still accepts 12.5 or 1e3, and this value names
+          # the resources about to be deleted.
+          if ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::pr_number must be a positive whole number, got '$PR_NUMBER'."
+            exit 1
+          fi
+          STATE=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state --jq .state)
+          if [ "$STATE" = "OPEN" ]; then
+            echo "::error::PR #$PR_NUMBER is open; its preview is live. Close the PR instead."
+            exit 1
+          fi
+          echo "PR #$PR_NUMBER is $STATE"
+
+      # Each deletion runs even if an earlier one failed, so one stuck
+      # resource doesn't strand the rest, but none run past the guard.
       - name: Delete D1 Database
+        if: ${{ !cancelled() && steps.guard.outcome != 'failure' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -65,7 +96,70 @@ jobs:
             echo "Database not found, may have been already deleted"
           fi
 
+      # Cloudflare refuses to delete a Worker that consumes a queue (error
+      # 10064) and refuses to delete a queue that still has a consumer, so the
+      # link has to be removed first. Deleting the Worker does not remove it.
+      - name: Detach Worker from the Evaluation Queue
+        id: queue
+        if: ${{ !cancelled() && steps.guard.outcome != 'failure' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/queues"
+          # The list endpoint pages and documents no name filter, so walk every
+          # page; stopping at the first could miss this PR's queue.
+          find_queue() {
+            local page=1 resp id count per total
+            while [ "$page" -le 50 ]; do
+              resp=$(curl -sf "${API}?page=${page}&per_page=100" \
+                -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || return 1
+              echo "$resp" | jq -e '.success == true and (.result | type == "array")' >/dev/null 2>&1 || return 1
+              id=$(echo "$resp" | jq -r --arg n "$1" '[.result[]? | select(.queue_name == $n) | .queue_id] | first // empty')
+              if [ -n "$id" ]; then echo "$id"; return 0; fi
+              # Done only on evidence the scan is complete: the reported totals
+              # say so, or a short page. Missing metadata keeps paging.
+              count=$(echo "$resp" | jq -r '.result | length')
+              per=$(echo "$resp" | jq -r '.result_info.per_page // empty')
+              total=$(echo "$resp" | jq -r '.result_info.total_count // empty')
+              if [ -n "$per" ] && [ -n "$total" ] && [ "$per" -gt 0 ]; then
+                [ $((page * per)) -ge "$total" ] && return 0
+              fi
+              [ "$count" -lt 100 ] && return 0
+              page=$((page + 1))
+            done
+            return 1
+          }
+          QUEUE_ID=$(find_queue "$EVAL_QUEUE_NAME") || { echo "❌ Could not list queues"; exit 1; }
+          # The delete step reuses this lookup rather than walking the pages again.
+          echo "id=$QUEUE_ID" >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          if [ -z "$QUEUE_ID" ]; then
+            echo "Queue not found, so there is no consumer to remove"
+            exit 0
+          fi
+          CONSUMERS=$(curl -sf "${API}/${QUEUE_ID}/consumers" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || { echo "❌ Could not list consumers"; exit 1; }
+          IDS=$(echo "$CONSUMERS" | jq -r --arg w "$WORKER_NAME" \
+            '.result[]? | select((.script_name // .script // "") == $w) | .consumer_id')
+          if [ -z "$IDS" ]; then
+            echo "$WORKER_NAME is not a consumer of $EVAL_QUEUE_NAME"
+            exit 0
+          fi
+          for ID in $IDS; do
+            RESP=$(curl -s -X DELETE "${API}/${QUEUE_ID}/consumers/${ID}" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+            if [ "$(echo "$RESP" | jq -r '.success // false')" = "true" ]; then
+              echo "✓ Removed consumer $ID"
+            else
+              echo "❌ Failed to remove consumer $ID"
+              echo "Response: $RESP"
+              exit 1
+            fi
+          done
+
       - name: Delete Worker Script
+        if: ${{ !cancelled() && steps.guard.outcome != 'failure' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -80,7 +174,10 @@ jobs:
             echo "✓ Worker deleted"
           else
             ERROR_CODE=$(echo "$DELETE_RESPONSE" | jq -r '.errors[0].code // 0')
-            if [ "$ERROR_CODE" = "10007" ]; then
+            # 10007 and 10090 both mean there is no such Worker: the cleanup
+            # already ran, or this PR (e.g. one opened by a workflow) never got
+            # a preview.
+            if [ "$ERROR_CODE" = "10007" ] || [ "$ERROR_CODE" = "10090" ]; then
               echo "Worker not found, may have been already deleted"
             else
               echo "❌ Failed to delete Worker"
@@ -89,18 +186,20 @@ jobs:
             fi
           fi
 
-      # After the Worker: a queue with a live consumer cannot be deleted, and
-      # deleting the Worker removes its consumer.
+      # Last of the queue's dependants: its consumer was removed above.
       - name: Delete Evaluation Queue
+        if: ${{ !cancelled() && steps.guard.outcome != 'failure' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          QUEUE_ID: ${{ steps.queue.outputs.id }}
+          LOOKED_UP: ${{ steps.queue.outputs.found }}
         run: |
-          echo "Deleting queue: ${{ env.EVAL_QUEUE_NAME }}"
-          LIST=$(curl -sf -X GET \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/queues?name=${{ env.EVAL_QUEUE_NAME }}" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || { echo "❌ Could not list queues"; exit 1; }
-          QUEUE_ID=$(echo "$LIST" | jq -r --arg n "${{ env.EVAL_QUEUE_NAME }}" '[.result[]? | select(.queue_name == $n) | .queue_id] | first // empty')
+          echo "Deleting queue: $EVAL_QUEUE_NAME"
+          if [ "$LOOKED_UP" != "true" ]; then
+            echo "❌ The queue lookup in the detach step failed, so there is no queue ID"
+            exit 1
+          fi
           if [ -z "$QUEUE_ID" ]; then
             echo "Queue not found, may have been already deleted"
             exit 0
@@ -117,6 +216,7 @@ jobs:
           fi
 
       - name: Delete KV Namespace
+        if: ${{ !cancelled() && steps.guard.outcome != 'failure' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -173,13 +273,13 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
+              issue_number: Number(process.env.PR_NUMBER),
               body: `## 🗑️ Preview Environment Deleted
 
             The preview environment for this PR has been cleaned up:
             - ~~https://${{ env.PREVIEW_SUBDOMAIN }}.staging.app.usestratum.dev~~
 
-            All resources (Worker, D1 database, KV namespace) have been destroyed.`
+            All resources (Worker, D1 database, evaluation queue, KV namespace) have been destroyed.`
             });
 
   # =======================================================================
@@ -192,6 +292,7 @@ jobs:
     # deploy can only fail there — and unreviewed fork code shouldn't get a live
     # preview environment anyway. Never convert this workflow to pull_request_target.
     if: >
+      github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
       github.event.pull_request.head.repo.full_name == github.repository
     permissions:
