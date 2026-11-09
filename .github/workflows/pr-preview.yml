@@ -106,9 +106,24 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/queues"
-          LIST=$(curl -sf "${API}?name=${EVAL_QUEUE_NAME}" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || { echo "❌ Could not list queues"; exit 1; }
-          QUEUE_ID=$(echo "$LIST" | jq -r --arg n "$EVAL_QUEUE_NAME" '[.result[]? | select(.queue_name == $n) | .queue_id] | first // empty')
+          # The list endpoint pages and documents no name filter, so walk every
+          # page; stopping at the first could miss this PR's queue.
+          find_queue() {
+            local page=1 resp id per total
+            while [ "$page" -le 50 ]; do
+              resp=$(curl -sf "${API}?page=${page}&per_page=100" \
+                -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || return 1
+              echo "$resp" | jq -e '.success == true' >/dev/null 2>&1 || return 1
+              id=$(echo "$resp" | jq -r --arg n "$1" '[.result[]? | select(.queue_name == $n) | .queue_id] | first // empty')
+              if [ -n "$id" ]; then echo "$id"; return 0; fi
+              per=$(echo "$resp" | jq -r '.result_info.per_page // 0')
+              total=$(echo "$resp" | jq -r '.result_info.total_count // 0')
+              { [ "$per" -le 0 ] || [ $((page * per)) -ge "$total" ]; } && return 0
+              page=$((page + 1))
+            done
+            return 1
+          }
+          QUEUE_ID=$(find_queue "$EVAL_QUEUE_NAME") || { echo "❌ Could not list queues"; exit 1; }
           if [ -z "$QUEUE_ID" ]; then
             echo "Queue not found, so there is no consumer to remove"
             exit 0
@@ -168,17 +183,32 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          echo "Deleting queue: ${{ env.EVAL_QUEUE_NAME }}"
-          LIST=$(curl -sf -X GET \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/queues?name=${{ env.EVAL_QUEUE_NAME }}" \
-            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || { echo "❌ Could not list queues"; exit 1; }
-          QUEUE_ID=$(echo "$LIST" | jq -r --arg n "${{ env.EVAL_QUEUE_NAME }}" '[.result[]? | select(.queue_name == $n) | .queue_id] | first // empty')
+          echo "Deleting queue: $EVAL_QUEUE_NAME"
+          API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/queues"
+          # The list endpoint pages and documents no name filter, so walk every
+          # page; stopping at the first could miss this PR's queue.
+          find_queue() {
+            local page=1 resp id per total
+            while [ "$page" -le 50 ]; do
+              resp=$(curl -sf "${API}?page=${page}&per_page=100" \
+                -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}") || return 1
+              echo "$resp" | jq -e '.success == true' >/dev/null 2>&1 || return 1
+              id=$(echo "$resp" | jq -r --arg n "$1" '[.result[]? | select(.queue_name == $n) | .queue_id] | first // empty')
+              if [ -n "$id" ]; then echo "$id"; return 0; fi
+              per=$(echo "$resp" | jq -r '.result_info.per_page // 0')
+              total=$(echo "$resp" | jq -r '.result_info.total_count // 0')
+              { [ "$per" -le 0 ] || [ $((page * per)) -ge "$total" ]; } && return 0
+              page=$((page + 1))
+            done
+            return 1
+          }
+          QUEUE_ID=$(find_queue "$EVAL_QUEUE_NAME") || { echo "❌ Could not list queues"; exit 1; }
           if [ -z "$QUEUE_ID" ]; then
             echo "Queue not found, may have been already deleted"
             exit 0
           fi
           DELETE_RESPONSE=$(curl -s -X DELETE \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/queues/${QUEUE_ID}" \
+            "${API}/${QUEUE_ID}" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
           if [ "$(echo "$DELETE_RESPONSE" | jq -r '.success // false')" = "true" ]; then
             echo "✓ Queue deleted"
