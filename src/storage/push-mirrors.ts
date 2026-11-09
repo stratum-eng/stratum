@@ -185,11 +185,11 @@ export async function mirrorTargetsRepo(
 ): Promise<Result<boolean, AppError>> {
   const mirror = await getPushMirror(db, logger, projectId);
   if (!mirror.success) return mirror;
+  const target = mirror.data;
+  if (target === null || !target.enabled) return ok(false);
   return ok(
-    mirror.data !== null &&
-      mirror.data.enabled &&
-      mirror.data.repoOwner.toLowerCase() === owner.toLowerCase() &&
-      mirror.data.repoName.toLowerCase() === repo.toLowerCase(),
+    target.repoOwner.toLowerCase() === owner.toLowerCase() &&
+      target.repoName.toLowerCase() === repo.toLowerCase(),
   );
 }
 
