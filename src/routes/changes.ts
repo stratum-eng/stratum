@@ -690,9 +690,35 @@ app.post("/changes/:id/merge", async (c) => {
       );
     }
 
-    if (mergePolicy.merge?.requireFreshBase && change.baseSha !== undefined) {
+    if (mergePolicy.merge?.requireFreshBase) {
+      // Fails closed both ways it used to skip (#415, ADR 012). A project that
+      // gates on CI relies on this rule to mean "what merges is what was
+      // tested": checks run against base + change, so a change with no
+      // recorded base, or a head nobody could read, has no such guarantee —
+      // and "could not check" must not be read as "fresh".
+      if (change.baseSha === undefined) {
+        return c.json(
+          {
+            error:
+              "Change has no recorded base, so its freshness cannot be verified; re-evaluate the change",
+            code: "STALE_BASE",
+          },
+          409,
+        );
+      }
       const currentHead = await resolveProjectHead(c.env, project, logger);
-      if (currentHead !== null && currentHead !== change.baseSha) {
+      if (currentHead === null) {
+        return c.json(
+          {
+            error:
+              "Could not read the project's current head to verify the change's base is fresh; try again",
+            code: "BASE_UNVERIFIABLE",
+            baseSha: change.baseSha,
+          },
+          503,
+        );
+      }
+      if (currentHead !== change.baseSha) {
         return c.json(
           {
             error: "Change base is stale: the project advanced since this change was evaluated",
@@ -1190,9 +1216,10 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
         if (!protection.data.allowed) return { id, skip: "blocked by branch protection" };
         if (mergePolicy.merge?.requireFreshBase === true) {
           const currentHead = await headPromise;
-          if (currentHead !== null && change.baseSha !== currentHead) {
-            return { id, skip: "stale base" };
-          }
+          // An unreadable head skips the change rather than merging it
+          // unchecked — the same fail-closed rule as the single-merge path.
+          if (currentHead === null) return { id, skip: "base freshness could not be verified" };
+          if (change.baseSha !== currentHead) return { id, skip: "stale base" };
         }
       }
       return { id, change };
@@ -1790,6 +1817,7 @@ app.post("/changes/:id/evaluate", async (c) => {
     diff,
     baseSha: baseOid,
     headSha: evaluatedSha,
+    headTreeSha: evaluatedTreeOid,
     requestOrigin: new URL(c.req.url).origin,
   });
 

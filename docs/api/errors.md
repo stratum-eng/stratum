@@ -113,8 +113,12 @@ codes are in the [OpenAPI specification](openapi.yml).
 - `REVIEW_STALE` — `409`; the change moved on (its evaluation finished or was
   re-run, or its status changed) between loading it and recording the
   approval. Nothing was recorded: reload the change and review it again
-- `STALE_BASE` — the change's recorded base is behind the project HEAD
-  (`merge.requireFreshBase`); re-evaluate on the new base
+- `STALE_BASE` — the change's recorded base is behind the project HEAD, or
+  the change has no recorded base (`merge.requireFreshBase`); re-evaluate on
+  the new base
+- `BASE_UNVERIFIABLE` — `503`; under `merge.requireFreshBase` the project HEAD
+  could not be read, so the change's base could not be checked. The merge is
+  refused rather than allowed unverified; retry
 - `STALE_WORKSPACE` — the workspace advanced after evaluation; the merge is
   rejected so unevaluated commits can never land
 - `STALE_PROJECT` — `409`; the project's default branch advanced between the
@@ -152,6 +156,12 @@ codes are in the [OpenAPI specification](openapi.yml).
   policy no longer declares
 - `CHECK_DISPATCH_FAILED` — `502`; a re-run was created but the runner could
   not be reached. The response carries the new run, already `errored`
+- `CHECK_HAS_NO_LOG` — `404`; a log was asked for a check run reported by a
+  project's own runner. Only a first-party CI step has a log on Stratum
+- `CHECK_LOG_NOT_FOUND` — `404`; the CI executor holds no log for this check
+  run: the step has not started, never ran, or its log has expired
+- `CI_EXECUTOR_UNAVAILABLE` — `502` when the instance's CI executor could not
+  be reached or refused the request, `503` when the instance has none
 - `TARGET_DELETING` — `409`; the project (or its owner) is being deleted
 - `NOT_REDRIVABLE` — `409`; the deletion job is not in an incomplete state
 - `IMPORT_IN_PROGRESS` — `409`; the project's import has not finished, so the

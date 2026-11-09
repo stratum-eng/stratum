@@ -33,6 +33,7 @@
     ["/guides/issues/", "The built-in issue tracker"],
     ["/guides/ci-integration/", "Bring your own CI via the webhook evaluator"],
     ["/guides/checks/", "Check runs: asynchronous per-job CI results and merge.requiredChecks"],
+    ["/guides/ci/", "First-party CI: .stratum/ci.yaml steps run in a fresh container and gate the merge"],
     ["/guides/webhook-executor/", "Running a webhook evaluator executor safely"],
     ["/guides/deployments/", "Post-merge deploys to Cloudflare and Vercel"],
     ["/guides/cli/", "The Stratum CLI — the change flow from the terminal"],

@@ -179,6 +179,7 @@ export default defineConfig({
             { label: "Issues", slug: "guides/issues" },
             { label: "CI integration", slug: "guides/ci-integration" },
             { label: "Check runs", slug: "guides/checks" },
+            { label: "First-party CI", slug: "guides/ci" },
             { label: "Webhook executor safety", slug: "guides/webhook-executor" },
             { label: "Deployments", slug: "guides/deployments" },
             { label: "CLI", slug: "guides/cli" },

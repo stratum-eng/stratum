@@ -229,6 +229,7 @@ export async function runEvaluationJob(
     diff,
     baseSha: baseOid,
     headSha: evaluatedSha,
+    headTreeSha: evaluatedTreeOid,
     ...(options.requestOrigin !== undefined ? { requestOrigin: options.requestOrigin } : {}),
   });
 

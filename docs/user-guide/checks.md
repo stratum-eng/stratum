@@ -120,6 +120,7 @@ runs with new ids, and ends any still-pending runs from before.
   "project": "@acme/api",
   "baseSha": "9c1e…",
   "headSha": "4a7d…",
+  "headTreeSha": "e21b…",
   "diff": "diff --git a/src/app.ts b/src/app.ts\n…",
   "checkRunIds": { "lint": "chk_51c0…", "test": "chk_a93e…" },
   "callbackUrl": "https://app.usestratum.dev/api/checks",
@@ -134,6 +135,7 @@ runs with new ids, and ends any still-pending runs from before.
 | `project` | The project, as `@namespace/slug`. |
 | `baseSha` | The commit `diff` was computed against. |
 | `headSha` | The evaluated revision. Echo it back in every report. |
+| `headTreeSha` | The git **tree** id of `headSha`: what checking out `baseSha` and applying `diff` must produce. See [Verifying what you built](#verifying-what-you-built). |
 | `diff` | Unified diff of `baseSha..headSha`. |
 | `checkRunIds` | Check name → check run id, for exactly the checks this request asks for. A re-run of one check carries only that one. |
 | `callbackUrl` | Report to `<callbackUrl>/<checkRunId>`. |
@@ -156,6 +158,24 @@ To apply the change, check out `baseSha` and apply `diff`, exactly as for the
 webhook evaluator — see [Wiring your CI to the contract](ci-integration.md#wiring-your-ci-to-the-contract)
 and [Running a Webhook Evaluator Executor Safely](webhook-executor.md). The
 diff is untrusted code; everything in that guide applies to a check runner.
+
+### Verifying what you built
+
+A runner does not receive the change's head commit; it rebuilds it from
+`baseSha` and `diff`. `headTreeSha` lets it prove the rebuild is the revision
+Stratum evaluated before it runs anything:
+
+```bash
+git checkout --detach "$BASE_SHA"
+git apply --index change.diff
+test "$(git write-tree)" = "$HEAD_TREE_SHA" || exit 1   # not the evaluated tree
+```
+
+The diff is written to be applied: it carries missing final newlines, empty
+files, executable bits and symlinks. What it cannot carry is a file that is not
+UTF-8 text. A change that adds or modifies a binary file does not reproduce
+its tree, and a runner that checks — as the [first-party executor](ci.md) does —
+must fail such a run rather than test something else.
 
 ## The callback (your runner → Stratum)
 
@@ -235,6 +255,10 @@ never read as a pass.
 
 ## The merge gate
 
+Steps declared in [`.stratum/ci.yaml`](ci.md) are required checks without
+being listed: see [First-party CI](ci.md#the-merge-gate). Everything below
+applies to them and to the names in `merge.requiredChecks` alike.
+
 `merge.requiredChecks` is enforced with the other merge protections, on both
 `POST /api/changes/:id/merge` and the batch merge. For each required name
 Stratum reads the **newest run of that check for the change's evaluated
@@ -294,6 +318,9 @@ re-evaluating a change, it is refused to agent tokens. It is also refused when:
 
 A re-run does not pick up new commits and cannot be used to carry a result to
 code that was never evaluated.
+
+Re-running a [first-party CI](ci.md) step re-runs the **whole job**: its steps
+share one checkout, so every step gets a new run.
 
 ## Seeing check runs
 
@@ -395,7 +422,8 @@ before you write it.
 ## Limits and what is not here yet
 
 - Check runs report a status, a summary and a link. There are no log uploads,
-  annotations or artifacts.
+  annotations or artifacts for a runner of your own; a
+  [first-party CI](ci.md) step has a log, served by Stratum.
 - Stratum does not cancel work on the runner. A run that has been replaced
   learns of it from the `409` on its next report.
 - There is no event or outbound webhook when a check finishes; poll the API or
@@ -406,6 +434,7 @@ before you write it.
 
 ## See also
 
+- [First-party CI](ci.md) — the same check runs, executed by Stratum's own executor from `.stratum/ci.yaml`
 - [CI Integration (Bring Your Own CI)](ci-integration.md) — the synchronous webhook evaluator, and what runs code where
 - [Running a Webhook Evaluator Executor Safely](webhook-executor.md)
 - [Changes API: check runs](../api/endpoints/changes.md#check-runs)

@@ -1,6 +1,7 @@
 import type { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import type { Result } from "../utils/result";
+import type { CiConfig } from "./ci-config";
 
 export interface EvalResult {
   score: number;
@@ -117,6 +118,12 @@ export interface EvalPolicy {
    * as fail-closed (blocks) rather than silently running on the default, so a
    * typo in a stricter policy can't quietly downgrade governance. */
   configError?: string;
+  /**
+   * The base branch's `.stratum/ci.yaml`, validated (#415). Present only when
+   * the file exists and is usable; an unusable one sets `configError` instead.
+   * Never taken from the policy file itself — `loadPolicy` attaches it.
+   */
+  ci?: CiConfig;
   /**
    * Post-merge deploys declared under `deploys:`, after sanitization. Only
    * entries that passed every rule in `sanitizeDeploys` appear here; anything

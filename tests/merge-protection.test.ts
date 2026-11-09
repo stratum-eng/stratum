@@ -5,6 +5,7 @@ import { checkMergeProtection, requiredEvaluatorReasons } from "../src/merge/pro
 import { readFileFromRepo } from "../src/storage/git-ops";
 import type { Change } from "../src/types";
 import type { Logger } from "../src/utils/logger";
+import { repoWithFiles } from "./helpers/repo-files";
 
 vi.mock("../src/storage/git-ops", () => ({
   readFileFromRepo: vi.fn(),
@@ -423,17 +424,18 @@ describe("policy loader merge rules", () => {
   });
 
   it("parses well-formed merge protection from policy.yaml", async () => {
-    vi.mocked(readFileFromRepo).mockResolvedValueOnce({
-      success: true,
-      data: [
-        "evaluators:",
-        "  - type: diff",
-        "merge:",
-        "  requiredApprovals: 2",
-        "  requiredEvaluators: [secret_scan, diff]",
-        "  allowForce: false",
-      ].join("\n"),
-    });
+    vi.mocked(readFileFromRepo).mockImplementation(
+      repoWithFiles({
+        ".stratum/policy.yaml": [
+          "evaluators:",
+          "  - type: diff",
+          "merge:",
+          "  requiredApprovals: 2",
+          "  requiredEvaluators: [secret_scan, diff]",
+          "  allowForce: false",
+        ].join("\n"),
+      }),
+    );
 
     const policy = await loadPolicy("remote", "token", mockLogger);
     expect(policy.merge).toEqual({
@@ -444,17 +446,18 @@ describe("policy loader merge rules", () => {
   });
 
   it("drops malformed merge fields", async () => {
-    vi.mocked(readFileFromRepo).mockResolvedValueOnce({
-      success: true,
-      data: [
-        "evaluators:",
-        "  - type: diff",
-        "merge:",
-        "  requiredApprovals: -3",
-        "  requiredEvaluators: [1, 2]",
-        "  allowForce: maybe",
-      ].join("\n"),
-    });
+    vi.mocked(readFileFromRepo).mockImplementation(
+      repoWithFiles({
+        ".stratum/policy.yaml": [
+          "evaluators:",
+          "  - type: diff",
+          "merge:",
+          "  requiredApprovals: -3",
+          "  requiredEvaluators: [1, 2]",
+          "  allowForce: maybe",
+        ].join("\n"),
+      }),
+    );
 
     const policy = await loadPolicy("remote", "token", mockLogger);
     expect(policy.merge).toBeUndefined();

@@ -20,6 +20,7 @@ vi.mock("../src/storage/git-ops", () => ({
 }));
 
 import { readFileFromRepo } from "../src/storage/git-ops";
+import { repoWithFiles } from "./helpers/repo-files";
 const mockReadFileFromRepo = vi.mocked(readFileFromRepo);
 
 /** The one reason string for a single rejected entry. */
@@ -380,7 +381,9 @@ describe("loadPolicy — deploys wiring", () => {
 
   /** Loads `config` as the policy file. */
   async function loadConfig(config: unknown): Promise<EvalPolicy> {
-    mockReadFileFromRepo.mockResolvedValue({ success: true, data: JSON.stringify(config) });
+    mockReadFileFromRepo.mockImplementation(
+      repoWithFiles({ ".stratum/policy.yaml": JSON.stringify(config) }),
+    );
     return loadPolicy("https://repo.example.com", "tok", mockLogger);
   }
 

@@ -376,6 +376,29 @@ export interface Env {
    * Settings → Security. Without it, hashes are user-bound SHA-256.
    */
   RECOVERY_CODE_PEPPER?: string;
+  /**
+   * Base URL of this instance's first-party CI executor (#415), the separate
+   * Worker in `ci-executor/` — e.g. `https://ci.example.com`. Optional: without
+   * an executor, a project that has a `.stratum/ci.yaml` gets its checks
+   * `errored` with a summary naming this setting, and its merges stay blocked.
+   * Must be https (http is accepted for localhost only).
+   */
+  CI_EXECUTOR_URL?: string;
+  /**
+   * Shared secret between this Worker and the CI executor: signs every job
+   * dispatched to it, verifies every result it reports, and signs log
+   * fetches. At least 32 characters; set the SAME value on both Workers with
+   * `wrangler secret put CI_EXECUTOR_SECRET`. It is the instance's, not a
+   * project's — no project secret can stand in for it.
+   */
+  CI_EXECUTOR_SECRET?: string;
+  /**
+   * Optional service binding to the executor Worker. When bound, jobs and log
+   * fetches go over it instead of the public network — required when the
+   * executor is routed on this Worker's own zone, where a global `fetch()`
+   * would not reach it.
+   */
+  CI_EXECUTOR?: Fetcher;
   /** Master key for the per-project deploy secret store: provider credentials
    * are AES-GCM encrypted under a key derived from it. Optional because a
    * self-hoster who never deploys never needs one — but a project that HAS

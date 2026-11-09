@@ -2,6 +2,7 @@ import YAML from "yaml";
 import { sanitizeDeploys } from "../deploy/config";
 import { readFileFromRepo } from "../storage/git-ops";
 import { type Logger, defaultLogger } from "../utils/logger";
+import { CI_CONFIG_PATH, type CiConfig, ciStepNames, parseCiConfig } from "./ci-config";
 import {
   CHECK_NAME_PATTERN,
   CHECK_NAME_RULE,
@@ -38,8 +39,16 @@ const DEFAULT_POLICY: EvalPolicy = {
  * altering the gate itself, so the merge path treats it specially (SA-3): such a
  * change requires a human approval and cannot be force-merged, so a writer can't
  * silently relax protection for later changes.
+ *
+ * `.stratum/ci.yaml` is one of them because every step it lists is a required
+ * check by default (#415): dropping a step, or marking it optional, relaxes
+ * the gate exactly as editing `merge.requiredChecks` would.
  */
-export const PROTECTED_CONFIG_FILES = [".stratum/policy.yaml", "stratum.config.json"] as const;
+export const PROTECTED_CONFIG_FILES = [
+  ".stratum/policy.yaml",
+  "stratum.config.json",
+  CI_CONFIG_PATH,
+] as const;
 
 /**
  * Most `evaluators:` entries one policy file may declare.
@@ -77,6 +86,8 @@ const MAX_LLM_ENTRIES = 1;
  */
 const NO_PROVIDERS: LlmProviderCatalog = new Map();
 
+const NO_EXTERNAL_CHECKS: ReadonlySet<string> = new Set();
+
 /** Does a unified diff (git-style `diff --git a/… b/…` headers) modify a
  *  protected merge-protection config file? */
 export function diffTouchesProtectedConfig(diff: string): boolean {
@@ -88,8 +99,43 @@ export type PolicyParse =
   | { status: "ok"; policy: EvalPolicy }
   | { status: "malformed"; reason: string };
 
-/** `PolicyParse` plus the one outcome only a *fetch* can produce. */
-type PolicyLoad = PolicyParse | { status: "absent" };
+/** What reading one file off the base branch produced. */
+type BaseFileRead =
+  | { status: "found"; content: string }
+  /** The repository was read and the file is not in it. */
+  | { status: "missing" }
+  /** The read itself failed, so nothing is known about the file. */
+  | { status: "failed"; reason: string };
+
+/**
+ * Read one config file from the base branch, keeping "it is not there" apart
+ * from "the read failed". `readFileFromRepo` reports a missing file as
+ * `FS_ERROR` after a clone that worked; anything else is the clone.
+ */
+async function readBaseFile(
+  remote: string,
+  token: string,
+  path: string,
+  logger: Logger,
+  branch: string,
+): Promise<BaseFileRead> {
+  try {
+    const result = await readFileFromRepo(remote, token, path, logger, branch);
+    if (!result.success) {
+      // `FS_ERROR` is what a successful clone without the file answers;
+      // `NOT_FOUND` says the same thing in so many words.
+      const code = (result.error as { code?: unknown }).code;
+      if (code === "FS_ERROR" || code === "NOT_FOUND") return { status: "missing" };
+      return { status: "failed", reason: result.error.message };
+    }
+    if (result.data === null || result.data === undefined) return { status: "missing" };
+    return { status: "found", content: result.data };
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    logger.warn("Config file read threw", { path, error: reason });
+    return { status: "failed", reason };
+  }
+}
 
 export async function loadPolicy(
   remote: string,
@@ -100,33 +146,119 @@ export async function loadPolicy(
    * none are configured, so any policy naming one fails closed. */
   providers: LlmProviderCatalog = NO_PROVIDERS,
 ): Promise<EvalPolicy> {
-  const yaml = await readAndParsePolicy(
-    remote,
-    token,
-    ".stratum/policy.yaml",
-    "yaml",
-    logger,
-    branch,
-    providers,
-  );
-  if (yaml.status === "ok") return yaml.policy;
-  if (yaml.status === "malformed")
-    return malformedPolicy(".stratum/policy.yaml", yaml.reason, logger);
+  // Started together because each read is its own clone; the policy read is
+  // started FIRST so it stays the first repository read a caller observes.
+  const yamlRead = readBaseFile(remote, token, ".stratum/policy.yaml", logger, branch);
+  const ciRead = readBaseFile(remote, token, CI_CONFIG_PATH, logger, branch);
+  const [yamlFile, ciFile] = await Promise.all([yamlRead, ciRead]);
 
-  const json = await readAndParsePolicy(
-    remote,
-    token,
-    "stratum.config.json",
-    "json",
-    logger,
-    branch,
-    providers,
-  );
-  if (json.status === "ok") return json.policy;
-  if (json.status === "malformed")
-    return malformedPolicy("stratum.config.json", json.reason, logger);
+  // The CI file is parsed before the policy because the policy's
+  // `merge.requiredChecks` may name a CI step, and the parser refuses a name
+  // nothing declares.
+  const ci = ciFile.status === "found" ? await parseCiConfig(ciFile.content) : undefined;
+  // `null` switches the "requiredChecks names an undeclared check" refusal
+  // off: with a CI file that is unreadable or invalid the step names are
+  // unknown, and reporting a second, derived error would bury the real one.
+  const stepNames: ReadonlySet<string> | null =
+    ci === undefined
+      ? ciFile.status === "failed"
+        ? null
+        : new Set()
+      : ci.status === "ok"
+        ? new Set(ciStepNames(ci.config))
+        : null;
 
-  return DEFAULT_POLICY;
+  let repositoryReadable = yamlFile.status !== "failed";
+  let policy: EvalPolicy | undefined;
+  if (yamlFile.status === "found") {
+    const parsed = parsePolicyContent(yamlFile.content, "yaml", logger, providers, stepNames);
+    policy =
+      parsed.status === "ok"
+        ? parsed.policy
+        : malformedPolicy(".stratum/policy.yaml", parsed.reason, logger);
+  } else {
+    const jsonFile = await readBaseFile(remote, token, "stratum.config.json", logger, branch);
+    repositoryReadable = repositoryReadable || jsonFile.status !== "failed";
+    if (jsonFile.status === "found") {
+      const parsed = parsePolicyContent(jsonFile.content, "json", logger, providers, stepNames);
+      policy =
+        parsed.status === "ok"
+          ? parsed.policy
+          : malformedPolicy("stratum.config.json", parsed.reason, logger);
+    }
+  }
+  // A failed policy read is still treated as "no policy file", as it always
+  // has been — the log line is the only trace of it.
+  if (yamlFile.status === "failed") {
+    logger.warn("Policy load failed; treating as absent", {
+      path: ".stratum/policy.yaml",
+      error: yamlFile.reason,
+    });
+  }
+
+  const base: EvalPolicy = policy ?? { ...DEFAULT_POLICY, evaluators: [{ type: "diff" }] };
+  return attachCiConfig(base, ciFile, ci, repositoryReadable, logger);
+}
+
+/**
+ * Put the base branch's CI steps on the policy, or the reason they could not be
+ * read on it as a `configError`.
+ *
+ * A CI file that is present but unusable fails the merge gate closed, like a
+ * malformed policy file: every step in it was a required check, and "no usable
+ * file" must not quietly become "no required checks". So does a read that
+ * failed while the same repository answered for the policy file — that is a
+ * blip on one read, not a repository with no CI. When NOTHING could be read
+ * the old rule stands (treated as absent), because that is also what an empty
+ * repository looks like and it has to stay usable.
+ */
+function attachCiConfig(
+  policy: EvalPolicy,
+  file: BaseFileRead,
+  parsed: Awaited<ReturnType<typeof parseCiConfig>> | undefined,
+  repositoryReadable: boolean,
+  logger: Logger,
+): EvalPolicy {
+  const blocked = (reason: string): EvalPolicy => {
+    logger.error("CI configuration unusable — failing merge gate closed", undefined, {
+      path: CI_CONFIG_PATH,
+      reason,
+    });
+    // A policy-file error, when there is one, is the one to show first.
+    return policy.configError !== undefined ? policy : { ...policy, configError: reason };
+  };
+
+  if (file.status === "missing") return policy;
+  if (file.status === "failed") {
+    if (!repositoryReadable) {
+      logger.warn("CI configuration load failed; treating as absent", { error: file.reason });
+      return policy;
+    }
+    return blocked(
+      `CI configuration ${CI_CONFIG_PATH} could not be read from the base branch; merges are blocked until it can be.`,
+    );
+  }
+  if (parsed === undefined || parsed.status === "malformed") {
+    const reason = parsed?.status === "malformed" ? parsed.reason : "unreadable";
+    return blocked(
+      `CI configuration ${CI_CONFIG_PATH} is present but invalid (${reason}); merges are blocked until it is fixed.`,
+    );
+  }
+
+  const ci: CiConfig = parsed.config;
+  const declared = declaredCheckNames(policy.evaluators).names;
+  const clash = ciStepNames(ci).find((name) => declared.has(name));
+  if (clash !== undefined) {
+    return blocked(
+      `CI configuration ${CI_CONFIG_PATH} declares a step named '${clash}', which a 'checks' evaluator in the policy file also declares; a check name must belong to exactly one of them. Merges are blocked until one is renamed.`,
+    );
+  }
+  if (declared.size + ci.steps.length > MAX_CHECK_NAMES) {
+    return blocked(
+      `CI configuration ${CI_CONFIG_PATH} and the policy file together declare ${declared.size + ci.steps.length} check names; at most ${MAX_CHECK_NAMES} are allowed. Merges are blocked until that is fixed.`,
+    );
+  }
+  return { ...policy, ci };
 }
 
 /**
@@ -161,7 +293,7 @@ function malformedPolicy(path: string, reason: string, logger: Logger): EvalPoli
 /**
  * Parse and sanitize the bytes of a policy file.
  *
- * Split out of `readAndParsePolicy` so parsing is separable from fetching: the
+ * Split out of `loadPolicy` so parsing is separable from fetching: the
  * deploy runner reads the tree *pinned at a merge commit* and must parse the
  * policy out of those bytes. Re-reading via `loadPolicy` would take the branch
  * tip instead, letting a newer policy apply to an older tree.
@@ -173,6 +305,15 @@ export function parsePolicyContent(
   format: "json" | "yaml",
   logger: Logger = defaultLogger,
   providers: LlmProviderCatalog = NO_PROVIDERS,
+  /**
+   * Check names declared OUTSIDE this file — the steps of the base branch's
+   * `.stratum/ci.yaml` — which `merge.requiredChecks` may therefore name.
+   * `null` means the caller cannot know them (the deploy runner parses a
+   * policy out of a pinned tree and never reads the CI file), and turns the
+   * "names an undeclared check" refusal off rather than reject a policy for
+   * naming a step this parse was never shown.
+   */
+  externalCheckNames: ReadonlySet<string> | null = NO_EXTERNAL_CHECKS,
 ): PolicyParse {
   let parsed: unknown;
   try {
@@ -208,6 +349,10 @@ export function parsePolicyContent(
       // reference. Both are rebuilt further down.
       deploys: _rawDeploys,
       deployRejections: _rawRejections,
+      // `ci` is never read from a policy file. It is attached by `loadPolicy`
+      // from `.stratum/ci.yaml` after validation; a `ci:` key written here
+      // would otherwise ride the spread onto the policy unvalidated.
+      ci: _rawCi,
       ...policy
     } = {
       ...DEFAULT_POLICY,
@@ -288,9 +433,12 @@ export function parsePolicyContent(
     // A required check nothing dispatches could never be satisfied, so the
     // merge is blocked either way. Saying so here names the typo instead of
     // leaving every change waiting on a check that "has not been reported".
-    const undeclared = (merge?.requiredChecks ?? []).filter(
-      (name) => !declaredChecks.names.has(name),
-    );
+    const undeclared =
+      externalCheckNames === null
+        ? []
+        : (merge?.requiredChecks ?? []).filter(
+            (name) => !declaredChecks.names.has(name) && !externalCheckNames.has(name),
+          );
     if (undeclared.length > 0) {
       return {
         status: "malformed",
@@ -327,35 +475,6 @@ export function parsePolicyContent(
       reason,
     });
     return { status: "malformed", reason };
-  }
-}
-
-async function readAndParsePolicy(
-  remote: string,
-  token: string,
-  path: string,
-  format: "json" | "yaml",
-  logger: Logger,
-  branch = "main",
-  providers: LlmProviderCatalog = NO_PROVIDERS,
-): Promise<PolicyLoad> {
-  try {
-    const contentResult = await readFileFromRepo(remote, token, path, logger, branch);
-    if (!contentResult.success) return { status: "absent" };
-
-    const content = contentResult.data;
-    if (content === null || content === undefined) return { status: "absent" };
-
-    return parsePolicyContent(content, format, logger, providers);
-  } catch (e) {
-    // A transient repo-read blip — treat as absent so it doesn't block every
-    // merge. Sanitization failures cannot reach here; `parsePolicyContent`
-    // handles them itself and fails closed.
-    logger.warn("Policy load failed; treating as absent", {
-      path,
-      error: e instanceof Error ? e.message : String(e),
-    });
-    return { status: "absent" };
   }
 }
 
@@ -661,7 +780,7 @@ export function sanitizeLlmConfig(
  * Validate one entry of the user-supplied `evaluators` array.
  *
  * Returns null for anything that is not an object with a string `type`. The
- * array guard in `readAndParsePolicy` only checks `Array.isArray`, so entries
+ * array guard in `parsePolicyContent` only checks `Array.isArray`, so entries
  * like `null` or `"sandbox"` reach `buildEvaluators` and throw on `.type`
  * access — dropping them here is what keeps a typo in a policy file from
  * crashing every change on the project.

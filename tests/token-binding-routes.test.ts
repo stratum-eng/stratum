@@ -802,6 +802,10 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   // callback (`POST /api/checks/:id`) is NOT here: it sits outside the bound
   // prefixes, so a bound token is refused before routing.
   "GET /api/changes/:id/checks",
+  // #415: a first-party CI step's log. Same authorization as the listing
+  // (canReadProject with the request's binding), and the check must belong to
+  // the change that was authorized.
+  "GET /api/changes/:id/checks/:checkId/log",
   "GET /api/changes/:id/comments",
   "GET /api/changes/:id/reviews",
   "GET /api/deployments/:id",

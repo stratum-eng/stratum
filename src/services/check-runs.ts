@@ -20,8 +20,16 @@
  * revision to another — and holding the signing key for one project's checks
  * says nothing about any other project's, because the key is resolved from the
  * project the row belongs to.
+ *
+ * A project that has a `.stratum/ci.yaml` on its base branch gets a second
+ * kind of dispatch (#415): one job, for every step in that file, sent to the
+ * instance's own CI executor. Its check runs are the same rows and the same
+ * callback; what differs is the key (the instance's, never a project's) and
+ * that the executor is handed a read token for the repository. See
+ * `./ci-executor.ts`.
  */
 import { loadPolicy } from "../evaluation";
+import { type CiConfig, ciStepNames } from "../evaluation/ci-config";
 import {
   DEFAULT_CHECK_DISPATCH_TIMEOUT_MS,
   MAX_PHASE_TIMEOUT_MS,
@@ -57,6 +65,13 @@ import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 import { validateWebhookUrl } from "../utils/validation";
+import {
+  CI_EXECUTOR_SECRET_REF,
+  buildCiJobSpec,
+  ciCheckDeadline,
+  ciExecutorConfig,
+  submitCiJob,
+} from "./ci-executor";
 
 /** Header carrying `sha256=<hex HMAC-SHA256 of the raw body>`, in both directions. */
 export const CHECK_SIGNATURE_HEADER = "X-Stratum-Signature";
@@ -87,6 +102,13 @@ export interface CheckDispatchPayload {
   baseSha: string;
   /** The evaluated revision. Every report must echo it back. */
   headSha: string;
+  /**
+   * Git tree id of `headSha`. A runner that rebuilds the revision from
+   * `baseSha` plus `diff` can compare the tree it built to this before running
+   * anything — the diff is text, and a binary file or a mode change it cannot
+   * carry would otherwise go untested without anyone noticing.
+   */
+  headTreeSha: string;
   /** Unified diff of `baseSha..headSha`. */
   diff: string;
   /** Check name to check run id, for exactly the checks this request asks for. */
@@ -151,6 +173,8 @@ export interface CheckDispatchTarget {
   baseSha: string;
   /** The evaluated revision the runs are bound to. */
   headSha: string;
+  /** The tree of `headSha`, as read when the revision was evaluated. */
+  headTreeSha: string;
   /** Origin of the triggering request, used when `APP_URL` is not set. */
   requestOrigin?: string;
 }
@@ -200,6 +224,7 @@ async function deliverDispatch(
     project: projectDisplayName(target.project),
     baseSha: target.baseSha,
     headSha: target.headSha,
+    headTreeSha: target.headTreeSha,
     diff: target.diff,
     checkRunIds: Object.fromEntries(runs.map((run) => [run.name, run.id])),
     callbackUrl,
@@ -277,6 +302,112 @@ async function dispatchEntry(
   });
 }
 
+/**
+ * Hand the base branch's CI steps, as one job, to the instance's executor.
+ * Returns `null` once the executor has accepted the job, or why it could not
+ * be handed over.
+ */
+async function deliverCiJob(
+  env: Env,
+  logger: Logger,
+  target: CheckDispatchTarget,
+  config: CiConfig,
+  runs: CheckRun[],
+  deadline: string,
+  now: Date,
+): Promise<string | null> {
+  const executor = ciExecutorConfig(env);
+  if (executor.status !== "configured") return executor.reason;
+
+  const callbackUrl = callbackUrlFor(env, target.requestOrigin);
+  if (callbackUrl === null) {
+    return "this instance has no public URL to give the CI executor; the operator must set APP_URL";
+  }
+  // Without the tree id the executor could not prove it rebuilt the evaluated
+  // revision, and it refuses to run steps on a tree it cannot prove.
+  if (target.headTreeSha === "") return "the evaluated revision has no recorded tree id";
+
+  // Minted here, per job, and sent only inside the signed request. Read scope:
+  // a job can fetch the repository and nothing else.
+  const token = await freshRepoToken(env.ARTIFACTS, target.project.remote, "read", logger);
+  if (!token.success) return "a read token for the repository could not be minted";
+
+  const origin = new URL(callbackUrl).origin;
+  return submitCiJob(executor, logger, {
+    event: "checks.requested",
+    changeId: target.changeId,
+    project: projectDisplayName(target.project),
+    baseSha: target.baseSha,
+    headSha: target.headSha,
+    headTreeSha: target.headTreeSha,
+    diff: target.diff,
+    checkRunIds: Object.fromEntries(runs.map((run) => [run.name, run.id])),
+    callbackUrl,
+    deadline,
+    job: buildCiJobSpec({
+      config,
+      repositoryUrl: target.project.remote,
+      repositoryToken: token.data,
+      // Logs are read through THIS Worker, which is the one that knows who
+      // may read the project. The executor reports these as `detailsUrl`.
+      logUrls: Object.fromEntries(
+        runs.map((run) => [
+          run.name,
+          `${origin}/api/changes/${encodeURIComponent(target.changeId)}/checks/${run.id}/log`,
+        ]),
+      ),
+      now,
+    }),
+  });
+}
+
+/**
+ * Create a run for every step of the base branch's `.stratum/ci.yaml` and
+ * submit the job; a job that could not be submitted errors them.
+ *
+ * Always the whole step list, including on a re-run of one step: the steps
+ * share one checkout and run in order, so `test` on its own, without the
+ * `install` before it, is not the check the file describes.
+ */
+async function dispatchCiJob(
+  env: Env,
+  logger: Logger,
+  target: CheckDispatchTarget,
+  config: CiConfig,
+  supersede: "all" | "same-names",
+): Promise<Result<{ runs: CheckRun[]; failure: string | null }, Error>> {
+  const now = new Date();
+  const deadline = ciCheckDeadline(config, now);
+  const created = await createCheckRuns(env.DB, logger, {
+    changeId: target.changeId,
+    projectId: target.project.id,
+    revision: target.headSha,
+    baseSha: target.baseSha,
+    names: ciStepNames(config),
+    secretRef: CI_EXECUTOR_SECRET_REF,
+    ciConfigDigest: config.digest,
+    deadlineAt: deadline,
+    supersede,
+    now: now.toISOString(),
+  });
+  if (!created.success) return created;
+
+  const failure = await deliverCiJob(env, logger, target, config, created.data, deadline, now);
+  if (failure === null) return ok({ runs: created.data, failure: null });
+
+  const summary = `Dispatch failed: ${failure}.`;
+  logger.warn("CI job dispatch failed; marking its runs errored", {
+    changeId: target.changeId,
+    revision: target.headSha,
+    reason: failure,
+  });
+  await failCheckRuns(env.DB, logger, { ids: created.data.map((run) => run.id), summary });
+  return ok({
+    runs: created.data.map((run) => ({ ...run, status: "errored" as const, summary })),
+    failure,
+  });
+}
+
 /** The policy's `checks` evaluator entries, in file order. */
 function checksEntries(policy: EvalPolicy): ChecksEvaluatorConfig[] {
   return policy.evaluators.filter(
@@ -294,7 +425,8 @@ function checksEntries(policy: EvalPolicy): ChecksEvaluatorConfig[] {
  * `errored`, and one that was never created is missing, and the merge gate
  * blocks on both. Re-evaluating the change dispatches again.
  *
- * A policy with no `checks` entry costs nothing here: no query, no write.
+ * A policy with no `checks` entry and no `.stratum/ci.yaml` costs nothing
+ * here: no query, no write.
  */
 export async function dispatchChecks(
   env: Env,
@@ -302,7 +434,8 @@ export async function dispatchChecks(
   target: CheckDispatchTarget,
 ): Promise<CheckRun[]> {
   const entries = checksEntries(target.policy);
-  if (entries.length === 0) return [];
+  const ci = target.policy.ci;
+  if (entries.length === 0 && ci === undefined) return [];
 
   const dispatched: CheckRun[] = [];
   try {
@@ -316,6 +449,16 @@ export async function dispatchChecks(
         entry,
         entry.checks,
         index === 0 ? "all" : "same-names",
+      );
+      if (result.success) dispatched.push(...result.data.runs);
+    }
+    if (ci !== undefined) {
+      const result = await dispatchCiJob(
+        env,
+        logger,
+        target,
+        ci,
+        entries.length === 0 ? "all" : "same-names",
       );
       if (result.success) dispatched.push(...result.data.runs);
     }
@@ -339,6 +482,9 @@ export async function dispatchChecks(
  * The endpoint and key come from the base policy as it is now, not as it was
  * when the run was created: a check the policy no longer declares is not
  * re-run.
+ *
+ * Re-running a step of the first-party CI job re-runs the whole job — every
+ * step gets a new attempt — because the steps share one checkout.
  */
 export async function rerunCheck(
   env: Env,
@@ -409,7 +555,9 @@ export async function rerunCheck(
   );
   if (policy.configError) return err(new AppError(policy.configError, "POLICY_INVALID", 409));
   const entry = checksEntries(policy).find((candidate) => candidate.checks.includes(check.name));
-  if (!entry) {
+  const ci =
+    policy.ci !== undefined && ciStepNames(policy.ci).includes(check.name) ? policy.ci : undefined;
+  if (!entry && ci === undefined) {
     return err(
       new AppError(
         `The project's policy no longer declares a check named '${check.name}'`,
@@ -440,24 +588,23 @@ export async function rerunCheck(
     );
   }
 
-  const result = await dispatchEntry(
-    env,
-    logger,
-    {
-      changeId: change.id,
-      project,
-      policy,
-      diff: diffResult.data.diff,
-      baseSha: diffResult.data.baseOid,
-      headSha: check.revision,
-      ...(args.requestOrigin !== undefined ? { requestOrigin: args.requestOrigin } : {}),
-    },
-    entry,
-    [check.name],
-    "same-names",
-  );
+  const target: CheckDispatchTarget = {
+    changeId: change.id,
+    project,
+    policy,
+    diff: diffResult.data.diff,
+    baseSha: diffResult.data.baseOid,
+    headSha: check.revision,
+    headTreeSha: diffResult.data.workspaceTreeOid,
+    ...(args.requestOrigin !== undefined ? { requestOrigin: args.requestOrigin } : {}),
+  };
+  const result = entry
+    ? await dispatchEntry(env, logger, target, entry, [check.name], "same-names")
+    : ci !== undefined
+      ? await dispatchCiJob(env, logger, target, ci, "same-names")
+      : err(new Error("Check is not declared"));
   if (!result.success) return err(new AppError(result.error.message, "DATABASE_ERROR", 500));
-  const [rerun] = result.data.runs;
+  const rerun = result.data.runs.find((run) => run.name === check.name);
   if (!rerun) return err(new AppError("Check run was not created", "INTERNAL_ERROR", 500));
   return ok({ check: rerun, dispatchFailure: result.data.failure });
 }
@@ -489,6 +636,16 @@ export type CheckReportOutcome =
   | { kind: "error"; message: string };
 
 const SIGNATURE_PATTERN = /^sha256=([0-9a-f]{64})$/i;
+
+/** The key first-party check runs are verified with, in `resolveSigningKey`'s shape. */
+function executorSigningKey(
+  env: Env,
+): { status: "resolved"; key: string } | { status: "unavailable"; reason: string } {
+  const executor = ciExecutorConfig(env);
+  return executor.status === "configured"
+    ? { status: "resolved", key: executor.secret }
+    : { status: "unavailable", reason: executor.reason };
+}
 
 /**
  * Parse and validate a runner's report for `checkId`. Returns the report, or
@@ -592,12 +749,19 @@ export async function reportCheck(
   if (found.data === null) return { kind: "unauthenticated" };
   const { check, superseded } = found.data;
 
-  const signing = await resolveSigningKey(
-    { secretRef: check.secretRef },
-    { env, projectId: check.projectId },
-    logger,
-    "check callback",
-  );
+  // A first-party run is verified against the instance's executor secret and
+  // nothing else. The branch is on the row's own marker, set at creation from
+  // the base config — not on anything the caller sent — so a project's runner
+  // key cannot report a CI step, and the executor's cannot report a project's.
+  const signing =
+    check.ciConfigDigest !== undefined
+      ? executorSigningKey(env)
+      : await resolveSigningKey(
+          { secretRef: check.secretRef },
+          { env, projectId: check.projectId },
+          logger,
+          "check callback",
+        );
   if (signing.status !== "resolved") {
     // The reason stays in the log: telling an unsigned caller that a project's
     // secret is missing would disclose both the check and its configuration.

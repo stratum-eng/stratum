@@ -328,6 +328,27 @@ REPO_DO_ENABLED = "false"
 # it to the hostname users already sign in on. Declare it PER ENVIRONMENT:
 # named envs do not inherit top-level vars.
 # APP_URL = "https://stratum.example.com"
+#
+# First-party CI (#415, docs/user-guide/ci.md). Optional: without it a project
+# with a `.stratum/ci.yaml` gets `errored` checks naming what is missing, and
+# everything else works as before. The executor is a SEPARATE Worker
+# (`ci-executor/`), deployed first. Two things connect Stratum to it:
+#
+# 1. A secret shared with the executor, at least 32 characters. It signs the
+#    job dispatch, verifies the executor's reports, and signs log requests:
+#      wrangler secret put CI_EXECUTOR_SECRET
+# 2. How to reach it. Preferably the service binding below, which keeps the
+#    dispatch (it carries a short-lived repository token) off the public
+#    internet. Declare it PER ENVIRONMENT (`[[env.<name>.services]]`); a named
+#    env does not inherit top-level bindings, and each env should have its own
+#    executor and its own secret:
+#      [[services]]
+#      binding = "CI_EXECUTOR"
+#      service = "stratum-ci-executor"
+#    Or, for an executor that is not on this account, its https URL:
+#      CI_EXECUTOR_URL = "https://ci-executor.example.com"
+# `APP_URL` above must also be set: it is where the executor reports, and must
+# equal the executor's own STRATUM_ORIGIN.
 # Set these to your own host when self-hosting (and register the callback URLs
 # in your GitHub/Google OAuth apps):
 OAUTH_REDIRECT_URI = "http://localhost:8787/auth/github/callback"

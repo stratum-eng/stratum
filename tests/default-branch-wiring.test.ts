@@ -247,14 +247,19 @@ describe("backup restore reconstructs and pushes the project's default branch", 
 });
 
 describe("policy loader threads the branch to readFileFromRepo", () => {
-  it("reads both candidate policy files at the given branch", async () => {
+  it("reads both candidate policy files, and the CI file, at the given branch", async () => {
     vi.mocked(readFileFromRepo).mockResolvedValue(errResult);
     await loadPolicy("https://r/p.git", "tok", logger, "trunk");
     const calls = vi.mocked(readFileFromRepo).mock.calls;
+    // The policy file stays the first read; the CI file (#415) is read off the
+    // same base branch, never `main` by default.
     expect(calls[0]?.[2]).toBe(".stratum/policy.yaml");
-    expect(calls[0]?.[4]).toBe("trunk");
-    expect(calls[1]?.[2]).toBe("stratum.config.json");
-    expect(calls[1]?.[4]).toBe("trunk");
+    expect(calls.map((call) => call[2]).sort()).toEqual([
+      ".stratum/ci.yaml",
+      ".stratum/policy.yaml",
+      "stratum.config.json",
+    ]);
+    for (const call of calls) expect(call[4]).toBe("trunk");
   });
 });
 

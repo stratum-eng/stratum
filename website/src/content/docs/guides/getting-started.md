@@ -394,9 +394,10 @@ Everything under `merge:` is branch protection, enforced at the merge step:
   the evaluated revision* must be `passed`. A check that is missing, `queued`,
   `running`, `failed` or `errored` blocks the merge, so a runner that never
   reports can never let a change through. Each name must be declared by a
-  `checks` evaluator; a name nothing declares, or a value that is not a list
-  of names, makes the policy file invalid and blocks every merge until it is
-  fixed.
+  `checks` evaluator or be a step in [`.stratum/ci.yaml`](/guides/ci/); a name
+  nothing declares, or a value that is not a list of names, makes the policy
+  file invalid and blocks every merge until it is fixed. Steps in
+  `.stratum/ci.yaml` are required without being listed here.
 - **`allowForce`** — force-merge is **deny-by-default**. The `?force=true`
   override is rejected unless the policy explicitly sets `allowForce: true`.
   Leave it off (or set it to `false`, as above) unless you have a specific

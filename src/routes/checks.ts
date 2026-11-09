@@ -2,8 +2,9 @@
  * Check runs over HTTP (#414, ADR 011). Two routers, because they have two
  * different callers and must not share a mount:
  *
- * - {@link changeChecksRouter} — `GET /changes/:id/checks` and
- *   `POST /changes/:id/checks/:checkId/rerun`. Ordinary authenticated API,
+ * - {@link changeChecksRouter} — `GET /changes/:id/checks`,
+ *   `POST /changes/:id/checks/:checkId/rerun` and, for a first-party CI step,
+ *   `GET /changes/:id/checks/:checkId/log`. Ordinary authenticated API,
  *   authorized through `utils/authz.ts` like every other change route, and
  *   mounted for MCP sub-requests too.
  * - {@link checkCallbackRouter} — `POST /api/checks/:id`, the runner's
@@ -18,8 +19,14 @@ import {
   reportCheck,
   rerunCheck,
 } from "../services/check-runs";
+import { ciExecutorConfig, fetchCiLog } from "../services/ci-executor";
 import { getChange } from "../storage/changes";
-import { latestChecksForRevision, listChecksForChange, toCheckRunView } from "../storage/checks";
+import {
+  getCheckRun,
+  latestChecksForRevision,
+  listChecksForChange,
+  toCheckRunView,
+} from "../storage/checks";
 import { getProject, getWorkspace } from "../storage/state";
 import type { Env } from "../types";
 import {
@@ -176,6 +183,98 @@ changeChecks.post("/changes/:id/checks/:checkId/rerun", async (c) => {
     );
   }
   return ok({ check }, 202);
+});
+
+/**
+ * The log of one first-party CI step (#415).
+ *
+ * The executor keeps logs in a bucket nobody can read directly, and serves
+ * them to this Worker only, on a signed request. So this route is the whole of
+ * "who can read a job's log": exactly who can read the project. A log holds
+ * whatever the change's code printed, which for a private repository is the
+ * repository.
+ *
+ * The body is untrusted output served from this origin, so it goes out as
+ * plain text that a browser may neither sniff into HTML nor run anything from.
+ */
+changeChecks.get("/changes/:id/checks/:checkId/log", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+  const userId = c.get("userId");
+  const agentOwnerId = c.get("agentOwnerId");
+  const { id, checkId } = c.req.param();
+
+  const changeResult = await getChange(c.env.DB, logger, id);
+  if (!changeResult.success) {
+    if (changeResult.error.code === "NOT_FOUND") return notFound("Change", id);
+    return internalError(changeResult.error.message);
+  }
+  const change = changeResult.data;
+
+  const projectResult = await getProject(c.env.STATE, change.project, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") return notFound("Project", change.project);
+    return internalError(projectResult.error.message);
+  }
+  if (
+    !(await canReadProject(
+      c.env.DB,
+      projectResult.data,
+      credentialBindingFrom(c),
+      userId,
+      agentOwnerId,
+    ))
+  )
+    return notFound("Change", id);
+
+  const checkResult = await getCheckRun(c.env.DB, logger, checkId);
+  if (!checkResult.success) return internalError(checkResult.error.message);
+  const check = checkResult.data?.check;
+  // The check must be this change's: the change is what the caller was
+  // authorized against, and a check id from another project must not ride it.
+  if (check === undefined || check.changeId !== id) return notFound("Check", checkId);
+  if (check.ciConfigDigest === undefined) {
+    return c.json(
+      {
+        error:
+          "Only a first-party CI step has a log here; this check's runner links its own details",
+        code: "CHECK_HAS_NO_LOG",
+      },
+      404,
+    );
+  }
+
+  const executor = ciExecutorConfig(c.env);
+  if (executor.status !== "configured") {
+    return c.json({ error: executor.reason, code: "CI_EXECUTOR_UNAVAILABLE" }, 503);
+  }
+  const log = await fetchCiLog(executor, logger, check.id);
+  if (log.status === "missing") {
+    return c.json(
+      {
+        error:
+          "No log has been stored for this check run: the step has not produced output yet, never started, or the log has expired",
+        code: "CHECK_LOG_NOT_FOUND",
+      },
+      404,
+    );
+  }
+  if (log.status === "unavailable") {
+    return c.json({ error: log.reason, code: "CI_EXECUTOR_UNAVAILABLE" }, 502);
+  }
+  return new Response(log.body, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Cache-Control": "private, no-store",
+    },
+  });
 });
 
 /** A report is a status, a short summary and a link. */
