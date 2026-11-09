@@ -60,18 +60,41 @@ const DIRECT_ACCESS = [
 /** A jurisdiction set anywhere but the helper is a second source of truth. */
 const JURISDICTION_CALL = /\.\s*jurisdiction\s*\(|\bjurisdiction\s*:/;
 
+/**
+ * A bracket access the formatter split across lines (`env[` / `"REPO_DO"` /
+ * `]`), which no single line of it matches. Run against the whole file, where
+ * `\s` spans the line breaks.
+ */
+const SPLIT_BRACKET_ACCESS = new RegExp(`(?<!\\bEnv)\\[\\s*["'\`]${BINDING}["'\`]\\s*\\]`, "g");
+
 function findings(path: string, source: string): string[] {
   const out: string[] = [];
-  const lines = stripComments(source).split("\n");
+  const stripped = stripComments(source);
+  const lines = stripped.split("\n");
+  const flagged = new Set<number>();
   lines.forEach((line, index) => {
     if (DIRECT_ACCESS.some((pattern) => pattern.test(line)) || JURISDICTION_CALL.test(line)) {
-      out.push(`${path.replace("../", "")}:${index + 1}: ${line.trim()}`);
+      flagged.add(index);
     }
   });
+  for (const match of stripped.matchAll(SPLIT_BRACKET_ACCESS)) {
+    flagged.add(stripped.slice(0, match.index).split("\n").length - 1);
+  }
+  for (const index of [...flagged].sort((a, b) => a - b)) {
+    out.push(`${path.replace("../", "")}:${index + 1}: ${(lines[index] ?? "").trim()}`);
+  }
   return out;
 }
 
 describe("Durable Object namespaces are only reached through durableObjectNamespace", () => {
+  it("flags a bracket access split across lines", () => {
+    const source = ["const ns = env[", '  "REPO_DO"', "];"].join("\n");
+    expect(findings("../src/example.ts", source)).toHaveLength(1);
+    // A type lookup split the same way is still not an access.
+    const typeLookup = ["type Ns = Env[", '  "REPO_DO"', "];"].join("\n");
+    expect(findings("../src/example.ts", typeLookup)).toEqual([]);
+  });
+
   it("scans a non-trivial number of source files, including the known call sites", () => {
     const paths = Object.keys(sources);
     expect(paths.length).toBeGreaterThan(100);
