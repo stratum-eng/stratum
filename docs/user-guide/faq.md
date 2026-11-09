@@ -270,6 +270,32 @@ you own — an agent inherits its owner's choice, so routing traffic through an
 agent does not re-enable it. The change takes effect on your next request. It
 is not retroactive: events already sent are not deleted.
 
+**At signup, on the hosted instance.** Telemetry is opt-in for accounts created
+there. The signup form has an unticked *Send anonymous usage analytics* box;
+leave it alone and your account is created opted out, with nothing attributed
+to it — not even the signup itself. The answer covers both the server-side
+events and the browser SDK described below, because both read the same
+per-account setting, and you can change it later in **Settings → Privacy**.
+Accounts created with nobody there to ask start opted out: ones provisioned by
+an identity provider over SCIM or created on first SSO sign-in, and ones an
+agent requested for you unless you tick the box on the approval page yourself
+(an agent cannot consent on your behalf). Accounts that existed before this was
+introduced keep the setting they had.
+
+What the choice does not cover is anything that is not tied to an account.
+Requests made before you have one — loading the signup page, submitting the
+form, following the emailed link — are still counted as anonymous `api_request`
+events under a single shared `server` id that identifies nobody, and an
+instance with browser analytics on serves its script on signed-out pages,
+including the signup page. Once you are signed in to an opted-out account,
+neither is sent for you.
+
+Self-hosters get this behaviour by setting
+`TELEMETRY_CONSENT_AT_SIGNUP = "true"`: in the top-level `[vars]` for a bare
+`wrangler deploy`, or in each `[env.<name>.vars]` block for a named
+environment. It is off by default, which leaves signup exactly as it was: no box,
+and new accounts opted in until they say otherwise.
+
 **Browser analytics is separate, and off unless you turn it on.** Everything
 described above is sent by the server. A second, independent switch —
 `POSTHOG_PUBLIC_KEY` — additionally loads PostHog's JavaScript SDK in your

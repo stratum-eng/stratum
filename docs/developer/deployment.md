@@ -587,6 +587,7 @@ POSTHOG_HOST = "https://app.posthog.com"
 OAUTH_REDIRECT_URI = "https://your-instance.workers.dev/auth/github/callback"
 GOOGLE_REDIRECT_URI = "https://your-instance.workers.dev/auth/google/callback"
 STRATUM_TELEMETRY_DISABLED = "false"
+# TELEMETRY_CONSENT_AT_SIGNUP = "true"
 STRATUM_ENVIRONMENT = "production"
 
 [env.staging.vars]
@@ -613,6 +614,22 @@ secrets are set.
 > so staging traffic can be told apart from production's in one PostHog
 > project. An instance that leaves it unset reports `environment: "unknown"` —
 > harmless, but every funnel built across both deployments is then wrong.
+
+`TELEMETRY_CONSENT_AT_SIGNUP` makes telemetry opt-in for **new** accounts. Only
+the literal `"true"` turns it on. With it on, every signup form (magic link, the
+username step after GitHub or Google, and the approval page of an
+agent-requested signup) shows an unticked consent box, and the account is
+created with `users.telemetry_opt_out = 1` unless the box was ticked. Accounts
+created with nobody to ask — SCIM provisioning, SSO just-in-time, the legacy
+`POST /auth/email/send` form, `/dev-login` — are created opted out. The value is
+written by the same `INSERT` that creates the account, so there is no window in
+which an account that did not consent is opted in. It never changes an existing
+account, and it does not affect anonymous capture (requests with no account
+behind them). Unset — the default — signup is unchanged: no box, new accounts
+opted in. The hosted instance sets it in both `[env.production.vars]` and
+`[env.staging.vars]`; like the kill switch, it must be declared in each named
+environment you deploy. It is independent of `STRATUM_TELEMETRY_DISABLED`, which
+still switches telemetry off for everyone regardless of any account's setting.
 
 ### Per-Environment Configuration
 

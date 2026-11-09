@@ -1,6 +1,12 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import {
+  TELEMETRY_CONSENT_FIELD,
+  newAccountTelemetryOptOut,
+  telemetryConsentAtSignup,
+  telemetryConsentGiven,
+} from "../analytics/consent";
 import type { AuthKind } from "../analytics/events";
 import { admitAndDeliverCodes, betaGateEnabled, validateInviteCode } from "../beta/gate";
 import { enforceSameOrigin } from "../middleware/csrf";
@@ -10,6 +16,7 @@ import { getSession } from "../storage/sessions";
 import { createUser, getUserByEmail, getUserByUsername, linkGitHub } from "../storage/users";
 import type { Env } from "../types";
 import { SourceFooter } from "../ui/components/source-footer";
+import { TelemetryConsentField } from "../ui/components/telemetry-consent";
 /**
  * The "choose your username" step of a GitHub or Google signup.
  *
@@ -312,6 +319,8 @@ app.get("/", async (c) => {
               </label>
             </div>
 
+            {telemetryConsentAtSignup(c.env) ? <TelemetryConsentField /> : null}
+
             <div class="submit-status" id="submitStatus" />
             <button type="submit" class="submit-btn" id="submitBtn">
               Create account
@@ -418,7 +427,12 @@ app.post("/", async (c) => {
   }
   if (namespaceTaken.data) return formError(c, "username_taken", username);
 
-  const created = await createUser(c.env.DB, record.email, logger, username);
+  const created = await createUser(c.env.DB, record.email, logger, username, {
+    telemetryOptOut: newAccountTelemetryOptOut(
+      c.env,
+      telemetryConsentGiven(body[TELEMETRY_CONSENT_FIELD]),
+    ),
+  });
   if (!created.success && created.error.statusCode === 409) {
     return formError(c, "username_taken", username);
   }

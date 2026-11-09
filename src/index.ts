@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import { contextStorage } from "hono/context-storage";
 import { setCookie } from "hono/cookie";
 import { routePath } from "hono/route";
+import { newAccountTelemetryOptOut } from "./analytics/consent";
 import { trackerForRequest } from "./analytics/tracker";
 import { githubWebhookRouter } from "./github/webhooks";
 import { analyticsMiddleware } from "./middleware/analytics";
@@ -149,7 +150,11 @@ app.get("/dev-login", async (c) => {
     let userId: string;
 
     if (!userResult.success) {
-      const createResult = await createUser(c.env.DB, email, logger);
+      // Nobody is asked anything here, so an instance that asks at signup gets
+      // the same opted-out account every other unasked path creates.
+      const createResult = await createUser(c.env.DB, email, logger, undefined, {
+        telemetryOptOut: newAccountTelemetryOptOut(c.env, false),
+      });
       if (!createResult.success) {
         logger.error("Failed to create user", undefined, { email });
         return c.json({ error: "Failed to create user" }, 500);

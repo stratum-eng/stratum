@@ -16,6 +16,12 @@ export interface MagicLinkPayload {
   username?: string;
   inviteCode?: string;
   createdAt?: number;
+  /**
+   * The person ticked the telemetry consent box on the signup form (#257).
+   * Carried on the link because the account is created at verify, a request
+   * that has no form of its own. Absent means no consent was given.
+   */
+  telemetryConsent?: boolean;
   /** The `agent_signups` row this link approves; set only for `agent-signup`. */
   agentSignupId?: string;
   /**

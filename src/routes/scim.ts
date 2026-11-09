@@ -1,4 +1,5 @@
 import { type Context, Hono } from "hono";
+import { newAccountTelemetryOptOut } from "../analytics/consent";
 import { deriveUsernameBase, findAvailableUsername } from "../services/sso-usernames";
 import { recordAudit } from "../storage/audit";
 import { ensureOrgMember } from "../storage/orgs";
@@ -502,11 +503,15 @@ app.post("/Users", async (c) => {
     // provisioning is authorized by the connection's DNS-verified email
     // domain, a stronger gate than a referral code.
     const base = deriveUsernameBase(email);
+    // An IdP is provisioning this account; the person it is for is not here to
+    // ask, so an instance that asks at signup creates it opted out (#257).
+    const createOptions = { telemetryOptOut: newAccountTelemetryOptOut(c.env, false) };
     const created = await createUser(
       c.env.DB,
       email,
       logger,
       await findAvailableUsername(c.env.DB, logger, base),
+      createOptions,
     );
     if (created.success) {
       userId = created.data.user.id;
@@ -529,6 +534,7 @@ app.post("/Users", async (c) => {
           email,
           logger,
           await findAvailableUsername(c.env.DB, logger, base),
+          createOptions,
         );
         if (!retried.success) return scimError(500, "Failed to provision user");
         userId = retried.data.user.id;

@@ -31,8 +31,9 @@ export interface AuthOutcome {
  * The preference has to be read from D1 rather than lifted off the request:
  * this runs *before* any middleware has an authenticated context to publish,
  * and on the sign-up path the account did not exist when the request started.
- * A brand-new account has never expressed a preference, which is the opt-in
- * default — the same default the settings page starts from.
+ * A brand-new account carries whatever `createUser` wrote in the same INSERT:
+ * opted in by default, or opted out where the instance asks for consent at
+ * signup and none was given (#257) — in which case this sends nothing.
  *
  * Scheduled past the response where an ExecutionContext exists and awaited
  * inline where none does (tests), matching how this codebase handles every

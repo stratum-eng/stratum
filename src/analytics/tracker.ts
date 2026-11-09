@@ -278,9 +278,9 @@ export function trackerForRequest(c: Context<{ Bindings: Env }>): AnalyticsTrack
  * than arrive with one.
  *
  * Sign-up and sign-in run before any middleware has an authenticated context
- * to publish, so the preference is read directly. A brand-new account has
- * never expressed one, which is the opt-in default — the same default the
- * settings page starts from.
+ * to publish, so the preference is read directly. A brand-new account has the
+ * one `createUser` gave it: opted in by default, opted out where the instance
+ * asks for consent at signup and none was given (#257).
  */
 export async function trackerForUser(
   env: Env,

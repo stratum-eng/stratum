@@ -186,6 +186,13 @@ export interface Env {
   POSTHOG_HOST?: string;
   STRATUM_TELEMETRY_DISABLED?: string;
   /**
+   * `"true"` makes telemetry opt-in for NEW accounts (#257): signup forms show
+   * an unticked consent box, and an account is created opted out unless it was
+   * ticked. Unset — the self-hosted default — changes nothing. Existing
+   * accounts are never touched either way. See `src/analytics/consent.ts`.
+   */
+  TELEMETRY_CONSENT_AT_SIGNUP?: string;
+  /**
    * Which deployment this is ("production", "staging", a self-hoster's own
    * label). Attached to every analytics event. Without it a staging deploy's
    * traffic is indistinguishable from production's in the same PostHog
