@@ -32,6 +32,12 @@
 - [ ] Public docs updated if this changes user-facing config, API shape, or evaluator/policy
       behavior — edit the canonical page under `docs/user-guide/` or `docs/api/`, then
       `cd website && npm run sync:guides` and commit the regenerated mirrors (see AGENTS.md)
+
+<!-- The "Docs & Changelog" check enforces the two items above for changes to
+     src/, cli/src/, agent/src/ and migrations/. If one genuinely isn't needed,
+     say why on its own line here, and the check accepts it:
+       No docs needed: <why>
+       No changelog: <why>                                                        -->
 - [ ] No secrets, tokens, or personal data committed
 - [ ] The web UI change (if any) stays server-rendered with no client-side JavaScript
 - [ ] I have read the [CLA](https://github.com/stratum-eng/stratum/blob/main/CLA.md) and agree

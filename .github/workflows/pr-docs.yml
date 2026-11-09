@@ -1,0 +1,49 @@
+name: PR Docs
+
+# Fails a PR that changes user-facing code without updating the public docs or
+# adding a changelog fragment, unless its description says why neither is
+# needed. Rules: scripts/pr-docs.ts. Separate from PR Checks so editing the
+# description re-runs only this.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: pr-docs-${{ github.event.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  docs:
+    name: Docs & Changelog
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: List changed files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" \
+            --jq '.[] | {path: .filename, status}' | jq -s . > "$RUNNER_TEMP/files.json"
+          echo "$(jq length "$RUNNER_TEMP/files.json") changed files"
+
+      - name: Check docs and changelog
+        env:
+          # From the event, so an edit to the description is what gets checked.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node --experimental-strip-types scripts/pr-docs-check.ts "$RUNNER_TEMP/files.json"
