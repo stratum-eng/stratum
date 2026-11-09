@@ -57,6 +57,7 @@ import { parseGitHubRepo } from "../src/github/remote";
 import { ensureCanonicalProject } from "../src/github/repo-authorization";
 import worker from "../src/index";
 import { syncAllProjects } from "../src/routes/sync";
+import { freshRepoToken } from "../src/storage/git-ops";
 import { linkInstallation, upsertInstallation } from "../src/storage/github-installations";
 import { MemoryFS } from "../src/storage/memory-fs";
 import { addOrgMember, createOrg } from "../src/storage/orgs";
@@ -1283,6 +1284,33 @@ describe("a failing mirror", () => {
     await drain();
     expect(await mirrorRow()).toMatchObject({ state: "ok", lastPushedSha: next.sha });
     expect(await github.repo.ref("refs/heads/main")).toBe(next.sha);
+  });
+
+  it("counts a thrown fault as an attempt, so it too backs off and gives up", async () => {
+    await configureMirror();
+    await merge();
+    const message = queued.shift();
+    // A fault below the Result-returning layers, on every attempt.
+    vi.mocked(freshRepoToken).mockRejectedValue(new Error("artifacts exploded"));
+
+    try {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const delays: (number | undefined)[] = [];
+      for (let attempt = 1; attempt <= MIRROR_MAX_ATTEMPTS; attempt++) {
+        delays.push((await deliver(message)).retried?.delaySeconds);
+        vi.advanceTimersByTime(16 * 60 * 1000);
+      }
+      expect(delays).toEqual([30, 60, 120, 240, undefined]);
+      const mirror = await mirrorRow();
+      expect(mirror).toMatchObject({ state: "failed", attempts: MIRROR_MAX_ATTEMPTS });
+      expect(mirror.lastError).toContain("artifacts exploded");
+      expect(mirror.nextAttemptAt).toBeUndefined();
+    } finally {
+      vi.mocked(freshRepoToken).mockImplementation(async () => ({
+        success: true,
+        data: "artifacts-token",
+      }));
+    }
   });
 
   it("fails at once, without retrying, when the App has lost the repository", async () => {

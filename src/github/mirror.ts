@@ -428,14 +428,29 @@ export async function runPushMirror(
   try {
     return await runPushMirrorUnsafe(env, logger, projectId);
   } catch (error) {
-    // Reached only by a fault below the Result-returning layers. The lease
-    // would expire on its own; releasing it lets the retry start on time.
+    // Reached only by a fault below the Result-returning layers.
     const message = error instanceof Error ? error.message : String(error);
     logger.error("Mirror push threw", error instanceof Error ? error : new Error(message), {
       projectId,
     });
-    await releasePushLease(env.DB, logger, projectId);
-    return { kind: "retry", delaySeconds: mirrorBackoffSeconds(1), error: message };
+    // Counted like any other failed attempt. A thrown fault is the kind most
+    // likely to be deterministic, so releasing the lease and retrying without
+    // recording anything would retry it every 30 seconds for ever: the row
+    // would stay pending with no backoff, and never reach `failed`.
+    // `recordPushFailure` releases the lease as well.
+    const current = await getPushMirror(env.DB, logger, projectId);
+    const attempt = (current.success && current.data !== null ? current.data.attempts : 0) + 1;
+    if (attempt >= MIRROR_MAX_ATTEMPTS) {
+      await recordPushFailure(env.DB, logger, { projectId, error: message });
+      return { kind: "failed", error: message };
+    }
+    const delaySeconds = mirrorBackoffSeconds(attempt);
+    await recordPushFailure(env.DB, logger, {
+      projectId,
+      error: message,
+      nextAttemptAt: new Date(Date.now() + delaySeconds * 1000).toISOString(),
+    });
+    return { kind: "retry", delaySeconds, error: message };
   }
 }
 
