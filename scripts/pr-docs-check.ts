@@ -23,9 +23,19 @@ if (!filesPath) {
   process.exit(2);
 }
 
-const files = (JSON.parse(readFileSync(filesPath, "utf8")) as ChangedFile[]).map(
-  ({ path, status }) => ({ path, status }),
-);
+function readFiles(path: string): ChangedFile[] {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!Array.isArray(parsed)) throw new Error("expected a JSON array of changed files");
+    return (parsed as ChangedFile[]).map(({ path, status }) => ({ path, status }));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.log(`::error::Could not read the changed-file list from ${path}: ${reason}`);
+    process.exit(2);
+  }
+}
+
+const files = readFiles(filesPath);
 const result = checkPullRequest(files, process.env.PR_BODY ?? "");
 
 /** Shows untrusted text (file names, the PR's stated reason) as inert code. */
