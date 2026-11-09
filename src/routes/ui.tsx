@@ -33,6 +33,7 @@ import {
 import { recordAudit } from "../storage/audit";
 import { listComments, listReviews } from "../storage/change-reviews";
 import { getChange, listChanges } from "../storage/changes";
+import { latestChecksForRevision, toCheckRunView } from "../storage/checks";
 import { getChangeCostSummary } from "../storage/costs";
 import { type Deployment, getDeployment, listDeployments } from "../storage/deployments";
 import { listEvalRuns } from "../storage/eval-runs";
@@ -1563,14 +1564,25 @@ app.get("/changes/:id", async (c) => {
     return c.html(errorPage(404, undefined, userResult), 404);
   }
 
-  const [evalRunsResult, commentsResult, reviewsResult, costsResult, provenanceResult] =
-    await Promise.all([
-      listEvalRuns(c.env.DB, logger, change.id),
-      listComments(c.env.DB, logger, change.id),
-      listReviews(c.env.DB, logger, change.id),
-      getChangeCostSummary(c.env.DB, logger, change.id),
-      getProvenance(c.env.DB, logger, change.id),
-    ]);
+  const [
+    evalRunsResult,
+    commentsResult,
+    reviewsResult,
+    costsResult,
+    provenanceResult,
+    checksResult,
+  ] = await Promise.all([
+    listEvalRuns(c.env.DB, logger, change.id),
+    listComments(c.env.DB, logger, change.id),
+    listReviews(c.env.DB, logger, change.id),
+    getChangeCostSummary(c.env.DB, logger, change.id),
+    getProvenance(c.env.DB, logger, change.id),
+    // Only the evaluated revision's checks: an older revision's results say
+    // nothing about the code this page is showing (#414).
+    change.evaluatedSha !== undefined
+      ? latestChecksForRevision(c.env.DB, logger, change.id, change.evaluatedSha)
+      : Promise.resolve({ success: true as const, data: [] }),
+  ]);
 
   // Provenance only exists once the change has merged; absence is normal, not an
   // error — the page simply omits the provenance card.
@@ -1646,6 +1658,7 @@ app.get("/changes/:id", async (c) => {
         ...(change.githubPrUrl !== undefined ? { githubPrUrl: change.githubPrUrl } : {}),
       }}
       evalRuns={evalRuns}
+      checks={checksResult.success ? checksResult.data.map(toCheckRunView) : []}
       provenance={provenance}
       comments={commentsResult.success ? commentsResult.data : []}
       reviews={reviewsResult.success ? reviewsResult.data : []}

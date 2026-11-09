@@ -32,6 +32,7 @@ import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 import { evaluateWorkspace } from "./change-flow";
+import { dispatchChecks } from "./check-runs";
 
 /**
  * A run that could not produce a verdict. `permanent` decides whether the
@@ -48,6 +49,17 @@ export class EvaluationJobError extends AppError {
     super(message, code, statusCode);
     this.name = "EvaluationJobError";
   }
+}
+
+/** What a caller with a request in hand can lend a run. A queue consumer has neither. */
+export interface EvaluationRunOptions {
+  waitUntil?: (promise: Promise<unknown>) => void;
+  /**
+   * Origin of the request that ran the evaluation inline. Only used to tell a
+   * check runner where to report when the operator has not set `APP_URL`
+   * (#414); a run executing on the queue has no request and relies on it.
+   */
+  requestOrigin?: string;
 }
 
 export type EvaluationJobOutcome =
@@ -74,7 +86,7 @@ export async function runEvaluationJob(
   env: Env,
   logger: Logger,
   message: Pick<EvaluationQueueMessage, "changeId" | "runId">,
-  options: { waitUntil?: (promise: Promise<unknown>) => void } = {},
+  options: EvaluationRunOptions = {},
 ): Promise<Result<EvaluationJobOutcome, EvaluationJobError>> {
   const { changeId, runId } = message;
   const { waitUntil } = options;
@@ -143,6 +155,7 @@ export async function runEvaluationJob(
     evalRuns,
     evalResult,
     billingSubject,
+    policy,
   } = evaluation.data;
 
   // Stale-approval dismissal, exactly as the inline re-evaluate route decides
@@ -204,6 +217,20 @@ export async function runEvaluationJob(
     });
     return ok({ status: "superseded" });
   }
+
+  // Only for a verdict that landed (#414): a superseded run's revision is not
+  // the one the change is on, and the run that superseded it dispatches its
+  // own. Before the event below, so a subscriber reacting to
+  // `change.evaluated` finds the revision's checks already queued.
+  await dispatchChecks(env, log, {
+    changeId,
+    project,
+    policy,
+    diff,
+    baseSha: baseOid,
+    headSha: evaluatedSha,
+    ...(options.requestOrigin !== undefined ? { requestOrigin: options.requestOrigin } : {}),
+  });
 
   const { dismissedReviewerIds } = finalized.data;
   if (dismissedReviewerIds.length > 0) {
@@ -346,7 +373,7 @@ export async function dispatchEvaluationRun(
   env: Env,
   logger: Logger,
   message: { changeId: string; runId: string },
-  options: { waitUntil?: (promise: Promise<unknown>) => void } = {},
+  options: EvaluationRunOptions = {},
 ): Promise<DispatchOutcome> {
   if (env.EVALUATION_QUEUE) {
     try {

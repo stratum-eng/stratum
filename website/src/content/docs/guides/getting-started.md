@@ -148,6 +148,14 @@ evaluators:
     secretRef: WEBHOOK_EVALUATOR_SECRET
     timeoutMs: 120000
 
+  # Hand long-running CI to your own runner and let it report back per job.
+  # Stratum POSTs each evaluated revision here and returns at once; the
+  # runner reports through a signed callback. See "Check runs".
+  # - type: checks
+  #   url: "https://ci.example.com/stratum/checks"
+  #   secretRef: WEBHOOK_CI_SIGNING_KEY
+  #   checks: [lint, test]
+
   # Run the test suite in a Cloudflare Sandbox. LEFT COMMENTED ON PURPOSE:
   # Sandboxes is a gated beta and its binding is off by default, and this
   # evaluator does not skip when the binding is missing — it returns
@@ -173,6 +181,9 @@ merge:
   # Only evaluators that actually run belong here. "sandbox" would block every
   # merge in this project while the Sandboxes binding is absent.
   requiredEvaluators: ["secret_scan", "diff"]
+  # Check runs that must have passed. Every name must be declared by a
+  # `checks` evaluator above, so this stays commented out with it.
+  # requiredChecks: [lint, test]
   allowForce: false
   requireFreshBase: true
   # Sandboxes-only, so also commented out. Unlike the evaluator, this one
@@ -217,6 +228,15 @@ requiring a human approval and refusing force-merge.
   literal `secret` field still works but is deprecated: it is readable by
   anyone with repository read access. See
   [the signing secret](/guides/ci-integration/#the-signing-secret).
+- **`checks`** — for CI that takes minutes, or reports per job. Stratum POSTs
+  each evaluated revision to `url`, signed with the project secret `secretRef`
+  names (required here; a literal `secret` is refused), and returns
+  immediately. Your runner then reports each name in `checks` as `running`,
+  `passed`, `failed` or `errored` through a signed callback. Unlike every
+  other entry it is **not scored** and does not affect whether a change is
+  accepted; it gates the merge only through `merge.requiredChecks`. A check
+  that has not finished by `deadlineMs` (default 30 minutes) becomes
+  `errored`. See [Check runs](/guides/checks/).
 - **`sandbox`** — **needs the Sandboxes beta, which is off by default
   everywhere, including the hosted instance.** `[[sandboxes]]` is commented out
   in `wrangler.toml`, so unless you self-host, have Sandboxes access, and
@@ -369,6 +389,13 @@ Everything under `merge:` is branch protection, enforced at the merge step:
   it can merge. Agent approvals never count (see the invariant below).
 - **`requiredEvaluators`** — evaluator types whose *latest run* must have
   passed. A change with a failing required evaluator cannot merge.
+- **`requiredChecks`** — [check-run](/guides/checks/) names whose *newest run for
+  the evaluated revision* must be `passed`. A check that is missing, `queued`,
+  `running`, `failed` or `errored` blocks the merge, so a runner that never
+  reports can never let a change through. Each name must be declared by a
+  `checks` evaluator; a name nothing declares, or a value that is not a list
+  of names, makes the policy file invalid and blocks every merge until it is
+  fixed.
 - **`allowForce`** — force-merge is **deny-by-default**. The `?force=true`
   override is rejected unless the policy explicitly sets `allowForce: true`.
   Leave it off (or set it to `false`, as above) unless you have a specific

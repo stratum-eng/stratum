@@ -1,6 +1,7 @@
 import { diffTouchesProtectedConfig } from "../evaluation/policy-loader";
 import type { EvalPolicy } from "../evaluation/types";
 import { countApprovals } from "../storage/change-reviews";
+import { type CheckRun, latestChecksForRevision } from "../storage/checks";
 import { listEvalRuns } from "../storage/eval-runs";
 import type { Change } from "../types";
 import { AppError } from "../utils/errors";
@@ -99,6 +100,25 @@ export async function checkMergeProtection(
     }
   }
 
+  if (merge?.requiredChecks && merge.requiredChecks.length > 0) {
+    // Read for the evaluated revision only (#414). A change with nothing
+    // pinned has no checks to read, and every required one is then missing.
+    let latest: CheckRun[] = [];
+    if (change.evaluatedSha !== undefined) {
+      const checksResult = await latestChecksForRevision(
+        db,
+        logger,
+        change.id,
+        change.evaluatedSha,
+      );
+      if (!checksResult.success) {
+        return err(new AppError(checksResult.error.message, "DATABASE_ERROR", 500));
+      }
+      latest = checksResult.data;
+    }
+    reasons.push(...requiredCheckReasons(latest, merge.requiredChecks, new Date()));
+  }
+
   // A change that edits the merge-protection config must always carry at least
   // one human approval, even if the policy sets requiredApprovals: 0 — otherwise
   // a writer could relax protection (allowForce, drop evaluators, zero approvals)
@@ -162,6 +182,57 @@ export function requiredEvaluatorReasons(
 }
 
 /**
+ * Why each required check blocks, given the latest run of every check on the
+ * evaluated revision (#414). Empty when all of them have passed.
+ *
+ * Fails closed on everything that is not `passed`: a check that was never
+ * dispatched for this revision, one still `queued` or `running`, one that
+ * `failed`, and one that `errored`. Only a terminal `passed` on the newest
+ * attempt opens the gate, so a runner that never reports — or a deadline sweep
+ * that has not run yet — can never be read as a pass. A pending run past its
+ * deadline is reported as overdue even before the sweep has flipped it.
+ *
+ * @param latest - Newest attempt per check name for the evaluated revision
+ */
+export function requiredCheckReasons(
+  latest: Array<Pick<CheckRun, "name" | "status" | "deadlineAt">>,
+  requiredChecks: string[] | undefined,
+  now: Date,
+): string[] {
+  if (!requiredChecks || requiredChecks.length === 0) return [];
+
+  const byName = new Map(latest.map((check) => [check.name, check]));
+  const nowIso = now.toISOString();
+  const reasons: string[] = [];
+  for (const required of requiredChecks) {
+    const check = byName.get(required);
+    if (!check) {
+      reasons.push(`Required check '${required}' has not been reported for the evaluated revision`);
+      continue;
+    }
+    switch (check.status) {
+      case "passed":
+        break;
+      case "queued":
+      case "running":
+        reasons.push(
+          check.deadlineAt <= nowIso
+            ? `Required check '${required}' did not report before its deadline`
+            : `Required check '${required}' is ${check.status === "queued" ? "queued" : "still running"}`,
+        );
+        break;
+      case "failed":
+        reasons.push(`Required check '${required}' failed`);
+        break;
+      default:
+        // `errored`, and any status a future migration adds: not a pass.
+        reasons.push(`Required check '${required}' errored`);
+    }
+  }
+  return reasons;
+}
+
+/**
  * Merge-protection check for a manual conflict resolution (issue #260,
  * SA-5 follow-up).
  *
@@ -209,6 +280,18 @@ export async function checkResolutionMergeProtection(
   if (!merge && !touchesProtectedConfig) return ok({ allowed: true, reasons: [] });
 
   const reasons: string[] = requiredEvaluatorReasons(args.evalRuns, merge?.requiredEvaluators);
+
+  // Required checks cannot be met here, and that is the answer rather than a
+  // gap (#414). A check run is bound to an evaluated revision of a change; a
+  // manual resolution is content with no revision, evaluated once inline and
+  // pushed. Skipping the rule would make conflict resolution the way to land
+  // code no runner ever saw, so it fails closed: put the resolution in the
+  // workspace and re-evaluate the change instead.
+  for (const required of merge?.requiredChecks ?? []) {
+    reasons.push(
+      `Required check '${required}' cannot run against a manual conflict resolution; commit the resolution to the workspace and re-evaluate the change`,
+    );
+  }
 
   const requiredApprovals = Math.max(merge?.requiredApprovals ?? 0, touchesProtectedConfig ? 1 : 0);
   if (requiredApprovals > 0) {

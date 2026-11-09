@@ -52,6 +52,7 @@ import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import type { Result } from "../utils/result";
 import { err, ok } from "../utils/result";
+import { dispatchChecks } from "./check-runs";
 
 /**
  * The create-change + evaluate pipeline, extracted from the REST route so every
@@ -263,6 +264,14 @@ export async function buildEvaluators(
             evaluator: new WebhookEvaluator(cfg, { env, projectId: project.id }),
           },
         ];
+      case "checks":
+        // Deliberately no evaluator (#414). A `checks` entry has no verdict to
+        // give at evaluation time — its results arrive later, per check — and
+        // a stand-in that reported "dispatched" as a pass would satisfy
+        // `requireAll: false` by itself. The dispatch happens once the verdict
+        // for the revision is recorded (`dispatchChecks`), and the entry gates
+        // a merge only through `merge.requiredChecks`.
+        return [];
       case "llm": {
         // Every failure to resolve a project-supplied credential lands here,
         // and NONE of them falls back to `env.AI`. Falling back would move
@@ -474,6 +483,12 @@ export interface WorkspaceEvaluation {
   evalResult: EvalResult;
   /** Resolved once and shared by the meters and the ledger. */
   billingSubject: BillingSubject | null;
+  /**
+   * The policy this pass ran under, read from the project's base branch. Handed
+   * back so the check dispatch that follows (#414) uses the same one, rather
+   * than a second read that could see a different file — or the change's own.
+   */
+  policy: EvalPolicy;
 }
 
 /**
@@ -576,6 +591,7 @@ export async function evaluateWorkspace(
     evalRuns,
     evalResult,
     billingSubject,
+    policy,
   });
 }
 
@@ -628,6 +644,11 @@ export async function createChangeWithEvaluation(
     /** Cloudflare Workers `ExecutionContext.waitUntil`, when the caller has one. */
     waitUntil?: (promise: Promise<unknown>) => void;
     /**
+     * Origin of the request creating the change. Only used to tell a check
+     * runner where to report when the operator has not set `APP_URL` (#414).
+     */
+    requestOrigin?: string;
+    /**
      * Create the change waiting on this evaluation run instead of evaluating
      * inline (#412). The run id is the caller's so it can dispatch the same
      * run it asked for.
@@ -636,6 +657,7 @@ export async function createChangeWithEvaluation(
   },
 ): Promise<Result<ChangeCreationOutcome, AppError>> {
   const { project, projectName, workspaceName, workspaceRemote, actor, waitUntil, queueRun } = args;
+  const { requestOrigin } = args;
   const { userId, agentId } = actor;
   // The human author: the acting user, or (for agent-authored changes) the
   // agent's owner. Excluded from the required-approval count at merge time.
@@ -745,9 +767,11 @@ export async function createChangeWithEvaluation(
     evaluatedSha,
     evaluatedTreeOid,
     workspaceHeadSha,
+    baseOid,
     evalRuns,
     evalResult,
     billingSubject: createSubject,
+    policy,
   } = evaluation.data;
 
   const newStatus: Change["status"] = evalResult.passed ? "accepted" : "needs_changes";
@@ -807,6 +831,18 @@ export async function createChangeWithEvaluation(
       ),
     );
   }
+
+  // After the revision is pinned, so a runner that reports immediately finds
+  // the change already on the revision its checks were dispatched for (#414).
+  await dispatchChecks(env, logger, {
+    changeId: change.id,
+    project,
+    policy,
+    diff,
+    baseSha: baseOid,
+    headSha: evaluatedSha,
+    ...(requestOrigin !== undefined ? { requestOrigin } : {}),
+  });
 
   await emitEvent(
     env.DB,

@@ -360,6 +360,19 @@ export class StratumClient {
     return this.request<unknown>("POST", `/api/changes/${encodeURIComponent(id)}/evaluate`, {});
   }
 
+  async listChecks(id: string, opts?: { all?: boolean }) {
+    const query = opts?.all ? "?all=true" : "";
+    return this.request<unknown>("GET", `/api/changes/${encodeURIComponent(id)}/checks${query}`);
+  }
+
+  async rerunCheck(id: string, checkId: string) {
+    return this.request<unknown>(
+      "POST",
+      `/api/changes/${encodeURIComponent(id)}/checks/${encodeURIComponent(checkId)}/rerun`,
+      {},
+    );
+  }
+
   async promoteChange(id: string, opts: { title?: string; body?: string; draft?: boolean }) {
     return this.request<unknown>("POST", `/api/changes/${encodeURIComponent(id)}/github-pr`, {
       ...(opts.title !== undefined ? { title: opts.title } : {}),

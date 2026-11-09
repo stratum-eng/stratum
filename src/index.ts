@@ -29,6 +29,7 @@ import { backfillRouter } from "./routes/backfill";
 import { backupRouter } from "./routes/backup";
 import { bulkImportRouter } from "./routes/bulk-import";
 import { changesRouter } from "./routes/changes";
+import { changeChecksRouter, checkCallbackRouter } from "./routes/checks";
 import { cspReportRouter } from "./routes/csp-report";
 import { deletionJobsRouter } from "./routes/deletion-jobs";
 import { deploymentsRouter, projectDeploymentsRouter } from "./routes/deployments";
@@ -284,6 +285,10 @@ app.route("/api/users", usersRouter);
 app.route("/api/agent-signup", agentSignupRouter);
 app.route("/api/agents", agentsRouter);
 app.route("/api", changesRouter);
+// Check runs (#414): the authenticated list/re-run routes under /api/changes,
+// and the runner's signature-authenticated callback at /api/checks/:id.
+app.route("/api", changeChecksRouter);
+app.route("/api/checks", checkCallbackRouter);
 app.route("/api", reviewsRouter);
 app.route("/api/orgs", orgsRouter);
 // Org SSO admin API (/api/orgs/:slug/sso) — same authMiddleware chain as /api/orgs.

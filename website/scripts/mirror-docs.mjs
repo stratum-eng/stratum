@@ -23,6 +23,7 @@ const GUIDES = [
   ["code-review", "Line-anchored comment threads, replies, resolve/unresolve, and the three review verdicts."],
   ["issues", "Open, triage, search, and link issues — and how a merged change closes them."],
   ["ci-integration", "Bring your own CI: run evaluations on your existing infrastructure and report verdicts back."],
+  ["checks", "Check runs: asynchronous, per-job CI results reported back to a change through a signed callback — the policy block, the dispatch and callback contracts, deadlines, re-runs, and merge.requiredChecks."],
   ["webhook-executor", "Run a webhook evaluator's executor safely: process, filesystem, and network isolation, resource and time bounds, credential hygiene, Git hazards, and reference setups."],
   ["deployments", "Publish the merged tree to Cloudflare or Vercel after a change lands — the deploys: policy block, encrypted project secrets, the approval gate, limits, and what v1 does not do."],
   ["cli", "Install and use @stratum-eng/cli — projects, workspaces, commits, and the change flow from the terminal."],

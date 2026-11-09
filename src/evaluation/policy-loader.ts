@@ -3,10 +3,15 @@ import { sanitizeDeploys } from "../deploy/config";
 import { readFileFromRepo } from "../storage/git-ops";
 import { type Logger, defaultLogger } from "../utils/logger";
 import {
+  CHECK_NAME_PATTERN,
+  CHECK_NAME_RULE,
+  MAX_CHECK_DEADLINE_MS,
+  MAX_CHECK_NAMES,
   MAX_COMMAND_LENGTH,
   MAX_LLM_TIMEOUT_MS,
   MAX_PHASE_TIMEOUT_MS,
   MAX_TOTAL_BUDGET_MS,
+  MIN_CHECK_DEADLINE_MS,
   MIN_LLM_TIMEOUT_MS,
   MIN_PHASE_TIMEOUT_MS,
   MIN_TOTAL_BUDGET_MS,
@@ -14,6 +19,7 @@ import {
 import type { LlmProviderCatalog } from "./llm-providers";
 import { SIGNING_SECRET_NAME_RULE, isSigningSecretName } from "./signing-secret";
 import type {
+  ChecksEvaluatorConfig,
   EvalPolicy,
   EvaluatorConfig,
   LlmEvaluatorConfig,
@@ -260,6 +266,37 @@ export function parsePolicyContent(
       return {
         status: "malformed",
         reason: `'evaluators' declares ${llmEntries} 'llm' entries; at most ${MAX_LLM_ENTRIES} is allowed, because a second one would run a second model call on a configuration nothing can choose between`,
+      };
+    }
+    // Check names are the identity `merge.requiredChecks` gates on, so each
+    // must belong to exactly one endpoint — and one signing key. Two entries
+    // declaring the same name would let either runner report it, which makes
+    // "the runner dispatched for this check" unanswerable (#414).
+    const declaredChecks = declaredCheckNames(evaluators);
+    if (declaredChecks.duplicate !== undefined) {
+      return {
+        status: "malformed",
+        reason: `check '${declaredChecks.duplicate}' is declared by more than one 'checks' evaluator; a check name must belong to exactly one`,
+      };
+    }
+    if (declaredChecks.names.size > MAX_CHECK_NAMES) {
+      return {
+        status: "malformed",
+        reason: `'checks' evaluators declare ${declaredChecks.names.size} check names; at most ${MAX_CHECK_NAMES} are allowed`,
+      };
+    }
+    // A required check nothing dispatches could never be satisfied, so the
+    // merge is blocked either way. Saying so here names the typo instead of
+    // leaving every change waiting on a check that "has not been reported".
+    const undeclared = (merge?.requiredChecks ?? []).filter(
+      (name) => !declaredChecks.names.has(name),
+    );
+    if (undeclared.length > 0) {
+      return {
+        status: "malformed",
+        reason: `merge.requiredChecks names ${undeclared
+          .map((name) => `'${name}'`)
+          .join(", ")}, which no 'checks' evaluator declares`,
       };
     }
     policy.evaluators = evaluators;
@@ -718,6 +755,13 @@ function sanitizeEvaluator(
     return webhook;
   }
 
+  if (source.type === "checks") {
+    const entryRejections: string[] = [];
+    const checks = sanitizeChecksConfig(source, logger, entryRejections);
+    for (const reason of entryRejections) rejections.push(`${at}: ${reason}`);
+    return checks;
+  }
+
   // Evaluator types this function does not model are copied through so a new
   // type is not silently dropped before `buildEvaluators` can reject it. The
   // assertion is narrower than it looks — `type` is known to be a string, and
@@ -725,7 +769,124 @@ function sanitizeEvaluator(
   return { ...source } as EvaluatorConfig;
 }
 
-/** Keep only well-typed merge-protection fields from user-supplied config. */
+/** Fields a `checks` evaluator entry may carry. */
+const CHECKS_CONFIG_KEYS = new Set([
+  "type",
+  "url",
+  "secretRef",
+  "checks",
+  "timeoutMs",
+  "deadlineMs",
+]);
+
+/**
+ * Keep only whitelisted, well-typed fields from a user-supplied `checks` entry
+ * (#414).
+ *
+ * Returning null fails the whole policy file closed, for the reason
+ * `sanitizeLlmConfig` gives: the entry is a gate, and a gate that cannot be
+ * dispatched must not be quietly dropped.
+ *
+ * Stricter than `webhook` about its key in two ways, both because the key also
+ * authenticates what comes BACK. `secretRef` is required — an unsigned
+ * dispatch would mean an unverifiable callback, and there is no deprecation
+ * window to honour for a new entry type. And a literal `secret` is refused
+ * outright rather than ignored: anyone who can read the repository could sign
+ * a `passed` report with it.
+ */
+function sanitizeChecksConfig(
+  source: Record<string, unknown>,
+  logger: Logger,
+  rejections: string[],
+): ChecksEvaluatorConfig | null {
+  const reject = (reason: string): null => {
+    logger.warn("Dropping checks evaluator entry", { reason });
+    rejections.push(reason);
+    return null;
+  };
+
+  for (const key of Object.keys(source)) {
+    if (!CHECKS_CONFIG_KEYS.has(key) && key !== "secret") {
+      logger.warn("Ignoring unrecognized checks evaluator field", { field: key });
+    }
+  }
+
+  if (typeof source.url !== "string" || source.url.trim() === "") {
+    return reject("checks evaluator has no 'url'");
+  }
+  if (source.secret !== undefined) {
+    return reject(
+      "checks evaluator does not accept a literal 'secret'; store the key as a project secret and name it with 'secretRef'",
+    );
+  }
+  // Never the value: an author may paste the raw key here by mistake.
+  if (typeof source.secretRef !== "string" || !isSigningSecretName(source.secretRef)) {
+    return reject(
+      source.secretRef === undefined
+        ? "checks evaluator requires 'secretRef', the project secret that signs the dispatch and verifies the runner's callbacks"
+        : `checks 'secretRef' ${SIGNING_SECRET_NAME_RULE}`,
+    );
+  }
+  if (!Array.isArray(source.checks) || source.checks.length === 0) {
+    return reject("checks evaluator requires 'checks', a non-empty list of check names");
+  }
+  const names: string[] = [];
+  for (const name of source.checks as unknown[]) {
+    if (typeof name !== "string" || !CHECK_NAME_PATTERN.test(name)) {
+      return reject(`check name ${JSON.stringify(forLog(name))} ${CHECK_NAME_RULE}`);
+    }
+    if (names.includes(name)) return reject(`check '${name}' is listed twice`);
+    names.push(name);
+  }
+
+  const config: ChecksEvaluatorConfig = {
+    type: "checks",
+    url: source.url,
+    secretRef: source.secretRef,
+    checks: names,
+  };
+  const timeoutMs = clampDuration(
+    source.timeoutMs,
+    { min: MIN_PHASE_TIMEOUT_MS, max: MAX_PHASE_TIMEOUT_MS },
+    "checks.timeoutMs",
+    logger,
+  );
+  if (timeoutMs !== undefined) config.timeoutMs = timeoutMs;
+  const deadlineMs = clampDuration(
+    source.deadlineMs,
+    { min: MIN_CHECK_DEADLINE_MS, max: MAX_CHECK_DEADLINE_MS },
+    "checks.deadlineMs",
+    logger,
+  );
+  if (deadlineMs !== undefined) config.deadlineMs = deadlineMs;
+  return config;
+}
+
+/** Every check name a policy's `checks` entries declare, and the first repeated one. */
+function declaredCheckNames(evaluators: EvaluatorConfig[]): {
+  names: Set<string>;
+  duplicate?: string;
+} {
+  const names = new Set<string>();
+  let duplicate: string | undefined;
+  for (const entry of evaluators) {
+    if (entry.type !== "checks") continue;
+    for (const name of entry.checks) {
+      if (names.has(name)) duplicate ??= name;
+      names.add(name);
+    }
+  }
+  return duplicate === undefined ? { names } : { names, duplicate };
+}
+
+/**
+ * Keep only well-typed merge-protection fields from user-supplied config.
+ *
+ * Throws on a malformed `requiredChecks`, which `parsePolicyContent` turns
+ * into a malformed file. The older fields here are dropped when mistyped, and
+ * for a gate that is the wrong direction — `requiredChecks: lint` (a string,
+ * not a list) would silently require nothing.
+ */
 function sanitizeMergePolicy(raw: unknown): MergePolicy | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
   const source = raw as Record<string, unknown>;
@@ -743,6 +904,20 @@ function sanitizeMergePolicy(raw: unknown): MergePolicy | null {
     source.requiredEvaluators.every((entry) => typeof entry === "string")
   ) {
     merge.requiredEvaluators = source.requiredEvaluators;
+  }
+  if (source.requiredChecks !== undefined) {
+    const required = source.requiredChecks;
+    if (
+      !Array.isArray(required) ||
+      !required.every(
+        (entry): entry is string => typeof entry === "string" && CHECK_NAME_PATTERN.test(entry),
+      )
+    ) {
+      throw new Error(
+        `merge.requiredChecks must be a list of check names, each of which ${CHECK_NAME_RULE}`,
+      );
+    }
+    if (required.length > 0) merge.requiredChecks = [...new Set(required)];
   }
   if (typeof source.allowForce === "boolean") {
     merge.allowForce = source.allowForce;

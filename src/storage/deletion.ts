@@ -469,6 +469,7 @@ export async function deleteProjectCascade(
     // 1) D1 — FK children first, keyed by the id-sets captured up front so
     // they stay deletable even after a crash removed their parents.
     await deleteByIdChunks(env.DB, "eval_runs", "change_id", target.changeIds);
+    await deleteByIdChunks(env.DB, "checks", "change_id", target.changeIds);
     await deleteByIdChunks(env.DB, "change_comments", "change_id", target.changeIds);
     await deleteByIdChunks(env.DB, "change_reviews", "change_id", target.changeIds);
     await deleteByIdChunks(env.DB, "webhook_deliveries", "webhook_id", target.webhookIds);
@@ -629,6 +630,7 @@ export async function verifyProjectDeleted(
   try {
     const childCounts: [string, string, readonly string[]][] = [
       ["eval_runs", "change_id", target.changeIds],
+      ["checks", "change_id", target.changeIds],
       ["change_comments", "change_id", target.changeIds],
       ["change_reviews", "change_id", target.changeIds],
       ["webhook_deliveries", "webhook_id", target.webhookIds],

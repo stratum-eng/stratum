@@ -1195,6 +1195,7 @@ gitHttpRouter.post("/:namespace/:slug/git-receive-pack", async (c) => {
     workspaceRemote: forkResult.data.remote,
     actor,
     waitUntil: getWaitUntil(c),
+    requestOrigin: new URL(c.req.url).origin,
   });
   if (!outcome.success) {
     logger.error("Gated push change creation failed", outcome.error);

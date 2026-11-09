@@ -114,6 +114,12 @@ bring-your-own-CI hook: Stratum POSTs the change to an HTTPS endpoint you
 host, and your endpoint returns the verdict. The full contract is documented
 [below](#the-webhook-evaluator-contract).
 
+Its asynchronous sibling is the `checks` evaluator: Stratum POSTs the change to
+your endpoint and returns at once, and your runner reports each job's result
+later through a signed callback. It executes nothing itself either — the code
+runs on your infrastructure. Use it when a suite takes longer than one request
+can wait, or when you want a result per job. See [Check runs](checks.md).
+
 ### 3. `merge.postMergeCommand` — post-merge smoke in a sandbox
 
 After a merge, the policy's `merge.postMergeCommand` (if set) runs in a
@@ -262,10 +268,17 @@ Any non-2xx status is recorded as a failed evaluation
 ### The timeout constraint (important)
 
 The call is **synchronous**: Stratum makes one HTTP request to your webhook and
-aborts it after `timeoutMs` (default **10 seconds**). The evaluation run itself
-may be queued, so opening the change does not wait for your CI, but there is **no
-async callback API today** — your CI must still produce its verdict within that
-one request. Practical approaches:
+aborts it after `timeoutMs` (default **10 seconds**, at most 120). The
+evaluation run itself may be queued, so opening the change does not wait for
+your CI, but the `webhook` evaluator has no callback — your CI must produce its
+verdict within that one request.
+
+**If your suite cannot finish in that window, use [check runs](checks.md)
+instead.** They are the asynchronous contract: your runner acknowledges the
+request, works for as long as it needs (30 minutes by default, up to 6 hours),
+and reports each job back through a signed callback.
+
+If you stay on the webhook evaluator, the practical approaches are:
 
 - Keep the webhook check fast (lint, typecheck, focused smoke tests) and
   raise `timeoutMs` moderately for slower suites.
@@ -360,27 +373,30 @@ To set expectations, Stratum has none of the following today:
 - Dependency/build caching
 - Scheduled jobs (cron workflows)
 - A general secrets store *for evaluators*. Stratum does have an encrypted
-  per-project secret store, but only three things read it: the deploy runner,
+  per-project secret store, but only four things read it: the deploy runner,
   the `llm` evaluator when a policy names a provider to bring its own key to
-  ([Getting started](getting-started.md#bringing-your-own-model-key)), and the
-  webhook evaluator's `secretRef`. Nothing interpolates it into a policy file
-  or into a receiver's environment.
+  ([Getting started](getting-started.md#bringing-your-own-model-key)), the
+  webhook evaluator's `secretRef`, and the `checks` evaluator's `secretRef`
+  (to sign its dispatch and verify the runner's reports). Nothing interpolates
+  it into a policy file or into a receiver's environment.
 - Deployment *environments* — no staging/production separation, no
   per-environment variables, no environment protection rules. What exists is a
   flat list of named deploys, each optionally gated by a single approval
   (`requiresApproval: true`), plus a retry. There is no rollback, no preview
   deploy of an unmerged change, and no build step. See
   [Deployments](deployments.md).
-- Status-check aggregation — Stratum does not collect external CI check
-  results the way a GitHub PR's checks tab does. An external system reports a
-  verdict only by answering the webhook evaluator synchronously; a check that
-  reports anywhere else is invisible to the gate.
+- Check annotations, log uploads and artifacts. [Check runs](checks.md) collect
+  a status, a summary and a link per named job, and can gate the merge — but
+  only for checks the policy declares and Stratum dispatched. A CI system that
+  reports somewhere else (a GitHub commit status, say) is invisible to the
+  gate.
 
 If you need those, run a real CI system and connect it via the webhook
 evaluator (for gating) or via GitHub sync in layer mode (for everything else).
 
 ## See also
 
+- [Check runs](checks.md) — asynchronous, per-job results reported back to a change
 - [Running a Webhook Evaluator Executor Safely](webhook-executor.md) — isolating the code a receiver runs
 - [Deployments](deployments.md) — the `deploys:` policy block, targets, secrets, and limits
 - [FAQ: Does Stratum replace GitHub Actions?](faq.md#does-stratum-replace-github-actions)

@@ -15,6 +15,7 @@ import {
   evaluateWorkspace,
   resolveProjectHead,
 } from "../services/change-flow";
+import { dispatchChecks } from "../services/check-runs";
 import { type DispatchOutcome, dispatchEvaluationRun } from "../services/evaluation-run";
 import { getCommitLogPreferNative } from "../storage/artifacts-reads";
 import { recordAudit } from "../storage/audit";
@@ -427,6 +428,7 @@ app.post("/projects/:name/changes", async (c) => {
       ...(agentOwnerId !== undefined ? { agentOwnerId } : {}),
     },
     waitUntil,
+    requestOrigin: new URL(c.req.url).origin,
     ...(queueRun ? { queueRun } : {}),
   });
   if (!outcome.success) {
@@ -449,7 +451,7 @@ app.post("/projects/:name/changes", async (c) => {
       c.env,
       logger,
       { changeId: outcome.data.change.id, runId: outcome.data.runId },
-      waitUntil ? { waitUntil } : {},
+      { requestOrigin: new URL(c.req.url).origin, ...(waitUntil ? { waitUntil } : {}) },
     ),
     outcome.data.change,
     { inlineStatus: 201 },
@@ -1576,7 +1578,7 @@ app.post("/changes/:id/evaluate", async (c) => {
       c.env,
       logger,
       { changeId: id, runId },
-      waitUntil ? { waitUntil } : {},
+      { requestOrigin: new URL(c.req.url).origin, ...(waitUntil ? { waitUntil } : {}) },
     );
     logger.info("Change re-evaluation dispatched", { changeId: id, runId, mode: dispatched.mode });
     return respondToDispatch(
@@ -1617,6 +1619,7 @@ app.post("/changes/:id/evaluate", async (c) => {
     evalRuns,
     evalResult,
     billingSubject: evaluateSubject,
+    policy: evaluatedPolicy,
   } = evaluation.data;
 
   const recordResult = await recordEvalRuns(c.env.DB, logger, id, evalRuns);
@@ -1749,6 +1752,18 @@ app.post("/changes/:id/evaluate", async (c) => {
       return badRequest(updateResult.error.message);
     }
   }
+
+  // The revision is pinned; announce it to the project's check runner (#414).
+  // A new set of runs replaces whatever the previous revision's were waiting on.
+  await dispatchChecks(c.env, logger, {
+    changeId: id,
+    project,
+    policy: evaluatedPolicy,
+    diff,
+    baseSha: baseOid,
+    headSha: evaluatedSha,
+    requestOrigin: new URL(c.req.url).origin,
+  });
 
   // Layer mode: report the verdict to the change's linked GitHub PR (comment
   // upsert + "stratum/evaluation" commit status). Best-effort — a GitHub

@@ -171,6 +171,13 @@ export interface MergePolicy {
   requiredApprovals?: number;
   /** Evaluator types whose latest run must have passed (e.g. ["secret_scan", "diff"]). */
   requiredEvaluators?: string[];
+  /**
+   * Check-run names whose latest run for the evaluated revision must be
+   * `passed` (#414). Every name here is declared by a `checks` evaluator entry
+   * in the same file — the loader fails the file closed otherwise — so a
+   * required check is always one Stratum itself dispatches.
+   */
+  requiredChecks?: string[];
   /** The ?force=true override is rejected unless this is explicitly true. Default false. */
   allowForce?: boolean;
   /** When true, a change whose recorded base is behind project HEAD cannot merge. */
@@ -233,6 +240,35 @@ export interface WebhookEvaluatorConfig {
   timeoutMs?: number;
 }
 
+/**
+ * The `checks` evaluator's slice of `.stratum/policy.yaml` (#414, ADR 011).
+ *
+ * Unlike every other entry this one produces no verdict of its own: it names
+ * an endpoint that is told about each evaluated revision and reports back
+ * later, per check, through a signed callback. It therefore contributes no
+ * `eval_runs` row and no score — a dispatch that always "passed" would satisfy
+ * `requireAll: false` on its own — and gates a merge only through
+ * `merge.requiredChecks`.
+ *
+ * Produced only by `sanitizeChecksConfig` (`policy-loader.ts`): `secretRef` is
+ * always present and there is no literal `secret`, because the same key
+ * authenticates the runner's callbacks and a key readable from the repository
+ * would let any reader report a pass.
+ */
+export interface ChecksEvaluatorConfig {
+  type: "checks";
+  /** Where the dispatch request is POSTed. */
+  url: string;
+  /** Name of the project secret that signs the dispatch and verifies callbacks. */
+  secretRef: string;
+  /** The check names this endpoint reports. Unique across the whole file. */
+  checks: string[];
+  /** How long the dispatch request itself may take. */
+  timeoutMs?: number;
+  /** How long a check may stay non-terminal before it is flipped to `errored`. */
+  deadlineMs?: number;
+}
+
 export type EvaluatorConfig =
   | {
       type: "diff";
@@ -242,6 +278,7 @@ export type EvaluatorConfig =
       requiredPatterns?: string[];
     }
   | WebhookEvaluatorConfig
+  | ChecksEvaluatorConfig
   | SandboxEvaluatorConfig
   | LlmEvaluatorConfig;
 

@@ -85,3 +85,45 @@ export function llmTimeoutMs(config: { timeoutMs?: number } | undefined): number
   if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_LLM_TIMEOUT_MS;
   return Math.min(MAX_LLM_TIMEOUT_MS, Math.max(MIN_LLM_TIMEOUT_MS, Math.floor(raw)));
 }
+
+/**
+ * How long a check run (#414) may stay `queued` or `running` when its `checks`
+ * entry sets no `deadlineMs`. Sized for a real CI suite rather than for an
+ * evaluator: the whole point of check runs is work that outlives a request.
+ */
+export const DEFAULT_CHECK_DEADLINE_MS = 30 * 60_000;
+
+/** Bounds for a policy-supplied `checks.deadlineMs`. */
+export const MIN_CHECK_DEADLINE_MS = 60_000;
+export const MAX_CHECK_DEADLINE_MS = 6 * 60 * 60_000;
+
+/** Timeout for the dispatch request when a `checks` entry sets no `timeoutMs`. */
+export const DEFAULT_CHECK_DISPATCH_TIMEOUT_MS = 10_000;
+
+/**
+ * Most check names one policy file may declare across all its `checks`
+ * entries. Each is a D1 row per evaluated revision and a line on the change
+ * page; the bound keeps one dispatch inside a single D1 batch.
+ */
+export const MAX_CHECK_NAMES = 32;
+
+/**
+ * A check name: what a runner reports under and what `merge.requiredChecks`
+ * lists. Path-like so `ci/test` and `build.linux` read naturally, and narrow
+ * enough to render and bind without escaping.
+ */
+export const CHECK_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$/;
+
+/** What a rejected check name is told. */
+export const CHECK_NAME_RULE =
+  "must be 1-64 characters of letters, digits, '.', '_', '-' or '/', starting with a letter or digit";
+
+/**
+ * The deadline a `checks` entry asks for, clamped again at the point of use
+ * for the reason `llmTimeoutMs` gives.
+ */
+export function checkDeadlineMs(config: { deadlineMs?: number } | undefined): number {
+  const raw = config?.deadlineMs;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_CHECK_DEADLINE_MS;
+  return Math.min(MAX_CHECK_DEADLINE_MS, Math.max(MIN_CHECK_DEADLINE_MS, Math.floor(raw)));
+}

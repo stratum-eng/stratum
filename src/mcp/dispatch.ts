@@ -25,6 +25,7 @@ import { contextStorage } from "hono/context-storage";
 import { authMiddleware } from "../middleware/auth";
 import { orgIpAllowlistMiddleware } from "../middleware/org-ip-allowlist";
 import { changesRouter } from "../routes/changes";
+import { changeChecksRouter } from "../routes/checks";
 import { issuesRouter } from "../routes/issues";
 import { orgsRouter } from "../routes/orgs";
 import { projectsRouter } from "../routes/projects";
@@ -71,6 +72,10 @@ api.route("/api/projects", projectsRouter);
 api.route("/api/workspaces", workspacesRouter);
 api.route("/api/users", usersRouter);
 api.route("/api", changesRouter);
+// The list and re-run routes only. The runner's callback (`/api/checks/:id`)
+// authenticates by signature, not by a caller's credential, and has no tool —
+// so it is not mounted here and no tool call can reach it.
+api.route("/api", changeChecksRouter);
 api.route("/api", reviewsRouter);
 // Only the org/member/team router. SSO, security policy and audit export stay
 // off the MCP surface: they are administrative settings with no tool, and a
