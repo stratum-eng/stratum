@@ -6,8 +6,8 @@ on:
     types: [opened, synchronize, reopened]
   # Release Autopilot opens its PRs with GITHUB_TOKEN, which starts no
   # pull_request workflows, so it dispatches this on the release branch.
-  # The check runs land on that branch's head commit, which is what main's
-  # required checks look at.
+  # Its checks land on the branch's head commit, but GitHub does not count
+  # dispatched checks toward a ruleset's required checks.
   workflow_dispatch:
     inputs:
       dispatch_id:

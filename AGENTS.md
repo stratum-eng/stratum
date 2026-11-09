@@ -69,10 +69,6 @@ staging and production deploy only from `ci.yml` on `main`; PRs get an isolated 
 preview Worker from `pr-preview.yml` instead.
 Mirror lint → typecheck → test locally before pushing.
 
-`main` requires these checks to pass before a PR merges: Lint, Type Check, Unit Tests,
-Unit Tests (engines floor), Integration Tests, both CLI & Agent Packages jobs, and Security
-Scan. A PR that GitHub won't merge for a missing check needs that check run, not a bypass.
-
 1. **Typecheck and tests must pass.** Never comment out, skip, or `.skip` a test to get green.
 2. **Run lint last.** Biome autofixes formatting — running it before you finish editing just
    creates churn. Fix all lint errors; zero warnings tolerated in CI.

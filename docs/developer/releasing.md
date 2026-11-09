@@ -40,7 +40,7 @@ their bullets.
 4. **Gates.** It runs `prepare`, then lint, typecheck and test:coverage on that exact tree.
 5. **Ships.** If `main` moved during the gates, it stops and tries again on the next run.
    Otherwise it opens the PR, checks that only release files changed, and starts **PR
-   Checks** on the release branch (its own PRs start none, and `main` requires them). When
+   Checks** on the release branch (its own PRs start none on their own). When
    they pass it squash-merges, then starts **Release** (tag and publish) and **CI**
    (staging, then production).
 
