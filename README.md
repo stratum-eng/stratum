@@ -329,8 +329,11 @@ A `deploys:` block in `.stratum/policy.yaml` publishes the merged tree to Cloudf
 (static assets or a Worker script) or Vercel · encrypted per-project deploy secrets that
 no API ever reads back and that agent identities cannot manage · an optional approval gate
 per deploy · retry as a new attempt · supersession when a newer merge lands first ·
-deployment events on the webhook stream. There is no build step — see
-[Known limitations](#known-limitations).
+deployment events on the webhook stream. A project that needs a build, database
+migrations or staging before production declares a deploy pipeline in
+`.stratum/ci.yaml` instead: its own steps, run per environment by the CI executor, with
+the deploy credentials held by the executor rather than by Stratum, and a rollback action
+— see [Known limitations](#known-limitations).
 
 **Import and sync**
 Import from GitHub, GitLab, and Bitbucket · bidirectional GitHub sync (inbound webhooks,
@@ -376,11 +379,11 @@ tokens) · `@stratum-eng/cli` covering the change flow, issues, and activity ·
   viable. Keep LFS repos on GitHub and use layer mode.
 - **Git submodules are rejected**, not supported — a gitlink or `.gitmodules` fails import,
   gated push, and change creation rather than corrupting the tree silently.
-- **Deploys have no build step** — v1 publishes the tree **exactly as committed**. There's
-  no install, bundle, or framework build, so commit your built output (and point `dir:` at
-  it) or use the `vercel` target, which builds the uploaded source remotely. There's also
-  no preview deploy of an unmerged change and no rollback: retrying an earlier successful
-  deployment is the recovery path. Netlify isn't supported.
+- **Static deploy targets have no build step** — a `deploys:` entry publishes the tree
+  **exactly as committed**. For an install, a bundle, database migrations or staged
+  environments, use a deploy pipeline (`deploy:` in `.stratum/ci.yaml`), which needs the CI
+  executor. There's no preview deploy of an unmerged change. A rollback redeploys an
+  earlier version and does **not** undo a database migration. Netlify isn't supported.
 - **Scale** — git operations run in-memory on the Worker; large repos will hit Worker limits.
 - **Gated pushes evaluate on the request** — change creation and re-evaluation run on a queue,
   but a gated `git push` reports its verdict in its own response, so its latency includes the

@@ -68,10 +68,14 @@ nothing else reads it. The webhook evaluator's older literal `secret` field
 still works but is deprecated — a value written there sits in
 `.stratum/policy.yaml`, in git, and in every clone, so treat it as published to
 anyone who can read the repository and move it to `secretRef`. And it can
-**deploy the merged tree** to Cloudflare or Vercel from a `deploys:` block, with an optional approval gate
-and a retry. That is not deployment environments: there is no
-staging/production separation, no per-environment variables, no build step, no
-preview deploy, and no rollback. See [Deployments](/guides/deployments/).
+**deploy the merged commit**: either by publishing the tree as committed to
+Cloudflare or Vercel from a `deploys:` block, or by running a **deploy
+pipeline** — your own build, migration and deploy commands, per environment,
+staging before production — on the first-party CI executor. Both have an
+optional approval gate, retry, and rollback to an earlier deployment (which
+redeploys an earlier version and does **not** undo a database migration).
+There is no preview deploy of an unmerged change. See
+[Deployments](/guides/deployments/).
 
 ## Do I have to leave GitHub to use it?
 

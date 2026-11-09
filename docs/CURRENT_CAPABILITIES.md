@@ -71,10 +71,17 @@ limitations recorded below.
   (`DEPLOY_SECRET_KEY` required; project admins only, agents refused),
   supersession of older deploys of the same name, retry as a new attempt (open to
   an agent with write access, unlike approval), and `deployment.requested` /
-  `deployment.succeeded` / `deployment.failed` events. **No build step, no
-  preview deploy, and no rollback** — see `user-guide/deployments.md`. A batch
-  merge (`changes/merge-batch`) triggers neither the post-merge check nor a
-  deploy. The deploy DLQ (`stratum-deploys-dlq`) has no consumer: dead-lettered
+  `deployment.succeeded` / `deployment.failed` events. Static targets have
+  **no build step**; **deploy pipelines** (#416, the `deploy:` section of
+  `.stratum/ci.yaml`) run a project's own steps per environment on the CI
+  executor, in order, with an approval gate between environments, one
+  deployment per environment at a time, a recorded version and a rollback
+  action. Pipeline credentials live in the executor, not in Stratum. A
+  rollback redeploys an earlier version and does not undo a migration. **No
+  preview deploy** — see `user-guide/deployments.md`. A batch merge
+  (`changes/merge-batch`) runs no post-merge check and triggers one deploy, of
+  its final commit. Pipelines have not yet been run against a deployed
+  executor. The deploy DLQ (`stratum-deploys-dlq`) has no consumer: dead-lettered
   messages sit there for manual inspection.
 - Push mirror to GitHub (#417): a per-project, admin-configured, fast-forward-only
   copy of the default branch and tags, pushed from the `stratum-mirrors` queue
@@ -249,8 +256,9 @@ environment (`wrangler.toml:84-85`), so it works out of the box.
   `wrangler.toml`, so the `sandbox` evaluator and `merge.postMergeCommand` are
   unusable on a stock instance — see
   [Sandbox-dependent features](#sandbox-dependent-features-unavailable-by-default).
-- Deployments have no build step, no preview environment and no rollback, and
-  the deploy DLQ has no consumer.
+- Deployments have no preview environment, a rollback does not undo a
+  database migration, deploy pipelines need the CI executor and have not been
+  exercised end to end on a deployed one, and the deploy DLQ has no consumer.
 - Phase 4 operational items remain: load testing at 1000+ concurrent workspaces,
   D1 hot/cold rotation, and the rest of multi-tenancy/billing for
   a managed offering — the metering, entitlement and enforcement machinery above is
