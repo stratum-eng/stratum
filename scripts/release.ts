@@ -146,7 +146,9 @@ function commandCheck(): void {
     for (const problem of problems) console.error(`  • ${problem}`);
     fail(`Found ${problems.length} problem(s)`);
   }
-  console.log(`✓ CHANGELOG.md and changelog.d/ are well-formed; latest release is ${latest ?? "(none)"}`);
+  console.log(
+    `✓ CHANGELOG.md and changelog.d/ are well-formed; latest release is ${latest ?? "(none)"}`,
+  );
 }
 
 /** `latest`: print the newest released version. */
@@ -266,7 +268,10 @@ function commandPrepare(args: string[]): Prepared {
   // otherwise empty, with the only new content living in fragments, must
   // still infer its bump from what those fragments actually add.
   const unreleased = parseChangelog(changelog).sections.find((s) => s.version === UNRELEASED);
-  const mergedBody = mergeChangelogBodies([unreleased?.body ?? "", ...fragments.map((f) => f.body)]);
+  const mergedBody = mergeChangelogBodies([
+    unreleased?.body ?? "",
+    ...fragments.map((f) => f.body),
+  ]);
   const merged = withUnreleasedBody(changelog, mergedBody);
   if (!merged.success) fail(merged.error);
 
@@ -303,9 +308,7 @@ function commandPrepare(args: string[]): Prepared {
   if (fragments.length > 0) {
     console.log(`  Folded in and removed ${fragments.length} changelog.d/ fragment(s).`);
   }
-  console.log(
-    "  Review the diff (CHANGELOG.md, package.json, package-lock.json, src/version.ts,",
-  );
+  console.log("  Review the diff (CHANGELOG.md, package.json, package-lock.json, src/version.ts,");
   console.log("  removed fragments), then open a PR. Merging it publishes the release.");
   return prepared;
 }
@@ -358,7 +361,9 @@ function commandPr(args: string[]): void {
       run("gh", ["release", "list", "--limit", "1000", "--json", "tagName,isDraft"]),
     ) as Array<{ tagName: string; isDraft: boolean }>;
     if (!releases.some((release) => release.tagName === `v${published}` && !release.isDraft)) {
-      fail(`v${published} is tagged but has no published GitHub release. Run the Release workflow for it first.`);
+      fail(
+        `v${published} is tagged but has no published GitHub release. Run the Release workflow for it first.`,
+      );
     }
   }
 
@@ -371,7 +376,15 @@ function commandPr(args: string[]): void {
   const tag = `v${prepared.to}`;
   const branch = `release/${tag}`;
   run("git", ["switch", "-c", branch]);
-  run("git", ["add", "-A", "CHANGELOG.md", "package.json", "package-lock.json", "src/version.ts", "changelog.d"]);
+  run("git", [
+    "add",
+    "-A",
+    "CHANGELOG.md",
+    "package.json",
+    "package-lock.json",
+    "src/version.ts",
+    "changelog.d",
+  ]);
   const trailer = coAuthor ? ["-m", `Co-Authored-By: ${coAuthor}`] : [];
   run("git", ["commit", "-m", `chore(release): ${tag}`, ...trailer]);
   run("git", ["push", "--set-upstream", "origin", branch]);
