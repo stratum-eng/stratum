@@ -86,6 +86,12 @@ end up editing the same lines. Use a [Keep a Changelog](https://keepachangelog.c
 group (`Breaking`, `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`). That text
 becomes the release notes verbatim, so write it for someone deciding whether to upgrade.
 
+The **Docs & Changelog** check on every PR enforces this, and also asks for a `docs/user-guide/`
+or `docs/api/` update when you change API routes, MCP, the evaluator or the CLI. If a change
+genuinely needs neither, say why in the PR description on its own line, as
+`No changelog: <why>` or `No docs needed: <why>`, and the check accepts it. The reason must be at
+least 10 characters, so `n/a` doesn't count, and text inside HTML comments is ignored.
+
 Releases are cut from the changelog automatically by the daily **Release Autopilot** workflow.
 A release with `Breaking` or `Removed` entries waits for a maintainer to merge it. See
 [`docs/developer/releasing.md`](docs/developer/releasing.md).

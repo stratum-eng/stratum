@@ -92,6 +92,12 @@ Mirror lint → typecheck → test locally before pushing.
   conflicts in this repo, and two PRs adding two different files can't collide. Use a Keep a
   Changelog group heading; that text ships verbatim as release notes, and `release:prepare` infers
   the version bump from which groups are present across all fragments (`docs/developer/releasing.md`).
+- **The "Docs & Changelog" PR check enforces this rule and the docs rule below.** A change under
+  `src/`, `cli/src/`, `agent/src/` or `migrations/` needs a `changelog.d/` fragment, and a change to
+  API routes, MCP, the evaluator or the CLI also needs `docs/user-guide/` or `docs/api/` updated.
+  When one genuinely isn't needed, put `No docs needed: <why>` or `No changelog: <why>` on its own
+  line in the PR description. The reason is the audit trail, so make it specific.
+  `scripts/pr-docs.ts` holds the exact rules.
 - **A change to user-facing config, API shape, or evaluator/policy behavior also updates the public
   docs** (`docs.usestratum.dev`) in the same PR — not just `CHANGELOG.md`. What a self-hoster or
   agent operator reads to configure `.stratum/policy.yaml` or use the API is what must not go
