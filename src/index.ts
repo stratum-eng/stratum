@@ -53,6 +53,7 @@ import { passkeysRouter } from "./routes/passkeys";
 import { posthogProxyRouter } from "./routes/posthog-proxy";
 import { projectsRouter } from "./routes/projects";
 import { restoreRouter } from "./routes/restore";
+import { resyncRouter } from "./routes/resync";
 import { reviewsRouter } from "./routes/reviews";
 import { scimRouter } from "./routes/scim";
 import { securitySettingsRouter } from "./routes/security-settings";
@@ -280,6 +281,9 @@ app.route("/api/projects", issuesRouter);
 app.route("/api/projects", projectDeploymentsRouter);
 // Push mirror (#417): :namespace/:slug/mirror, ahead of projectsRouter like the above.
 app.route("/api/projects", mirrorRouter);
+// Break-glass resync (#418): :namespace/:slug/resync, ahead of projectsRouter
+// for the same reason. Deliberately NOT mounted in the MCP dispatcher.
+app.route("/api/projects", resyncRouter);
 app.route("/api/projects", projectsRouter);
 app.route("/api/deployments", deploymentsRouter);
 app.route("/api/workspaces", workspacesRouter);

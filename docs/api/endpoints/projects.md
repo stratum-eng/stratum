@@ -182,6 +182,85 @@ diverged again. On a healthy mirror it queues a push now.
 
 Deletes the configuration and status. The GitHub repository is not changed.
 
+### Resync from GitHub (break-glass)
+`POST /api/projects/{namespace}/{slug}/resync`
+
+Fast-forwards the project's default branch to the same branch on GitHub. This
+is the one exception to the read-only mirror, for a fix that had to land on
+GitHub while Stratum could not merge. **The commits it brings in are not
+evaluated.** Read [the guide](../../user-guide/push-mirror.md#break-glass-resync-from-github)
+before you use it.
+
+Project admins only, as above. In addition, an OAuth grant is refused with
+`403 ADMIN_REQUIRES_DIRECT_CREDENTIAL`: use a browser session or a personal API
+token with the `read_write` scope. The organization's second-factor policy and
+IP allowlist apply.
+
+The source is the project's push mirror repository, or, for a project with no
+mirror, its linked GitHub repository. The request cannot choose it.
+
+```json
+{ "expectedSha": "9f2c1e7a0b3d4c5e6f708192a3b4c5d6e7f80910" }
+```
+
+The body is optional. `expectedSha` is the full 40-character SHA that GitHub's
+branch must be at; any other commit there is refused.
+
+`200` with `"status": "fast-forwarded"`:
+
+```json
+{
+  "status": "fast-forwarded",
+  "branch": "main",
+  "source": { "kind": "mirror", "repo": "acme/widgets" },
+  "oldSha": "4b825dc6…",
+  "newSha": "9f2c1e7a…",
+  "commits": [{ "sha": "9f2c1e7a…", "summary": "Fix the merge queue deadlock", "author": "Ada" }],
+  "commitCount": 1,
+  "commitsTruncated": false,
+  "evaluated": false,
+  "mirror": { "repo": "acme/widgets", "state": "ok", "pending": true }
+}
+```
+
+`200` with `"status": "up-to-date"` when the project already contains GitHub's
+commit. It carries `branch`, `source`, `projectSha`, `upstreamSha` and `mirror`,
+and nothing was changed.
+
+`source.kind` is `mirror` or `source`. `commits` holds at most 50 entries,
+newest first. `mirror` is the mirror after the resync, or `null`.
+
+A refusal carries `code`, and `projectSha` and `upstreamSha` when it knows them.
+Nothing was changed, except where the table says the outcome is unknown.
+
+| Status | `code` | Meaning |
+|---|---|---|
+| `400` | `RESYNC_INVALID_SHA` | `expectedSha` is not a full 40-character SHA |
+| `403` | `ADMIN_REQUIRES_DIRECT_CREDENTIAL` | An OAuth grant was used |
+| `403` | `GITHUB_APP_NOT_AUTHORIZED` | The App installation is not linked to the project's owner |
+| `403` | `GITHUB_APP_PERMISSION_DENIED` | The App lacks **Contents: read** on the repository |
+| `409` | `RESYNC_NO_UPSTREAM` | The project has no push mirror and no linked GitHub repository |
+| `409` | `RESYNC_DIVERGED` | The two branches have diverged; the error names both commits |
+| `409` | `RESYNC_SHA_MISMATCH` | GitHub's branch is not at `expectedSha` |
+| `409` | `RESYNC_PROJECT_MOVED` | A merge landed while the resync was running; run it again |
+| `409` | `RESYNC_UPSTREAM_BRANCH_MISSING` | The GitHub repository has no branch with the default branch's name |
+| `409` | `RESYNC_PROJECT_BRANCH_MISSING` | The project has no commits; a resync does not populate it |
+| `409` | `GITHUB_APP_NOT_INSTALLED` | The App is not installed on the repository |
+| `409` | `TARGET_DELETING` | The project is being deleted |
+| `502` | `GITHUB_ACCESS_DENIED` | GitHub refused the App's token for the repository |
+| `502` | `RESYNC_UPSTREAM_UNAVAILABLE` | GitHub could not be read |
+| `502` | `RESYNC_PROJECT_UNAVAILABLE` | The project's repository could not be read |
+| `502` | `RESYNC_HISTORY_INCOMPLETE` | The history between the two commits could not be read completely |
+| `502` | `RESYNC_PUSH_REJECTED` | The project's repository refused the fast-forward |
+| `502` | `RESYNC_FAILED` | The resync failed. **The outcome may be unknown**: check the branch before you retry |
+| `503` | `GITHUB_APP_NOT_CONFIGURED` | The GitHub App is not configured on this instance |
+| `504` | `RESYNC_PUSH_TIMEOUT` | The push did not finish in time. **The outcome is unknown**: check the branch before you retry |
+
+A fast-forward writes `branch.resync_requested` and `branch.resynced` audit
+entries and emits a `branch.resynced` event. The settings page posts a form to
+the same path with `confirm` (the source `owner/repository`, typed out) and an
+optional `expected_sha`; a form post is answered with a redirect.
+
 ## Browsing a branch
 
 `GET .../files`, `.../content`, and `.../log` accept `?ref=<branch>`, defaulting

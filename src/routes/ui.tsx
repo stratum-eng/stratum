@@ -4,6 +4,7 @@ import { fetchInviteCodes, referralServiceConfigured } from "../beta/gate";
 import { type UsageBannerNotice, loadUsageBanner } from "../billing/usage-banner";
 import { buildUsageReport } from "../billing/usage-report";
 import { githubRepoKey } from "../github/issue-import";
+import { resolveResyncSource, resyncSourceRepo } from "../github/resync";
 import { cannotMintLegacyCredential } from "../middleware/auth";
 import { NO_ANALYTICS_HEADER } from "../middleware/web-analytics";
 import {
@@ -133,6 +134,7 @@ import { getCurrentUser, renderWebhooksPage } from "./form-pages";
 import { issueImportNotice } from "./issue-import";
 import { DEFAULT_COMMENTS_PAGE, DEFAULT_ISSUES_PAGE } from "./issues";
 import { type PushMirrorView, mirrorNotice, toPushMirrorView } from "./mirror";
+import { type ResyncNotice, resyncNotice } from "./resync";
 import { SUBSCRIBABLE_EVENTS } from "./webhooks";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -2761,17 +2763,35 @@ app.get("/:namespace/:slug/settings", async (c) => {
     | { current: PushMirrorView | null; defaultBranch: string; notice?: string }
     | undefined;
   let mirrorUnavailable = false;
+  // The break-glass resync card (#418) sits under the same check: its route
+  // admits the same admins and nobody else.
+  let resync:
+    | {
+        source: { kind: "mirror" | "source"; repo: string } | null;
+        defaultBranch: string;
+        notice?: ResyncNotice;
+      }
+    | undefined;
   if (await isProjectAdmin(c.env.DB, project, credentialBindingFrom(c), userId)) {
     const stored = await getPushMirror(c.env.DB, logger, project.id);
     const notice = mirrorNotice(c.req.query("mirror"));
     if (!stored.success) {
-      // Not rendered as "no mirror": see `mirrorUnavailable` on the page.
+      // Not rendered as "no mirror": see `mirrorUnavailable` on the page. The
+      // resync card is left out as well: its route would refuse for the same
+      // reason, and the notice on the mirror card says why both are missing.
       mirrorUnavailable = true;
     } else {
       mirror = {
         current: stored.data ? toPushMirrorView(stored.data) : null,
         defaultBranch: projectDefaultBranch(project),
         ...(notice !== undefined ? { notice } : {}),
+      };
+      const source = resolveResyncSource(project, stored.data);
+      const outcome = resyncNotice(c.req.query("resync"), c.req.query("from"), c.req.query("to"));
+      resync = {
+        source: source ? { kind: source.kind, repo: resyncSourceRepo(source) } : null,
+        defaultBranch: projectDefaultBranch(project),
+        ...(outcome !== undefined ? { notice: outcome } : {}),
       };
     }
   }
@@ -2794,6 +2814,7 @@ app.get("/:namespace/:slug/settings", async (c) => {
       {...(issueImport !== undefined ? { issueImport } : {})}
       {...(mirror !== undefined ? { mirror } : {})}
       {...(mirrorUnavailable ? { mirrorUnavailable: true } : {})}
+      {...(resync !== undefined ? { resync } : {})}
       user={userResult}
     />,
   );

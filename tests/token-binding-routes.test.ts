@@ -873,6 +873,9 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   "POST /api/projects/:namespace/:slug/mirror/delete",
   "POST /api/projects/:namespace/:slug/mirror/resume",
   "PUT /api/projects/:namespace/:slug/mirror",
+  // Break-glass resync (#418): the same `requireAdmin`, so a token bound to
+  // another project is refused like any other non-admin.
+  "POST /api/projects/:namespace/:slug/resync",
 ];
 
 describe("the route table", () => {

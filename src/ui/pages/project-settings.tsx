@@ -1,5 +1,6 @@
 import type { FC } from "hono/jsx";
 import type { PushMirrorView } from "../../routes/mirror";
+import type { ResyncNotice } from "../../routes/resync";
 import type { IssueImportRun } from "../../storage/github-issue-import";
 import type { ProjectSecretSummary } from "../../storage/project-secrets";
 import { FieldError, fieldAttrs } from "../components/field-error";
@@ -69,6 +70,17 @@ interface ProjectSettingsProps {
    * could not see. An empty state and a failed read must not look the same.
    */
   mirrorUnavailable?: boolean;
+  /**
+   * The break-glass resync card (#418), present only for project admins — the
+   * same people the route behind its form admits. `source` is where a resync
+   * would read from, or null when the project has neither a mirror nor a
+   * linked GitHub repository; `notice` is the outcome of the last form post.
+   */
+  resync?: {
+    source: { kind: "mirror" | "source"; repo: string } | null;
+    defaultBranch: string;
+    notice?: ResyncNotice;
+  };
   user?: { id: string; email: string; username: string } | null;
 }
 
@@ -117,6 +129,7 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
   issueImport,
   mirror,
   mirrorUnavailable,
+  resync,
   user,
 }) => {
   const nameError = secretErrorField === "name" ? secretError : undefined;
@@ -282,6 +295,94 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
                 </button>
               </form>
             </div>
+          )}
+        </div>
+      )}
+
+      {resync && (
+        <div class="card" id="resync">
+          <h3 style={{ marginTop: 0 }}>Break-glass: resync from GitHub</h3>
+          <p class="settings-help">
+            For after an incident in which a fix had to land on GitHub because this project could
+            not merge. A resync fast-forwards <code>{resync.defaultBranch}</code> to the same branch
+            on GitHub. It only ever fast-forwards: if the two have diverged it refuses and changes
+            nothing.
+          </p>
+          <p class="settings-help">
+            <strong>
+              The commits it brings in are not evaluated by this project's policy and do not go
+              through a change.
+            </strong>{" "}
+            Every resync is written to the audit log with the commits that came in.
+          </p>
+          {resync.notice !== undefined && (
+            <p class={resync.notice.ok ? "settings-help" : "settings-help settings-help-error"}>
+              {resync.notice.message}
+              {resync.notice.from !== undefined && (
+                <>
+                  {" "}
+                  Project: <code>{resync.notice.from}</code>.
+                </>
+              )}
+              {resync.notice.to !== undefined && (
+                <>
+                  {" "}
+                  GitHub: <code>{resync.notice.to}</code>.
+                </>
+              )}
+            </p>
+          )}
+          {resync.source ? (
+            <form
+              method="post"
+              action={`/api/projects/${project.namespace}/${project.slug}/resync`}
+              class="secret-form"
+            >
+              <p class="settings-help">
+                Source:{" "}
+                <a
+                  href={`https://github.com/${resync.source.repo}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {resync.source.repo}
+                </a>{" "}
+                ({resync.source.kind === "mirror" ? "this project's push mirror" : "linked source"}
+                ). Type <code>{resync.source.repo}</code> to confirm.
+              </p>
+              <div class="secret-field">
+                <label>
+                  Confirm repository
+                  <input
+                    type="text"
+                    name="confirm"
+                    placeholder={resync.source.repo}
+                    required
+                    autocomplete="off"
+                  />
+                </label>
+              </div>
+              <div class="secret-field">
+                <label>
+                  Expected commit (optional)
+                  <input
+                    type="text"
+                    name="expected_sha"
+                    placeholder="full 40-character SHA of the commit you reviewed"
+                    pattern="[0-9a-fA-F]{40}"
+                    autocomplete="off"
+                  />
+                </label>
+              </div>
+              <button type="submit" class="btn btn-danger">
+                Resync from GitHub
+              </button>
+            </form>
+          ) : (
+            <p class="settings-help">
+              This project has no push mirror and no linked GitHub repository, so there is nothing
+              to resync from.
+            </p>
           )}
         </div>
       )}

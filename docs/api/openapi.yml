@@ -1135,6 +1135,116 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/projects/{namespace}/{slug}/resync:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+    post:
+      operationId: resyncFromGitHub
+      tags: [mirror]
+      summary: "Break-glass: fast-forward the default branch to its GitHub copy"
+      description: |
+        Project admins only (user identity), with a browser session or a
+        personal API token. An OAuth grant is refused with
+        `403 ADMIN_REQUIRES_DIRECT_CREDENTIAL`. The organization's second-factor
+        policy and IP allowlist apply.
+
+        Fast-forwards the project's default branch to the same branch on the
+        project's push mirror repository or, for a project with no mirror, its
+        linked GitHub repository. The request cannot choose the source.
+
+        Fast-forward only: a diverged branch is refused with
+        `409 RESYNC_DIVERGED`, naming both commits, and nothing is changed.
+        Nothing is ever forced, rewritten or merged.
+
+        The commits this brings in are NOT evaluated: no evaluator, approval,
+        post-merge check or deployment runs for them. The audit entries
+        (`branch.resync_requested`, `branch.resynced`), the `branch.resynced`
+        event and this response all say so.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expectedSha:
+                  type: string
+                  pattern: "^[0-9a-fA-F]{40}$"
+                  description: |
+                    Only fast-forward if the branch on GitHub is at exactly this
+                    commit. Any other commit there is refused with
+                    `409 RESYNC_SHA_MISMATCH`.
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm:
+                  type: string
+                  description: The source repository, `owner/repository`, typed out.
+                expected_sha: { type: string }
+      responses:
+        "200":
+          description: The branch was fast-forwarded, or was already up to date
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ResyncFastForwarded"
+                  - $ref: "#/components/schemas/ResyncUpToDate"
+        "302":
+          description: Form post; redirect to the settings page
+        "400":
+          description: "`RESYNC_INVALID_SHA`: `expectedSha` is not a full SHA"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResyncRefusal" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            Not a project admin, an OAuth grant
+            (`ADMIN_REQUIRES_DIRECT_CREDENTIAL`), or the GitHub App is not
+            authorized for the repository (`GITHUB_APP_NOT_AUTHORIZED`,
+            `GITHUB_APP_PERMISSION_DENIED`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResyncRefusal" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            Refused, nothing changed: `RESYNC_DIVERGED`, `RESYNC_SHA_MISMATCH`,
+            `RESYNC_PROJECT_MOVED`, `RESYNC_NO_UPSTREAM`,
+            `RESYNC_UPSTREAM_BRANCH_MISSING`, `RESYNC_PROJECT_BRANCH_MISSING`,
+            `GITHUB_APP_NOT_INSTALLED` or `TARGET_DELETING`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResyncRefusal" }
+        "502":
+          description: |
+            GitHub or the project's repository could not be read or refused the
+            operation: `GITHUB_ACCESS_DENIED`, `RESYNC_UPSTREAM_UNAVAILABLE`,
+            `RESYNC_PROJECT_UNAVAILABLE`, `RESYNC_HISTORY_INCOMPLETE`,
+            `RESYNC_PUSH_REJECTED` or `RESYNC_FAILED`. After `RESYNC_FAILED`
+            the outcome may be unknown; check the branch before retrying.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResyncRefusal" }
+        "503":
+          description: "`GITHUB_APP_NOT_CONFIGURED`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResyncRefusal" }
+        "504":
+          description: |
+            `RESYNC_PUSH_TIMEOUT`: the push did not finish in time and may
+            still land. Check the branch before retrying.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResyncRefusal" }
+
   /api/projects/{namespace}/{slug}/sync/settings:
     parameters:
       - $ref: "#/components/parameters/Namespace"
@@ -1351,7 +1461,7 @@ paths:
                     workspace.created, sync.completed, issue.opened,
                     issue.commented, issue.closed, deployment.requested,
                     deployment.succeeded, deployment.failed, mirror.diverged,
-                    mirror.failed
+                    mirror.failed, branch.resynced
       responses:
         "201":
           description: Webhook created (includes the secret, shown once)
@@ -7109,6 +7219,83 @@ components:
           description: Link to the original GitHub issue; present only on imported issues
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+
+    ResyncSource:
+      type: object
+      description: Where a break-glass resync read from.
+      required: [kind, repo]
+      properties:
+        kind:
+          type: string
+          enum: [mirror, source]
+          description: The project's push mirror, or its linked GitHub repository.
+        repo:
+          type: string
+          description: "`owner/repository` on GitHub."
+
+    ResyncFastForwarded:
+      type: object
+      description: A break-glass resync that moved the default branch.
+      required:
+        [status, branch, source, oldSha, newSha, commits, commitCount, commitsTruncated, evaluated, mirror]
+      properties:
+        status: { type: string, enum: [fast-forwarded] }
+        branch: { type: string }
+        source: { $ref: "#/components/schemas/ResyncSource" }
+        oldSha: { type: string, description: The branch's commit before. }
+        newSha: { type: string, description: The branch's commit now. }
+        commits:
+          type: array
+          description: The commits that came in, newest first, at most 50.
+          items:
+            type: object
+            required: [sha, summary, author]
+            properties:
+              sha: { type: string }
+              summary: { type: string, description: First line of the commit message. }
+              author: { type: string, description: The author's name. }
+        commitCount:
+          type: integer
+          description: How many commits came in, including any left out of `commits`.
+        commitsTruncated: { type: boolean }
+        evaluated:
+          type: boolean
+          enum: [false]
+          description: Always false. No evaluator ran on these commits.
+        mirror:
+          description: The push mirror after the resync, or null when the project has none.
+          oneOf:
+            - $ref: "#/components/schemas/PushMirror"
+            - type: "null"
+
+    ResyncUpToDate:
+      type: object
+      description: A break-glass resync that found nothing to do.
+      required: [status, branch, source, projectSha, upstreamSha, mirror]
+      properties:
+        status: { type: string, enum: [up-to-date] }
+        branch: { type: string }
+        source: { $ref: "#/components/schemas/ResyncSource" }
+        projectSha: { type: string }
+        upstreamSha: { type: string }
+        mirror:
+          oneOf:
+            - $ref: "#/components/schemas/PushMirror"
+            - type: "null"
+
+    ResyncRefusal:
+      type: object
+      description: A refused break-glass resync.
+      required: [error, code]
+      properties:
+        error: { type: string }
+        code: { type: string }
+        projectSha:
+          type: string
+          description: The project's commit, when the refusal knows it.
+        upstreamSha:
+          type: string
+          description: GitHub's commit, when the refusal knows it.
 
     PushMirror:
       type: object

@@ -92,7 +92,7 @@ receiving mail servers.
 | **Your webhook evaluator endpoint** | A `webhook` evaluator in `.stratum/policy.yaml` | The diff, the policy (signing secrets stripped), and `baseSha`. See [CI Integration](ci-integration.md#the-webhook-evaluator-contract) |
 | **Your outbound webhook URLs** | A project webhook subscription | Event payloads for that project |
 | **Cloudflare (your account) or Vercel** | A `deploys:` entry in the policy | The merged tree, uploaded with the project's own credentials. See [Deployments](deployments.md) |
-| **GitHub** | A [push mirror](push-mirror.md) an admin configured on a project | That project's default branch and tags — its full history — pushed to the one repository the admin named, with a GitHub App installation token limited to that repository |
+| **GitHub** | A [push mirror](push-mirror.md) an admin configured on a project | That project's default branch and tags — its full history — pushed to the one repository the admin named, with a GitHub App installation token limited to that repository. A [break-glass resync](push-mirror.md#break-glass-resync-from-github) reads that repository's default branch back, with a read-only token limited to it, and sends nothing |
 | **GitHub / GitLab / Bitbucket** | Importing or syncing a project | Anonymous clones of **public** repositories only — imports carry no provider token. GitHub sync and PR promotion use an instance-wide `GITHUB_TOKEN` when the operator sets one |
 
 ## What is encrypted, and by whom

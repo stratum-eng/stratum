@@ -69,8 +69,15 @@ codes are in the [OpenAPI specification](openapi.yml).
   (the body carries `approveUrl`, the change page to approve on)
 - `SESSION_EXPIRED` — `401`; the browser session is no longer valid
 - `ADMIN_REQUIRES_DIRECT_CREDENTIAL` — `403`; an MCP/CLI OAuth grant was used on
-  `/api/admin/*`. Refused before routing, even when the account behind the grant
-  is the instance administrator
+  `/api/admin/*`, or on a project's break-glass
+  [`resync`](endpoints/projects.md#resync-from-github-break-glass) endpoint.
+  Refused before routing, even when the account behind the grant is the instance
+  administrator
+- `RESYNC_DIVERGED` — `409`; a break-glass resync found that the project's
+  default branch and the branch on GitHub have diverged. The body carries
+  `projectSha` and `upstreamSha`. Nothing was changed. The other `RESYNC_*`
+  codes are listed with the
+  [endpoint](endpoints/projects.md#resync-from-github-break-glass)
 - `CSRF` — `403`; a `POST`/`PUT`/`PATCH`/`DELETE` arrived with an `Origin` or
   `Referer` that is missing, malformed, or names a different host. Enforced for
   session-cookie callers and for the few unauthenticated endpoints that must not

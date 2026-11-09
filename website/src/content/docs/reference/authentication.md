@@ -238,6 +238,9 @@ the user does not control:
 - **No admin API.** `/api/admin/*` returns `403
   ADMIN_REQUIRES_DIRECT_CREDENTIAL` for an OAuth grant, even when the account
   behind it is the instance administrator.
+- **No break-glass resync.** `POST /api/projects/{namespace}/{slug}/resync`
+  returns the same `403 ADMIN_REQUIRES_DIRECT_CREDENTIAL`, even when the account
+  behind the grant administers the project.
 - **No legacy-key minting.** Like a scoped token, it is refused by
   `rotate-token` with `SESSION_REQUIRED`.
 - **No approvals.** Like a scoped token, it cannot submit an `approve` review
