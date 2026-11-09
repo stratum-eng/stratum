@@ -232,6 +232,7 @@ export type DeployTargetsResult =
   /** Names the problem, never a secret's value. */
   | { ok: false; reason: string };
 
+/** Whether a parsed JSON value is an object, as opposed to an array or a scalar. */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

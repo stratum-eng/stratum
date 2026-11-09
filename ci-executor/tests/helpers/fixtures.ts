@@ -166,7 +166,7 @@ export function deployDispatchBody(now: number, overrides: Record<string, unknow
     projectId: DEPLOY_PROJECT_ID,
     environment: "staging",
     commitSha: COMMIT_SHA,
-    callbackUrl: `${STRATUM}/api/deployments/callback`,
+    callbackUrl: `${STRATUM}/api/deploy-reports`,
     deadline: new Date(now + 47 * 60_000).toISOString(),
     ...overrides,
     job,
@@ -196,7 +196,7 @@ export function makeDeployJob(now: number, overrides: Partial<Job> = {}): Job {
       environment: "staging",
       env: { CLOUDFLARE_ACCOUNT_ID: "acct123" },
     },
-    callbackUrl: `${STRATUM}/api/deployments/callback`,
+    callbackUrl: `${STRATUM}/api/deploy-reports`,
     deadline: now + 47 * 60_000,
     profile: {
       name: "deploy",

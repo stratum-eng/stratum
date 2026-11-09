@@ -7,15 +7,27 @@ runs each job from a project's `.stratum/ci.yaml` in a fresh
 reports every step back to Stratum as a check run.
 
 It is a **separate Worker from Stratum on purpose**. It runs code from changes
-nobody has reviewed yet, so it is deployed with nothing worth stealing: no D1,
-no KV, no Artifacts binding, no deploy credential, and no binding back to
-Stratum. It holds one shared secret, one R2 bucket for logs, and its own two
-Durable Object classes.
+nobody has reviewed yet, so it is deployed with nothing a CI job can reach: no
+D1, no KV, no Artifacts binding, and no binding back to Stratum. It holds one
+shared secret, one R2 bucket for logs, and its own Durable Object classes.
+
+It also runs **deploy pipelines** ([#416](https://github.com/stratum-eng/stratum/issues/416)):
+the `deploy:` section of a project's `.stratum/ci.yaml`, for a commit that has
+merged. Those run under a separate profile — their own Durable Object class
+(`DeployRunner`), container application and image — and are the only jobs that
+can use the deploy credentials this Worker may hold. A credential is a Wrangler
+secret named `DEPLOY_CRED_*`, mapped to a project and environment by the
+`DEPLOY_TARGETS` variable, and it is attached to a request for one exact host
+by an intercept handler, outside the container. A job never holds it, and
+Stratum's database never does. An executor with no `DEPLOY_TARGETS` holds none
+and refuses every deploy job.
 
 - **Using it** (the `.stratum/ci.yaml` format, what a job can and cannot do):
   [docs/user-guide/ci.md](../docs/user-guide/ci.md)
 - **Deploying it** (every command, secret and binding, in order):
   [docs/user-guide/ci.md#self-hosting-deploy-the-executor](../docs/user-guide/ci.md#self-hosting-deploy-the-executor)
+- **Deploy pipelines** (the `deploy:` format, `DEPLOY_TARGETS`, how a
+  credential is scoped): [docs/user-guide/deployments.md#deploy-pipelines](../docs/user-guide/deployments.md#deploy-pipelines)
 
 Licensed AGPL-3.0-or-later, like the Stratum server it is part of (see
 [LICENSING.md](../LICENSING.md)).
@@ -26,12 +38,13 @@ Licensed AGPL-3.0-or-later, like the Stratum server it is part of (see
 |---|---|
 | `src/index.ts` | The Worker: `POST /jobs`, `GET /logs/:checkRunId`, `GET /health` |
 | `src/signature.ts` | HMAC-SHA256 sign and constant-time verify |
-| `src/dispatch.ts` | Validation of a job dispatch against this deployment's limits |
-| `src/admission.ts`, `src/coordinator.ts` | The concurrency cap and bounded queue: pure rules, and the one Durable Object that applies them |
-| `src/job.ts`, `src/job-object.ts` | One job's state machine, and the Durable Object that owns its container |
-| `src/egress.ts` | The two intercept handlers: everything a container can reach |
-| `src/logs.ts`, `src/report.ts` | Serving logs to Stratum; reporting steps to Stratum |
-| `container/` | The job image: `Dockerfile`, the in-container supervisor (`agent.mjs`) and the checkout script (`prepare.sh`) |
+| `src/config.ts` | The operator's limits, and `DEPLOY_TARGETS`: which projects and environments may deploy, with which secrets |
+| `src/dispatch.ts` | Validation of a CI or deploy dispatch against this deployment's limits and targets |
+| `src/admission.ts`, `src/coordinator.ts` | The concurrency cap and bounded queues (deploy jobs take a freed slot first): pure rules, and the one Durable Object that applies them |
+| `src/job.ts`, `src/job-object.ts` | One job's state machine for both profiles, and the two Durable Object classes (`JobRunner` for CI, `DeployRunner` for deploys) that own a container |
+| `src/egress.ts` | The three intercept handlers: everything a container can reach, and the one place a deploy credential is attached |
+| `src/logs.ts`, `src/report.ts` | Serving logs to Stratum; reporting steps and deployments to Stratum |
+| `container/` | The job images: `Dockerfile` (CI) and `Dockerfile.deploy`, the in-container supervisor (`agent.mjs`) and the checkout script (`prepare.sh`) |
 
 ## Working on it
 
@@ -68,4 +81,7 @@ logic, not the platform. Not covered by any automated test:
   intercepted hosts, the `Host`-versus-SNI behaviour the handlers defend
   against);
 - a fetch from a real Artifacts repository through the proxy;
+- a deploy job end to end: Wrangler talking to the Cloudflare API through the
+  credential intercept, `wrangler d1 migrations apply`, `wrangler rollback`,
+  and which hosts besides `api.cloudflare.com` those need allowed;
 - R2 and Durable Object behaviour under load, eviction or deploy.

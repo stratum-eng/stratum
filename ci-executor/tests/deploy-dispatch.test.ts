@@ -142,7 +142,7 @@ describe("what a deploy dispatch cannot do", () => {
   });
 
   it("report anywhere but the executor's Stratum, or skip its limits", () => {
-    expect(reason({ callbackUrl: "https://evil.example.com/api/deployments/callback" })).toContain(
+    expect(reason({ callbackUrl: "https://evil.example.com/api/deploy-reports" })).toContain(
       "callbackUrl",
     );
     expect(reason({ job: { logUrl: "https://evil.example.com/x" } })).toContain("logUrl");

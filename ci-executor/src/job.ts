@@ -385,7 +385,9 @@ export class JobMachine {
     this.failRemaining(
       state,
       "errored",
-      "Not run: the job waited for a free slot on the CI executor until it could no longer finish before the deadline. Re-run the check when the executor is less busy.",
+      isDeploy(state.job)
+        ? "Not run: the job waited for a free slot on the CI executor until it could no longer finish before the deadline. Nothing was deployed; retry the deployment when the executor is less busy."
+        : "Not run: the job waited for a free slot on the CI executor until it could no longer finish before the deadline. Re-run the check when the executor is less busy.",
     );
     state.phase = "finishing";
     await this.save(state);

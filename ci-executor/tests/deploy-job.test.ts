@@ -109,6 +109,8 @@ function harness(options: { job: Job; profile: "ci" | "deploy" }) {
     control,
     credentialRequests,
     machine_tick: () => machine.tick(),
+    accept: () => machine.accept(options.job),
+    expire: () => machine.expire(),
     run,
     begin,
     everythingStored,
@@ -264,6 +266,22 @@ describe("a deploy job whose step fails", () => {
     expect(h.sent[0]?.status).toBe("errored");
     expect([...h.logs.keys()]).toEqual([`${DEPLOY_ID}-0`]);
     expect(h.sent[0]?.deploy?.logTail).toContain("not in the repository");
+  });
+});
+
+describe("a deploy job that never gets a slot", () => {
+  it("reports that nothing was deployed, without starting a container", async () => {
+    const h = harness({ job: makeDeployJob(T0), profile: "deploy" });
+    expect(await h.accept()).toBe(true);
+    expect(await h.expire()).toBe(0);
+    await h.run();
+
+    expect(h.container.starts).toHaveLength(0);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]?.status).toBe("errored");
+    expect(h.sent[0]?.summary).toContain("Nothing was deployed");
+    expect(h.sent[0]?.deploy?.steps.every((step) => step.status === "errored")).toBe(true);
+    expect(h.control.released).toBe(1);
   });
 });
 

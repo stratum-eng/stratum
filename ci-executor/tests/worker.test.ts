@@ -445,7 +445,7 @@ describe("a deploy report", () => {
     const outcome = await sendDeployReport(
       SECRET,
       {
-        callbackUrl: `${STRATUM}/api/deployments/callback`,
+        callbackUrl: `${STRATUM}/api/deploy-reports`,
         headSha: HEAD_SHA,
         deploy: { deploymentId: "dep_1", projectId: "prj_app", environment: "staging", env: {} },
       },
@@ -468,7 +468,7 @@ describe("a deploy report", () => {
     );
 
     expect(outcome).toBe("delivered");
-    expect(requests[0]?.url).toBe(`${STRATUM}/api/deployments/callback/dep_1`);
+    expect(requests[0]?.url).toBe(`${STRATUM}/api/deploy-reports/dep_1`);
     const sentBody = String(requests[0]?.init.body);
     expect(JSON.parse(sentBody)).toMatchObject({
       deploymentId: "dep_1",
@@ -489,7 +489,7 @@ describe("a deploy report", () => {
     const send = (status: "failed" | "errored") =>
       sendDeployReport(
         SECRET,
-        { callbackUrl: `${STRATUM}/api/deployments/callback`, headSha: HEAD_SHA },
+        { callbackUrl: `${STRATUM}/api/deploy-reports`, headSha: HEAD_SHA },
         { checkRunId: "dep_1", status, sequence: 1, detailsUrl: "" },
         async (_url, init) => {
           bodies.push(String(init.body));
@@ -506,7 +506,7 @@ describe("a deploy report", () => {
     const answer = (status: number) =>
       sendDeployReport(
         SECRET,
-        { callbackUrl: `${STRATUM}/api/deployments/callback`, headSha: HEAD_SHA },
+        { callbackUrl: `${STRATUM}/api/deploy-reports`, headSha: HEAD_SHA },
         { checkRunId: "dep_1", status: "passed", sequence: 1, detailsUrl: "" },
         async () => new Response("{}", { status }),
       );
@@ -517,7 +517,7 @@ describe("a deploy report", () => {
     expect(
       await sendDeployReport(
         SECRET,
-        { callbackUrl: `${STRATUM}/api/deployments/callback`, headSha: HEAD_SHA },
+        { callbackUrl: `${STRATUM}/api/deploy-reports`, headSha: HEAD_SHA },
         { checkRunId: "dep_1", status: "passed", sequence: 1, detailsUrl: "" },
         async () => {
           throw new Error("network");
