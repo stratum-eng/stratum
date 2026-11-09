@@ -28,13 +28,19 @@ const files = (JSON.parse(readFileSync(filesPath, "utf8")) as ChangedFile[]).map
 );
 const result = checkPullRequest(files, process.env.PR_BODY ?? "");
 
+/** Shows untrusted text (file names, the PR's stated reason) as inert code. */
+const code = (text: string): string => `\`${text.replace(/[`\r\n]/g, "'")}\``;
+
 function describe(name: string, requirement: Requirement, fix: string): string {
   if (!requirement.needed) return `- **${name}:** not needed by these changes.`;
   if (requirement.satisfied) {
-    const how = requirement.by === "changed" ? "updated in this PR" : `skipped: ${requirement.by}`;
+    const how =
+      requirement.by === "changed"
+        ? "updated in this PR"
+        : `skipped: ${code(requirement.by ?? "")}`;
     return `- **${name}:** ${how}.`;
   }
-  return `- **${name}: missing.** Needed because of ${requirement.because.map((p) => `\`${p}\``).join(", ")}. ${fix}`;
+  return `- **${name}: missing.** Needed because of ${requirement.because.map(code).join(", ")}. ${fix}`;
 }
 
 const lines = [

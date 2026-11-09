@@ -1,4 +1,7 @@
+/// <reference types="vite/client" />
 import { describe, expect, it } from "vitest";
+// The real template, so a placeholder in it can never satisfy the check.
+import PR_TEMPLATE from "../.github/PULL_REQUEST_TEMPLATE.md?raw";
 import { type ChangedFile, checkPullRequest, optOutReason } from "../scripts/pr-docs";
 
 const modified = (...paths: string[]): ChangedFile[] =>
@@ -23,6 +26,21 @@ describe("optOutReason", () => {
     expect(optOutReason("No docs needed:", "No docs needed")).toBeNull();
     expect(optOutReason("No docs needed: n/a", "No docs needed")).toBeNull();
     expect(optOutReason("", "No docs needed")).toBeNull();
+  });
+
+  it("ignores anything inside an HTML comment", () => {
+    expect(
+      optOutReason("<!-- No changelog: <why>                    -->", "No changelog"),
+    ).toBeNull();
+    expect(
+      optOutReason("<!--\n  No docs needed: example of the format here\n-->", "No docs needed"),
+    ).toBeNull();
+  });
+
+  it("finds a real reason after an unfilled placeholder line", () => {
+    expect(
+      optOutReason("No changelog:\n\nNo changelog: test-only change here", "No changelog"),
+    ).toBe("test-only change here");
   });
 
   it("ignores the phrase mid-sentence", () => {
@@ -92,6 +110,12 @@ describe("checkPullRequest", () => {
       ],
       "",
     );
+    expect(result.changelog.satisfied).toBe(false);
+  });
+
+  it("is not satisfied by the unedited PR template", () => {
+    const result = checkPullRequest(modified("src/routes/projects.ts"), PR_TEMPLATE);
+    expect(result.docs.satisfied).toBe(false);
     expect(result.changelog.satisfied).toBe(false);
   });
 

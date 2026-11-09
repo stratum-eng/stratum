@@ -66,13 +66,20 @@ const triggered = (files: ChangedFile[], patterns: readonly RegExp[]): string[] 
 
 /**
  * Finds `<label>: <reason>` on its own line in a PR body, optionally as a list item.
- * Returns the reason, or null when it is absent or too short to mean anything.
+ * Returns the first reason long enough to mean something, or null.
+ *
+ * HTML comments are removed first: the PR template shows the format inside one, and
+ * an unedited template must never count as a stated reason.
  */
 export function optOutReason(body: string, label: string): string | null {
+  const visible = body.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const line = new RegExp(`^[\\t ]*(?:[-*][\\t ]+)?${escaped}:[\\t ]*(.*)$`, "im");
-  const reason = body.match(line)?.[1]?.trim() ?? "";
-  return reason.length >= MIN_REASON_LENGTH ? reason : null;
+  const line = new RegExp(`^[\\t ]*(?:[-*][\\t ]+)?${escaped}:[\\t ]*(.*)$`, "gim");
+  for (const match of visible.matchAll(line)) {
+    const reason = match[1]?.trim() ?? "";
+    if (reason.length >= MIN_REASON_LENGTH) return reason;
+  }
+  return null;
 }
 
 export const DOCS_OPT_OUT = "No docs needed";
