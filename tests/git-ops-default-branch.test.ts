@@ -63,6 +63,7 @@ vi.mock("isomorphic-git", async (importOriginal) => {
         ref: args.ref,
         depth: args.depth,
         singleBranch: args.singleBranch,
+        noCheckout: args.noCheckout,
       });
       const server = h.servers.get(args.url);
       if (!server) throw new Error(`NotFoundError: unknown remote ${args.url}`);
@@ -71,6 +72,17 @@ vi.mock("isomorphic-git", async (importOriginal) => {
         throw new Error(`NotFoundError: Could not find ${args.ref}.`);
       }
       await seed(args.fs, args.dir, server);
+      // A real `noCheckout` clone writes no files. Remove the ones seeding
+      // wrote, so code that reads a path instead of a git object fails here.
+      if (args.noCheckout) {
+        for (const files of server.commits) {
+          for (const p of Object.keys(files)) {
+            await args.fs.promises
+              .unlink(args.dir === "/" ? `/${p}` : `${args.dir}/${p}`)
+              .catch(() => {});
+          }
+        }
+      }
     },
     // Simulates fetching the workspace fork: same history plus one extra commit,
     // exposed ONLY via the remote-tracking ref (no FETCH_HEAD is written, so the
@@ -223,6 +235,22 @@ describe("read helpers honor the branch parameter", () => {
   it("readFileFromRepo reads from a master-default repo", async () => {
     const result = await readFileFromRepo(remote, "tok", "a.txt", logger, "master");
     expect(result.success && result.data).toBe("v2\n");
+  });
+
+  it("readFileFromRepo reads the blob from a tip-only clone with no checked-out files", async () => {
+    const result = await readFileFromRepo(remote, "tok", "b.txt", logger, "master");
+    // The mock deletes the files of a noCheckout clone, so this content can
+    // only have come from the object store.
+    expect(result.success && result.data).toBe("b\n");
+    expect(h.calls.clone).toEqual([
+      expect.objectContaining({ url: remote, ref: "master", depth: 1, noCheckout: true }),
+    ]);
+  });
+
+  it("readFileFromRepo reports a path that is not a file as FS_ERROR", async () => {
+    const result = await readFileFromRepo(remote, "tok", "no/such/file.txt", logger, "master");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.code).toBe("FS_ERROR");
   });
 
   it("readFileFromRepo still defaults to main (and fails against master-only remotes)", async () => {
@@ -608,6 +636,47 @@ describe("getDiffBetweenRepos", () => {
     });
     expect(result.data.workspaceOid).toBe(wsTip);
     expect(result.data.workspaceSha).toBe(wsTip);
+  });
+
+  it("clones each side at its tip with no checked-out files", async () => {
+    h.servers.set("https://r/base.git", { branch: "trunk", commits: [{ "a.txt": "line1\n" }] });
+    h.servers.set("https://r/fork.git", {
+      branch: "trunk",
+      commits: [{ "a.txt": "line1\nline2\n" }],
+    });
+
+    const result = await getDiffBetweenRepos(
+      "https://r/base.git",
+      "btok",
+      "https://r/fork.git",
+      "wtok",
+      logger,
+      "trunk",
+    );
+
+    // The mock deletes the files of a noCheckout clone, so a diff at all means
+    // both sides were read from git objects.
+    expect(result.success && result.data.diff).toContain("+line2");
+    expect(h.calls.clone).toEqual([
+      expect.objectContaining({ url: "https://r/fork.git", depth: 1, noCheckout: true }),
+      expect.objectContaining({ url: "https://r/base.git", depth: 1, noCheckout: true }),
+    ]);
+  });
+
+  it("does not clone the base when the workspace clone fails", async () => {
+    h.servers.set("https://r/base.git", { branch: "trunk", commits: [{ "a.txt": "line1\n" }] });
+
+    const result = await getDiffBetweenRepos(
+      "https://r/base.git",
+      "btok",
+      "https://r/missing.git",
+      "wtok",
+      logger,
+      "trunk",
+    );
+
+    expect(result.success).toBe(false);
+    expect(h.calls.clone.map((call) => call.url)).toEqual(["https://r/missing.git"]);
   });
 
   it("reads only the files that differ, not both whole trees", async () => {
