@@ -295,8 +295,9 @@ including the signup page. Once you are signed in to an opted-out account,
 neither is sent for you.
 
 Self-hosters get this behaviour by setting
-`TELEMETRY_CONSENT_AT_SIGNUP = "true"` in each `[env.<name>.vars]` block they
-deploy. It is off by default, which leaves signup exactly as it was: no box,
+`TELEMETRY_CONSENT_AT_SIGNUP = "true"`: in the top-level `[vars]` for a bare
+`wrangler deploy`, or in each `[env.<name>.vars]` block for a named
+environment. It is off by default, which leaves signup exactly as it was: no box,
 and new accounts opted in until they say otherwise.
 
 **Browser analytics is separate, and off unless you turn it on.** Everything
