@@ -1,0 +1,82 @@
+# Stratum's first-party CI executor (#415, ADR 012).
+#
+# A separate Worker from Stratum, deployed separately, because it runs code
+# from changes nobody has reviewed. It is bound to exactly three things: its
+# two Durable Object classes and one bucket for logs. No D1, no KV, no
+# Artifacts, no service binding back to Stratum.
+#
+# Deploying it is described step by step in docs/developer/ci-executor.md.
+"$schema" = "./node_modules/wrangler/config-schema.json"
+name = "stratum-ci-executor"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+# `global_fetch_strictly_public`: a job reports to Stratum's public URL. When
+# both Workers are on one zone, a plain `fetch()` to that zone goes to the
+# zone's ORIGIN and skips Workers, so the report would never reach Stratum.
+# With this flag it goes through Cloudflare's front door like any client's.
+compatibility_flags = ["global_fetch_strictly_public"]
+# Reachable only through Stratum's service binding (see below) unless you turn
+# this on. Every request is signature-checked either way.
+workers_dev = false
+
+[observability]
+enabled = true
+
+[vars]
+# REQUIRED. The origin of the one Stratum instance this executor serves.
+# Reports and log links go there and nowhere else.
+STRATUM_ORIGIN = "https://stratum.example.com"
+# REQUIRED, and there is no "unlimited": the `durable_object` scheduling policy
+# has no max_instances, so this is the only cap on containers running at once.
+CI_MAX_CONCURRENT_JOBS = "2"
+# Jobs that may wait for a slot. Their checks stay `queued`; a dispatch that
+# does not fit is refused, and Stratum marks its checks `errored`.
+CI_MAX_QUEUED_JOBS = "10"
+# Container size when `.stratum/ci.yaml` asks for none, and the largest it may
+# ask for: lite, standard-1, standard-2, standard-3, standard-4.
+CI_DEFAULT_INSTANCE = "standard-1"
+CI_MAX_INSTANCE = "standard-2"
+# Longest wall-clock limit a job may have, in minutes.
+CI_MAX_JOB_MINUTES = "60"
+# Whether a project's `network.allow` may add hostnames to the default
+# allowlist (registry.npmjs.org, registry.yarnpkg.com, nodejs.org).
+CI_ALLOW_PROJECT_HOSTS = "true"
+# Repositories are fetched only from hosts ending in this.
+CI_GIT_HOST_SUFFIX = ".artifacts.cloudflare.net"
+# Most output kept per step, in bytes. Beyond it the log keeps its start and end.
+CI_LOG_MAX_BYTES = "1048576"
+
+# The secret shared with Stratum is NOT a var:
+#   wrangler secret put CI_EXECUTOR_SECRET
+
+[[containers]]
+class_name = "JobRunner"
+# One fresh container per job, sized per job, started by the job's own Durable
+# Object. This policy is in public beta.
+scheduling_policy = "durable_object"
+
+[containers.images.ci]
+dockerfile = "./container/Dockerfile"
+
+[[durable_objects.bindings]]
+name = "JOB"
+class_name = "JobRunner"
+
+[[durable_objects.bindings]]
+name = "COORDINATOR"
+class_name = "Coordinator"
+
+[exports.JobRunner]
+type = "durable-object"
+storage = "sqlite"
+
+[exports.Coordinator]
+type = "durable-object"
+storage = "sqlite"
+
+# Job logs. Private: no public access, no custom domain, read only through
+# this Worker by Stratum. Create it before the first deploy:
+#   wrangler r2 bucket create stratum-ci-logs
+[[r2_buckets]]
+binding = "LOGS"
+bucket_name = "stratum-ci-logs"
