@@ -39,8 +39,10 @@ their bullets.
    decision).
 4. **Gates.** It runs `prepare`, then lint, typecheck and test:coverage on that exact tree.
 5. **Ships.** If `main` moved during the gates, it stops and tries again on the next run.
-   Otherwise it opens the PR, checks that only release files changed, squash-merges, then
-   starts **Release** (tag and publish) and **CI** (staging, then production).
+   Otherwise it opens the PR, checks that only release files changed, and starts **PR
+   Checks** on the release branch (its own PRs start none, and `main` requires them). When
+   they pass it squash-merges, then starts **Release** (tag and publish) and **CI**
+   (staging, then production).
 
 **What waits for a person:** a release whose notes include `Breaking` or `Removed` entries.
 Autopilot opens that PR with the `release-hold` label and doesn't merge it. Merging it

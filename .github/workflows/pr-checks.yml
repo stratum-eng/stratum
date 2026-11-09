@@ -4,9 +4,14 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
+  # Release Autopilot opens its PRs with GITHUB_TOKEN, which starts no
+  # pull_request workflows, so it dispatches this on the release branch.
+  # The check runs land on that branch's head commit, which is what main's
+  # required checks look at.
+  workflow_dispatch:
 
 concurrency:
-  group: pr-checks-${{ github.head_ref }}
+  group: pr-checks-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -243,7 +248,9 @@ jobs:
             // A fork PR's token is read-only whatever `permissions` asks for,
             // so creating the check run would 403 and turn a green run red.
             // Report through this job's own result instead.
-            const head = context.payload.pull_request.head.repo;
+            // A dispatch has no PR: it runs on a branch in this repository.
+            const pr = context.payload.pull_request;
+            const head = pr ? pr.head.repo : context.payload.repository;
             if (!head || head.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
               core.info(`Fork PR: skipping the PR Requirements check run. ${summary}`);
               if (!allPassed) core.setFailed(`${status}: ${summary}`);
@@ -255,7 +262,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               name: 'PR Requirements',
-              head_sha: context.payload.pull_request.head.sha,
+              head_sha: pr ? pr.head.sha : context.sha,
               status: 'completed',
               conclusion: allPassed ? 'success' : 'failure',
               output: {

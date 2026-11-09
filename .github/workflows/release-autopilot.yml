@@ -6,10 +6,11 @@ name: Release Autopilot
 # Everything here uses GITHUB_TOKEN, and two consequences shape the design:
 #
 #   - Events it raises start no workflows, so its PR gets no PR Checks and its
-#     merge does not trigger ci.yml or release.yml. `main` also requires no
-#     status checks, so nothing outside this file would stop a bad merge. Hence
-#     `verify` gates the exact tree being shipped, and `cut` starts the follow-on
-#     workflows explicitly: workflow_dispatch is the one event that still fires.
+#     merge does not trigger ci.yml or release.yml. workflow_dispatch is the one
+#     event that still fires, so `cut` dispatches PR Checks on the release
+#     branch (main requires them) and waits for them before merging, then
+#     starts the follow-on workflows the same way. `verify` gates the tree first
+#     so a failing release never opens a PR.
 #   - Actions must be allowed to create pull requests (repository settings).
 #
 # Stop it by setting the repository variable RELEASE_AUTOPILOT to `off`.
@@ -240,7 +241,7 @@ jobs:
           git push --quiet --force --set-upstream origin "$BRANCH"
 
           RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          BODY="Autopilot cut **v$VERSION** ($BUMP bump). PR Checks do not start on this PR; the gates ran on this exact tree in [this run]($RUN_URL)."
+          BODY="Autopilot cut **v$VERSION** ($BUMP bump) in [this run]($RUN_URL), which also started PR Checks on this branch."
           if [ -n "$HOLD" ]; then
             BODY="$BODY
 
@@ -256,6 +257,42 @@ jobs:
             gh pr edit "$URL" --add-label release-hold
             echo "::notice::v$VERSION is held for a person: $HOLD. $URL"
           fi
+
+      # main requires PR Checks, and a PR opened with GITHUB_TOKEN starts none,
+      # so dispatch them on the release branch. A held PR gets them too, so it
+      # is mergeable when a person approves it.
+      - name: Run PR Checks on the release branch
+        id: checks
+        if: steps.pr.outputs.moved != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          HEAD_SHA: ${{ steps.pr.outputs.head }}
+          HOLD: ${{ needs.plan.outputs.hold }}
+        run: |
+          set -euo pipefail
+          BRANCH="release/v$VERSION"
+          gh workflow run pr-checks.yml --ref "$BRANCH"
+          # The dispatch returns before the run exists; find it by its commit.
+          RUN_ID=""
+          for attempt in $(seq 1 20); do
+            RUN_ID="$(gh run list --workflow pr-checks.yml --branch "$BRANCH" --event workflow_dispatch \
+              --json databaseId,headSha --jq --arg sha "$HEAD_SHA" \
+              '[.[] | select(.headSha == $sha)][0].databaseId // empty')"
+            [ -n "$RUN_ID" ] && break
+            sleep 6
+          done
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::PR Checks did not start on $BRANCH"
+            exit 1
+          fi
+          echo "PR Checks: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID"
+          # A person merges a held PR, and the required checks make them wait.
+          if [ -n "$HOLD" ]; then exit 0; fi
+          gh run watch "$RUN_ID" --exit-status --interval 30 > /dev/null || {
+            echo "::error::PR Checks failed on $BRANCH, so v$VERSION was not merged"
+            exit 1
+          }
 
       - name: Merge
         if: needs.plan.outputs.hold == '' && steps.pr.outputs.moved != 'true'
