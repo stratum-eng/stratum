@@ -53,6 +53,7 @@ jobs:
       bump: ${{ steps.plan.outputs.bump }}
       hold: ${{ steps.plan.outputs.hold }}
       sha: ${{ steps.plan.outputs.sha }}
+      base: ${{ steps.plan.outputs.base }}
       date: ${{ steps.plan.outputs.date }}
     steps:
       - name: Checkout the default branch
@@ -112,6 +113,8 @@ jobs:
             echo "bump=$(jq -r .bump <<< "$PLAN")"
             echo "hold=$(jq -r '.hold // ""' <<< "$PLAN")"
             echo "sha=$(git rev-parse HEAD)"
+            # Published and tagged, as checked above: the migration guard's baseline.
+            echo "base=$(git rev-parse "v$LATEST^{commit}")"
             echo "date=$(date -u +%F)"
           } >> "$GITHUB_OUTPUT"
           echo "Plan: $PLAN" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -130,14 +133,18 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
+          # The baseline commit below has to be in the clone.
+          fetch-depth: 0
 
-      # tests/wrangler-migration-chain compares wrangler.toml with origin/main
-      # and fails in CI when that ref is missing, as it is after a SHA checkout.
-      # This commit is already on main and passed the guard when it merged, so
-      # it is its own base. Comparing with today's main instead would fail any
-      # re-publish of an older commit once main has gained a migration.
-      - name: Point origin/main at the commit under test
-        run: git update-ref refs/remotes/origin/main HEAD
+      # tests/wrangler-migration-chain checks that migrations are only appended
+      # relative to origin/main, and fails in CI when that ref is missing. Here
+      # the baseline is the previous release rather than today's main, which
+      # would fail a re-publish of an older commit once main gains a migration,
+      # and rather than this commit itself, which would compare it with itself.
+      - name: Point origin/main at the previous release
+        env:
+          BASE: ${{ needs.plan.outputs.base }}
+        run: git update-ref refs/remotes/origin/main "$BASE"
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

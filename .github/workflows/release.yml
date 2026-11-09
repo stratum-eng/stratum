@@ -58,6 +58,7 @@ jobs:
       tag_exists: ${{ steps.resolve.outputs.tag_exists }}
       is_latest: ${{ steps.resolve.outputs.is_latest }}
       publish: ${{ steps.resolve.outputs.publish }}
+      base: ${{ steps.resolve.outputs.base }}
     steps:
       # Reads the changelog and tooling from the default branch, not the release
       # commit: the changelog there is the record of every version, and an old
@@ -129,6 +130,16 @@ jobs:
             exit 1
           fi
 
+          # The migration guard's baseline: the previous release, which shipped
+          # with this chain. Migrations may only be appended after it.
+          if [ -z "$PREVIOUS" ]; then
+            BASE="$SHA"
+          elif git rev-parse --quiet --verify "refs/tags/v$PREVIOUS^{commit}" > /dev/null; then
+            BASE="$(git rev-parse "v$PREVIOUS^{commit}")"
+          else
+            BASE="$(npm run --silent release:commit -- "$PREVIOUS")"
+          fi
+
           IS_LATEST=false
           if [ "$VERSION" = "$LATEST" ]; then IS_LATEST=true; fi
 
@@ -139,6 +150,7 @@ jobs:
             echo "tag_exists=$TAG_EXISTS"
             echo "is_latest=$IS_LATEST"
             echo "publish=$PUBLISH"
+            echo "base=$BASE"
           } >> "$GITHUB_OUTPUT"
           echo "$TAG at $SHA: tag exists=$TAG_EXISTS, release exists=$RELEASE_EXISTS, publish=$PUBLISH"
 
@@ -174,14 +186,18 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.sha }}
           persist-credentials: false
+          # The baseline commit below has to be in the clone.
+          fetch-depth: 0
 
-      # tests/wrangler-migration-chain compares wrangler.toml with origin/main
-      # and fails in CI when that ref is missing, as it is after a SHA checkout.
-      # This commit is already on main and passed the guard when it merged, so
-      # it is its own base. Comparing with today's main instead would fail any
-      # re-publish of an older commit once main has gained a migration.
-      - name: Point origin/main at the commit under test
-        run: git update-ref refs/remotes/origin/main HEAD
+      # tests/wrangler-migration-chain checks that migrations are only appended
+      # relative to origin/main, and fails in CI when that ref is missing. Here
+      # the baseline is the previous release rather than today's main, which
+      # would fail a re-publish of an older commit once main gains a migration,
+      # and rather than this commit itself, which would compare it with itself.
+      - name: Point origin/main at the previous release
+        env:
+          BASE: ${{ needs.resolve.outputs.base }}
+        run: git update-ref refs/remotes/origin/main "$BASE"
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
