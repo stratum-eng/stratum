@@ -34,13 +34,22 @@ jobs:
           node-version: "22"
 
       - name: List changed files
+        # pipefail: without it a failed gh api still lets jq write [], and the
+        # check would pass having looked at no files.
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.number }}
         run: |
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" \
             --jq '.[] | {path: .filename, status}' | jq -s . > "$RUNNER_TEMP/files.json"
-          echo "$(jq length "$RUNNER_TEMP/files.json") changed files"
+          COUNT="$(jq length "$RUNNER_TEMP/files.json")"
+          # Every PR changes at least one file, so none means the listing failed.
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::GitHub returned no changed files for PR #$PR_NUMBER"
+            exit 1
+          fi
+          echo "$COUNT changed files"
 
       - name: Check docs and changelog
         env:
