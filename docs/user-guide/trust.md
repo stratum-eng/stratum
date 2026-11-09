@@ -406,6 +406,18 @@ existing resource that has no jurisdiction.
    - Add `jurisdiction = "eu"` to **every** `[[r2_buckets]]` binding. Cloudflare
      requires the binding to name the jurisdiction to reach a bucket that has
      one.
+   - If you turn `REPO_DO_ENABLED` on, bind the `stratum-repo-objects` bucket
+     from step 1 as `REPO_OBJECTS`, with the jurisdiction. The top-level
+     template has no such binding, and creating the bucket does not add one.
+     Without it the fast merge path has nowhere to stage trees, and batch
+     merges skip changes as not staged.
+
+     ```toml
+     [[r2_buckets]]
+     binding = "REPO_OBJECTS"
+     bucket_name = "stratum-repo-objects"
+     jurisdiction = "eu"
+     ```
    - Set `DO_JURISDICTION = "eu"` under `[vars]`. If you deploy a named
      environment, set it in that environment's `[env.<name>.vars]` block: named
      environments do not inherit top-level vars, and a value set only at the top
@@ -425,7 +437,11 @@ existing resource that has no jurisdiction.
 
 5. **Settle where logs go, before the first deploy.** Set Customer Metadata
    Boundary to `EU` (Data Localization Suite) if Worker logs must stay in the
-   EU, or turn `[observability]` off. Application logs contain identifiers such
+   EU, or turn observability off. Turning it off takes two settings, in the
+   environment you deploy: `[observability] enabled = false` stops logs, and
+   traces have their own switch, `[observability.traces] enabled = false`,
+   which the template also has on. Leaving traces on keeps request metadata
+   flowing with no boundary. Application logs contain identifiers such
    as user and project ids, and the template has observability on, so a
    deployment made before this step writes logs with no boundary from its
    first request or cron run.
@@ -527,7 +543,7 @@ Cloudflare documents none, and no setting in Stratum creates one.
 | Workers AI (`llm` evaluator) | **No guarantee available**, because Cloudflare documents no location control for inference | Remove the `[ai]` binding (step 4) |
 | Rate limiting bindings | **No guarantee available** as a separate control, because none is documented | Counters live in the Cloudflare location the Worker runs in, so they follow Regional Services for HTTP requests. The key is a user id, an agent id, or a client IP address |
 | Outbound email | **No guarantee available**, because Cloudflare documents no location control for Email Sending | Recipient addresses and message bodies reach Cloudflare's mail infrastructure and then the recipient's mail server |
-| Worker logs, traces and metrics | **Covered by Customer Metadata Boundary** set to `EU` (Data Localization Suite), or by turning `[observability]` off | Without either, there is no guarantee where logs are stored |
+| Worker logs, traces and metrics | **Covered by Customer Metadata Boundary** set to `EU` (Data Localization Suite), or by turning off both `[observability]` and `[observability.traces]` | Without either, there is no guarantee where logs are stored |
 | Sandbox evaluator and `merge.postMergeCommand` | **No statement made** | The `[[sandboxes]]` binding is commented out in every environment and was not assessed. Leave it off |
 
 So such a deployment keeps the data in its **jurisdiction-restricted stores**
