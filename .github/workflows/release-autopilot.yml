@@ -272,15 +272,20 @@ jobs:
         run: |
           set -euo pipefail
           BRANCH="release/v$VERSION"
-          gh workflow run pr-checks.yml --ref "$BRANCH"
-          # The dispatch returns before the run exists; find it by its commit.
-          RUN_ID=""
+          STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          DISPATCH="$(gh workflow run pr-checks.yml --ref "$BRANCH" 2>&1)"
+          echo "$DISPATCH"
+          # Wait on the run this dispatch started, never an older one for the
+          # same commit. gh prints its URL; older versions don't, so fall back
+          # to a run on this commit created after the dispatch.
+          RUN_ID="$(grep -oE '/actions/runs/[0-9]+' <<< "$DISPATCH" | grep -oE '[0-9]+$' || true)"
           for attempt in $(seq 1 20); do
-            RUN_ID="$(gh run list --workflow pr-checks.yml --branch "$BRANCH" --event workflow_dispatch \
-              --json databaseId,headSha |
-              jq -r --arg sha "$HEAD_SHA" '[.[] | select(.headSha == $sha)][0].databaseId // empty')"
             [ -n "$RUN_ID" ] && break
             sleep 6
+            RUN_ID="$(gh run list --workflow pr-checks.yml --branch "$BRANCH" --event workflow_dispatch \
+              --json databaseId,headSha,createdAt |
+              jq -r --arg sha "$HEAD_SHA" --arg after "$STARTED" \
+                '[.[] | select(.headSha == $sha and .createdAt >= $after)][0].databaseId // empty')"
           done
           if [ -z "$RUN_ID" ]; then
             echo "::error::PR Checks did not start on $BRANCH"
