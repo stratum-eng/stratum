@@ -782,12 +782,15 @@ describe("listRepoTags", () => {
       const pending = listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
         detailCache,
       });
+      // Node's setImmediate, which this project's Worker types do not declare.
+      const realImmediate = (globalThis as unknown as { setImmediate: (fn: () => void) => void })
+        .setImmediate;
       let settled = false;
       void pending.finally(() => {
         settled = true;
       });
       for (let turn = 0; turn < 200 && !settled; turn++) {
-        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise<void>((resolve) => realImmediate(resolve));
         await vi.advanceTimersByTimeAsync(TAG_DETAIL_STORE_TIMEOUT_MS / 4);
       }
       const result = await pending;
