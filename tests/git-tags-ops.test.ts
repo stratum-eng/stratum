@@ -774,25 +774,25 @@ describe("listRepoTags", () => {
       mockFetch.mockResolvedValue({});
       await mockClone({ fs: new MemoryFS().toNodeFS() as unknown as NodeFS, dir: "/repo" });
       mockGetRemoteInfo.mockResolvedValue(remoteInfoWithTags({ ann: tagOid, "ann^{}": commitOid }));
+      let storeReached = (): void => {};
+      const reached = new Promise<void>((resolve) => {
+        storeReached = resolve;
+      });
       const detailCache = {
         get: async () => null,
-        put: () => new Promise<void>(() => {}),
+        put: () => {
+          storeReached();
+          return new Promise<void>(() => {});
+        },
       };
 
       const pending = listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
         detailCache,
       });
-      // Node's setImmediate, which this project's Worker types do not declare.
-      const realImmediate = (globalThis as unknown as { setImmediate: (fn: () => void) => void })
-        .setImmediate;
-      let settled = false;
-      void pending.finally(() => {
-        settled = true;
-      });
-      for (let turn = 0; turn < 200 && !settled; turn++) {
-        await new Promise<void>((resolve) => realImmediate(resolve));
-        await vi.advanceTimersByTimeAsync(TAG_DETAIL_STORE_TIMEOUT_MS / 4);
-      }
+      // Let the clone finish in real time first. Advancing the fake clock any
+      // earlier would also run down the clone's own timeout.
+      await reached;
+      await vi.advanceTimersByTimeAsync(TAG_DETAIL_STORE_TIMEOUT_MS + 1);
       const result = await pending;
 
       expect(result.success).toBe(true);
