@@ -49,6 +49,13 @@ checked against Cloudflare's documentation on 2026-11-09:
   to send anywhere. This is stronger than the read-only job token #415 asked
   for. Intercepting HTTPS requires the image to trust Cloudflare's
   interception CA.
+
+  An intercept is matched on the TLS server name, and the request inside can
+  name a different host. So the handler never forwards the container's URL
+  with a credential attached. It checks that the request's scheme is HTTPS and
+  that its hostname is exactly the one the credential is for, builds the
+  upstream request itself, and does not follow redirects: a redirect is
+  returned to the job without the credential.
 - **Self-hosters can run it.** Containers are included in the Workers Paid
   plan, which is the plan self-hosters are on. They have been generally
   available since April 2026.
@@ -105,14 +112,40 @@ It holds no D1 binding, no session store, and no deploy credential.
 
 - **Defined in the repository, read from the base.** `.stratum/ci.yaml` lists
   named steps with commands and timeouts. It is read from the base tree, never
-  from the change's head, so a change cannot rewrite its own gate. It joins
-  `.stratum/policy.yaml` in `PROTECTED_CONFIG_FILES`.
+  from the change's head, and joins `.stratum/policy.yaml` in
+  `PROTECTED_CONFIG_FILES`. A change therefore cannot remove a step, rename
+  it, shorten its timeout, widen the network allowlist or drop a required
+  check.
+
+  This protects the list of steps, not what a step does. A step that runs
+  `npm test` runs the `test` script of the tree under test, and a change can
+  make that script a no-op. That is true of any CI that tests a change's own
+  code, and reading `ci.yaml` from the base does not alter it. What covers it
+  is review: a project that wants its gate-defining files (`package.json`
+  scripts, test configuration) held to a higher bar lists them under the
+  policy's existing path rules so that a change touching them needs approval.
+  Stratum's own project will.
 - **Reconstructed, then verified.** The job clones at `baseSha`, applies the
-  diff, and checks that the resulting tree is the tree of `headSha` before any
-  step runs. A mismatch fails the job. What ran is then exactly what will merge.
-- **One check per step.** Each step reports through the #414 callback. A step
-  that never reports is caught by the check's deadline, so a hung or killed job
-  cannot leave a change mergeable.
+  diff, and checks that the resulting tree is the head's tree before any step
+  runs. A mismatch fails the job. The executor reads one repository at one
+  commit, the base, and cannot look the head commit up, so the signed dispatch
+  carries the head's **tree id** alongside `headSha`. The executor compares
+  against that. The dispatch payload from #414 gains this field.
+- **What ran is the change's head, which is not always what merges.** If the
+  project's default branch advances after the checks ran, a merge combines the
+  tested tree with newer commits, and Stratum refuses that only when the policy
+  sets `requireFreshBase`. A project that gates merges on the executor sets
+  `requireFreshBase`, so that a stale change is re-evaluated, and its checks
+  re-run, against the new base. Testing the proposed merge tree instead is the
+  better long-term answer and is left open below.
+- **One check per step, and every step is required.** Each step reports
+  through the #414 callback. The steps declared in the base `ci.yaml` are
+  required checks by default: the merge gate takes the required names from
+  that file, in addition to anything in `merge.requiredChecks`, and a step
+  opts out only by being marked optional there. If the checks dispatched for
+  a revision do not match the steps the base declares, the gate fails closed.
+  A step that never reports is caught by its check's deadline, so a hung or
+  killed job cannot leave a change mergeable.
 - **Bounded.** CPU and memory by instance type, wall-clock by a timeout the
   Durable Object enforces from outside the container, log size by a cap. Logs
   go to object storage and are linked from the check.
@@ -197,3 +230,6 @@ what it is good at.
   token injected by the outbound handler, or a service binding back to Stratum
   that serves exactly that bundle.
 - Per-project concurrency and monthly usage limits.
+- Whether to test the proposed merge tree (base tip plus the change) instead
+  of the change's head, which would remove the dependence on
+  `requireFreshBase`.
