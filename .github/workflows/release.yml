@@ -174,9 +174,14 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.sha }}
           persist-credentials: false
-          # The suite's migration-chain guard compares wrangler.toml against
-          # origin/main and fails in CI when a shallow SHA checkout lacks it.
-          fetch-depth: 0
+
+      # tests/wrangler-migration-chain compares wrangler.toml with origin/main
+      # and fails in CI when that ref is missing, as it is after a SHA checkout.
+      # This commit is already on main and passed the guard when it merged, so
+      # it is its own base. Comparing with today's main instead would fail any
+      # re-publish of an older commit once main has gained a migration.
+      - name: Point origin/main at the commit under test
+        run: git update-ref refs/remotes/origin/main HEAD
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
