@@ -143,7 +143,10 @@ jobs:
             echo "✓ Worker deleted"
           else
             ERROR_CODE=$(echo "$DELETE_RESPONSE" | jq -r '.errors[0].code // 0')
-            if [ "$ERROR_CODE" = "10007" ]; then
+            # 10007 and 10090 both mean there is no such Worker: the cleanup
+            # already ran, or this PR (e.g. one opened by a workflow) never got
+            # a preview.
+            if [ "$ERROR_CODE" = "10007" ] || [ "$ERROR_CODE" = "10090" ]; then
               echo "Worker not found, may have been already deleted"
             else
               echo "❌ Failed to delete Worker"
