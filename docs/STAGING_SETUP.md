@@ -70,7 +70,8 @@ migrations_dir = "migrations"
 
 Staging is deployed from `main` only, and not from every push to it: a push to
 `main` in `stratum-eng/stratum` deploys staging once the `test` job passes.
-Production then follows, gated on both the staging deploy and manual approval.
+Production then follows, gated on the staging deploy. The `production` environment has
+no required reviewers, so it does not wait for approval.
 Forks are skipped — they hold none of the secrets, so a deploy there could only
 fail, while the tests above still run and are still useful.
 

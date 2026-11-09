@@ -4,7 +4,7 @@ This document explains the new PR-based CI/CD workflow and how to use it effecti
 
 ## Overview
 
-The Stratum project uses a PR-based workflow with per-PR preview environments, integration tests, and manual production approvals.
+The Stratum project uses a PR-based workflow with per-PR preview environments, integration tests, and automatic staging and production deploys from `main`.
 
 Each PR gets its own isolated preview Worker. The shared staging and production
 environments are deployed only from `main`, after the PR merges.
@@ -25,8 +25,8 @@ environments are deployed only from `main`, after the PR merges.
                                               │
                                               ▼
 ┌─────────────┐    ┌──────────────┐    ┌──────────────┐
-│   Staging   │───▶│    Manual    │───▶│  Production  │
-│   Deploy    │    │   Approval   │    │    Deploy    │
+│   Staging   │───▶│   Staging    │───▶│  Production  │
+│   Deploy    │    │ Health Check │    │    Deploy    │
 └─────────────┘    └──────────────┘    └──────────────┘
 ```
 
@@ -181,18 +181,13 @@ Before a PR can be merged to `main`, all checks must pass:
 
 ### Automatic Trigger
 
-Merging to `main` triggers the production deployment workflow, but it requires **manual approval**.
-
-### Approval Process
-
-1. Go to the GitHub Actions tab
-2. Find the pending "Deploy Production" workflow
-3. Review the changes being deployed
-4. Click "Approve and deploy"
+Merging to `main` deploys to production once the tests and the staging deploy pass.
+Nothing waits for approval: the `production` environment has no required reviewers. Cutting
+a release doesn't change this (see [Releasing](developer/releasing.md)).
 
 ### Deployment Steps
 
-Once approved, the following happens:
+The following happens:
 
 1. Build and type-check
 2. Deploy to Cloudflare Workers (production)
@@ -264,7 +259,7 @@ commit that defines the missing tag, rather than deleting tags from
 
 ### Production Deployment Issues
 
-1. Check the approval workflow status
+1. Check the `production` deploy job in the CI run for `main`
 2. Verify secrets are set correctly
 3. Check Cloudflare dashboard for errors
 
