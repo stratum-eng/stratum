@@ -1015,10 +1015,11 @@ paths:
         mirror is fast-forward only: it never force-pushes and never deletes a
         ref on GitHub.
 
-        An enabled mirror is checked before it is saved: the GitHub App must be
+        The target is checked before it is saved, enabled or not (only
+        disabling an existing mirror skips the check): the GitHub App must be
         installed on the repository with the Contents (read and write)
         permission, linked to the project's owner, and the repository must not
-        be connected to another project. Saving queues a push.
+        be connected to another project. Saving an enabled mirror queues a push.
 
         While a mirror is enabled the project is in forge mode: syncing from
         its source and promoting changes to GitHub pull requests are refused

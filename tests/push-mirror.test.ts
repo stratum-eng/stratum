@@ -745,6 +745,51 @@ describe("configuring a mirror", () => {
     expect(mirror.state).not.toBe("diverged");
   });
 
+  it("does not let an unverified, disabled mirror reserve a repository", async () => {
+    // The App is not installed on this repository for this project's owner.
+    const res = await json("/api/projects/@acme/app/mirror", cookies.admin, "PUT", {
+      repo: "someone-else/their-repo",
+      enabled: false,
+    });
+    expect(res.status).toBe(409);
+    expect(rows("SELECT * FROM push_mirrors")).toEqual([]);
+  });
+
+  it("can still disable an existing mirror after the App has lost the repository", async () => {
+    await configureMirror();
+    github.uninstalled = true;
+    await env.STATE.delete(`github_installation:${MIRROR_REPO}`);
+
+    const res = await json("/api/projects/@acme/app/mirror", cookies.admin, "PUT", {
+      repo: MIRROR_REPO,
+      enabled: false,
+    });
+    expect(res.status).toBe(200);
+    expect(await mirrorRow()).toMatchObject({ enabled: false });
+  });
+
+  it("keeps the canonical holder when the mirror lookup fails", async () => {
+    await configureMirror();
+    const claimant = { id: "proj_other", namespace: "@acme", slug: "other" };
+    const broken = {
+      ...env,
+      DB: {
+        prepare: (sql: string) => {
+          if (sql.includes("push_mirrors")) throw new Error("d1 down");
+          return env.DB.prepare(sql);
+        },
+      },
+    } as unknown as Env;
+    const canonical = await ensureCanonicalProject(
+      broken,
+      "acme-gh",
+      "app-mirror",
+      claimant,
+      logger,
+    );
+    expect(canonical).toEqual({ success: true, data: false });
+  });
+
   it("refuses a target that is not a plain owner/repo", async () => {
     for (const repo of ["", "acme-gh", "acme-gh/a/b", "https://evil.test/acme-gh/app", "../x/y"]) {
       const res = await json("/api/projects/@acme/app/mirror", cookies.admin, "PUT", { repo });

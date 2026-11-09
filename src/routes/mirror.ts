@@ -221,7 +221,7 @@ app.get("/:namespace/:slug/mirror", async (c) => {
  * Configure the mirror: PUT for API clients, POST for the settings form (an
  * HTML form cannot issue PUT) and for clients that prefer it.
  *
- * An enabled mirror is checked against GitHub before it is saved: the App must
+ * The target is checked against GitHub before it is saved: the App must
  * be installed on the target, linked to the project's owner, and the project
  * must be able to become the repository's canonical target. Saving a mirror
  * that could never push would only move the error from this response, where an
@@ -261,7 +261,21 @@ app.on(["PUT", "POST"], "/:namespace/:slug/mirror", async (c) => {
   if (target === null) return refuse("invalid-repo", 400);
   if (await isTargetDeleting(c.env, project, logger)) return refuse("deleting", 409);
 
-  if (enabled) {
+  // The target is verified before ANY row naming it is written, enabled or
+  // not: a row reserves its repository (one mirror per repo), so an unverified
+  // disabled one would let any project admin lock other projects out of a
+  // repository they have no rights on. The one exception is turning off a
+  // mirror that already exists for this same target — that must keep working
+  // when the App is exactly what broke.
+  const existing = await getPushMirror(c.env.DB, logger, project.id);
+  if (!existing.success) return refuse("failed", 503);
+  const disablingSameTarget =
+    !enabled &&
+    existing.data !== null &&
+    existing.data.repoOwner.toLowerCase() === target.owner.toLowerCase() &&
+    existing.data.repoName.toLowerCase() === target.repo.toLowerCase();
+
+  if (!disablingSameTarget) {
     const remote = await openGitHubRemote(c.env, project, target, "write", logger);
     if (!remote.success) {
       const refusal = credentialRefusal(remote.error);

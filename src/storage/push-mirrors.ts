@@ -167,9 +167,14 @@ export async function isPushMirrorEnabled(
 }
 
 /**
- * Does `projectId` mirror to `owner/repo`? Used by the canonical repo link: a
- * mirroring project points at its target as surely as an imported one points at
- * its source.
+ * Does `projectId` have an enabled mirror to `owner/repo`? Used by the
+ * canonical repo link: a mirroring project points at its target as surely as
+ * an imported one points at its source.
+ *
+ * A disabled mirror does not count — the project is back in layer mode and
+ * pushes nothing there. A storage failure is returned as an error rather than
+ * read as "no": the caller decides whether a repository changes hands, and
+ * must not do that on the strength of a lookup that did not answer.
  */
 export async function mirrorTargetsRepo(
   db: D1Database,
@@ -177,13 +182,14 @@ export async function mirrorTargetsRepo(
   projectId: string,
   owner: string,
   repo: string,
-): Promise<boolean> {
+): Promise<Result<boolean, AppError>> {
   const mirror = await getPushMirror(db, logger, projectId);
-  return (
-    mirror.success &&
+  if (!mirror.success) return mirror;
+  return ok(
     mirror.data !== null &&
-    mirror.data.repoOwner.toLowerCase() === owner.toLowerCase() &&
-    mirror.data.repoName.toLowerCase() === repo.toLowerCase()
+      mirror.data.enabled &&
+      mirror.data.repoOwner.toLowerCase() === owner.toLowerCase() &&
+      mirror.data.repoName.toLowerCase() === repo.toLowerCase(),
   );
 }
 

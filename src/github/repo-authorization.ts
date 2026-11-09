@@ -284,11 +284,11 @@ async function holderStillValid(
   // (#417). Without the second, a mirror-only project — one with no source URL
   // at all — would hold its target only until any other project named the same
   // repo as a source, and then lose the right to push to its own mirror.
-  if (
-    !sourceMatchesRepo(holder.data, owner, repo) &&
-    !(await mirrorTargetsRepo(env.DB, logger, holder.data.id, owner, repo))
-  ) {
-    return false;
+  if (!sourceMatchesRepo(holder.data, owner, repo)) {
+    const mirrors = await mirrorTargetsRepo(env.DB, logger, holder.data.id, owner, repo);
+    // Same rule as every other lookup here: a failure keeps the holder.
+    if (!mirrors.success) return true;
+    if (!mirrors.data) return false;
   }
   const decision = await authorizeForRepo(
     env,
