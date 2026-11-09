@@ -42,6 +42,10 @@ const MAX_BODY_BYTES = 16 * 1024;
 
 type AppContext = Context<{ Bindings: Env }>;
 
+/**
+ * Resolve the org in the path for the signed-in caller. Non-members get the
+ * missing-org 404; members get a 403 only where an admin is required.
+ */
 async function loadOrgFor(c: AppContext, needAdmin: boolean) {
   const userId = c.get("userId");
   if (!userId) return { response: c.json({ error: "Unauthorized" }, 401) };

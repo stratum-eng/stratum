@@ -84,6 +84,10 @@ export function sessionCreatedAtMs(createdAt: string | undefined): number | null
   return Number.isNaN(ms) ? null : ms;
 }
 
+/**
+ * Start a session for a user, recording how they authenticated. Returns the
+ * raw id for the cookie; only its hash is stored.
+ */
 export async function createSession(
   db: D1Database,
   userId: string,
@@ -132,6 +136,10 @@ export async function createSession(
   }
 }
 
+/**
+ * Load a session by its raw id, with the orgs whose second-factor policy it
+ * does not satisfy. Expiry is the caller's to check.
+ */
 export async function getSession(
   db: D1Database,
   id: string,

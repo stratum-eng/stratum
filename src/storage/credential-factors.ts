@@ -66,6 +66,8 @@ export function parseUnmetOrgs(raw: string | null | undefined): UnmetSecondFacto
     .filter((org) => org.id.length > 0 && org.slug.length > 0);
 }
 
+/** Narrow a stored factor column to a known kind. Anything else, including a
+ * value written by a newer version, reads as no factor: the safe direction. */
 export function parseSecondFactor(
   value: string | null | undefined,
 ): SessionSecondFactor | undefined {

@@ -29,11 +29,16 @@ info:
     here. An org that requires a second factor answers requests for ITS OWN
     projects and `/api/orgs/{slug}/*` endpoints with `403 SECOND_FACTOR_REQUIRED`
     when the session has not passed one; nothing else is affected.
-    API tokens, agent tokens and OAuth grants are never asked for one when
-    used. The policy applies when they are minted instead: a session that has
-    not met it gets `403 SECOND_FACTOR_REQUIRED` from token creation (unless the
-    token is bound to a target outside the policy org), agent creation,
-    legacy-key rotation and OAuth consent.
+    API tokens, the legacy key, agent tokens and OAuth grants are never asked
+    for one, but they are held to the same policy by how the session that
+    created them had signed in, which each credential records. One created
+    without a second factor (or this org's SSO) gets the same
+    `403 SECOND_FACTOR_REQUIRED` on that org's resources, and keeps the rest
+    of its access; creating it again from a session that meets the policy
+    restores it. The policy also applies when a credential is minted: a
+    session that has not met it gets `403 SECOND_FACTOR_REQUIRED` from token
+    creation (unless the token is bound to a target outside the policy org),
+    agent creation, legacy-key rotation and OAuth consent.
 
     Authentication: most endpoints accept a Stratum API token (user or agent)
     as a `Authorization: Bearer <token>` header. Browser requests may instead be

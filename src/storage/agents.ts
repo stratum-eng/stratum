@@ -51,6 +51,10 @@ function rowToAgent(row: AgentRow): Agent {
   return agent;
 }
 
+/**
+ * Create an agent and its token. The plaintext is returned once and only its
+ * hash is stored.
+ */
 export async function createAgent(
   db: D1Database,
   ownerId: string,
@@ -205,6 +209,10 @@ export interface AuthenticatedAgent extends Agent {
   policy?: CredentialPolicy;
 }
 
+/**
+ * Resolve a presented `stratum_agent_` token to its agent, with the agent's
+ * second-factor policy on the same lookup. Refuses a grant-only agent.
+ */
 export async function getAgentByToken(
   db: D1Database,
   plaintext: string,
