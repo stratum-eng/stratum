@@ -325,7 +325,17 @@ function commandPr(args: string[]): void {
     run("git", ["branch", "--show-current"]) || run("git", ["rev-parse", "HEAD"]);
   run("git", ["fetch", "origin", "main", "--tags"]);
 
-  const openPrs = run("gh", ["pr", "list", "--state", "open", "--json", "headRefName"]);
+  // gh lists 30 PRs by default, and an agent-heavy repo easily has more open.
+  const openPrs = run("gh", [
+    "pr",
+    "list",
+    "--state",
+    "open",
+    "--limit",
+    "1000",
+    "--json",
+    "headRefName",
+  ]);
   const openRelease = (JSON.parse(openPrs) as Array<{ headRefName: string }>).find((pr) =>
     pr.headRefName.startsWith("release/"),
   );
@@ -341,6 +351,15 @@ function commandPr(args: string[]): void {
   const published = latestRelease(readChangelog());
   if (published && !run("git", ["tag", "--list", `v${published}`])) {
     fail(`v${published} has no tag, so it never published. Run the Release workflow for it first.`);
+  }
+  // The tag is created before the release, so a tag alone can mean the publish step failed.
+  if (published) {
+    const releases = JSON.parse(
+      run("gh", ["release", "list", "--limit", "1000", "--json", "tagName,isDraft"]),
+    ) as Array<{ tagName: string; isDraft: boolean }>;
+    if (!releases.some((release) => release.tagName === `v${published}` && !release.isDraft)) {
+      fail(`v${published} is tagged but has no published GitHub release. Run the Release workflow for it first.`);
+    }
   }
 
   const prepared = commandPrepare(args);

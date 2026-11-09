@@ -4,7 +4,7 @@ This document explains the new PR-based CI/CD workflow and how to use it effecti
 
 ## Overview
 
-The Stratum project uses a PR-based workflow with per-PR preview environments, integration tests, and manual production approvals.
+The Stratum project uses a PR-based workflow with per-PR preview environments, integration tests, and automatic staging and production deploys from `main`.
 
 Each PR gets its own isolated preview Worker. The shared staging and production
 environments are deployed only from `main`, after the PR merges.
@@ -25,8 +25,8 @@ environments are deployed only from `main`, after the PR merges.
                                               │
                                               ▼
 ┌─────────────┐    ┌──────────────┐    ┌──────────────┐
-│   Staging   │───▶│    Manual    │───▶│  Production  │
-│   Deploy    │    │   Approval   │    │    Deploy    │
+│   Staging   │───▶│   Staging    │───▶│  Production  │
+│   Deploy    │    │ Health Check │    │    Deploy    │
 └─────────────┘    └──────────────┘    └──────────────┘
 ```
 
@@ -259,7 +259,7 @@ commit that defines the missing tag, rather than deleting tags from
 
 ### Production Deployment Issues
 
-1. Check the approval workflow status
+1. Check the `production` deploy job in the CI run for `main`
 2. Verify secrets are set correctly
 3. Check Cloudflare dashboard for errors
 
