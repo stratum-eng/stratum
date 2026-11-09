@@ -260,8 +260,9 @@ PostHog events or log lines already written.
 **No jurisdiction is configured for any resource.** `wrangler.toml` sets no
 `jurisdiction` on any binding, no location hint, and no
 [Smart Placement](https://developers.cloudflare.com/workers/configuration/placement/),
-and no code calls `.jurisdiction()` on a Durable Object namespace. Concretely, as
-reported by the Cloudflare API on 2026-11-02:
+and `DO_JURISDICTION` is unset in every environment, so no Durable Object
+namespace is restricted. Concretely, as reported by the Cloudflare API on
+2026-11-02:
 
 | Resource | Location | Jurisdiction |
 |----------|----------|--------------|
@@ -280,61 +281,236 @@ Object placement are not tied to any region. An EU-only (or US-only) hosted offe
 
 ### What Cloudflare's primitives can and cannot guarantee
 
-Per Cloudflare's documentation as of this writing — check the linked pages for
-current status, because these features change:
+Per Cloudflare's documentation as read on 2026-11-09 — check the linked pages
+for current status, because these features change. A **jurisdiction** is a
+guarantee Cloudflare documents; a **location hint** is explicitly best-effort
+and is not a residency control.
 
 | Primitive | Strong guarantee available | Best-effort only | Notes |
 |-----------|----------------------------|------------------|-------|
-| D1 | [Jurisdiction](https://developers.cloudflare.com/d1/configuration/data-location/) `eu`, `us`, `fedramp` | Location hints (`wnam`, `enam`, `weur`, `eeur`, `apac`, `oc`) | Set at creation only; cannot be changed later |
-| R2 | [Jurisdiction](https://developers.cloudflare.com/r2/reference/data-location/) `eu`, `us`, `fedramp` | Location hints | Set at bucket creation; the Worker binding must name the jurisdiction |
-| Artifacts | [Namespace jurisdiction](https://developers.cloudflare.com/artifacts/guides/data-localization/) `eu`, `us` | — | Set at namespace creation; applies to every repo in it |
-| Durable Objects | [Jurisdiction](https://developers.cloudflare.com/durable-objects/reference/data-location/) `eu`, `us`, `fedramp` via `namespace.jurisdiction()` | Location hints | A code change in Stratum, not configuration; object ids are still logged outside the jurisdiction |
-| Workers KV | [Jurisdiction](https://developers.cloudflare.com/kv/reference/data-location/) controls where data is *durably stored* | — | Values can still be cached outside the jurisdiction |
-| Worker execution, TLS termination | [Regional Services](https://developers.cloudflare.com/data-localization/how-to/workers/), part of the Data Localization Suite (Enterprise). It applies **only to HTTP requests on the Worker's custom domain** | — | It does not cover the `*.workers.dev` hostname, Queue consumers, Cron Triggers, or outgoing subrequests, and Worker code and secrets are still deployed globally. See the next section |
+| D1 | [Jurisdiction](https://developers.cloudflare.com/d1/configuration/data-location/) `eu`, `us`, `fedramp`: the database "only run[s] and store[s] data within" it, and read replicas stay inside it | Location hints (`wnam`, `enam`, `weur`, `eeur`, `apac`, `oc`): "does not guarantee that D1 runs in your preferred location" | Set at creation only; cannot be added or changed later. A jurisdiction overrides a hint |
+| R2 | [Jurisdiction](https://developers.cloudflare.com/r2/reference/data-location/) `eu`, `us`, `fedramp`: objects are "stored within a specific jurisdiction" | Location hints: "a best effort and not a guarantee" | Set at bucket creation and cannot be changed; the Worker binding must name the jurisdiction |
+| Artifacts | [Namespace jurisdiction](https://developers.cloudflare.com/artifacts/guides/data-localization/) `eu`, `us`: repo data is "stored and processed only within" it | — | Set at namespace creation; applies to every repo in it; cannot be changed. [A namespace that does not exist is created automatically, unrestricted, by the first repo created in it](https://developers.cloudflare.com/artifacts/concepts/namespaces/) — so it must be created before the first project |
+| Durable Objects | [Jurisdiction](https://developers.cloudflare.com/durable-objects/reference/data-location/) `eu`, `us`, `fedramp`: objects "only run and store data within" it | Location hints | In Stratum, the `DO_JURISDICTION` setting (below). A restricted namespace addresses different objects than the unrestricted one. Cloudflare logs each object's id outside the jurisdiction "for billing and debugging purposes" |
+| Queues | [Jurisdiction](https://developers.cloudflare.com/queues/configuration/data-location/) `eu`, `us`, `fedramp`: restricts "where Queues stores and processes messages" | — | Set at queue creation; cannot be changed. A dead-letter queue must share its source queue's jurisdiction. **It does not restrict where the consumer Worker runs**: "Workers can produce to and consume from a restricted queue from any location" |
+| Workers KV | [Jurisdiction](https://developers.cloudflare.com/kv/reference/data-location/) `eu`, `us`, `fedramp`, for where data is *durably stored* only | — | Set at creation only. "KV data can be cached outside the jurisdiction location on Cloudflare's network" |
+| Worker execution, TLS termination | [Regional Services](https://developers.cloudflare.com/data-localization/how-to/workers/), an Enterprise add-on in the Data Localization Suite. It applies **only to HTTP requests on the Worker's custom domain** | — | It does not cover the `*.workers.dev` hostname, Queue consumers, Cron Triggers, or outgoing subrequests, and Worker code and secrets are still deployed globally |
+| Logs and metrics | [Customer Metadata Boundary](https://developers.cloudflare.com/data-localization/metadata-boundary/) (Data Localization Suite), `EU` or `US` | — | Controls where Cloudflare stores logs and analytics. With it set to `EU`, the Workers and Durable Objects metrics tabs in the dashboard are empty |
+| Workers AI | None documented | — | No location setting appears in Cloudflare's Workers AI documentation, and the [Data Localization compatibility table](https://developers.cloudflare.com/data-localization/compatibility/) marks Workers AI as not compatible with Regional Services |
+| Rate limiting bindings | None documented | — | [Counters are kept per Cloudflare location](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) the Worker runs in. No separate location setting is documented |
+| Email Sending | None documented | — | No location setting appears in Cloudflare's Email Service documentation. Mail leaves Cloudflare for the recipient's mail server in any case |
+| Workers Analytics Engine | None documented | — | Bound by the default configuration, though no code path writes to it |
 
-### What an EU-only self-hosted deployment would take
+**Two places where Cloudflare's own pages disagree.** Both matter to anyone
+relying on this table, and neither is resolved here:
 
-None of this is done or tested; it is the list of what would have to be true.
+- The [Data Localization compatibility table](https://developers.cloudflare.com/data-localization/compatibility/)
+  (updated 2026-11-06) carries footnotes saying jurisdictional restrictions for
+  **Workers KV** and for **D1** are "not supported today". The KV and D1
+  product pages linked above (both updated 2026-10-02) document creating each
+  with a jurisdiction, and `wrangler` accepts the flag. This page follows the
+  product pages. If KV or D1 residency is load-bearing for you, confirm it with
+  Cloudflare.
+- The [Workers data-localization page](https://developers.cloudflare.com/data-localization/how-to/workers/)
+  says Customer Metadata Boundary applies to the `*.workers.dev` subdomain; the
+  compatibility table marks `Workers.dev` as not compatible with it. The steps
+  below avoid the question by turning `workers.dev` off.
 
-1. Create the D1 database, R2 bucket(s), KV namespace, and Artifacts namespace
-   with `jurisdiction: eu` — all four are creation-time settings, so an
-   existing instance would need a migration, not a config change.
-2. Add `jurisdiction = "eu"` to each `[[r2_buckets]]` binding.
-3. Change the Durable Object call sites to go through
-   `namespace.jurisdiction("eu")` — this is a code change in Stratum.
-4. Disable or relocate everything outside Cloudflare: leave PostHog unset (or
-   point `POSTHOG_HOST` at PostHog's EU cloud), keep `LLM_PROVIDERS` to
-   providers with suitable terms, and decide about Google Fonts.
-5. If request processing must also stay in-region, the storage steps above
-   are not enough. See the next section: Regional Services covers only part of
-   Stratum's execution.
+### Deploying EU-only (self-hosted)
 
-### Why Regional Services alone does not make processing EU-only
+These steps configure a **new** deployment so that every control Cloudflare
+offers is switched on. Read
+[What an EU-only deployment does and does not guarantee](#what-an-eu-only-deployment-does-and-does-not-guarantee)
+before relying on the result: two execution paths have no control at all, and
+this procedure does not change that.
 
-According to [Cloudflare's Workers data-localization page](https://developers.cloudflare.com/data-localization/how-to/workers/),
-Regional Services applies to the custom domain configured for a Worker. It
-**does not apply to Queues or Cron Triggers**, it does not extend to outgoing
-subrequests, and Worker code and secrets are deployed to every data center even
-when execution is regionalized. Stratum's production configuration has
-execution paths in every one of those categories:
+> **Not verified end to end.** The maintainers do not run an EU-only
+> deployment, and none of this has been exercised against a live Cloudflare
+> account. `DO_JURISDICTION` is covered by unit tests against a fake namespace;
+> what a jurisdiction does once set is Cloudflare's documented behaviour, not
+> something this repository tests. Nothing in Stratum checks that the D1
+> database, buckets, KV namespace, Artifacts namespace or queues you bind were
+> actually created with a jurisdiction — verify each in the Cloudflare
+> dashboard or API after creating it.
 
-| Execution path | In production `wrangler.toml` | Covered by Regional Services on the custom domain? | What EU-only processing would need |
-|----------------|-------------------------------|----------------------------------------------------|------------------------------------|
-| HTTP on `app.usestratum.dev` | `routes = [{ pattern = "app.usestratum.dev", custom_domain = true }]` | Yes, if configured for that hostname | Regional Services set to an EU region on the hostname |
-| HTTP on `*.workers.dev` | `workers_dev = true` (kept for deploy smoke tests) | **No** | `workers_dev = false`, with the smoke tests moved to the custom domain. Otherwise the same API is reachable unregionalized |
-| Queue consumers | `stratum-events`, `stratum-imports`, `stratum-deploys`, which handle event delivery, imports and syncs, and post-merge deploys | **No** | Cloudflare documents no regional control for consumer execution. The data these consumers touch must be protected by storage jurisdictions, and the consumers themselves should be treated as running anywhere |
-| Cron Triggers | `0 4 * * *` (backup), `0 6 * * *` (housekeeping, sync), `*/5 * * * *` (outbox and import sweeps) | **No** | Same as Queues: no documented regional control. The backup cron reads every D1 table and every project repository, so it processes the full dataset wherever it runs |
-| Durable Objects | Four classes, no jurisdiction | Not by Regional Services | `namespace.jurisdiction("eu")` at every call site, which is a code change |
-| Outbound subrequests | OAuth, PostHog, BYOK LLM providers, deploy targets, webhooks, Git hosts | **No** | Choose EU-hosted endpoints, or disable each one |
-| Workers AI | `[ai]` binding for the `llm` evaluator | Not documented as covered | Unverified. Treat inference as running outside the region, or do not use the `llm` evaluator |
+> **This is for a fresh deployment.** Every storage jurisdiction below is fixed
+> at creation, and `DO_JURISDICTION` moves every Durable Object to a different
+> object. See [Do not switch an existing deployment](#do-not-switch-an-existing-deployment).
 
-So a deployment can keep its **stored** data in the EU with jurisdictions,
-and keep its **custom-domain request handling** in the EU with Regional
-Services. With today's Cloudflare features and Stratum's design, it cannot
-guarantee that **every computation** over that data happens in the EU, because
-background work runs on queues and crons. Anyone making an EU-only processing
-claim would need Cloudflare to confirm regional execution for those triggers,
-or would need Stratum to move that work onto primitives that support it.
+The same steps apply to `us` or `fedramp` by substituting the jurisdiction,
+except Artifacts, which documents only `eu` and `us`.
+
+Do these in order. Steps 1–4 must be finished **before the first deploy**.
+
+1. **Create the storage with an EU jurisdiction.** The `--jurisdiction` flag on
+   `kv namespace create` and `queues create` needs a recent Wrangler (present in
+   4.159.0; absent from 4.86.0, which this repository's lockfile currently
+   resolves to), so use `wrangler@latest` for these commands or the REST calls
+   on the linked pages.
+
+   ```bash
+   npx wrangler@latest d1 create stratum --jurisdiction=eu
+   npx wrangler@latest kv namespace create STATE --jurisdiction=eu
+   npx wrangler@latest r2 bucket create stratum-backups --jurisdiction=eu
+   # Only if you enable REPO_DO_ENABLED, which needs the REPO_OBJECTS bucket:
+   npx wrangler@latest r2 bucket create stratum-repo-objects --jurisdiction=eu
+   ```
+
+   Do not substitute `--location=weur`. That is a hint, and Cloudflare says it
+   is not a guarantee.
+
+2. **Create the Artifacts namespace with an EU jurisdiction**, before any
+   project exists. If the Worker creates a repository in a namespace that does
+   not exist yet, Artifacts creates that namespace for it with **no**
+   jurisdiction, and that cannot be changed afterwards.
+
+   ```bash
+   curl --request POST \
+     "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/artifacts/namespaces" \
+     --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+     --header "Content-Type: application/json" \
+     --data '{"namespace": "stratum", "jurisdiction": "eu"}'
+   ```
+
+3. **Create every queue with an EU jurisdiction.** A dead-letter queue must be
+   in the same jurisdiction as its source queue; create them explicitly rather
+   than relying on that being inferred.
+
+   ```bash
+   for q in stratum-events stratum-imports stratum-deploys stratum-deploys-dlq \
+            stratum-evaluations stratum-evaluations-dlq; do
+     npx wrangler@latest queues create "$q" --jurisdiction eu
+   done
+   ```
+
+4. **Edit `wrangler.toml`.** Each of these has a commented sample in the
+   top-level template:
+
+   - Put the ids from step 1 in the `[[kv_namespaces]]` and `[[d1_databases]]`
+     bindings.
+   - Add `jurisdiction = "eu"` to **every** `[[r2_buckets]]` binding. Cloudflare
+     requires the binding to name the jurisdiction to reach a bucket that has
+     one.
+   - Set `DO_JURISDICTION = "eu"` under `[vars]`. If you deploy a named
+     environment, set it in that environment's `[env.<name>.vars]` block: named
+     environments do not inherit top-level vars, and a value set only at the top
+     level leaves the deployed Worker unrestricted with no warning.
+   - Set `workers_dev = false` and `preview_urls = false`, and route the Worker
+     on a custom domain (`routes = [{ pattern = "…", custom_domain = true }]`).
+     `preview_urls` must be set explicitly: Cloudflare documents that disabling
+     the `workers.dev` route "does not disable" version and preview URLs, and
+     that omitting `preview_urls` leaves an existing setting unchanged.
+   - Remove the `[ai]` binding, or accept that the `llm` evaluator's inference
+     has no location guarantee. Without the binding, an `llm` evaluator that
+     names no BYOK provider reports itself unavailable instead of running.
+   - Leave `[[sandboxes]]` commented out. The sandbox evaluator is not covered
+     by `DO_JURISDICTION`, and this page makes no residency statement about it.
+   - Optionally remove `[[analytics_engine_datasets]]`. Nothing writes to it.
+
+5. **Deploy**, then configure
+   [Regional Services](https://developers.cloudflare.com/data-localization/regional-services/regional-hostnames/)
+   for the custom domain with an EU region. This needs a Cloudflare Enterprise
+   plan with the Data Localization Suite; without it, nothing constrains where
+   HTTP requests are decrypted and handled, and the rest of this list covers
+   storage and Durable Objects only.
+
+6. **Set Customer Metadata Boundary to `EU`** (also Data Localization Suite) if
+   Worker logs must stay in the EU, or turn `[observability]` off. Application
+   logs contain identifiers such as user and project ids.
+
+7. **Deal with everything outside Cloudflare.** Leave `POSTHOG_API_KEY` and
+   `POSTHOG_PUBLIC_KEY` unset, or point `POSTHOG_HOST` at PostHog's EU cloud.
+   Keep `LLM_PROVIDERS` to providers whose terms suit you, or leave it unset.
+   Decide about Google Fonts, which the UI loads from `fonts.googleapis.com` and
+   which is not configurable today. OAuth sign-in, outbound webhooks, deploy
+   targets, and Git hosts used for import and sync are all subrequests that
+   Regional Services does not cover.
+
+8. **Check it.** Confirm in the Cloudflare dashboard that the D1 database, each
+   bucket, the KV namespace, the Artifacts namespace and each queue show the
+   jurisdiction. Request `https://<worker>.<subdomain>.workers.dev/health` and
+   confirm it no longer answers. Request `/health` on the custom domain: a
+   mistyped `DO_JURISDICTION` answers `503` to every request there (below).
+
+#### The `DO_JURISDICTION` setting
+
+`DO_JURISDICTION` accepts `eu`, `us`, or `fedramp` — the jurisdictions
+[Cloudflare documents for Durable Objects](https://developers.cloudflare.com/durable-objects/reference/data-location/#supported-locations).
+Unset, or set to the empty string, it does nothing; that is the default and
+what the hosted instance runs.
+
+When set, every Durable Object namespace the Worker uses — all four classes —
+is obtained through `namespace.jurisdiction(<value>)`, in one function
+(`durableObjectNamespace` in `src/utils/durable-objects.ts`). A test fails the
+build if any code reads a Durable Object binding without going through it.
+
+The value must match exactly. `EU`, `europe`, `weur`, or a value with stray
+whitespace is not normalised and is not ignored: **every HTTP request is
+answered `503`**, the health check included, and the reason is logged once per
+isolate. Queue consumers and cron handlers, which no request reaches, throw
+instead of addressing an unrestricted object. A deployment with a mistyped
+jurisdiction is therefore down rather than quietly unrestricted.
+
+#### Do not switch an existing deployment
+
+**Setting or changing `DO_JURISDICTION` on a deployment that has already run
+makes its existing Durable Object state unreachable.** Cloudflare documents
+that the same name maps to a different object id in a jurisdiction-restricted
+namespace than in the unrestricted one, so every object the Worker addresses
+afterwards is a new, empty one. The old objects are **not deleted or moved**:
+they stay where they were created, outside the jurisdiction, and nothing in
+Stratum can reach them any more — including account and project deletion,
+whose purge step addresses the new namespace. Changing the value back makes the
+old objects reachable again and the new ones unreachable.
+
+What each class holds, and what switching would do to it:
+
+| Class (binding) | State it holds | Effect of switching |
+|-----------------|----------------|---------------------|
+| `MergeQueue` (`MERGE_QUEUE`) | Nothing durable. It exists to run one repository's merges one at a time | Nothing is lost. A merge in flight at the moment of the switch is no longer serialized against the next one |
+| `RepoDO` (`REPO_DO`) | Only when `REPO_DO_ENABLED = "true"`: each repository's cached `head` commit, and a SQLite index of staged workspace trees that the batch-merge endpoint reads | The cached head starts empty and is rebuilt; correctness does not depend on it. The SQLite index is lost: the batch-merge endpoint reports a workspace committed before the switch as "not staged" and skips it until the workspace is committed again. Single merges do not read that index and are unaffected |
+| `MagicLinkRateLimiter` (`MAGIC_LINK_LIMITER`) | The current hour's magic-link send count, one object per email digest and one per source IP | Counts restart at zero, so each address and IP gets one extra hour's allowance |
+| `UsageMeter` (`USAGE_METER`) | Only when a billing service is configured: the current month's usage counters, short-window rate counters, and in-flight creation holds, one object per enforcement subject | Enforcement counters restart at zero for the current month, so limits are under-enforced until the month rolls over. The usage ledger in D1 is unaffected. A default self-hosted instance stores nothing here |
+
+The same applies to the storage in step 1: a jurisdiction cannot be added to
+an existing D1 database, bucket, KV namespace, Artifacts namespace or queue.
+Moving an existing instance means creating new resources and migrating the data
+into them, and this repository provides no procedure for that.
+
+### What an EU-only deployment does and does not guarantee
+
+For a deployment configured by the steps above. "Covered" means Cloudflare
+documents a guarantee and the named setting turns it on. "No guarantee" means
+Cloudflare documents none, and no setting in Stratum creates one.
+
+| Execution path or data | Status | Detail |
+|------------------------|--------|--------|
+| HTTP on the custom domain: UI, REST API, `/mcp`, Git smart-HTTP | **Covered by Regional Services** (Enterprise add-on), set to an EU region on the hostname | TLS termination and Worker execution for these requests happen in-region. Without Regional Services there is no guarantee |
+| HTTP on `*.workers.dev`, and version or preview URLs | **Covered by `workers_dev = false` and `preview_urls = false`** | The hostnames stop existing, so no request can reach the Worker outside the regional hostname. Regional Services does not cover `workers.dev` |
+| Durable Objects: execution and storage, all four classes, including their alarms | **Covered by `DO_JURISDICTION = "eu"`** | Cloudflare still logs object ids outside the jurisdiction. The Worker that *calls* an object is not moved by this setting; it runs wherever its own trigger runs |
+| D1, R2, Artifacts: storage and processing | **Covered by a jurisdiction set at creation** (and `jurisdiction = "eu"` on each R2 binding) | Not checked by Stratum at run time |
+| Queue messages: storage and processing by Queues | **Covered by a jurisdiction set at queue creation** | Covers the messages, not the consumer — see the next row |
+| Queue consumers (`stratum-events`, `stratum-imports`, `stratum-deploys`, `stratum-evaluations`) | **No guarantee available**, because Cloudflare states that Regional Services "does not apply to other Worker triggers, like Queues or Cron Triggers", that a restricted queue can be consumed "from any location", and that placement settings "only [affect] the execution of fetch event handlers" | The consumer Worker may run in any Cloudflare data center. It handles event delivery, imports and syncs, post-merge deploys and evaluation runs, so repository contents and database rows read from EU storage can be processed in memory outside the EU. Whatever it writes still lands in EU storage |
+| Cron Triggers: `0 4 * * *` (backup), `0 6 * * *` (housekeeping, sync), `*/5 * * * *` (outbox and import sweeps) | **No guarantee available**, for the same reason; Cloudflare says only that scheduled Workers "run on underutilized machines" | The backup cron reads every D1 table and every project repository, so it processes the full dataset wherever it runs |
+| Workers KV | **Durable storage covered by a jurisdiction set at creation; cached copies have no guarantee available**, because Cloudflare states KV data "can be cached outside the jurisdiction" | KV holds project and workspace registry records, short-lived OAuth state, and caches. See also the documentation conflict noted above |
+| Worker code and secrets at rest | **No guarantee available**, because Cloudflare states they "are deployed globally to all Cloudflare data centers" even under Regional Services | This includes `DEPLOY_SECRET_KEY`, `SSO_ENCRYPTION_SECRET`, `BACKUP_ENCRYPTION_SECRET` and the OAuth client secrets |
+| Outbound subrequests: OAuth, PostHog, BYOK LLM providers, deploy targets, webhooks, Git hosts | **No guarantee available**, because Regional Services "does not extend to outgoing subrequests" | Choose EU-hosted endpoints, or disable each one (step 7) |
+| Workers AI (`llm` evaluator) | **No guarantee available**, because Cloudflare documents no location control for inference | Remove the `[ai]` binding (step 4) |
+| Rate limiting bindings | **No guarantee available** as a separate control, because none is documented | Counters live in the Cloudflare location the Worker runs in, so they follow Regional Services for HTTP requests. The key is a user id, an agent id, or a client IP address |
+| Outbound email | **No guarantee available**, because Cloudflare documents no location control for Email Sending | Recipient addresses and message bodies reach Cloudflare's mail infrastructure and then the recipient's mail server |
+| Worker logs, traces and metrics | **Covered by Customer Metadata Boundary** set to `EU` (Data Localization Suite), or by turning `[observability]` off | Without either, there is no guarantee where logs are stored |
+| Sandbox evaluator and `merge.postMergeCommand` | **No statement made** | The `[[sandboxes]]` binding is commented out in every environment and was not assessed. Leave it off |
+
+So such a deployment keeps its **stored** data in the EU, runs its **Durable
+Objects** in the EU, and — with Regional Services — handles its **HTTP
+requests** in the EU. It **cannot** guarantee that every computation over that
+data happens in the EU, because queue consumers and cron handlers run wherever
+Cloudflare schedules them, and Stratum does a large share of its work there:
+imports, syncs, evaluations, post-merge deploys, event delivery, and the
+nightly backup. Anyone making an EU-only *processing* claim needs either
+Cloudflare's confirmation of regional execution for those triggers, or a
+version of Stratum that moves that work into jurisdiction-restricted Durable
+Objects, which this one does not do.
 
 ## Compliance status
 
@@ -386,9 +562,13 @@ and it is listed so a reviewer can see the gap, not as a commitment or a date.
   engagement with an audit firm, and controls this repository does not document
   today: production access reviews, on-call and incident response procedures,
   and periodic restore drills with recorded results.
-- **Technical prerequisites that are code changes:** an EU-jurisdiction
-  deployment path (above), backup purge on account deletion or a documented
-  maximum, self-hosted fonts, and a published log-retention setting.
+- **Technical prerequisites that are code changes:** moving queue-consumer and
+  cron work into jurisdiction-restricted Durable Objects, which is what an
+  EU-only *processing* guarantee would need (the
+  [EU-only deployment steps](#deploying-eu-only-self-hosted) cover storage,
+  Durable Objects and HTTP only); a run-time check that bound storage actually
+  carries a jurisdiction; backup purge on account deletion or a documented
+  maximum; self-hosted fonts; and a published log-retention setting.
 
 ## See also
 

@@ -38,6 +38,7 @@
 import { usageMeterName } from "../queue/usage-meter";
 import { type MeterKey, getOwnerMeterTotals, isMeterKey, usagePeriod } from "../storage/usage";
 import type { Env } from "../types";
+import { durableObjectNamespace } from "../utils/durable-objects";
 import { type AppError, ValidationError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
@@ -265,7 +266,7 @@ async function readMeterCounts(
   period: string,
 ): Promise<Partial<Record<MeterKey, number>> | null> {
   if (!entitlementsEnabled(env)) return null;
-  const namespace = env.USAGE_METER;
+  const namespace = durableObjectNamespace(env, "USAGE_METER");
   if (!namespace) return null;
   try {
     const stub = namespace.get(

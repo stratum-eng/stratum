@@ -44,6 +44,7 @@ import {
 import { resolveBillingSubject } from "../storage/costs";
 import { type MeterKey, getOwnerMeterTotals, isMeterKey, usagePeriod } from "../storage/usage";
 import type { Env } from "../types";
+import { durableObjectNamespace } from "../utils/durable-objects";
 import type { Logger } from "../utils/logger";
 import {
   type CountKey,
@@ -384,7 +385,7 @@ export async function checkMeter(
   opts: MeterCheckOptions,
 ): Promise<EnforcementDecision> {
   if (!entitlementsEnabled(env)) return inert();
-  const meterNamespace = env.USAGE_METER;
+  const meterNamespace = durableObjectNamespace(env, "USAGE_METER");
   if (!meterNamespace) {
     // Configured to enforce with nothing to count against. Logged rather than
     // refusing: `entitlementsConfigError` is where this gets fixed, and a
@@ -470,7 +471,7 @@ export async function settleMeter(
   },
 ): Promise<void> {
   if (!entitlementsEnabled(env)) return;
-  const meterNamespace = env.USAGE_METER;
+  const meterNamespace = durableObjectNamespace(env, "USAGE_METER");
   if (!meterNamespace) return;
   if (!Number.isFinite(opts.delta) || opts.delta === 0) return;
   const nowMs = opts.nowMs ?? Date.now();
@@ -584,7 +585,7 @@ async function holdGauge(
   limit: number,
   enforcing: boolean,
 ): Promise<GaugeReserveOutcome | null> {
-  const meterNamespace = env.USAGE_METER;
+  const meterNamespace = durableObjectNamespace(env, "USAGE_METER");
   if (!meterNamespace) {
     logger.warn("Gauge decision not serialized: USAGE_METER binding is not configured", {
       count: opts.count,
@@ -633,7 +634,7 @@ export async function releaseGauge(
   opts: { subject: EnforcementSubject; count: CountKey; token: string; paths?: string[] },
 ): Promise<void> {
   if (!entitlementsEnabled(env)) return;
-  const meterNamespace = env.USAGE_METER;
+  const meterNamespace = durableObjectNamespace(env, "USAGE_METER");
   if (!meterNamespace) return;
   try {
     const stub = meterNamespace.get(

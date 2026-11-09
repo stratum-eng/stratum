@@ -65,6 +65,7 @@ import {
   credentialBindingFrom,
   refuseProjectAccess,
 } from "../utils/authz";
+import { durableObjectNamespace } from "../utils/durable-objects";
 import { getWaitUntil } from "../utils/execution-ctx";
 import { newId } from "../utils/ids";
 import { createLogger } from "../utils/logger";
@@ -755,26 +756,31 @@ app.post("/changes/:id/merge", async (c) => {
   // RepoDO is keyed by the canonical project.id so one repo maps to exactly one DO
   // (change.project may be a name OR id depending on the creating path, which would
   // otherwise split a repo's ref cache across DOs).
-  const useRepoDo = c.env.REPO_DO_ENABLED === "true" && c.env.REPO_DO !== undefined;
-  if ((useRepoDo || c.env.MERGE_QUEUE) && strategy === "merge") {
-    let result: MergeOutcome;
-    if (useRepoDo && c.env.REPO_DO) {
-      const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(project.id)) as unknown as {
+  const repoDo =
+    c.env.REPO_DO_ENABLED === "true" ? durableObjectNamespace(c.env, "REPO_DO") : undefined;
+  const mergeQueue = durableObjectNamespace(c.env, "MERGE_QUEUE");
+  let serializedMerge: (() => Promise<MergeOutcome>) | undefined;
+  if (repoDo) {
+    serializedMerge = async () => {
+      const stub = repoDo.get(repoDo.idFromName(project.id)) as unknown as {
         mergeViaR2(changeId: string): Promise<MergeOutcome | { fallback: true }>;
         advance(changeId: string): Promise<MergeOutcome>;
       };
       // Prefer the R2 fetch-free path; fall back to the Phase-1 FF/cold path when the
       // change has no staged tree (e.g. committed before R2 staging was enabled).
       const r2 = await stub.mergeViaR2(id);
-      result = "fallback" in r2 ? await stub.advance(id) : r2;
-    } else {
-      // biome-ignore lint/style/noNonNullAssertion: guarded by the if condition
-      const queue = c.env.MERGE_QUEUE!;
-      const stub = queue.get(queue.idFromName(change.project));
-      result = await (stub as unknown as { merge(changeId: string): Promise<MergeOutcome> }).merge(
+      return "fallback" in r2 ? await stub.advance(id) : r2;
+    };
+  } else if (mergeQueue) {
+    serializedMerge = async () => {
+      const stub = mergeQueue.get(mergeQueue.idFromName(change.project));
+      return await (stub as unknown as { merge(changeId: string): Promise<MergeOutcome> }).merge(
         id,
       );
-    }
+    };
+  }
+  if (serializedMerge && strategy === "merge") {
+    const result = await serializedMerge();
 
     if (!result.success) {
       // Preserve the structured 409 for a stale workspace (matches the cold path),
@@ -824,7 +830,7 @@ app.post("/changes/:id/merge", async (c) => {
       changeId: id,
       project: change.project,
       commit: result.commit,
-      via: useRepoDo ? "repo-do" : "merge-queue",
+      via: repoDo ? "repo-do" : "merge-queue",
     });
 
     if (force) {
@@ -1242,8 +1248,9 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
 
   // Merge inside the per-repo DO: local SQLite hot-index reads + warm reused clone +
   // one push. Keyed by project.id (same key the commit route seeds the index under).
-  if (!c.env.REPO_DO) return internalError("RepoDO not bound");
-  const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(project.id)) as unknown as {
+  const repoDo = durableObjectNamespace(c.env, "REPO_DO");
+  if (!repoDo) return internalError("RepoDO not bound");
+  const stub = repoDo.get(repoDo.idFromName(project.id)) as unknown as {
     getStagedTrees(workspaces: string[]): Promise<{ workspace: string; value: Uint8Array }[]>;
     gcStagedTrees(workspaces: string[]): Promise<void>;
   };

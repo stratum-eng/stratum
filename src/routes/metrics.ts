@@ -19,6 +19,7 @@ import { packObjects, placeLooseObject, unpackObjects } from "../storage/object-
 import { putObject } from "../storage/object-store";
 import type { Env } from "../types";
 import { isAdminRequest } from "../utils/admin";
+import { durableObjectNamespace } from "../utils/durable-objects";
 import { createLogger } from "../utils/logger";
 import { internalError, ok, unauthorized } from "../utils/response";
 
@@ -215,7 +216,8 @@ app.get("/health", async (c) => {
 app.post("/bench", async (c) => {
   const logger = createLogger({ requestId: crypto.randomUUID(), path: c.req.path });
   if (!(await isAdmin(c))) return unauthorized("Admin access required");
-  if (!c.env.REPO_DO) return internalError("REPO_DO not bound");
+  const repoDo = durableObjectNamespace(c.env, "REPO_DO");
+  if (!repoDo) return internalError("REPO_DO not bound");
 
   if (!c.env.REPO_OBJECTS) return internalError("REPO_OBJECTS not bound");
   const repo = c.req.query("repo") ?? "bench-repo";
@@ -229,7 +231,7 @@ app.post("/bench", async (c) => {
     const put = await putObject(c.env.REPO_OBJECTS, blob.oid, blob.bytes, logger);
     if (!put.success) return internalError("object write failed");
     // Ref plane: only the advance hits the DO (group-commit batches it).
-    const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(repo));
+    const stub = repoDo.get(repoDo.idFromName(repo));
     await (
       stub as unknown as { benchAdvance(path: string, blobOid: string): Promise<{ ok: true }> }
     ).benchAdvance(path, blob.oid);
@@ -243,9 +245,10 @@ app.post("/bench", async (c) => {
 // GET /api/admin/metrics/bench-stats?repo=... - read the bench DO's counters.
 app.get("/bench-stats", async (c) => {
   if (!(await isAdmin(c))) return unauthorized("Admin access required");
-  if (!c.env.REPO_DO) return internalError("REPO_DO not bound");
+  const repoDo = durableObjectNamespace(c.env, "REPO_DO");
+  if (!repoDo) return internalError("REPO_DO not bound");
   const repo = c.req.query("repo") ?? "bench-repo";
-  const stub = c.env.REPO_DO.get(c.env.REPO_DO.idFromName(repo));
+  const stub = repoDo.get(repoDo.idFromName(repo));
   const stats = await (
     stub as unknown as {
       benchStats(): Promise<{

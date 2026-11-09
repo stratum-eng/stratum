@@ -31,6 +31,7 @@ import { SOURCE_FOOTER_HTML_INLINE } from "../ui/components/source-footer";
 import { TELEMETRY_CONSENT_HTML_INLINE } from "../ui/components/telemetry-consent";
 import { auditAuthFailure } from "../utils/auth-audit";
 import { hashToken } from "../utils/crypto";
+import { durableObjectNamespace } from "../utils/durable-objects";
 import { getWaitUntil } from "../utils/execution-ctx";
 import { escapeHtml } from "../utils/html";
 import { type Logger, createLogger } from "../utils/logger";
@@ -196,7 +197,7 @@ export async function checkMagicLinkRateLimits(
   email: string,
   logger: Logger,
 ): Promise<{ blocked: boolean }> {
-  const namespace = c.env.MAGIC_LINK_LIMITER;
+  const namespace = durableObjectNamespace(c.env, "MAGIC_LINK_LIMITER");
   // One reading for both counters, so a request that straddles an hour boundary
   // cannot land its two reservations in different windows.
   const nowMs = Date.now();
