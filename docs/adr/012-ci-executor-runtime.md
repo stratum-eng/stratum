@@ -165,12 +165,24 @@ It holds no D1 binding, no session store, and no deploy credential.
   project's default branch advances after the checks ran, a merge combines the
   tested tree with newer commits, and Stratum refuses that only when the policy
   sets `requireFreshBase`. A project that gates merges on the executor sets
-  `requireFreshBase`, so that a stale change is re-evaluated, and its checks
-  re-run, against the new base. That check has a hole today: the merge route
-  skips it when the project's head cannot be resolved, or when the change has
-  no recorded base, and the merge proceeds unverified. The executor's
-  implementation closes it, so that under `requireFreshBase` an unresolvable
-  head or a missing base refuses the merge. Testing the proposed merge tree instead is the
+  `requireFreshBase`. That refuses a stale change with `STALE_BASE`. It does
+  not re-evaluate it: the author rebases and asks for a new evaluation, and
+  the checks run again against the new base. Three limits on that protection
+  are stated here so that nobody reads more into it:
+
+  - **It can be skipped today.** The merge route skips the check when the
+    project's head cannot be resolved, or when the change has no recorded
+    base, and the merge proceeds unverified. The executor's implementation
+    closes this, so that under `requireFreshBase` an unresolvable head or a
+    missing base refuses the merge.
+  - **It is a check before the merge, not part of it.** The head is read, and
+    then the merge runs. A second merge landing between the two is not caught.
+    Merges for one project are already serialized through a Durable Object, so
+    the fix is to make the comparison inside that serialized step; until that
+    is done the window exists and is small.
+  - **A force merge bypasses it**, like every other protection, where the
+    policy sets `allowForce`. A project that gates on the executor leaves
+    `allowForce` off. Testing the proposed merge tree instead is the
   better long-term answer and is left open below.
 - **One check per step, and every step is required.** Each step reports
   through the #414 callback. The steps declared in the base `ci.yaml` are
@@ -268,6 +280,8 @@ what it is good at.
   per-project concurrency and monthly usage limits that sit under it.
 - Path-specific approval rules in the merge policy, so that a change touching
   gate-defining files needs approval without requiring it for every change.
+- Moving the fresh-base comparison inside the serialized merge step, which
+  makes it atomic with the merge.
 - Whether to test the proposed merge tree (base tip plus the change) instead
   of the change's head, which would remove the dependence on
   `requireFreshBase`.
