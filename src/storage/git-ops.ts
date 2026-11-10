@@ -4397,6 +4397,9 @@ export type TagDetailCache = {
 /** Longest a listing waits for its tag details to be stored before answering. */
 export const TAG_DETAIL_STORE_TIMEOUT_MS = 2_000;
 
+/** Longest a listing waits on one batch of tag-detail cache reads before cloning instead. */
+export const TAG_DETAIL_READ_TIMEOUT_MS = 2_000;
+
 /** Tag-detail cache reads kept in flight at once while building a listing. */
 const TAG_DETAIL_READ_BATCH = 20;
 
@@ -4421,15 +4424,26 @@ async function tagsFromAdvertisement(
   // listing to the clone, so reads past it are paid for and thrown away.
   const entries: RepoTagEntry[] = [];
   for (let start = 0; start < names.length; start += TAG_DETAIL_READ_BATCH) {
-    const batch = await Promise.all(
-      names
-        .slice(start, start + TAG_DETAIL_READ_BATCH)
-        .map(async (name): Promise<RepoTagEntry | null> => {
-          const oid = advertised.tags[name] as string;
-          const details = await cache.get(oid);
-          return details === null ? null : { name, oid, ...details, unresolvable: false };
-        }),
+    // Bounded like the store below: a cache that stalls must not hold the
+    // listing. A batch that does not answer in time counts as a miss, and the
+    // clone can still produce the listing.
+    const read = await fromPromise(
+      withTimeout(
+        Promise.all(
+          names
+            .slice(start, start + TAG_DETAIL_READ_BATCH)
+            .map(async (name): Promise<RepoTagEntry | null> => {
+              const oid = advertised.tags[name] as string;
+              const details = await cache.get(oid);
+              return details === null ? null : { name, oid, ...details, unresolvable: false };
+            }),
+        ),
+        TAG_DETAIL_READ_TIMEOUT_MS,
+        "listRepoTags: reading tag details",
+      ),
     );
+    if (!read.success) return null;
+    const batch = read.data;
     for (const entry of batch) {
       if (entry === null) return null;
       entries.push(entry);

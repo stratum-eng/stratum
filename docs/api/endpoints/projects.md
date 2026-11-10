@@ -94,7 +94,8 @@ Tag names come from the remote's ref advertisement, so a listing normally does
 not clone the repository. The exception is a tag whose details are not stored
 yet. The repository is cloned to read it, and the details are then remembered.
 The first request after a new tag is pushed is therefore slower. A tag that could
-not be resolved, or whose message is over 64 KB, is not remembered. Every
+not be resolved, or whose details come to more than 64 KB once stored (in
+practice, a very long message), is not remembered. Every
 request that lists such a tag clones the repository again, and `unresolvable`
 can be `true` on any of those requests.
 

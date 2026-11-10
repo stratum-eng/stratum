@@ -4,6 +4,7 @@ import { snapshotRepo, walkRepoObjects } from "../src/backup/repo-snapshot";
 import {
   MAX_TAGS,
   type NodeFS,
+  TAG_DETAIL_READ_TIMEOUT_MS,
   TAG_DETAIL_STORE_TIMEOUT_MS,
   type TagDetails,
   cloneRepo,
@@ -780,6 +781,37 @@ describe("listRepoTags", () => {
     expect(mockClone).toHaveBeenCalledTimes(1);
     // Both paths describe the tag identically.
     expect(second).toEqual(first);
+  });
+
+  it("clones when the cache does not answer in time", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      mockGetRemoteInfo.mockResolvedValue(remoteInfoWithTags({ "v1.0.0": "a".repeat(40) }));
+      mockClone.mockRejectedValue(new Error("clone reached"));
+      let readReached = (): void => {};
+      const reached = new Promise<void>((resolve) => {
+        readReached = resolve;
+      });
+      const detailCache = {
+        get: () => {
+          readReached();
+          return new Promise<null>(() => {});
+        },
+        put: async () => {},
+      };
+
+      const pending = listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+        detailCache,
+      });
+      await reached;
+      await vi.advanceTimersByTimeAsync(TAG_DETAIL_READ_TIMEOUT_MS + 1);
+      const result = await pending;
+
+      expect(result.success).toBe(false);
+      expect(mockClone).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not store a tag that did not resolve", async () => {
