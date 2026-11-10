@@ -229,15 +229,17 @@ It lists what failed. While it is open no second issue is filed, and it is
 closed automatically when the check passes again. Left unset, which is the
 default, the result is written to the Worker's logs only.
 
-To be emailed as well, set the `OPS_ALERT_EMAIL` secret to an address. Secrets
-are per environment, so name the one you deploy:
-`wrangler secret put OPS_ALERT_EMAIL --env production`. The instance then sends
-one message when the issue is opened and one when it is closed. This needs the
+To be emailed as well, set the `OPS_ALERT_EMAIL` secret to an address. A secret
+belongs to one deployment: for a top-level deployment run
+`wrangler secret put OPS_ALERT_EMAIL`, and for a named environment add
+`--env <name>`, for example `--env production`. The instance then sends one
+message when the issue is opened and one when it is closed. This needs the
 instance's email sending to be configured (`EMAIL` binding and
-`EMAIL_FROM_ADDRESS`). With no `OPS_ALERT_PROJECT`, or when the issue could not
-be opened (the message says why), there is no issue to mark the alert as
-already raised, so a failing check sends a message every day until it passes,
-and none when it does.
+`EMAIL_FROM_ADDRESS`). With no `OPS_ALERT_PROJECT`, with one that cannot be
+found, or when the issue could not be opened, there is no issue to mark the
+alert as already raised, so a failing check sends a message every day until it
+passes, and none when it does. Each of those messages says why no issue was
+opened.
 
 ### `... allowance is used up` or an evaluation rate limit
 

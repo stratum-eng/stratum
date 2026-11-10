@@ -132,7 +132,10 @@ export async function raiseOpsAlert(
         ? `Issue #${outcome.number} was opened in ${env.OPS_ALERT_PROJECT}.`
         : outcome.status === "failed"
           ? `No issue could be opened in ${env.OPS_ALERT_PROJECT}: ${outcome.why}.`
-          : "No issue was opened.";
+          : outcome.status === "logged-only"
+            ? // Says which: an unset project is a choice, a misspelt one is not.
+              `No issue was opened: ${outcome.why}.`
+            : "No issue was opened.";
     await sendAlertEmail(env, logger, {
       subject: `[Stratum] ${alert.title}`,
       text: `${alert.body}\n\n${where}`,

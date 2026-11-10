@@ -668,9 +668,12 @@ and, unless `OPS_ALERT_EMAIL` is set, nothing else happens. The hosted instance
 sets it to `@stratum/stratum` in `[env.production.vars]`; staging leaves it
 unset.
 
-`OPS_ALERT_EMAIL` (a secret, so set it per environment:
-`wrangler secret put OPS_ALERT_EMAIL --env production`) adds an email when the
-issue is opened and when it is closed. With no `OPS_ALERT_PROJECT`, or when the
+`OPS_ALERT_EMAIL` adds an email when the issue is opened and when it is closed.
+It is a secret, and a secret belongs to one deployment:
+`wrangler secret put OPS_ALERT_EMAIL` for a top-level deployment, with
+`--env <name>` (for example `--env production`) for a named environment. It
+does nothing on its own: the same deployment also needs the `EMAIL` binding and
+`EMAIL_FROM_ADDRESS`, and without either no message is sent. With no `OPS_ALERT_PROJECT`, or when the
 issue cannot be filed, there is no issue to mark the alert as already raised:
 the instance then mails on every failing run, and sends no message when the
 check recovers. It is deliberately not `ADMIN_EMAIL`: that secret also makes

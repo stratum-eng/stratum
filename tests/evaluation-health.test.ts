@@ -210,7 +210,21 @@ describe("ops alerts", () => {
       await raiseOpsAlert(env, logger, alert);
       expect(send).toHaveBeenCalledTimes(2);
       expect(send).toHaveBeenLastCalledWith(
-        expect.objectContaining({ text: expect.stringContaining("No issue was opened.") }),
+        expect.objectContaining({
+          text: expect.stringContaining("No issue was opened: OPS_ALERT_PROJECT is not set."),
+        }),
+      );
+    });
+
+    it("says in the mail when the project it was told to file in does not exist", async () => {
+      const { env, send } = mailEnv({ OPS_ALERT_PROJECT: "@acme/missing" } as Partial<Env>);
+      await raiseOpsAlert(env, logger, alert);
+      expect(send).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining(
+            "No issue was opened: the OPS_ALERT_PROJECT project was not found.",
+          ),
+        }),
       );
     });
 

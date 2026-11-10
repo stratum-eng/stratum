@@ -440,8 +440,9 @@ ENTITLEMENTS_ENFORCE = "0"
 # OPS_ALERT_PROJECT = "@your-org/ops"
 # To be emailed as well, when the issue is opened and when it is closed, set
 # the address as a secret (it is someone's inbox, so not a var in this file).
-# Secrets are per environment, so name the one being deployed:
-#   wrangler secret put OPS_ALERT_EMAIL --env production
+# A secret belongs to one deployment: as written for a top-level deployment,
+# with `--env <name>` for a named environment such as production.
+#   wrangler secret put OPS_ALERT_EMAIL
 # With no OPS_ALERT_PROJECT, or when the issue cannot be filed, it mails on
 # every failing run instead, and not on recovery.
 # Needs the EMAIL binding and EMAIL_FROM_ADDRESS. It is not ADMIN_EMAIL, which
