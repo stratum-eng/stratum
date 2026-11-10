@@ -175,8 +175,9 @@ or `attempts`.
 `repo` is `owner/repository` on GitHub. `enabled` defaults to `true`. `POST` to
 the same path does the same thing.
 
-An enabled mirror is checked against GitHub before it is saved, and saving
-queues a push. Enabling a mirror also stops the project syncing from its source
+The target is checked against GitHub before it is saved, whether or not the
+mirror is enabled; only disabling an existing mirror skips the check. Saving an
+enabled mirror queues a push. Enabling a mirror also stops the project syncing from its source
 and promoting changes to GitHub pull requests (`409 PUSH_MIRROR_ENABLED` on
 those endpoints).
 
