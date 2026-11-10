@@ -6,7 +6,11 @@ import {
   llmTimeoutMs,
 } from "../src/evaluation/limits";
 import { LLMEvaluator } from "../src/evaluation/llm-evaluator";
-import { type LlmProvider, WorkersAiProvider } from "../src/evaluation/llm-provider";
+import {
+  type LlmProvider,
+  LlmProviderResponseError,
+  WorkersAiProvider,
+} from "../src/evaluation/llm-provider";
 import type { EvalPolicy } from "../src/evaluation/types";
 import type { AiBinding } from "../src/types";
 import type { Logger } from "../src/utils/logger";
@@ -33,6 +37,88 @@ function makePolicy(overrides: Partial<EvalPolicy> = {}): EvalPolicy {
     ...overrides,
   };
 }
+
+describe("WorkersAiProvider — response shapes", () => {
+  const verdict = { score: 0.9, passed: true, reason: "Looks good", issues: [] };
+  const messages = [{ role: "user", content: "review" }];
+
+  it("reads a chat completion that has no `response` field", async () => {
+    const ai: AiBinding = {
+      run: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: JSON.stringify(verdict) }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      }),
+    };
+    const result = await new WorkersAiProvider(ai).run("m", messages);
+    expect(result).toEqual({
+      success: true,
+      data: { text: JSON.stringify(verdict), usage: { inputTokens: 10, outputTokens: 5 } },
+    });
+  });
+
+  it("reads the completion text when `response` is the verdict already parsed", async () => {
+    const ai: AiBinding = {
+      run: vi.fn().mockResolvedValue({
+        response: verdict,
+        choices: [{ message: { content: JSON.stringify(verdict) }, finish_reason: "stop" }],
+      }),
+    };
+    const result = await new WorkersAiProvider(ai).run("m", messages);
+    expect(result.success && result.data.text).toBe(JSON.stringify(verdict));
+  });
+
+  it("serializes a parsed `response` when there is no completion text", async () => {
+    const ai: AiBinding = { run: vi.fn().mockResolvedValue({ response: verdict }) };
+    const result = await new WorkersAiProvider(ai).run("m", messages);
+    expect(result.success && result.data.text).toBe(JSON.stringify(verdict));
+  });
+
+  it("yields no text for a response in neither shape", async () => {
+    const ai: AiBinding = {
+      run: vi.fn().mockResolvedValue({ choices: [{ message: { content: 42 } }] }),
+    };
+    const result = await new WorkersAiProvider(ai).run("m", messages);
+    expect(result.success && result.data.text).toBe("");
+  });
+
+  it("reports a completion cut off at the output limit, with its usage", async () => {
+    const ai: AiBinding = {
+      run: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: '{"score": 0.' }, finish_reason: "length" }],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      }),
+    };
+    const result = await new WorkersAiProvider(ai).run("m", messages);
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error).toBeInstanceOf(LlmProviderResponseError);
+    expect(result.error.message).toContain("truncated at the model's output limit");
+    expect((result.error as LlmProviderResponseError).usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+    });
+  });
+
+  it("passes a verdict from a chat completion through the evaluator", async () => {
+    const ai: AiBinding = {
+      run: vi.fn().mockResolvedValue({
+        response: verdict,
+        choices: [{ message: { content: JSON.stringify(verdict) }, finish_reason: "stop" }],
+      }),
+    };
+    const result = await new LLMEvaluator(new WorkersAiProvider(ai)).evaluate(
+      "diff content",
+      makePolicy(),
+      mockLogger,
+    );
+    expect(result.success && result.data).toMatchObject({ score: 0.9, passed: true });
+    // The default model, when the policy names none.
+    expect(ai.run).toHaveBeenCalledWith(
+      "@cf/meta/llama-4-scout-17b-16e-instruct",
+      expect.anything(),
+    );
+  });
+});
 
 describe("LLMEvaluator — valid JSON responses", () => {
   it("score 0.9 with threshold 0.7 → passed: true", async () => {

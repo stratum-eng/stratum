@@ -338,7 +338,7 @@ describe("sanitizeLlmConfig — the policy may select a provider, never describe
   });
 
   it("fails closed on a provider entry that names no model", () => {
-    // The default model id is a Workers AI one (`@cf/meta/llama-3.1-8b-instruct`).
+    // The default model id is a Workers AI one (`@cf/meta/llama-4-scout-17b-16e-instruct`).
     // Posted to Anthropic it fails every call — a gate that never runs, found one
     // merge at a time — so the entry is refused where it is written instead.
     const parsed = parsePolicy({ evaluators: [{ type: "llm", provider: "anthropic" }] });

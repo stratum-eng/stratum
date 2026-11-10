@@ -123,7 +123,9 @@ export interface AiBinding {
     },
   ): Promise<
     | {
-        response?: string;
+        /** The text, for most models. Some return the JSON they wrote already
+         * parsed, so this is not always a string. */
+        response?: unknown;
         /**
          * Token counts Workers AI actually reported. Declared because it is
          * genuinely there and this repo was throwing it away: Cloudflare's
@@ -135,6 +137,15 @@ export interface AiBinding {
          * `estimated`, not a type error — `usageOrNothing` decides which.
          */
         usage?: { prompt_tokens?: number; completion_tokens?: number };
+        /**
+         * The OpenAI chat-completion shape, which current Workers AI models
+         * return as well as, or instead of, `response`. Typed `unknown` where
+         * the provider checks before use.
+         */
+        choices?: Array<{
+          message?: { content?: unknown };
+          finish_reason?: unknown;
+        }>;
       }
     | ReadableStream
   >;

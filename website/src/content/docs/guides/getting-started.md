@@ -160,7 +160,7 @@ evaluators:
 
   # AI review of the diff, scored 0.0-1.0. With no `provider` this runs on
   # the instance's Workers AI binding, and omitting `model` uses the default
-  # (@cf/meta/llama-3.1-8b-instruct); a model id Workers AI doesn't serve makes
+  # (@cf/meta/llama-4-scout-17b-16e-instruct); a model id Workers AI doesn't serve makes
   # this evaluator fail closed. Naming a `provider` runs the review on your own
   # key instead (see below) and then `model` is required.
   - type: llm
@@ -238,12 +238,13 @@ requiring a human approval and refusing force-merge.
   when you need it is *not* a failing install, but a native module that
   installs unbuilt and then fails when the test command loads it.
 - **`llm`** — sends the diff to an LLM for review against your criteria.
-  `model` picks the reviewer (default: `@cf/meta/llama-3.1-8b-instruct`, which
+  `model` picks the reviewer (default: `@cf/meta/llama-4-scout-17b-16e-instruct`, which
   the **Workers AI binding** serves); `threshold` is the minimum passing score
   (0.0–1.0); `maxDiffChars` bounds how much diff is sent (default 24,000, max
   100,000); `timeoutMs` is how long the reviewer may take (default 30s,
   clamped to 1s–120s) — a model that has not answered by then **fails closed**,
-  score 0; `provider` runs the review on your own key instead of the
+  score 0 (a model that reasons before it answers can take longer than the
+  default on a large diff, so raise `timeoutMs` if you name one); `provider` runs the review on your own key instead of the
   instance's binding (see [Bringing your own model key](#bringing-your-own-model-key)).
   An unavailable model or unparseable verdict fails closed. Token usage is
   recorded on the change as a cost record — the counts the provider reports,
