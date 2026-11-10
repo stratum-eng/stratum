@@ -26,7 +26,8 @@ const GITHUB_TIMEOUT_MS = 10_000;
 const INSTALLATIONS_PER_PAGE = 100;
 /**
  * A ceiling on pagination, so a misbehaving upstream cannot keep a request
- * alive. An installation past it is simply not found, which refuses the link.
+ * alive. An installation past it is simply not found, and an organization
+ * membership past it is not seen; either refuses the link.
  */
 const MAX_INSTALLATION_PAGES = 10;
 
@@ -95,10 +96,12 @@ export function githubAppAuthorizeUrl(
   return `${GITHUB_AUTHORIZE_URL}?${params.toString()}`;
 }
 
+/** The error for anything GitHub got wrong or refused: a 502, since it is the upstream's. */
 function githubError(message: string): AppError {
   return new AppError(message, "GITHUB_ERROR", 502);
 }
 
+/** Headers for a call made as the user, with their token. */
 function userHeaders(token: string): Record<string, string> {
   return {
     Accept: "application/vnd.github+json",
@@ -108,6 +111,7 @@ function userHeaders(token: string): Record<string, string> {
   };
 }
 
+/** One GET to GitHub's API as the user. A transport failure is an error; any HTTP answer is returned. */
 async function githubGet(path: string, token: string): Promise<Result<Response, AppError>> {
   try {
     return ok(
@@ -127,6 +131,7 @@ async function githubGet(path: string, token: string): Promise<Result<Response, 
   }
 }
 
+/** The response body as JSON, or null when it is not JSON. */
 async function readJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -135,6 +140,7 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
+/** Is this a plain object: not null and not an array? */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -213,6 +219,7 @@ export interface CurrentGitHubAccess {
   installations: ReadonlyMap<number, ListedInstallation>;
 }
 
+/** One entry of GitHub's installation list, or null when it lacks an id or an account. */
 function toListedInstallation(value: unknown): ListedInstallation | null {
   if (!isRecord(value) || !isRecord(value.account)) return null;
   const { id } = value;
@@ -226,6 +233,7 @@ function toListedInstallation(value: unknown): ListedInstallation | null {
   return { installationId: id, accountId: String(accountId), accountLogin: login, accountType };
 }
 
+/** The GitHub user id the token belongs to (`GET /user`). */
 async function fetchTokenUserId(token: string, logger: Logger): Promise<Result<string, AppError>> {
   const response = await githubGet("/user", token);
   if (!response.success) return response;
@@ -242,6 +250,10 @@ async function fetchTokenUserId(token: string, logger: Logger): Promise<Result<s
   return ok(String(body.id));
 }
 
+/**
+ * Every installation of the app GitHub lists for the token's user, read page
+ * by page up to the page limit.
+ */
 async function fetchListedInstallations(
   token: string,
   logger: Logger,
@@ -300,32 +312,60 @@ export async function fetchCurrentGitHubAccess(
   return ok({ githubUserId: githubUserId.data, installations: installations.data });
 }
 
+/** Memberships asked for per page; GitHub's maximum. */
+const MEMBERSHIPS_PER_PAGE = 100;
+
+/**
+ * Is the token's user an active admin of the organization this installation
+ * is on, according to GitHub now?
+ *
+ * Read from the user's own membership list (`GET /user/memberships/orgs`),
+ * which a GitHub App user token may call with no permission granted to the
+ * app. The single-organization form of the call needs the app to hold
+ * "Members: read"; without it GitHub answers 403, which is also what a real
+ * refusal looks like, so every organization link would be refused with
+ * nothing to tell the two apart.
+ *
+ * The organization is matched by account id, never by login: logins are
+ * reused, and the id is the account the installation is actually on.
+ */
 async function isActiveOrgAdmin(
   token: string,
   org: ListedInstallation,
   logger: Logger,
 ): Promise<Result<boolean, AppError>> {
-  const response = await githubGet(
-    `/user/memberships/orgs/${encodeURIComponent(org.accountLogin)}`,
-    token,
-  );
-  if (!response.success) return response;
-  // 404: not a member. 403: the org blocks the app from reading membership.
-  // Either way GitHub has not said "admin", which is the only thing that counts.
-  if (response.data.status === 404 || response.data.status === 403) return ok(false);
-  if (!response.data.ok) {
-    logger.warn("GitHub refused to report an org membership", { status: response.data.status });
-    return err(githubError("GitHub refused to report an org membership"));
+  for (let page = 1; page <= MAX_INSTALLATION_PAGES; page++) {
+    const response = await githubGet(
+      `/user/memberships/orgs?state=active&per_page=${MEMBERSHIPS_PER_PAGE}&page=${page}`,
+      token,
+    );
+    if (!response.success) return response;
+    // GitHub declining to list memberships is not GitHub saying "admin", which
+    // is the only thing that counts. Logged, because a refusal here is more
+    // likely a misconfigured app than a person without access.
+    if (response.data.status === 403) {
+      logger.warn("GitHub refused to list the user's org memberships", { status: 403 });
+      return ok(false);
+    }
+    if (!response.data.ok) {
+      logger.warn("GitHub refused to report org memberships", { status: response.data.status });
+      return err(githubError("GitHub refused to report org memberships"));
+    }
+    const body = await readJson(response.data);
+    if (!Array.isArray(body)) return ok(false);
+    for (const membership of body) {
+      if (!isRecord(membership) || !isRecord(membership.organization)) continue;
+      if (String(membership.organization.id) !== org.accountId) continue;
+      return ok(membership.state === "active" && membership.role === "admin");
+    }
+    // Follow GitHub's own word on whether there is more, as for installations.
+    const more = /rel="next"/.test(response.data.headers.get("link") ?? "");
+    if (!more || body.length === 0) return ok(false);
   }
-  const body = await readJson(response.data);
-  if (!isRecord(body) || !isRecord(body.organization)) return ok(false);
-  return ok(
-    body.state === "active" &&
-      body.role === "admin" &&
-      // The login in the path is a name, and names get reused; the id is the
-      // account the installation is actually on.
-      String(body.organization.id) === org.accountId,
-  );
+  logger.warn("Stopped paging the user's org memberships at the page limit", {
+    pages: MAX_INSTALLATION_PAGES,
+  });
+  return ok(false);
 }
 
 /**

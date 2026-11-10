@@ -224,7 +224,7 @@ describe("checkInstallationAccess", () => {
   const recorded = { installationId: 777, accountId: "99" };
 
   it("does not trust a listing that is on a different account than the one recorded", async () => {
-    answerWith(() => json({ state: "active", role: "admin", organization: { id: 55 } }));
+    answerWith(() => json([{ state: "active", role: "admin", organization: { id: 55 } }]));
     const verdict = await checkInstallationAccess(
       TOKEN,
       access("55", "Organization"),
@@ -259,7 +259,16 @@ describe("checkInstallationAccess", () => {
   });
 
   it("refuses a membership answer that is not the documented shape", async () => {
-    for (const body of [null, [], {}, { state: "active", role: "admin" }, "admin"]) {
+    for (const body of [
+      null,
+      [],
+      {},
+      // The single-membership shape, which the list endpoint never returns.
+      { state: "active", role: "admin", organization: { id: 99 } },
+      [{ state: "active", role: "admin" }],
+      [null, "admin"],
+      "admin",
+    ]) {
       answerWith(() => json(body));
       const verdict = await checkInstallationAccess(
         TOKEN,
@@ -271,27 +280,55 @@ describe("checkInstallationAccess", () => {
     }
   });
 
-  it("asks about the org by its login, escaped", async () => {
-    answerWith(() => json({ state: "active", role: "admin", organization: { id: 99 } }));
-    const odd: CurrentGitHubAccess = {
-      githubUserId: "1",
-      installations: new Map([
-        [
-          777,
-          {
-            installationId: 777,
-            accountId: "99",
-            accountLogin: "a/../b?x",
-            accountType: "Organization",
-          },
-        ],
+  it("finds the organization by account id in the user's own membership list", async () => {
+    answerWith(() =>
+      json([
+        { state: "active", role: "admin", organization: { id: 12, login: "elsewhere" } },
+        // Same login as the installation's account, a different account.
+        { state: "active", role: "admin", organization: { id: 55, login: "acme" } },
+        { state: "active", role: "admin", organization: { id: 99, login: "renamed" } },
       ]),
-    };
-    expect(await checkInstallationAccess(TOKEN, odd, recorded, logger)).toEqual({
-      success: true,
-      data: "allowed",
+    );
+    expect(
+      await checkInstallationAccess(TOKEN, access("99", "Organization"), recorded, logger),
+    ).toEqual({ success: true, data: "allowed" });
+    // The list form, which needs no permission on the app. The login never
+    // reaches the request, so nothing about it has to be escaped or trusted.
+    expect(requests).toEqual(["GET /user/memberships/orgs?state=active&per_page=100&page=1"]);
+  });
+
+  it("is not an admin on the strength of a login that matches", async () => {
+    answerWith(() =>
+      json([{ state: "active", role: "admin", organization: { id: 55, login: "acme" } }]),
+    );
+    expect(
+      await checkInstallationAccess(TOKEN, access("99", "Organization"), recorded, logger),
+    ).toEqual({ success: true, data: "not_manager" });
+  });
+
+  it("reads further pages of memberships, and stops at the limit", async () => {
+    const other = (id: number) => ({ state: "active", role: "admin", organization: { id } });
+    answerWith((url) => {
+      const page = Number(url.searchParams.get("page"));
+      return json([page === 3 ? other(99) : other(1000 + page)], 200, {
+        Link: '<https://evil.example/steal>; rel="next"',
+      });
     });
-    expect(requests).toEqual(["GET /user/memberships/orgs/a%2F..%2Fb%3Fx"]);
+    expect(
+      await checkInstallationAccess(TOKEN, access("99", "Organization"), recorded, logger),
+    ).toEqual({ success: true, data: "allowed" });
+    expect(requests).toHaveLength(3);
+
+    requests.length = 0;
+    answerWith((url) =>
+      json([other(1000 + Number(url.searchParams.get("page")))], 200, {
+        Link: '<https://api.github.com/x>; rel="next"',
+      }),
+    );
+    expect(
+      await checkInstallationAccess(TOKEN, access("99", "Organization"), recorded, logger),
+    ).toEqual({ success: true, data: "not_manager" });
+    expect(requests).toHaveLength(10);
   });
 });
 

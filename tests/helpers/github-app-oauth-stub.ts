@@ -2,7 +2,7 @@
  * A scripted GitHub for the app's user-to-server OAuth (#442), installed over
  * `globalThis.fetch`. It answers the five calls linking makes — the code
  * exchange, `GET /user`, `GET /user/installations`, `GET
- * /user/memberships/orgs/:org`, and the token revocation — from what a test
+ * /user/memberships/orgs`, and the token revocation — from what a test
  * says a person can reach on GitHub at that moment, and records every request
  * so a test can assert on what was (and was not) asked.
  *
@@ -161,16 +161,28 @@ export function stubGitHub(options: { pageSize?: number } = {}): GitHubStub {
       );
     }
 
-    const membership = /^\/user\/memberships\/orgs\/([^/]+)$/.exec(url.pathname);
-    if (membership) {
-      const login = decodeURIComponent(membership[1] ?? "");
-      const found = persona.memberships?.[login];
-      if (!found) return json({ message: "Not Found" }, 404);
-      return json({
-        state: found.state,
-        role: found.role,
-        organization: { id: found.organizationId, login },
-      });
+    // The list form only. The per-organization form needs the app to hold
+    // "Members: read", which the deployment guide does not grant, so code
+    // that calls it falls through to "unexpected" below and fails its test.
+    if (url.pathname === "/user/memberships/orgs") {
+      const wanted = url.searchParams.get("state");
+      const all = Object.entries(persona.memberships ?? {})
+        .filter(([, membership]) => wanted === null || membership.state === wanted)
+        .map(([login, membership]) => ({
+          state: membership.state,
+          role: membership.role,
+          organization: { id: membership.organizationId, login },
+        }));
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const start = (page - 1) * pageSize;
+      const more = start + pageSize < all.length;
+      return json(
+        all.slice(start, start + pageSize),
+        200,
+        more
+          ? { Link: `<https://api.github.com/user/memberships/orgs?page=${page + 1}>; rel="next"` }
+          : {},
+      );
     }
 
     return json({ message: "unexpected" }, 599);

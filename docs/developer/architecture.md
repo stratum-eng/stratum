@@ -453,7 +453,9 @@ sends the person through the app's user-to-server OAuth; `/github/app/callback`
 exchanges the code (`GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET`) and
 requires that `GET /user/installations` lists the installation and that the
 person is an active `admin` of the organization it is on
-(`GET /user/memberships/orgs/:org`), or is the personal account it is on. The
+(read from the person's own list, `GET /user/memberships/orgs`, which needs no
+permission on the app; the organization is matched by account id), or is the
+personal account it is on. The
 token's user must also be the caller's OAuth-verified `users.github_id`. The
 token lives only in that request, is never written or logged, and is revoked
 on the way out. The installer recorded from the `installation.created` webhook

@@ -348,7 +348,7 @@ describe("who may link an organization's installation", () => {
   it("refuses an org member who is not an admin", async () => {
     expect(await linkAs("carol", github.carolMember)).toBe("not_authorized");
     expect(owner()).toEqual(UNLINKED);
-    expect(stub.callsTo("/user/memberships/orgs/acme")).toHaveLength(1);
+    expect(stub.callsTo("/user/memberships/orgs")).toHaveLength(1);
   });
 
   it("refuses an admin invitation that has not been accepted", async () => {

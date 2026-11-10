@@ -43,14 +43,17 @@ interface LinkStateRow {
   expires_at: number;
 }
 
+/** The error callers pass on when a statement fails. */
 function storageError(message: string): AppError {
   return new AppError(message, "STORAGE_ERROR", 500);
 }
 
+/** The current time in whole seconds, the unit the expiry columns use. */
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+/** A fresh, unguessable `state` value for one round trip to GitHub. */
 function randomState(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);

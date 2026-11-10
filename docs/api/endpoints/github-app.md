@@ -169,6 +169,13 @@ to `/github/app/setup?notice=<code>`:
 | `github_unavailable` | GitHub could not be asked. Nothing is linked on a guess; try again |
 | `not_configured` | The operator removed the credentials mid-flight |
 
+Stratum reads at most 10 pages of 100 from each of the two GitHub lists it
+consults: the installations GitHub lists for you, and your organization
+memberships. Past that it stops. An installation beyond the first 1,000 that
+GitHub lists for you is answered `not_found`, and an organization beyond your
+first 1,000 active memberships is answered `not_authorized`, exactly as if
+GitHub had not listed it.
+
 Each installation serves one Stratum owner. Controlling the GitHub account
 never lets you take a link away from the Stratum account its admins chose:
 they unlink it first.

@@ -383,7 +383,9 @@ npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app.pkcs8.pem
 #     "Redirect on update". Linking works either way; it just asks for the
 #     authorization on the first link instead of during the install.)
 #   - no extra permissions: the two calls made with the user's token
-#     (GET /user/installations, GET /user/memberships/orgs/:org) need none.
+#     (GET /user/installations, GET /user/memberships/orgs) need none. Stratum
+#     reads the person's own membership list on purpose: asking about one
+#     organization (GET /user/memberships/orgs/:org) would need "Members: read".
 # Then set the app's own client ID and a client secret generated on that same
 # page. These are NOT GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET above, which
 # belong to the sign-in OAuth App. Until both are set, every link attempt is
