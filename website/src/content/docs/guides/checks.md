@@ -57,8 +57,9 @@ are blocked** until it is fixed:
 
 - A check name belongs to exactly one `checks` entry. Two entries may not
   declare the same name.
-- Every name in `merge.requiredChecks` must be declared by a `checks` entry.
-  A required check nothing dispatches could never pass.
+- Every name in `merge.requiredChecks` must be declared somewhere: by a
+  `checks` entry, or as a step in [`.stratum/ci.yaml`](/guides/ci/). A required check
+  nothing dispatches could never pass.
 - `merge.requiredChecks` must be a list of valid names. A string or a mistyped
   entry is an error, not "require nothing".
 
@@ -94,7 +95,9 @@ branch's `.stratum/ci.yaml` is a check run of the same kind, named after the
 step and created by Stratum in the same way. Three things differ:
 
 - **A step is required without being listed** in `merge.requiredChecks`. A step
-  marked `optional: true` is reported and shown, and does not gate the merge.
+  marked `optional: true` is reported and shown, and does not gate the merge,
+  unless `merge.requiredChecks` names it: the policy wins, and the step is
+  required.
 - **A name belongs to one source.** A step may not share a name with a check a
   `checks` entry declares; that makes the configuration invalid.
 - **Its reports are signed with the instance's executor secret**, not with a
@@ -273,9 +276,15 @@ never read as a pass.
 
 ## The merge gate
 
-Steps declared in [`.stratum/ci.yaml`](/guides/ci/) are required checks without
-being listed: see [First-party CI](/guides/ci/#the-merge-gate). Everything below
-applies to them and to the names in `merge.requiredChecks` alike.
+Required names come from two places: the names in `merge.requiredChecks`, and
+every step in [`.stratum/ci.yaml`](/guides/ci/) that is not marked `optional` (a step
+needs no listing). Everything below applies to both alike.
+
+A CI step has one more condition. Its run must have been dispatched under the
+base branch's current `.stratum/ci.yaml`. If that file has changed since, the
+earlier result does not count, even a `passed` one, and the merge is blocked
+until the change is re-evaluated: see
+[First-party CI](/guides/ci/#the-merge-gate).
 
 `merge.requiredChecks` is enforced with the other merge protections, on both
 `POST /api/changes/:id/merge` and the batch merge. For each required name

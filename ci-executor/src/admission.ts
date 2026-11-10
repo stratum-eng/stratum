@@ -133,3 +133,22 @@ export class Admission {
     return times.length === 0 ? null : Math.min(...times);
   }
 }
+
+/** How long the coordinator waits before telling a promoted job to start again. */
+export const START_RETRY_MS = 15_000;
+
+/**
+ * The promoted jobs that still have to be told to start: those already
+ * waiting to be told, plus the ones just promoted, less any whose slot is gone.
+ *
+ * A job is promoted in the coordinator's own state before it is told, so a
+ * call that fails would otherwise leave it holding a slot and never running
+ * until its deadline. A job without a slot must not be told to start at all.
+ */
+export function pendingStarts(
+  waiting: readonly string[],
+  promoted: readonly string[],
+  running: AdmissionState["running"],
+): string[] {
+  return [...new Set([...waiting, ...promoted])].filter((jobId) => jobId in running);
+}

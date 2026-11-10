@@ -104,6 +104,7 @@ export type CiExecutorConfig =
     }
   | { status: "unconfigured"; reason: string };
 
+/** Is this a loopback host, the one place the executor may be reached without https? */
 function isLocalHost(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
 }
@@ -217,6 +218,11 @@ export function buildCiJobSpec(args: {
   };
 }
 
+/**
+ * Send one request to the executor, giving up after the request timeout.
+ *
+ * @returns The response, or whether the call timed out or never connected
+ */
 async function sendWithTimeout(
   config: Extract<CiExecutorConfig, { status: "configured" }>,
   request: Request,

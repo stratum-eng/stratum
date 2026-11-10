@@ -105,10 +105,12 @@ const NETWORK_KEYS = new Set(["allow"]);
 const HOSTNAME_PATTERN =
   /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
+/** Is this a plain object, as a YAML mapping parses to: not null and not a list? */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** The first key of `source` the schema does not allow, so a typo is refused, not ignored. */
 function unknownKey(source: Record<string, unknown>, allowed: Set<string>): string | undefined {
   return Object.keys(source).find((key) => !allowed.has(key));
 }
@@ -122,6 +124,7 @@ function minutes(raw: unknown, field: string, fallback: number, max: number): nu
   return raw * 60;
 }
 
+/** One entry of `steps`, validated; or the reason it is not a step, naming its index. */
 function parseStep(raw: unknown, index: number): CiStep | string {
   const at = `steps[${index}]`;
   if (!isRecord(raw)) return `${at} is not a step (expected 'name' and 'run')`;

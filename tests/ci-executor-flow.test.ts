@@ -146,6 +146,7 @@ let basePolicy: string;
 let baseCi: string | undefined;
 /** When set, every read of the project's repository fails, as a failed clone does. */
 let repositoryUnreadable: boolean;
+let ciFileUnreadable: boolean;
 let workspaceTip: string;
 /** The project's current head, or null when it cannot be read. */
 let projectHead: string | null;
@@ -272,6 +273,7 @@ beforeEach(async () => {
   basePolicy = BASE_POLICY;
   baseCi = BASE_CI;
   repositoryUnreadable = false;
+  ciFileUnreadable = false;
   workspaceTip = "tip-1";
   projectHead = "base-1";
   diffText = "diff --git a/x b/x\n+hello\n";
@@ -292,6 +294,13 @@ beforeEach(async () => {
       return {
         success: false,
         error: new AppError("Failed to clone repository", "EXTERNAL_SERVICE_ERROR", 502),
+      };
+    }
+    // The clone worked and this one read did not: a fault, not an absent file.
+    if (ciFileUnreadable && remote === PROJECT_REMOTE && path === ".stratum/ci.yaml") {
+      return {
+        success: false,
+        error: new AppError(`Could not read ${path} from the repository`, "GIT_ERROR", 500),
       };
     }
     const files: Record<string, string | undefined> =
@@ -686,6 +695,23 @@ describe("the merge gate fails closed when the checks are not the base's steps",
 
     repositoryUnreadable = false;
     expect((await mergeChange(id)).body.reasons).toEqual(["Required check 'test' failed"]);
+  });
+
+  it("blocks when ci.yaml alone cannot be read, though the policy can", async () => {
+    const { id, job } = await createChange();
+    if (!job) throw new Error("no job was dispatched");
+    await report(job, "lint", "passed");
+    await report(job, "test", "failed");
+
+    // A failed read of the file is not the file being absent. Taken for
+    // absent, the project would look like it declares no steps, and a policy
+    // with no merge block would let the failed step through.
+    ciFileUnreadable = true;
+    const merge = await mergeChange(id);
+    expect(merge.status).toBe(403);
+    expect(merge.body.reasons).toEqual([
+      "CI configuration .stratum/ci.yaml could not be read from the base branch; merges are blocked until it can be.",
+    ]);
   });
 
   it("blocks a change opened while the base was unreadable, in a project that runs CI", async () => {

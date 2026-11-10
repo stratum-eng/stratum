@@ -2871,6 +2871,23 @@ async function readFileAtCommit(
   return ok(new TextDecoder().decode(readResult.data.blob));
 }
 
+/**
+ * Does this isomorphic-git error say the path holds no file: nothing is there
+ * (`NotFoundError`), or what is there is a directory (`ObjectTypeError`)?
+ */
+function isGitNotFound(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "NotFoundError" || code === "ObjectTypeError";
+}
+
+/**
+ * Read one file's text at the tip of `branch`.
+ *
+ * A file that is not in the tree is an `FS_ERROR`. Any other failure after
+ * the clone is a `GIT_ERROR`, so that callers can tell "absent" from "could
+ * not be read".
+ */
 export async function readFileFromRepo(
   remote: string,
   token: string,
@@ -2906,6 +2923,13 @@ export async function readFileFromRepo(
         path,
       },
     );
+    // Only git's own "no such object" means the file is absent. Anything
+    // else (a corrupt pack, a storage fault) leaves that unknown, and a caller
+    // that reads config off the base branch must not take "unknown" for
+    // "not there": it would drop the gates that file declares.
+    if (!isGitNotFound(blob.error)) {
+      return err(new AppError(`Could not read ${path} from the repository`, "GIT_ERROR", 500));
+    }
     return err(new AppError(`Failed to read file: ${path}`, "FS_ERROR", 500));
   }
   logger.info("Successfully read file from repo", { remote, path });

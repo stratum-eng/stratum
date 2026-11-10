@@ -109,8 +109,9 @@ type BaseFileRead =
 
 /**
  * Read one config file from the base branch, keeping "it is not there" apart
- * from "the read failed". `readFileFromRepo` reports a missing file as
- * `FS_ERROR` after a clone that worked; anything else is the clone.
+ * from "the read failed". `readFileFromRepo` reports a file that is not in
+ * the tree as `FS_ERROR`; a failed clone, or a read that failed for any other
+ * reason, carries a different code and is a failure here.
  */
 async function readBaseFile(
   remote: string,
@@ -122,8 +123,8 @@ async function readBaseFile(
   try {
     const result = await readFileFromRepo(remote, token, path, logger, branch);
     if (!result.success) {
-      // `FS_ERROR` is what a successful clone without the file answers;
-      // `NOT_FOUND` says the same thing in so many words.
+      // `FS_ERROR` is what a successful clone without the file answers, and
+      // only that; `NOT_FOUND` says the same thing in so many words.
       const code = (result.error as { code?: unknown }).code;
       if (code === "FS_ERROR" || code === "NOT_FOUND") return { status: "missing" };
       return { status: "failed", reason: result.error.message };

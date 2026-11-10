@@ -255,6 +255,7 @@ export function staleCiSteps(
 
 const CI_UNVERIFIED_REASON = `This project runs first-party CI, but ${CI_CONFIG_PATH} could not be read from the base branch to confirm which steps are required; try again`;
 
+/** The block reason for CI steps whose runs predate the base's current `ci.yaml`. */
 function ciMismatchReason(stale: string[]): string {
   const names = stale.map((name) => `'${name}'`).join(", ");
   return `CI step${stale.length === 1 ? "" : "s"} ${names} ${stale.length === 1 ? "has" : "have"} not run for the evaluated revision under the base branch's current ${CI_CONFIG_PATH}; re-evaluate the change`;

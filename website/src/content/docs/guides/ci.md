@@ -71,7 +71,7 @@ steps:
       npm ci
       npm test
     timeoutMinutes: 20  # this step; default 10, max 120
-    optional: false     # true = reported, but does not gate the merge
+    optional: false     # true = reported, but does not gate the merge (unless merge.requiredChecks names the step)
 ```
 
 | Field | Meaning |
@@ -80,7 +80,7 @@ steps:
 | `steps[].name` | The check's name: letters, digits, `.`, `_`, `-` or `/`, starting with a letter or digit; 1–64 characters; unique in the file and different from every name a `checks` evaluator in the policy declares. |
 | `steps[].run` | A bash script, up to 4000 characters, run with `bash -eo pipefail` at the repository root. The first failing command fails the step. |
 | `steps[].timeoutMinutes` | Whole minutes, 1–120. Default 10. |
-| `steps[].optional` | `true` makes the step advisory. Default `false`. |
+| `steps[].optional` | `true` makes the step advisory: reported, but not a merge gate. Default `false`. A step that `merge.requiredChecks` names is required whatever this says. |
 | `timeoutMinutes` | Wall-clock limit for the whole job, 1–120. Default 30. The executor's operator may set a lower maximum. |
 | `instance` | `lite`, `standard-1`, `standard-2`, `standard-3` or `standard-4`. Omit it for the executor's default. A size above the executor's configured maximum is refused. |
 | `network.allow` | Up to 16 exact hostnames added to the default network allowlist. No wildcards, ports, IP addresses or URLs. |

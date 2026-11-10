@@ -423,7 +423,8 @@ than the text above. Nothing here reverses a decision.
   own result, or a later step's, it could already do by editing the checkout —
   the trust model is the one stated under "What a job is".
 - **Read failures.** A `ci.yaml` that cannot be read while the same repository
-  answers for the policy file blocks merges. If no file can be read at all, the
+  answers for the policy file blocks merges. Only git's own "not in the tree"
+  counts as the file being absent; any other failed read is a failure. If no file can be read at all, the
   loader cannot tell "no config" from "repository unavailable" — an empty
   repository fails its clone too and has to stay usable — so it still falls
   back to the default policy, as it always has for the policy file. For CI that
