@@ -224,8 +224,9 @@ To be emailed as well, set the `OPS_ALERT_EMAIL` secret to an address
 (`wrangler secret put OPS_ALERT_EMAIL`). The instance then sends one message
 when the issue is opened and one when it is closed. This needs the instance's
 email sending to be configured (`EMAIL` binding and `EMAIL_FROM_ADDRESS`).
-With no `OPS_ALERT_PROJECT`, there is no issue to mark the alert as already
-raised, so a failing check sends a message every day until it passes.
+With no `OPS_ALERT_PROJECT`, or when the issue could not be opened (the message
+says why), there is no issue to mark the alert as already raised, so a failing
+check sends a message every day until it passes.
 
 ### `... allowance is used up` or an evaluation rate limit
 

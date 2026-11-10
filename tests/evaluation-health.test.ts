@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LLMEvaluator } from "../src/evaluation/llm-evaluator";
 import { WorkersAiProvider } from "../src/evaluation/llm-provider";
 import {
@@ -30,6 +30,12 @@ const logger = {
   child: vi.fn(),
 } as unknown as Logger;
 (logger.child as ReturnType<typeof vi.fn>).mockReturnValue(logger);
+
+// The logger is shared, and several tests assert on what it was called with:
+// without this, one can pass on a call an earlier test made.
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 const NOW = new Date("2026-11-10T06:00:00.000Z");
 const HOUR = 60 * 60 * 1000;
@@ -224,6 +230,29 @@ describe("ops alerts", () => {
       }
       const { env } = mailEnv({ EMAIL: undefined } as Partial<Env>);
       expect((await raiseOpsAlert(env, logger, alert)).status).toBe("opened");
+      // Not merely "did not throw": a send attempted on a missing binding is
+      // caught and logged, and would leave the outcome looking the same.
+      expect(logger.error).not.toHaveBeenCalledWith(
+        "Failed to send operational alert email",
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it("mails when the issue cannot be filed, and says why", async () => {
+      const { env, send } = mailEnv({ DB: makeThrowingD1() } as Partial<Env>);
+
+      expect((await raiseOpsAlert(env, logger, alert)).status).toBe("failed");
+      // And again the next day: with no issue there is nothing to mark it as a repeat.
+      await raiseOpsAlert(env, logger, alert);
+
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(send).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          subject: "[Stratum] Something is failing",
+          text: expect.stringContaining("No issue could be opened in @acme/ops:"),
+        }),
+      );
     });
 
     it("still reports the issue when the send fails", async () => {

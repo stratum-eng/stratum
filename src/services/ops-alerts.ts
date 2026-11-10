@@ -119,15 +119,20 @@ export async function raiseOpsAlert(
   logger.error("Operational alert", undefined, { title: alert.title, body: alert.body });
 
   const outcome = await fileAlertIssue(env, logger, alert);
-  // Mailed when the alert is new. With no project to file in there is nothing
-  // to tell a first finding from a repeat, so that case mails every time it is
-  // raised; a check that runs daily then mails daily, which is the reminder an
-  // operator with no issue to look at needs.
-  if (outcome.status === "opened" || outcome.status === "logged-only") {
+  // Mailed when the alert is new. With no issue behind it there is nothing to
+  // tell a first finding from a repeat, so those cases mail every time the
+  // alert is raised; a check that runs daily then mails daily, which is the
+  // reminder an operator with no issue to look at needs. That covers a project
+  // that is not configured and an issue that could not be filed alike: mail is
+  // the fallback for both, and a database failure must not be what hides the
+  // alert from someone relying on it.
+  if (outcome.status !== "already-open") {
     const where =
       outcome.status === "opened"
         ? `Issue #${outcome.number} was opened in ${env.OPS_ALERT_PROJECT}.`
-        : "No issue was opened.";
+        : outcome.status === "failed"
+          ? `No issue could be opened in ${env.OPS_ALERT_PROJECT}: ${outcome.why}.`
+          : "No issue was opened.";
     await sendAlertEmail(env, logger, {
       subject: `[Stratum] ${alert.title}`,
       text: `${alert.body}\n\n${where}`,
