@@ -151,7 +151,7 @@ export const BACKUP_EXCLUDED_TABLES: readonly string[] = [
   "agent_signups",
   // The CSRF state of an installation-link round trip to GitHub, and the
   // display-only list of what GitHub last said a session could link (migration
-  // 073). Both live ten minutes; a restored row is expired, and a restored
+  // 082). Both live ten minutes; a restored row is expired, and a restored
   // state names a session hash no restored cookie would be trusted with.
   "github_app_link_states",
   "github_app_access_snapshots",

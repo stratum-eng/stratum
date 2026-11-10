@@ -1,6 +1,6 @@
 /**
  * The short-lived state behind linking a GitHub App installation on the
- * strength of current GitHub access (#442, migration 073): the CSRF `state` of
+ * strength of current GitHub access (#442, migration 082): the CSRF `state` of
  * one OAuth round trip, and the display-only list of installations GitHub said
  * a session's user could link.
  *

@@ -82,10 +82,10 @@ describe("runScheduledJobs", () => {
   });
 
   it("registers a SEPARATE waitUntil per job (not one batched Promise.all)", () => {
-    // The 06:00 cron has six jobs; each must be its own waitUntil so one
+    // The 06:00 cron has seven jobs; each must be its own waitUntil so one
     // failing job can't reject the others — a single Promise.all would show up
     // as length 1.
-    expect(collect("0 6 * * *")).toHaveLength(6);
+    expect(collect("0 6 * * *")).toHaveLength(7);
   });
 
   it("registers nothing for an unknown cron", () => {

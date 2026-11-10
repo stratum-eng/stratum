@@ -448,7 +448,7 @@ and push to it through that tenant's installation. Links are made at
 `/github/app/setup`, whose forms post to `POST /api/github/installations/:id/link`.
 Proof of control is GitHub's answer at link time (#442,
 `src/github/user-access.ts`): the link request issues a single-use `state`
-bound to the browser session (`github_app_link_states`, migration 073) and
+bound to the browser session (`github_app_link_states`, migration 082) and
 sends the person through the app's user-to-server OAuth; `/github/app/callback`
 exchanges the code (`GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET`) and
 requires that `GET /user/installations` lists the installation and that the

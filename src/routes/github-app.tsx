@@ -1,5 +1,5 @@
 /**
- * Linking GitHub App installations to Stratum owners (migrations 059, 073).
+ * Linking GitHub App installations to Stratum owners (migrations 059, 082).
  *
  *   GET  /github/app/setup                      — the setup page; HTML
  *   POST /github/app/authorize                  — ask GitHub which installations the caller can link

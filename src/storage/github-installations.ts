@@ -204,7 +204,7 @@ export async function getInstallation(
 /**
  * Installations a user may see on the setup page: ones linked to them or to an
  * org they administer, plus ones GitHub said THIS session could link when it
- * last asked (migration 073's display-only snapshot).
+ * last asked (migration 082's display-only snapshot).
  *
  * Who installed the app is deliberately not a way onto this list (#442): the
  * installer is an audit fact, and GitHub's current answer is the only thing
