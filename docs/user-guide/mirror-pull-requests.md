@@ -195,7 +195,13 @@ so commits a maintainer made there are kept.
 
 A merge checks this again by itself. If the pull request has commits newer
 than the ones that were imported, the merge is refused with `PR_HEAD_MOVED`,
-whatever state the change is in and even with `force`.
+whatever state the change is in and even with `force`, and the change returns
+to `external` so the new commits can be imported.
+
+A push can still arrive while a merge is already under way. Those commits are
+not in what merged. Stratum's comment on the pull request then says which
+commit the merge went up to, and asks the contributor to open a new pull
+request for the rest.
 
 A maintainer can commit to the workspace like any other. Those commits carry
 the maintainer's name, and the contributor's commits keep theirs.

@@ -1049,6 +1049,12 @@ export function mergedComment(input: {
   appUrl?: string;
   /** GitHub has not marked the pull request merged, so Stratum is closing it. */
   closing: boolean;
+  /**
+   * The last commit that was imported, when the pull request has commits
+   * after it. A push can arrive while a merge is already under way; those
+   * commits are not in what merged, and the comment must not suggest they are.
+   */
+  mergedThrough?: string;
 }): string {
   const origin = input.appUrl?.replace(/\/+$/, "");
   const change =
@@ -1060,6 +1066,12 @@ export function mergedComment(input: {
     "",
     "This repository is a read-only mirror: changes are reviewed and merged in Stratum, and pushed here afterwards.",
   ];
+  if (input.mergedThrough !== undefined) {
+    lines.push(
+      "",
+      `Only the commits up to \`${input.mergedThrough.slice(0, 12)}\` were merged. Commits pushed to this pull request after that one are not included; open a new pull request for them.`,
+    );
+  }
   if (input.closing) {
     lines.push(
       "",
@@ -1067,6 +1079,13 @@ export function mergedComment(input: {
     );
   }
   return lines.join("\n");
+}
+
+/** `mergedThrough` for the comment, when the pull request has commits past the imported ones. */
+function leftBehind(record: ExternalPullRequest): { mergedThrough?: string } {
+  return record.importedHeadSha !== undefined && record.headSha !== record.importedHeadSha
+    ? { mergedThrough: record.importedHeadSha }
+    : {};
 }
 
 /** A GitHub refusal no retry will change: the App may not do this here. */
@@ -1248,6 +1267,7 @@ async function settleOne(
         changeId: record.changeId,
         branch,
         ...(env.APP_URL !== undefined ? { appUrl: env.APP_URL } : {}),
+        ...leftBehind(record),
         closing: false,
       }),
     });
@@ -1330,6 +1350,7 @@ async function settleOne(
         changeId: record.changeId,
         branch,
         ...(env.APP_URL !== undefined ? { appUrl: env.APP_URL } : {}),
+        ...leftBehind(record),
         closing: true,
       }),
     });

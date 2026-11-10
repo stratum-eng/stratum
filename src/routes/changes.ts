@@ -45,6 +45,7 @@ import { listEvalRuns, recordEvalRuns } from "../storage/eval-runs";
 import {
   getExternalPullRequestByChange,
   listExternalChangeIds,
+  supersedeImportedChange,
 } from "../storage/external-pull-requests";
 import {
   MergeConflictError,
@@ -660,6 +661,11 @@ app.post("/changes/:id/merge", async (c) => {
   // This reads the stored record, so it holds whatever was interrupted, and
   // it is not something `force` may skip.
   if (fromPullRequest !== null && fromPullRequest.headSha !== fromPullRequest.importedHeadSha) {
+    // Finish what was interrupted: the change goes back to `external`, the
+    // only state an import accepts. Without this the refusal would ask for
+    // an import the API then refuses.
+    const superseded = await supersedeImportedChange(c.env.DB, logger, id);
+    if (!superseded.success) return internalError("Failed to return the change to external");
     return c.json(
       {
         error: `Pull request #${fromPullRequest.prNumber} has commits newer than the ones that were imported; import them before merging`,

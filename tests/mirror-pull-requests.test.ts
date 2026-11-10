@@ -179,6 +179,7 @@ import { resetCircuitBreakersForTests } from "../src/github/client";
 import {
   CLOSURE_GRACE_MS,
   EXTERNAL_PR_LIMITS,
+  mergedComment,
   parsePullRequestEvent,
   settleMergedPullRequests,
   sweepMergedPullRequests,
@@ -1908,23 +1909,41 @@ describe("a push that lands between the import's head check and the start of its
 });
 
 describe("a change whose pull request moved on without it", () => {
-  it("cannot merge, even when nothing sent it back to external", async () => {
+  it("cannot merge, and is returned to external so the new commits can be imported", async () => {
     await configureMirror();
-    const { changeId } = await openPullRequest(7);
+    const { changeId, fork: contributorFork } = await openPullRequest(7);
     expect((await importChange(changeId)).status).toBe(202);
     expect((await getChange(changeId)).change.status).toBe("accepted");
 
     // What an interrupted import leaves behind: the push's new head is on
     // record, but the step that returns the change to `external` never ran,
     // so the old commits finished evaluating and look mergeable.
-    const newer = "e".repeat(40);
+    const newer = await contributorFork.commit({ "late.txt": "late\n" }, "late", contributor);
+    await github.pushToPull(7, contributorFork, newer);
     db.prepare("UPDATE external_pull_requests SET head_sha = ?").run(newer);
     expect((await getChange(changeId)).change.status).toBe("accepted");
 
     const merge = await mergeChange(changeId);
     expect(merge.status).toBe(409);
     expect(await merge.json()).toMatchObject({ code: "PR_HEAD_MOVED", headSha: newer });
-    expect((await getChange(changeId)).change.status).toBe("accepted");
+    // The refusal asks for an import, so it must leave the change importable.
+    expect((await getChange(changeId)).change.status).toBe("external");
+    expect((await importChange(changeId, cookies.writer, { headSha: newer })).status).toBe(202);
+    expect((await getChange(changeId)).change.evaluatedSha).toBe(newer);
+  });
+
+  it("says so on GitHub when a push arrived too late to be part of the merge", () => {
+    const comment = mergedComment({
+      changeId: "chg_1",
+      branch: "main",
+      closing: true,
+      mergedThrough: "a".repeat(40),
+    });
+    expect(comment).toContain("Only the commits up to `aaaaaaaaaaaa` were merged");
+    expect(comment).toContain("open a new pull request for them");
+    expect(mergedComment({ changeId: "chg_1", branch: "main", closing: true })).not.toContain(
+      "Only the commits up to",
+    );
   });
 });
 
