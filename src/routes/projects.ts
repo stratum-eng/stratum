@@ -77,6 +77,7 @@ import {
   getProjectProvider,
   getProjectSourceUrl,
   getSyncStatus,
+  isSyncInProgress,
   setSyncInProgress,
   updateProjectAfterSync,
   updateProjectSyncError,
@@ -2593,7 +2594,7 @@ app.post("/:namespace/:slug/sync", async (c) => {
 
   // Check if there's already a sync in progress
   const syncStatusResult = await getSyncStatus(c.env.STATE, namespace, slug, logger);
-  if (syncStatusResult.success && syncStatusResult.data?.lastSyncStatus === "in_progress") {
+  if (syncStatusResult.success && isSyncInProgress(syncStatusResult.data)) {
     if (!isJson) {
       return c.redirect(`/${namespace}/${slug}?sync=error&reason=sync-in-progress`);
     }

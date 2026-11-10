@@ -27,7 +27,7 @@ import {
 import { pushMirrorMode } from "../storage/push-mirrors";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { getProjectByPath, setProject } from "../storage/state";
-import { recordSyncHistory } from "../storage/sync";
+import { recordSyncHistory, settleSyncStatus } from "../storage/sync";
 import type {
   EmailMessage,
   Env,
@@ -707,6 +707,13 @@ async function processSyncJob(
         lastSyncError: syncError.message,
       };
       await setProject(env.STATE, updatedProject, logger);
+      await settleSyncStatus(
+        env.STATE,
+        namespace,
+        slug,
+        { status: "failed", error: syncError.message },
+        logger,
+      );
 
       await updateImportStatus(
         env.DB,
@@ -755,6 +762,16 @@ async function processSyncJob(
     if (!setResult.success) {
       logger.error("Failed to update project after sync", setResult.error, { namespace, slug });
     }
+    // The sync status is where "in progress" was written when this job was
+    // queued. Left alone it would say so for good, and every later push and
+    // manual sync would stand aside for a sync that finished long ago.
+    await settleSyncStatus(
+      env.STATE,
+      namespace,
+      slug,
+      { status: "success", ...(latestCommitSha !== undefined ? { commit: latestCommitSha } : {}) },
+      logger,
+    );
 
     // Mark sync as complete
     await updateImportStatus(

@@ -65,6 +65,7 @@ vi.mock("../src/storage/state", () => ({
 
 vi.mock("../src/storage/sync", () => ({
   recordSyncHistory: vi.fn(async () => {}),
+  settleSyncStatus: vi.fn(async () => {}),
   getProjectProvider: vi.fn(() => null),
   getProjectSourceUrl: vi.fn((project: ProjectEntry) => project.sourceUrl || project.githubUrl),
   // Daily cron gates on an update check first; default to "updates available"
@@ -97,6 +98,7 @@ import { writeSnapshotFromRepo } from "../src/storage/repo-snapshot";
 import { setProject } from "../src/storage/state";
 import {
   recordSyncHistory,
+  settleSyncStatus,
   updateProjectAfterSync,
   updateProjectSyncError,
 } from "../src/storage/sync";
@@ -186,6 +188,7 @@ beforeEach(() => {
   vi.mocked(syncFromGitHub).mockReset();
   vi.mocked(setProject).mockClear();
   vi.mocked(recordSyncHistory).mockClear();
+  vi.mocked(settleSyncStatus).mockClear();
   vi.mocked(writeSnapshotFromRepo).mockClear();
   vi.mocked(updateImportStatus).mockClear();
   vi.mocked(updateProjectSyncError).mockClear();
@@ -282,8 +285,34 @@ describe("queue consumer sync jobs (webhook + manual sync)", () => {
       expect.objectContaining({ status: "failed" }),
       expect.anything(),
     );
+    // The in-progress flag set when the job was queued is cleared, or every
+    // later push and manual sync would stand aside for this one.
+    expect(settleSyncStatus).toHaveBeenCalledWith(
+      env.STATE,
+      "@test",
+      "repo",
+      { status: "failed", error: expect.stringContaining("diverged") },
+      expect.anything(),
+    );
     expect(msg.ack).toHaveBeenCalled();
     expect(msg.retry).not.toHaveBeenCalled();
+  });
+
+  it("clears the in-progress flag when a sync succeeds", async () => {
+    projects.set("@test/repo", makeProject());
+    vi.mocked(syncFromGitHub).mockResolvedValue({
+      success: true,
+      data: { status: "fast-forwarded", commit: "newsha" },
+    });
+    const env = makeEnv();
+    await handleImportQueue(makeBatch([makeSyncMessage()]), env);
+    expect(settleSyncStatus).toHaveBeenCalledWith(
+      env.STATE,
+      "@test",
+      "repo",
+      expect.objectContaining({ status: "success" }),
+      expect.anything(),
+    );
   });
 });
 
