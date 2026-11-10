@@ -4366,6 +4366,44 @@ async function readKnownHistory(fs: NodeFS, tip: string): Promise<KnownHistory> 
 }
 
 /**
+ * Order commits so that each comes before every commit it descends from.
+ *
+ * {@link readKnownHistory} lists commits by distance from the tip, and through
+ * a merge commit that can put a commit ahead of one built on top of it: the
+ * short side of the merge is reached first. A reader takes the last entry for
+ * the change's first commit, so the order has to follow ancestry.
+ *
+ * Among commits neither of which descends from the other, the given order is
+ * kept, so the result is the same on every read.
+ */
+export function newestFirst(
+  commits: ChangeCommit[],
+  parents: ReadonlyMap<string, string[]>,
+): ChangeCommit[] {
+  const listed = new Set(commits.map((commit) => commit.oid));
+  const waitingOn = new Map<string, number>(commits.map((commit) => [commit.oid, 0]));
+  for (const commit of commits) {
+    for (const parent of parents.get(commit.oid) ?? []) {
+      if (listed.has(parent)) waitingOn.set(parent, (waitingOn.get(parent) ?? 0) + 1);
+    }
+  }
+  const ordered: ChangeCommit[] = [];
+  const remaining = [...commits];
+  while (remaining.length > 0) {
+    const index = remaining.findIndex((commit) => waitingOn.get(commit.oid) === 0);
+    // Commits cannot form a cycle, so one is always ready; the fallback keeps
+    // a malformed history from looping forever.
+    const [commit] = remaining.splice(index === -1 ? 0 : index, 1);
+    if (commit === undefined) break;
+    ordered.push(commit);
+    for (const parent of parents.get(commit.oid) ?? []) {
+      if (listed.has(parent)) waitingOn.set(parent, (waitingOn.get(parent) ?? 1) - 1);
+    }
+  }
+  return ordered;
+}
+
+/**
  * The commit a workspace forked from, out of what both sides hold locally:
  * a commit on both sides that no other such commit descends from. With more
  * than one (the project was merged into the workspace along the way), the one
@@ -4708,7 +4746,10 @@ export async function getDiffBetweenRepos(
   }
   const commits =
     forkPoint.data.kind === "found"
-      ? [...workspaceHistory.summaries.values()].filter((commit) => !beforeFork.has(commit.oid))
+      ? newestFirst(
+          [...workspaceHistory.summaries.values()].filter((commit) => !beforeFork.has(commit.oid)),
+          workspaceHistory.parents,
+        )
       : [];
 
   const [workspaceFilesResult, baseFilesResult] = await Promise.all([

@@ -309,8 +309,45 @@ describe("ChangeDetailPage: what the change is", () => {
     expect(html).toContain("Review and merging happen there");
   });
 
-  it("does not offer the merge button to someone who cannot merge", () => {
-    expect(page({ canReview: false })).not.toContain("Merge into Stratum repo");
-    expect(page({ canReview: true })).toContain("Merge into Stratum repo");
+  it("offers one merge button, and only to someone who can merge", () => {
+    expect(page({ canReview: false })).not.toContain("/merge");
+    expect(page({ canReview: true }).split("/merge").length - 1).toBe(1);
+  });
+
+  it("offers no merge into Stratum once the change has a pull request", () => {
+    const html = page({
+      canReview: true,
+      change: {
+        ...baseChange,
+        status: "promoted",
+        githubPrUrl: "https://github.com/acme/api/pull/42",
+        githubPrNumber: 42,
+      },
+    });
+    expect(html).not.toContain("/merge");
+  });
+
+  it("takes the latest round by round id when two rounds ran in the same millisecond", () => {
+    const ranAt = "2026-01-01T03:00:00.000Z";
+    const run = (id: string, roundId: string) => ({
+      id,
+      roundId,
+      ranAt,
+      evaluatorType: "llm",
+      passed: true,
+      score: 1,
+      reason: id,
+    });
+    const { latest, earlier } = splitEvalRounds([
+      run("second", `${ranAt}#evr_b`),
+      run("first", `${ranAt}#evr_a`),
+    ]);
+    expect(latest.map((r) => r.id)).toEqual(["second"]);
+    expect(earlier.map((round) => round.map((r) => r.id))).toEqual([["first"]]);
+    const reversed = splitEvalRounds([
+      run("first", `${ranAt}#evr_a`),
+      run("second", `${ranAt}#evr_b`),
+    ]);
+    expect(reversed.latest.map((r) => r.id)).toEqual(["second"]);
   });
 });

@@ -12,5 +12,7 @@
   revision it judged.
 
 ### Fixed
-- The "Merge into Stratum repo" button at the foot of the change page was shown
-  to everyone, including signed-out visitors, who could not use it.
+- The change page had a second merge button at its foot, "Merge into Stratum
+  repo". It was shown to everyone, including signed-out visitors who could not
+  use it, and on a change with a GitHub pull request, where merging happens on
+  GitHub. It is gone: "Merge change" under Actions is the one merge button.

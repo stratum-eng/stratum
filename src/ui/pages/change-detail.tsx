@@ -102,9 +102,12 @@ export function splitEvalRounds(runs: EvalRunView[]): {
     const key = run.roundId ?? run.ranAt;
     rounds.set(key, [...(rounds.get(key) ?? []), run]);
   }
-  const newestFirst = [...rounds.values()].sort((a, b) =>
-    (b[0]?.ranAt ?? "").localeCompare(a[0]?.ranAt ?? ""),
-  );
+  // By the key the merge gate compares (src/merge/protection.ts), so the page
+  // and the gate agree on which evaluation is the latest. Two rounds can share
+  // a `ranAt`; a `roundId` starts with it and still tells them apart.
+  const newestFirst = [...rounds.entries()]
+    .sort(([a], [b]) => b.localeCompare(a))
+    .map(([, round]) => round);
   return { latest: newestFirst[0] ?? [], earlier: newestFirst.slice(1) };
 }
 
@@ -798,19 +801,6 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
           </form>
         )}
       </div>
-
-      {canReview &&
-        (change.status === "accepted" ||
-          change.status === "approved" ||
-          change.status === "promoted") && (
-          <div class="action-row">
-            <form method="post" action={`/api/changes/${change.id}/merge`}>
-              <button type="submit" class="btn">
-                Merge into Stratum repo
-              </button>
-            </form>
-          </div>
-        )}
     </Layout>
   );
 };
