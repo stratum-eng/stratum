@@ -473,17 +473,27 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
           <h2>Actions</h2>
           {hasGithubPr && (
             <p class="text-muted">
-              This change was promoted to GitHub
-              {change.githubPrNumber !== undefined && (
-                <> as pull request #{change.githubPrNumber}</>
-              )}
+              This change was promoted to GitHub as{" "}
+              <a href={change.githubPrUrl} target="_blank" rel="noreferrer">
+                pull request
+                {change.githubPrNumber !== undefined && <> #{change.githubPrNumber}</>}
+              </a>
               {change.githubPrDraft === true && ", still as a draft"}. Review and merging happen
               there, and Stratum reports this evaluation on the pull request.
             </p>
           )}
           <div class="action-row">
             {hasGithubPr ? (
-              <>
+              // One button, for the next thing to do with the pull request:
+              // take it out of draft while it is one, and open it after that.
+              // The sentence above links to it either way.
+              canMarkReady ? (
+                <form method="post" action={`/api/changes/${change.id}/github-pr/ready`}>
+                  <button type="submit" class="btn btn-primary">
+                    Mark ready for review
+                  </button>
+                </form>
+              ) : (
                 <a
                   class="btn btn-primary"
                   href={change.githubPrUrl}
@@ -492,14 +502,7 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
                 >
                   Open GitHub PR
                 </a>
-                {canMarkReady && (
-                  <form method="post" action={`/api/changes/${change.id}/github-pr/ready`}>
-                    <button type="submit" class="btn">
-                      Mark ready for review
-                    </button>
-                  </form>
-                )}
-              </>
+              )
             ) : (
               <>
                 {canMerge && (
