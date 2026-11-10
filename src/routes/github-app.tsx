@@ -764,6 +764,9 @@ async function finishConnect(
     return abandon("github-connect-mismatch");
   }
 
+  // Read before it is overwritten: once replaced, nothing on record names the
+  // old pair, and it would stay alive at GitHub with no way left to revoke it.
+  const previous = await readConnection(c.env.DB, config.secret, user.id, logger);
   const saved = await saveConnection(
     c.env.DB,
     config.secret,
@@ -776,6 +779,9 @@ async function finishConnect(
     logger,
   );
   if (!saved.success) return abandon("github-connect-failed");
+  if (previous.success && previous.data && previous.data.accessToken !== tokens.accessToken) {
+    await revokeInBackground(c, config.oauth, previous.data.accessToken, logger);
+  }
 
   await recordAudit(c.env.DB, logger, {
     action: "github.account_connected",

@@ -239,6 +239,9 @@ export async function exchangeGitHubAppCode(
   return ok(tokens);
 }
 
+/** The token endpoint's `error` for a refresh token that is spent, expired or revoked. */
+const REFUSED_REFRESH_TOKEN = "bad_refresh_token";
+
 /**
  * Trades a refresh token for a new pair. The old pair stops working the moment
  * GitHub answers, so the caller must store what this returns.
@@ -287,8 +290,17 @@ export async function refreshGitHubAppUserTokens(
   const tokens = toUserTokens(body);
   if (tokens !== null) return ok(tokens);
   if (isRecord(body) && typeof body.error === "string") {
-    logger.info("GitHub refused a refresh token", { reason: safeOAuthErrorCode(body.error) });
-    return ok(null);
+    const reason = safeOAuthErrorCode(body.error);
+    // Only a code that names the token says the token is dead. Any other one,
+    // such as the app's own credentials being wrong after a secret rotation,
+    // says nothing about it, and reading it as a refusal would disconnect
+    // every person at their next promotion.
+    if (reason === REFUSED_REFRESH_TOKEN) {
+      logger.info("GitHub refused a refresh token", { reason });
+      return ok(null);
+    }
+    logger.warn("GitHub App token refresh was refused for another reason", { reason });
+    return err(githubError("GitHub App token refresh was refused"));
   }
   return err(githubError("GitHub App token refresh returned no token"));
 }

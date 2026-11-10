@@ -304,6 +304,12 @@ describe("connecting a GitHub account", () => {
     await connectAs("alice", ALICE);
     expect(rows()).toHaveLength(1);
     expect(rows()[0]?.access_token).not.toBe(first);
+    // The replaced pair is revoked: nothing on record could do it later.
+    expect(stub.revoked).toEqual([stub.tokens[0]]);
+    expect(await resolvePrAuthor(env, "usr_alice", logger)).toMatchObject({
+      kind: "user",
+      token: stub.tokens[1],
+    });
   });
 });
 
@@ -496,6 +502,22 @@ describe("the token a promotion is given", () => {
     expect(rows()[0]?.refresh_lease_until).toBeNull();
 
     stub.refreshOutage = undefined;
+    expect(await resolvePrAuthor(env, "usr_alice", logger, later)).toMatchObject({ kind: "user" });
+  });
+
+  it("keeps every connection when GitHub rejects the app's own credentials", async () => {
+    await connectAs("alice", ALICE);
+    // The operator rotated the client secret and the deployment has the old one.
+    env = { ...env, GITHUB_APP_CLIENT_SECRET: "no-longer-the-secret" } as unknown as Env;
+    const later = Date.now() + 9 * HOUR;
+    expect(await resolvePrAuthor(env, "usr_alice", logger, later)).toEqual({
+      kind: "app",
+      reason: "unavailable",
+    });
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]?.refresh_lease_until).toBeNull();
+
+    env = { ...env, GITHUB_APP_CLIENT_SECRET: STUB_CLIENT_SECRET } as unknown as Env;
     expect(await resolvePrAuthor(env, "usr_alice", logger, later)).toMatchObject({ kind: "user" });
   });
 

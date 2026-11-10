@@ -180,6 +180,13 @@ describe("refreshGitHubAppUserTokens", () => {
     expect(await refresh()).toEqual({ success: true, data: null });
   });
 
+  it("is an error when GitHub refuses for a reason that is not the token", async () => {
+    for (const code of ["incorrect_client_credentials", "unsupported_grant_type", "x y z"]) {
+      answerWith(() => json({ error: code }));
+      expect((await refresh()).success).toBe(false);
+    }
+  });
+
   it("is an error, which says nothing about the token, when GitHub cannot be asked", async () => {
     for (const answer of [
       () => {
