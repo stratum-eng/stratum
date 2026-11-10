@@ -469,7 +469,7 @@ credential it names as a Wrangler secret on the executor
 executor again. The format, what each field means and how the credential is
 scoped are in
 [Deployments: Setting it up](/guides/deployments/#setting-it-up). Stratum itself
-needs nothing new for this beyond migration `079_deployment_pipelines.sql`,
+needs nothing new for this beyond migration `081_deployment_pipelines.sql`,
 the deploy queue it already uses for static targets, and `APP_URL`; it never
 holds the credential.
 

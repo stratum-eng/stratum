@@ -33,7 +33,7 @@
   from this release, with a `DEPLOY_TARGETS` variable naming each project and
   environment it may deploy and a Wrangler secret per credential
   (`DEPLOY_CRED_…`). The *Deployments* guide lists every step. Stratum itself
-  needs migration `079_deployment_pipelines.sql` (two nullable columns and one
+  needs migration `081_deployment_pipelines.sql` (two nullable columns and one
   index), `APP_URL`, and the deploy queue it already uses. An instance that
   does none of this behaves as before; the existing static `deploys:` targets
   are unchanged.

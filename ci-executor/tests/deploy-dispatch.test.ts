@@ -267,4 +267,15 @@ describe("DEPLOY_TARGETS", () => {
     expect(readDeploySecret({ DEPLOY_CRED_EMPTY: "  " }, "DEPLOY_CRED_EMPTY")).toBeUndefined();
     expect(readDeploySecret(null, "DEPLOY_CRED_STAGING")).toBeUndefined();
   });
+
+  it("is refused for an external change, whatever else the dispatch says", () => {
+    // The deploy profile is the one that attaches credentials. A change from
+    // outside the project may only ever run under `ci` (ADR 012), and that
+    // has to hold on this path as well as on the one checks arrive by.
+    expect(reason({ job: { origin: "external" } })).toMatch(/external change/);
+    expect(reason({ job: { origin: "somewhere" } })).toMatch(/unsupported job origin/);
+    const accepted = parse();
+    if (!accepted.ok) throw new Error(accepted.reason);
+    expect(accepted.job.origin).toBe("project");
+  });
 });

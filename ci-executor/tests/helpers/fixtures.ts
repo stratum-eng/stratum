@@ -186,6 +186,7 @@ export function makeDeployJob(now: number, overrides: Partial<Job> = {}): Job {
   return {
     changeId: DEPLOY_ID,
     project: "@owner/app",
+    origin: "project",
     baseSha: COMMIT_SHA,
     headSha: COMMIT_SHA,
     headTreeSha: "",
