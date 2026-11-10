@@ -92,9 +92,16 @@ interface EvalRunView {
  * Split runs into the latest evaluation and the ones before it. A change that
  * was evaluated twice has two sets of rows, and listing them together reads as
  * one evaluation that both failed and passed.
+ *
+ * The merge gate does not take the latest evaluation whole: for each evaluator
+ * it takes that evaluator's newest result (src/merge/protection.ts). When the
+ * latest evaluation did not run an evaluator an earlier one did, the earlier
+ * result still decides the merge. Those are `stillCounted`, and a page that
+ * folded them away as replaced would hide the thing blocking the change.
  */
 export function splitEvalRounds(runs: EvalRunView[]): {
   latest: EvalRunView[];
+  stillCounted: EvalRunView[];
   earlier: EvalRunView[][];
 } {
   const rounds = new Map<string, EvalRunView[]>();
@@ -102,13 +109,24 @@ export function splitEvalRounds(runs: EvalRunView[]): {
     const key = run.roundId ?? run.ranAt;
     rounds.set(key, [...(rounds.get(key) ?? []), run]);
   }
-  // By the key the merge gate compares (src/merge/protection.ts), so the page
-  // and the gate agree on which evaluation is the latest. Two rounds can share
-  // a `ranAt`; a `roundId` starts with it and still tells them apart.
+  // By the key the merge gate compares, so the page and the gate agree on
+  // which evaluation is the latest. Two rounds can share a `ranAt`; a
+  // `roundId` starts with it and still tells them apart.
   const newestFirst = [...rounds.entries()]
     .sort(([a], [b]) => b.localeCompare(a))
     .map(([, round]) => round);
-  return { latest: newestFirst[0] ?? [], earlier: newestFirst.slice(1) };
+  const latest = newestFirst[0] ?? [];
+  const earlier = newestFirst.slice(1);
+
+  const decided = new Set(latest.map((run) => run.evaluatorType));
+  const stillCounted: EvalRunView[] = [];
+  for (const round of earlier) {
+    const carried = round.filter((run) => !decided.has(run.evaluatorType));
+    stillCounted.push(...carried);
+    // Only after the whole round: every run of a type within one round counts.
+    for (const run of carried) decided.add(run.evaluatorType);
+  }
+  return { latest, stillCounted, earlier };
 }
 
 /**
@@ -553,10 +571,24 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
               . The result above is this one.
             </p>
             <EvalRunTable runs={rounds.latest} />
+            {rounds.stillCounted.length > 0 && (
+              <>
+                <p class="text-muted">
+                  Still counted from an earlier evaluation. The latest one did not run{" "}
+                  {rounds.stillCounted.length === 1 ? "this evaluator" : "these evaluators"}, so
+                  merging is decided on{" "}
+                  {rounds.stillCounted.length === 1 ? "this result" : "these results"} as well.
+                </p>
+                <EvalRunTable runs={rounds.stillCounted} />
+              </>
+            )}
             {rounds.earlier.length > 0 && (
               <details class="earlier-runs">
                 <summary>
-                  {plural(rounds.earlier.length, "earlier evaluation")}, replaced by the one above
+                  {plural(rounds.earlier.length, "earlier evaluation")}
+                  {rounds.stillCounted.length === 0
+                    ? ", replaced by the one above"
+                    : ", replaced except for the results shown above"}
                 </summary>
                 {rounds.earlier.map((round) => (
                   <div key={round[0]?.id}>

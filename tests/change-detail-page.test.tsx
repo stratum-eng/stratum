@@ -284,6 +284,32 @@ describe("ChangeDetailPage: what the change is", () => {
     expect(earlier).toContain("llm broke");
   });
 
+  it("keeps showing an earlier result the latest evaluation did not repeat", () => {
+    // The merge gate takes each evaluator's newest result, so a failure from
+    // an evaluator the latest round skipped still blocks the change.
+    const runs = [
+      run("old-scan", "secret_scan", false, first, `${first}#evr_a`),
+      run("old-llm", "llm", false, first, `${first}#evr_a`),
+      run("new-llm", "llm", true, second, `${second}#evr_b`),
+    ];
+    const split = splitEvalRounds(runs);
+    expect(split.latest.map((r) => r.id)).toEqual(["new-llm"]);
+    expect(split.stillCounted.map((r) => r.id)).toEqual(["old-scan"]);
+
+    const html = page({ evalRuns: runs });
+    const [shown, folded] = html.split("earlier-runs");
+    expect(shown).toContain("Still counted from an earlier evaluation");
+    expect(shown).toContain("secret_scan broke");
+    expect(shown).not.toContain("llm broke");
+    expect(folded).toContain("replaced except for the results shown above");
+    expect(folded).toContain("llm broke");
+  });
+
+  it("counts nothing from earlier evaluations when the latest ran every evaluator", () => {
+    expect(splitEvalRounds(twoRounds).stillCounted).toEqual([]);
+    expect(page({ evalRuns: twoRounds })).not.toContain("Still counted");
+  });
+
   it("has no earlier-evaluations fold for a change evaluated once", () => {
     expect(page({ evalRuns: twoRounds.slice(2) })).not.toContain("earlier-runs");
   });
