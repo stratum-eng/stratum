@@ -324,6 +324,7 @@ beforeEach(async () => {
       baseOid: "base-1",
       mergeBaseOid: "base-1",
       behindBy: 0,
+      commits: [],
     },
   }));
   vi.mocked(getCommitLogPreferNative).mockImplementation((async (
