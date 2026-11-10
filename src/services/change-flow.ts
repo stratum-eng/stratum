@@ -841,6 +841,7 @@ export async function createChangeWithEvaluation(
     diff,
     baseSha: baseOid,
     headSha: evaluatedSha,
+    headTreeSha: evaluatedTreeOid,
     ...(requestOrigin !== undefined ? { requestOrigin } : {}),
   });
 

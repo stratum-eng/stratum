@@ -3,6 +3,7 @@ export * from "./diff-evaluator";
 export * from "./webhook-evaluator";
 export * from "./composite-evaluator";
 export * from "./policy-loader";
+export * from "./ci-config";
 export * from "./sandbox-evaluator";
 export * from "./llm-provider";
 export * from "./llm-providers";

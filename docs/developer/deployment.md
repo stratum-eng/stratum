@@ -281,6 +281,26 @@ npx wrangler d1 execute stratum --remote --command "SELECT * FROM d1_migrations"
 npx wrangler d1 execute stratum --remote --command "<rollback SQL>"
 ```
 
+## The CI executor (a second Worker)
+
+First-party CI (#415) is run by a separate Worker in `ci-executor/`, with its
+own Wrangler config, its own pinned Wrangler version and a container image. It
+is **not** deployed by `ci.yml` and not by `wrangler deploy` from the repo
+root: nothing deploys it automatically yet. Stratum without it works as
+before; a project with a `.stratum/ci.yaml` gets `errored` checks.
+
+The ordered procedure — bucket, variables, deploy, the shared
+`CI_EXECUTOR_SECRET` on both Workers, the `CI_EXECUTOR` service binding,
+migration 077 — is in the public guide, because self-hosters need it:
+[First-party CI → Self-hosting: deploy the executor](../user-guide/ci.md#self-hosting-deploy-the-executor).
+
+Two rules when changing it:
+
+- It runs unreviewed code. It must never be given a binding to D1, KV,
+  Artifacts or the main Worker. See `docs/adr/012-ci-executor-runtime.md`.
+- Deploy the executor **before** a Stratum deploy that adds the `CI_EXECUTOR`
+  service binding: Wrangler refuses a binding to a Worker that does not exist.
+
 ## Secrets Management
 
 ### Setting Secrets

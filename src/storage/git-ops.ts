@@ -2871,6 +2871,49 @@ async function readFileAtCommit(
   return ok(new TextDecoder().decode(readResult.data.blob));
 }
 
+/**
+ * Is `path` known not to be a file in the tree of commit `oid`?
+ *
+ * Walks the trees one path segment at a time, so that the only thing read as
+ * "absent" is a tree that was read and does not list the next segment (or
+ * lists something that is not what the path needs there). isomorphic-git's
+ * `NotFoundError` cannot be used for this: it is also what a missing ref or a
+ * missing object raises, and those leave the question open.
+ *
+ * @returns true when the path is absent; false when it could not be
+ *   established (a tree or the commit could not be read, or the file is there)
+ */
+async function fileIsAbsentAtCommit(
+  fs: NodeFS,
+  dir: string,
+  oid: string,
+  path: string,
+): Promise<boolean> {
+  const segments = path.split("/").filter((segment) => segment.length > 0);
+  if (segments.length === 0) return true;
+  let treeOid = oid;
+  for (const [index, segment] of segments.entries()) {
+    const tree = await fromPromise(git.readTree({ fs, dir, oid: treeOid }));
+    if (!tree.success) return false;
+    const entry = tree.data.tree.find((candidate) => candidate.path === segment);
+    if (entry === undefined) return true;
+    const last = index === segments.length - 1;
+    // A directory where the file should be, or a file where a directory
+    // should be: either way there is no file at this path.
+    if (last) return entry.type !== "blob";
+    if (entry.type !== "tree") return true;
+    treeOid = entry.oid;
+  }
+  return false;
+}
+
+/**
+ * Read one file's text at the tip of `branch`.
+ *
+ * A file that is not in the tree is an `FS_ERROR`. Any other failure after
+ * the clone is a `GIT_ERROR`, so that callers can tell "absent" from "could
+ * not be read".
+ */
 export async function readFileFromRepo(
   remote: string,
   token: string,
@@ -2906,6 +2949,14 @@ export async function readFileFromRepo(
         path,
       },
     );
+    // The file is absent only if the trees say so. A ref that did not
+    // resolve, or an object that could not be read, leaves that unknown, and
+    // a caller that reads config off the base branch must not take "unknown"
+    // for "not there": it would drop the gates that file declares.
+    const absent = tip.success && (await fileIsAbsentAtCommit(fs, dir, tip.data, path));
+    if (!absent) {
+      return err(new AppError(`Could not read ${path} from the repository`, "GIT_ERROR", 500));
+    }
     return err(new AppError(`Failed to read file: ${path}`, "FS_ERROR", 500));
   }
   logger.info("Successfully read file from repo", { remote, path });
@@ -4091,43 +4142,92 @@ export async function syncFromGitHub(
   return ok(applied);
 }
 
+/** The three modes git records for a file. Anything else is stored as a plain one. */
+type GitFileMode = "100644" | "100755" | "120000";
+
+function gitFileMode(mode: number | undefined): GitFileMode {
+  if (mode === 0o120000) return "120000";
+  if (mode === 0o100755) return "100755";
+  return "100644";
+}
+
 /**
- * Builds a git-style unified diff header + POSIX patch for a modified file.
- * `createPatch` computes a real line-level diff with proper @@ hunks.
+ * The hunks of one file's change, with git-style `---`/`+++` lines, or `""`
+ * when the two sides hold the same bytes (an empty new file, a mode-only
+ * change). `undefined` is the side that does not exist.
+ *
+ * `createPatch` computes a real line-level diff with proper @@ hunks, and
+ * marks a side that does not end in a newline — which is what makes the result
+ * something `git apply` rebuilds byte for byte rather than something that only
+ * reads like a diff.
  */
-function fileUnifiedDiff(path: string, oldContent: string, newContent: string): string {
+function fileHunks(
+  path: string,
+  oldContent: string | undefined,
+  newContent: string | undefined,
+): string {
   // createPatch returns: "Index: <path>\n===...\n--- <path>\n+++ <path>\n@@ ... @@\n..."
   // We strip the Index/=== preamble and replace the --- / +++ markers with git-style ones.
-  const patch = createPatch(path, oldContent, newContent, "", "");
+  const patch = createPatch(path, oldContent ?? "", newContent ?? "", "", "");
   const lines = patch.split("\n");
+  if (!lines.some((line) => line.startsWith("@@ "))) return "";
   // Drop the first two lines ("Index: …" and "===…"). The next two are the
   // --- / +++ header pair; rewrite those *by position*, never by prefix. A
   // deleted line whose text starts with "-- " (a SQL or Lua comment) arrives as
   // "--- …" and an added line starting with "++ " as "+++ …", so a prefix test
   // rewrites file content into a bogus header.
-  const body = lines
+  return lines
     .slice(2)
     .map((line, index) => {
-      if (index === 0 && line.startsWith("--- ")) return `--- a/${path}`;
-      if (index === 1 && line.startsWith("+++ ")) return `+++ b/${path}`;
+      if (index === 0 && line.startsWith("--- ")) {
+        return oldContent === undefined ? "--- /dev/null" : `--- a/${path}`;
+      }
+      if (index === 1 && line.startsWith("+++ ")) {
+        return newContent === undefined ? "+++ /dev/null" : `+++ b/${path}`;
+      }
       return line;
     })
     .join("\n");
-  return `diff --git a/${path} b/${path}\n${body}`;
 }
 
-function newFileDiff(path: string, content: string): string {
-  const lines = content.split("\n");
-  const lineCount = lines.length;
-  const body = lines.map((l) => `+${l}`).join("\n");
-  return `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lineCount} @@\n${body}\n`;
+/** One side of a file's change: its text and the mode git records for it. */
+interface DiffSide {
+  content: string;
+  mode: GitFileMode;
 }
 
-function deletedFileDiff(path: string, content: string): string {
-  const lines = content.split("\n");
-  const lineCount = lines.length;
-  const body = lines.map((l) => `-${l}`).join("\n");
-  return `diff --git a/${path} b/${path}\ndeleted file mode 100644\n--- a/${path}\n+++ /dev/null\n@@ -1,${lineCount} +0,0 @@\n${body}\n`;
+/**
+ * One file's entry in the unified diff, or `null` when nothing about it
+ * changed.
+ *
+ * Written to be APPLIED, not only read: the CI executor (#415) rebuilds the
+ * evaluated revision by applying this to the base commit and refuses to run
+ * unless the resulting tree is the one that was evaluated. So the things a
+ * reader would not miss are all here — a missing final newline, an empty file,
+ * an executable bit, a symlink, a change of mode alone.
+ */
+function fileDiff(
+  path: string,
+  before: DiffSide | undefined,
+  after: DiffSide | undefined,
+): string | null {
+  const header = `diff --git a/${path} b/${path}\n`;
+  if (before === undefined && after === undefined) return null;
+  if (before === undefined) {
+    return `${header}new file mode ${after?.mode}\n${fileHunks(path, undefined, after?.content)}`;
+  }
+  if (after === undefined) {
+    return `${header}deleted file mode ${before.mode}\n${fileHunks(path, before.content, undefined)}`;
+  }
+  // A file that became a symlink (or stopped being one) is not a mode change
+  // to git: it is one path removed and another kind of thing created.
+  if ((before.mode === "120000") !== (after.mode === "120000")) {
+    return `${fileDiff(path, before, undefined) ?? ""}${fileDiff(path, undefined, after) ?? ""}`;
+  }
+  const modeChange =
+    before.mode === after.mode ? "" : `old mode ${before.mode}\nnew mode ${after.mode}\n`;
+  if (before.content === after.content) return modeChange === "" ? null : `${header}${modeChange}`;
+  return `${header}${modeChange}${fileHunks(path, before.content, after.content)}`;
 }
 
 /**
@@ -4273,14 +4373,31 @@ export async function getDiffBetweenRepos(
     }),
   ]);
 
-  const diff = buildUnifiedDiff(baseContent, workspaceContent);
+  const diff = buildUnifiedDiff(baseContent, workspaceContent, {
+    base: new Map(baseFilesResult.data.map(([path, , mode]) => [path, mode])),
+    workspace: new Map(workspaceFilesResult.data.map(([path, , mode]) => [path, mode])),
+  });
   logger.info("Successfully generated diff between repos", { baseRemote, workspaceRemote });
   return ok({ diff, workspaceOid, workspaceTreeOid, workspaceSha, baseOid });
 }
 
+/**
+ * The unified diff between two sets of files, as text keyed by path.
+ *
+ * `modes` carries each side's git file modes; a path it does not name is a
+ * plain file (`100644`), which is what every caller without a tree to read
+ * modes from means.
+ *
+ * What this cannot carry is a file that is not text: both sides arrive already
+ * decoded as UTF-8, so a binary file's bytes are gone before they get here.
+ * Such a change still appears in the diff, but applying it does not reproduce
+ * the file — which is why a consumer that rebuilds a tree from this checks the
+ * result against the tree id it was given.
+ */
 export function buildUnifiedDiff(
   baseFiles: Map<string, string>,
   workspaceFiles: Map<string, string>,
+  modes?: { base: ReadonlyMap<string, number>; workspace: ReadonlyMap<string, number> },
 ): string {
   const diffParts: string[] = [];
   const paths = new Set([...baseFiles.keys(), ...workspaceFiles.keys()]);
@@ -4288,15 +4405,16 @@ export function buildUnifiedDiff(
   for (const path of [...paths].sort()) {
     const oldContent = baseFiles.get(path);
     const newContent = workspaceFiles.get(path);
-    if (oldContent === newContent) continue;
-
-    if (oldContent === undefined && newContent !== undefined) {
-      diffParts.push(newFileDiff(path, newContent));
-    } else if (newContent === undefined && oldContent !== undefined) {
-      diffParts.push(deletedFileDiff(path, oldContent));
-    } else if (oldContent !== undefined && newContent !== undefined) {
-      diffParts.push(fileUnifiedDiff(path, oldContent, newContent));
-    }
+    const part = fileDiff(
+      path,
+      oldContent === undefined
+        ? undefined
+        : { content: oldContent, mode: gitFileMode(modes?.base.get(path)) },
+      newContent === undefined
+        ? undefined
+        : { content: newContent, mode: gitFileMode(modes?.workspace.get(path)) },
+    );
+    if (part !== null) diffParts.push(part);
   }
 
   return diffParts.join("\n");

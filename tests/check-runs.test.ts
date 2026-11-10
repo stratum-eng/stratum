@@ -97,6 +97,7 @@ interface Dispatch {
     project: string;
     baseSha: string;
     headSha: string;
+    headTreeSha: string;
     diff: string;
     checkRunIds: Record<string, string>;
     callbackUrl: string;
@@ -345,6 +346,7 @@ describe("dispatch", () => {
       "diff",
       "event",
       "headSha",
+      "headTreeSha",
       "project",
     ]);
     expect(dispatch.body).toMatchObject({
@@ -353,6 +355,9 @@ describe("dispatch", () => {
       project: "@owner/app",
       baseSha: "base-1",
       headSha: "tip-1",
+      // The TREE the evaluated commit points at: what a runner that rebuilds
+      // the revision from `baseSha` + `diff` compares its result against.
+      headTreeSha: "tree-tip-1",
       diff: diffText,
       callbackUrl: `${ORIGIN}/api/checks`,
     });

@@ -25,6 +25,7 @@ const GUIDES = [
   ["issues", "Open, triage, search, and link issues — and how a merged change closes them."],
   ["ci-integration", "Bring your own CI: run evaluations on your existing infrastructure and report verdicts back."],
   ["checks", "Check runs: asynchronous, per-job CI results reported back to a change through a signed callback — the policy block, the dispatch and callback contracts, deadlines, re-runs, and merge.requiredChecks."],
+  ["ci", "First-party CI: commit a .stratum/ci.yaml and Stratum runs each step in a fresh, network-restricted container and gates the merge on it — the file format, what a job can reach, results and logs, the merge gate, and deploying the executor when self-hosting."],
   ["webhook-executor", "Run a webhook evaluator's executor safely: process, filesystem, and network isolation, resource and time bounds, credential hygiene, Git hazards, and reference setups."],
   ["deployments", "Publish the merged tree to Cloudflare or Vercel after a change lands — the deploys: policy block, encrypted project secrets, the approval gate, limits, and what v1 does not do."],
   ["cli", "Install and use @stratum-eng/cli — projects, workspaces, commits, and the change flow from the terminal."],

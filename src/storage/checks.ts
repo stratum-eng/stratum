@@ -56,6 +56,13 @@ export interface CheckRun {
   summary?: string;
   /** Name of the project secret callbacks are verified against. Never a key. */
   secretRef: string;
+  /**
+   * Set only on a run dispatched to the instance's CI executor (#415): the
+   * digest of the `.stratum/ci.yaml` it was dispatched under. Its presence is
+   * what marks a first-party run — the callback is then verified against the
+   * executor's secret and `secretRef` is only a label.
+   */
+  ciConfigDigest?: string;
   lastSequence: number;
   createdAt: string;
   updatedAt: string;
@@ -115,6 +122,7 @@ interface CheckRow {
   details_url: string | null;
   summary: string | null;
   secret_ref: string;
+  ci_config_digest: string | null;
   last_sequence: number;
   created_at: string;
   updated_at: string;
@@ -137,6 +145,9 @@ function rowToCheck(row: CheckRow): CheckRun {
     ...(row.details_url !== null ? { detailsUrl: row.details_url } : {}),
     ...(row.summary !== null ? { summary: row.summary } : {}),
     secretRef: row.secret_ref,
+    // `!= null` rather than `!== null`: a row read before migration 077 has no
+    // such column at all, and must read as a project check.
+    ...(row.ci_config_digest != null ? { ciConfigDigest: row.ci_config_digest } : {}),
     lastSequence: row.last_sequence,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -189,6 +200,8 @@ export async function createCheckRuns(
     baseSha?: string;
     names: string[];
     secretRef: string;
+    /** Marks the runs as the CI executor's. See {@link CheckRun.ciConfigDigest}. */
+    ciConfigDigest?: string;
     deadlineAt: string;
     supersede: "all" | "same-names";
     now?: string;
@@ -217,9 +230,9 @@ export async function createCheckRuns(
     const insert = db.prepare(
       `INSERT INTO checks (
          id, change_id, project_id, revision, base_sha, name, attempt, status,
-         secret_ref, last_sequence, created_at, updated_at, deadline_at
+         secret_ref, ci_config_digest, last_sequence, created_at, updated_at, deadline_at
        )
-       SELECT ?, ?, ?, ?, ?, ?, COALESCE(MAX(attempt), 0) + 1, 'queued', ?, 0, ?, ?, ?
+       SELECT ?, ?, ?, ?, ?, ?, COALESCE(MAX(attempt), 0) + 1, 'queued', ?, ?, 0, ?, ?, ?
        FROM checks WHERE change_id = ? AND revision = ? AND name = ?
        RETURNING *`,
     );
@@ -234,6 +247,7 @@ export async function createCheckRuns(
           args.baseSha ?? null,
           name,
           secretRef,
+          args.ciConfigDigest ?? null,
           now,
           now,
           deadlineAt,
@@ -290,6 +304,38 @@ export async function listChecksForChange(
     return ok(rows.results.map(rowToCheck));
   } catch (error) {
     logger.error("Failed to list check runs", toError(error), { changeId });
+    return err(toError(error));
+  }
+}
+
+/**
+ * Whether first-party CI has ever been dispatched for this change's project
+ * (#415) — or, for a change that predates project ids, for the change itself.
+ *
+ * The merge gate asks this only when the base branch could not be read, where
+ * "the project has no `.stratum/ci.yaml`" and "the file is out of reach" look
+ * the same. A project that has run CI before is not one to wave through on the
+ * strength of a failed read; a project that never has is unaffected.
+ */
+export async function projectHasCiRuns(
+  db: D1Database,
+  logger: Logger,
+  change: { id: string; projectId?: string },
+): Promise<Result<boolean, Error>> {
+  try {
+    const row = await db
+      .prepare(
+        `SELECT 1 AS found FROM checks
+         WHERE ci_config_digest IS NOT NULL AND (project_id = ? OR change_id = ?)
+         LIMIT 1`,
+      )
+      .bind(change.projectId ?? "", change.id)
+      .first<{ found: number }>();
+    return ok(row !== null);
+  } catch (error) {
+    logger.error("Failed to look for first-party check runs", toError(error), {
+      changeId: change.id,
+    });
     return err(toError(error));
   }
 }

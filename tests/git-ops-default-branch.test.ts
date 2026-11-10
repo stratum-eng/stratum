@@ -24,6 +24,8 @@ const h = vi.hoisted(() => ({
     push: [] as any[],
     readBlob: [] as string[],
   },
+  /** When set, every `readBlob` throws this instead of reading. */
+  failReadBlob: null as Error | null,
 }));
 
 vi.mock("isomorphic-git", async (importOriginal) => {
@@ -114,6 +116,7 @@ vi.mock("isomorphic-git", async (importOriginal) => {
     // biome-ignore lint/suspicious/noExplicitAny: mock of isomorphic-git readBlob
     readBlob: async (args: any) => {
       h.calls.readBlob.push(args.filepath);
+      if (h.failReadBlob !== null) throw h.failReadBlob;
       return real.readBlob(args);
     },
     // biome-ignore lint/suspicious/noExplicitAny: mock of isomorphic-git push
@@ -172,6 +175,7 @@ async function precomputeShas(server: { branch: string; commits: Record<string, 
 
 beforeEach(() => {
   h.servers.clear();
+  h.failReadBlob = null;
   h.calls.clone.length = 0;
   h.calls.fetch.length = 0;
   h.calls.readBlob.length = 0;
@@ -251,6 +255,23 @@ describe("read helpers honor the branch parameter", () => {
     const result = await readFileFromRepo(remote, "tok", "no/such/file.txt", logger, "master");
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.code).toBe("FS_ERROR");
+  });
+
+  it("readFileFromRepo reports a directory at the path as FS_ERROR", async () => {
+    h.servers.set(remote, { branch: "master", commits: [{ "dir/inner.txt": "x\n" }] });
+    const result = await readFileFromRepo(remote, "tok", "dir", logger, "master");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.code).toBe("FS_ERROR");
+  });
+
+  it("readFileFromRepo does not report a file whose object cannot be read as absent", async () => {
+    // The tree lists the file; reading its blob fails as a lost object does.
+    // `NotFoundError` is what isomorphic-git raises for that too, so the code
+    // alone cannot be taken to mean the path is missing.
+    h.failReadBlob = Object.assign(new Error("Could not find object"), { code: "NotFoundError" });
+    const result = await readFileFromRepo(remote, "tok", "a.txt", logger, "master");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.code).toBe("GIT_ERROR");
   });
 
   it("readFileFromRepo still defaults to main (and fails against master-only remotes)", async () => {

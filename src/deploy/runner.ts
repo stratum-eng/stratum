@@ -1005,7 +1005,10 @@ function policyFromTree(
     const bytes = files.get(path);
     if (bytes === undefined) continue;
 
-    const parsed = parsePolicyContent(decoder.decode(bytes), format, logger, providers);
+    // `null`: this parse is only after `deploys`, and is never shown the CI
+    // file, so it must not reject a policy whose `merge.requiredChecks` names
+    // a CI step — that would turn a valid policy into a failed deployment.
+    const parsed = parsePolicyContent(decoder.decode(bytes), format, logger, providers, null);
     if (parsed.status === "malformed") {
       return {
         deploys: [],

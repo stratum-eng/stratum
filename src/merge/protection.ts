@@ -1,7 +1,8 @@
+import { CI_CONFIG_PATH, type CiConfig, requiredCiStepNames } from "../evaluation/ci-config";
 import { diffTouchesProtectedConfig } from "../evaluation/policy-loader";
 import type { EvalPolicy } from "../evaluation/types";
 import { countApprovals } from "../storage/change-reviews";
-import { type CheckRun, latestChecksForRevision } from "../storage/checks";
+import { type CheckRun, latestChecksForRevision, projectHasCiRuns } from "../storage/checks";
 import { listEvalRuns } from "../storage/eval-runs";
 import type { Change } from "../types";
 import { AppError } from "../utils/errors";
@@ -43,7 +44,16 @@ export async function checkMergeProtection(
   const merge = policy.merge;
   // A change that edits the merge-protection config is gated even when the policy
   // has no merge block at all (SA-3), so we can't early-return on a missing merge.
-  if (!merge && !change.touchesProtectedConfig) return ok({ allowed: true, reasons: [] });
+  // Nor on a project whose only gate is its `.stratum/ci.yaml` (#415): every
+  // step in that file is a required check whether or not a policy file exists.
+  if (
+    !merge &&
+    !change.touchesProtectedConfig &&
+    policy.ci === undefined &&
+    policy.ciUnverified !== true
+  ) {
+    return ok({ allowed: true, reasons: [] });
+  }
 
   const reasons: string[] = [];
 
@@ -100,7 +110,8 @@ export async function checkMergeProtection(
     }
   }
 
-  if (merge?.requiredChecks && merge.requiredChecks.length > 0) {
+  const requiredChecks = requiredCheckNames(policy);
+  if (requiredChecks.length > 0 || policy.ci !== undefined || policy.ciUnverified === true) {
     // Read for the evaluated revision only (#414). A change with nothing
     // pinned has no checks to read, and every required one is then missing.
     let latest: CheckRun[] = [];
@@ -116,7 +127,30 @@ export async function checkMergeProtection(
       }
       latest = checksResult.data;
     }
-    reasons.push(...requiredCheckReasons(latest, merge.requiredChecks, new Date()));
+    // First: were the CI steps run under the step list the base declares NOW?
+    // A step that was not is reported once, as stale, and left out of the
+    // status rule below — "passed" under a different step list is not a pass,
+    // and "failed" under one is not this gate's failure either.
+    const stale = staleCiSteps(latest, policy.ci);
+    if (stale.length > 0) reasons.push(ciMismatchReason(stale));
+    // The base branch could not be read at all, so its step list is unknown.
+    // For a project that runs first-party CI, "unknown" must not mean "no
+    // steps required": a failed step would stop gating for as long as the read
+    // fails, and a change opened during the outage would never be tested at
+    // all. Asked of the project, not of this revision — a revision evaluated
+    // while the base was unreadable has no runs to find.
+    if (policy.ciUnverified === true) {
+      const ran = await projectHasCiRuns(db, logger, change);
+      if (!ran.success) return err(new AppError(ran.error.message, "DATABASE_ERROR", 500));
+      if (ran.data) reasons.push(CI_UNVERIFIED_REASON);
+    }
+    reasons.push(
+      ...requiredCheckReasons(
+        latest,
+        requiredChecks.filter((name) => !stale.includes(name)),
+        new Date(),
+      ),
+    );
   }
 
   // A change that edits the merge-protection config must always carry at least
@@ -179,6 +213,52 @@ export function requiredEvaluatorReasons(
     }
   }
   return reasons;
+}
+
+/**
+ * Every check name a merge must see `passed`: the policy's
+ * `merge.requiredChecks`, plus every step of the base branch's
+ * `.stratum/ci.yaml` that is not marked optional (#415). A CI step is required
+ * by being listed; a project does not have to repeat it in the policy file.
+ */
+export function requiredCheckNames(policy: Pick<EvalPolicy, "merge" | "ci">): string[] {
+  const names = new Set(policy.merge?.requiredChecks ?? []);
+  for (const name of policy.ci ? requiredCiStepNames(policy.ci) : []) names.add(name);
+  return [...names];
+}
+
+/**
+ * The CI steps whose newest run on the evaluated revision was NOT dispatched
+ * from the base branch's current `.stratum/ci.yaml` (#415) — optional steps
+ * included.
+ *
+ * Each first-party run records the digest of the config it was dispatched
+ * under, and the digest covers the whole file: every step's name, command,
+ * timeout and optional flag, the job's limit, its size and its extra hosts. So
+ * a step counts as current only if its run carries today's digest, which fails
+ * closed on every way the two can drift apart — a step added to the base after
+ * the dispatch (no run), a step whose command changed (old digest), a step
+ * that became required, a name that used to belong to a project runner (no
+ * digest at all), a job that was never dispatched. Re-evaluating the change
+ * dispatches again from the current file and clears it.
+ */
+export function staleCiSteps(
+  latest: Array<Pick<CheckRun, "name" | "ciConfigDigest">>,
+  ci: CiConfig | undefined,
+): string[] {
+  if (ci === undefined) return [];
+  const byName = new Map(latest.map((check) => [check.name, check]));
+  return ci.steps
+    .filter((step) => byName.get(step.name)?.ciConfigDigest !== ci.digest)
+    .map((step) => step.name);
+}
+
+const CI_UNVERIFIED_REASON = `This project runs first-party CI, but ${CI_CONFIG_PATH} could not be read from the base branch to confirm which steps are required; try again`;
+
+/** The block reason for CI steps whose runs predate the base's current `ci.yaml`. */
+function ciMismatchReason(stale: string[]): string {
+  const names = stale.map((name) => `'${name}'`).join(", ");
+  return `CI step${stale.length === 1 ? "" : "s"} ${names} ${stale.length === 1 ? "has" : "have"} not run for the evaluated revision under the base branch's current ${CI_CONFIG_PATH}; re-evaluate the change`;
 }
 
 /**
@@ -268,6 +348,9 @@ export async function checkResolutionMergeProtection(
     diff: string;
     evalRuns: Array<{ evaluatorType: string; result: { passed: boolean } }>;
     originatingChange?: { id: string; createdByUserId?: string };
+    /** The project the resolution writes to. Needed to ask whether it has ever
+     * run first-party CI, when the base branch could not be read (#415). */
+    projectId?: string;
   },
   policy: EvalPolicy,
 ): Promise<Result<ProtectionVerdict, AppError>> {
@@ -277,17 +360,39 @@ export async function checkResolutionMergeProtection(
 
   const merge = policy.merge;
   const touchesProtectedConfig = diffTouchesProtectedConfig(args.diff);
-  if (!merge && !touchesProtectedConfig) return ok({ allowed: true, reasons: [] });
+  if (
+    !merge &&
+    !touchesProtectedConfig &&
+    policy.ci === undefined &&
+    policy.ciUnverified !== true
+  ) {
+    return ok({ allowed: true, reasons: [] });
+  }
 
   const reasons: string[] = requiredEvaluatorReasons(args.evalRuns, merge?.requiredEvaluators);
+
+  // The base branch could not be read, so whether this project has required
+  // CI steps is unknown. Same rule as `checkMergeProtection`: for a project
+  // that has ever run first-party CI, unknown must not mean none. Without it
+  // a manual resolution could be pushed, during a read outage, with content
+  // no step was ever run against.
+  if (policy.ciUnverified === true) {
+    const ran = await projectHasCiRuns(db, logger, {
+      id: args.originatingChange?.id ?? "",
+      ...(args.projectId !== undefined ? { projectId: args.projectId } : {}),
+    });
+    if (!ran.success) return err(new AppError(ran.error.message, "DATABASE_ERROR", 500));
+    if (ran.data) reasons.push(CI_UNVERIFIED_REASON);
+  }
 
   // Required checks cannot be met here, and that is the answer rather than a
   // gap (#414). A check run is bound to an evaluated revision of a change; a
   // manual resolution is content with no revision, evaluated once inline and
   // pushed. Skipping the rule would make conflict resolution the way to land
   // code no runner ever saw, so it fails closed: put the resolution in the
-  // workspace and re-evaluate the change instead.
-  for (const required of merge?.requiredChecks ?? []) {
+  // workspace and re-evaluate the change instead. Required CI steps (#415)
+  // are required checks like any other, and fail closed the same way.
+  for (const required of requiredCheckNames(policy)) {
     reasons.push(
       `Required check '${required}' cannot run against a manual conflict resolution; commit the resolution to the workspace and re-evaluate the change`,
     );

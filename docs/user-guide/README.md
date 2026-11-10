@@ -20,6 +20,7 @@ Welcome to Stratum! This guide helps you get started.
 - [Issues](issues.md) — the built-in tracker, and linking issues to changes
 - [CI Integration (Bring Your Own CI)](ci-integration.md) — the webhook evaluator
 - [Check runs](checks.md) — asynchronous, per-job CI results reported back to a change
+- [First-party CI](ci.md) — `.stratum/ci.yaml`: Stratum runs your steps in a fresh container and gates the merge on them
 - [Running a Webhook Evaluator Executor Safely](webhook-executor.md) — isolating the code your receiver runs
 - [Deployments](deployments.md) — publishing the merged tree after a change lands
 - [The CLI](cli.md) — the change flow from the terminal

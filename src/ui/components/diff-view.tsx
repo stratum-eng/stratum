@@ -34,6 +34,9 @@ export interface DiffFile {
  * deletion of a `-- ` line immediately followed by an addition of a `++ ` one;
  * no diff this app generates puts those two adjacent.
  */
+/** Git's extended header lines for a file's mode: metadata, not content. */
+const GIT_MODE_LINE = /^(?:new file mode|deleted file mode|old mode|new mode) \d{6}$/;
+
 export function parseUnifiedDiff(diff: string): DiffFile[] {
   const files: DiffFile[] = [];
   let current: DiffFile | null = null;
@@ -46,6 +49,8 @@ export function parseUnifiedDiff(diff: string): DiffFile[] {
   // is read as a header again.
   let oldRemaining = 0;
   let newRemaining = 0;
+  // Between a `diff --git` line and that file's `+++` line (or the next file).
+  let gitHeader = false;
 
   const consume = (kind: "add" | "del" | "context") => {
     if (kind !== "add") oldRemaining -= 1;
@@ -59,6 +64,20 @@ export function parseUnifiedDiff(diff: string): DiffFile[] {
     // also closes a hunk left open by truncated input.
     if (line.startsWith("Index:") || line.startsWith("diff ") || line.startsWith("index ")) {
       inHunk = false;
+      // A git header names its file itself, so the section starts here. That
+      // is what gives a file with no hunks at all — an empty new file, a
+      // change of mode alone — a section of its own, and keeps its
+      // `new file mode` line out of the file above it.
+      const git = /^diff --git a\/(.+) b\/\1$/.exec(line);
+      gitHeader = git?.[1] !== undefined;
+      if (git?.[1] !== undefined) {
+        current = { path: git[1], additions: 0, deletions: 0, lines: [] };
+        files.push(current);
+      }
+      continue;
+    }
+    if (gitHeader && !inHunk && current && GIT_MODE_LINE.test(line)) {
+      current.lines.push({ kind: "meta", text: line });
       continue;
     }
     // A `--- ` line directly followed by a `+++ ` line is the header pair of a
@@ -72,6 +91,12 @@ export function parseUnifiedDiff(diff: string): DiffFile[] {
       continue;
     }
     if (!inHunk && line.startsWith("+++ ")) {
+      // Already opened by this file's `diff --git` line, under its real path
+      // (a deleted file's `+++` side is /dev/null).
+      if (gitHeader) {
+        gitHeader = false;
+        continue;
+      }
       const rawPath = line.slice(4).trim();
       const path = rawPath.startsWith("b/") ? rawPath.slice(2) : rawPath;
       current = { path, additions: 0, deletions: 0, lines: [] };

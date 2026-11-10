@@ -10,7 +10,7 @@ authoritative account of which is which and why.
 
 | Path | License | SPDX |
 |---|---|---|
-| Everything not listed below — `src/`, `migrations/`, `scripts/`, `tests/`, `docs/`, `website/`, `wrangler.toml` | GNU Affero General Public License v3.0 or later | [`AGPL-3.0-or-later`](LICENSE) |
+| Everything not listed below — `src/`, `ci-executor/`, `migrations/`, `scripts/`, `tests/`, `docs/`, `website/`, `wrangler.toml` | GNU Affero General Public License v3.0 or later | [`AGPL-3.0-or-later`](LICENSE) |
 | [`cli/`](cli) — the `@stratum-eng/cli` package | Apache License 2.0 | [`Apache-2.0`](cli/LICENSE) |
 | [`agent/`](agent) — the `@stratum-eng/agent` reference agent | Apache License 2.0 | [`Apache-2.0`](agent/LICENSE) |
 | `website/public/.well-known/agent-skills/` — the published agent skill files | MIT License | `MIT` |

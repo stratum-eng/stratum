@@ -1,0 +1,65 @@
+# Stratum's own CI, run by Stratum's first-party executor (#415).
+#
+# Read from the BASE branch, never from the change under test: a change cannot
+# edit the list of steps it is gated by. That protects this list — not what
+# `npm test` does, which is whatever the change's package.json says. Only
+# review covers that: `merge.requiredApprovals` in .stratum/policy.yaml. There
+# is no path-specific approval rule yet (ADR 012).
+#
+# Every step is a required check unless marked `optional`. They run in order in
+# one fresh container, in one checkout, and a failing step does not stop the
+# ones after it. Reference: docs/user-guide/ci.md.
+version: 1
+timeoutMinutes: 60
+instance: standard-2
+
+steps:
+  - name: install
+    run: npm ci
+    timeoutMinutes: 10
+
+  - name: typecheck
+    run: npm run typecheck
+
+  - name: test
+    # tests/wrangler-migration-chain.test.ts compares wrangler.toml against
+    # origin/main. In a job the base commit IS main, and it is the only commit
+    # fetched, so point the name at it.
+    run: |
+      git update-ref refs/remotes/origin/main refs/stratum/base
+      npm run test:coverage
+    timeoutMinutes: 20
+
+  - name: integration
+    run: npm run test:integration -- --run
+    timeoutMinutes: 15
+
+  - name: cli
+    run: |
+      cd cli
+      npm ci
+      npm run typecheck
+      npm test
+      npm run build
+      npm run lint
+
+  - name: agent
+    run: |
+      cd agent
+      npm ci
+      npm run typecheck
+      npm test
+      npm run build
+
+  - name: ci-executor
+    run: |
+      cd ci-executor
+      npm ci
+      npm run typecheck
+      npm test
+      npm run lint
+
+  # Last, as in AGENTS.md: Biome reports style, and style on code that does
+  # not compile is noise.
+  - name: lint
+    run: npm run lint

@@ -434,3 +434,85 @@ describe("LineCommentThreads rendering", () => {
     });
   });
 });
+
+describe("parseUnifiedDiff with git's file headers (#415)", () => {
+  // What buildUnifiedDiff emits now that the diff is written to be applied:
+  // modes, files with no hunks at all, and deletions.
+  const diff = [
+    "diff --git a/a.txt b/a.txt",
+    "--- a/a.txt",
+    "+++ b/a.txt",
+    "@@ -1 +1 @@",
+    "-one",
+    "+two",
+    "",
+    "diff --git a/empty.txt b/empty.txt",
+    "new file mode 100644",
+    "",
+    "diff --git a/gone.txt b/gone.txt",
+    "deleted file mode 100644",
+    "--- a/gone.txt",
+    "+++ /dev/null",
+    "@@ -1 +0,0 @@",
+    "-bye",
+    "",
+    "diff --git a/run.sh b/run.sh",
+    "old mode 100644",
+    "new mode 100755",
+    "",
+    "diff --git a/new.sh b/new.sh",
+    "new file mode 100755",
+    "--- /dev/null",
+    "+++ b/new.sh",
+    "@@ -0,0 +1 @@",
+    "+echo hi",
+    "",
+  ].join("\n");
+
+  it("gives every file one section, under its own path", () => {
+    const files = parseUnifiedDiff(diff);
+    expect(files.map((file) => file.path)).toEqual([
+      "a.txt",
+      // No hunks at all: still a file that changed.
+      "empty.txt",
+      // A deletion is listed by the file's name, not as /dev/null.
+      "gone.txt",
+      "run.sh",
+      "new.sh",
+    ]);
+  });
+
+  it("shows a mode line as metadata of its own file, not as content of the one above", () => {
+    const files = parseUnifiedDiff(diff);
+    const kinds = (index: number) => files[index]?.lines.map((line) => `${line.kind}:${line.text}`);
+
+    expect(kinds(0)).not.toContain("context:new file mode 100644");
+    expect(kinds(1)).toEqual(["meta:new file mode 100644", "context:"]);
+    expect(kinds(3)?.slice(0, 2)).toEqual(["meta:old mode 100644", "meta:new mode 100755"]);
+    expect(files.map((file) => [file.additions, file.deletions])).toEqual([
+      [1, 1],
+      [0, 0],
+      [0, 1],
+      [0, 0],
+      [1, 0],
+    ]);
+  });
+
+  it("still reads a mode-looking line inside a hunk as content", () => {
+    const [file] = parseUnifiedDiff(
+      [
+        "diff --git a/notes b/notes",
+        "--- a/notes",
+        "+++ b/notes",
+        "@@ -1,2 +1,2 @@",
+        " keep",
+        "-old mode 100644",
+        "+new mode 100755",
+        "",
+      ].join("\n"),
+    );
+    expect(file?.additions).toBe(1);
+    expect(file?.deletions).toBe(1);
+    expect(file?.lines.some((line) => line.kind === "meta")).toBe(false);
+  });
+});

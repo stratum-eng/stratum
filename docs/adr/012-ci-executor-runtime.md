@@ -314,3 +314,125 @@ what it is good at.
 - Whether to test the proposed merge tree (base tip plus the change) instead
   of the change's head, which would remove the dependence on
   `requireFreshBase`.
+
+## Implementation notes
+
+Added with the first implementation (#415). These record what was decided
+where this ADR left a question open, and where the implementation is narrower
+than the text above. Nothing here reverses a decision.
+
+### Open questions, as decided
+
+- **Default allowlist.** `registry.npmjs.org`, `registry.yarnpkg.com` and
+  `nodejs.org`: what a Node project needs to install, and nothing a job could
+  be told to fetch code from. Notably not `github.com` — a dependency on a git
+  URL needs its host added.
+- **Extending it.** A project may add up to 16 exact hostnames under
+  `network.allow` in `.stratum/ci.yaml`, read from the base. No globs, ports or
+  IP addresses. The executor's operator can turn this off
+  (`CI_ALLOW_PROJECT_HOSTS = "false"`), in which case a job that asks for more
+  is refused rather than run with less.
+- **The read path.** A short-lived token, not a service binding back to
+  Stratum. Stratum mints a one-hour, read-only Artifacts token for the
+  project's repository and sends it in the signed dispatch. The executor puts
+  it in the props of the intercept handler for `git.stratum.internal`, a
+  hostname that exists only inside the job's network; the handler serves the
+  two requests a `git fetch` makes and builds the upstream request itself. A
+  binding back to Stratum would have made the executor a caller of the main
+  Worker, which is the coupling "its own Worker" exists to avoid. Two things
+  narrow the token further than "for the length of one job": the proxy is
+  replaced with one that refuses everything as soon as the checkout is
+  verified, and the token is deleted from the job's storage at the same moment,
+  so steps run with no path to the repository at all.
+
+  The token reads the whole repository, not "one commit": Artifacts tokens are
+  scoped to a repository. A job could, during the seconds the checkout is being
+  prepared, fetch other branches — but no step is running then, only the
+  executor's own script.
+- **The concurrency cap.** `CI_MAX_CONCURRENT_JOBS` is required and has no
+  default in code; the shipped `wrangler.toml` sets `2`. `CI_MAX_QUEUED_JOBS`
+  defaults to `10`. **Per-project concurrency and monthly usage limits are not
+  implemented**; the executor is one queue for the whole instance. That is
+  acceptable while the only project is Stratum's own and must be built before
+  the executor is offered to anyone else.
+
+### Decisions this ADR did not ask for
+
+- **One secret for the instance.** `CI_EXECUTOR_SECRET` signs the dispatch, the
+  executor's callbacks and Stratum's requests for logs. A first-party check run
+  is verified against it and only it; a project's own runner key cannot report
+  one, and it cannot report a project runner's check. Rows are told apart by a
+  new nullable column, `checks.ci_config_digest` (migration 077).
+- **"Do not match" means the digest, not the names.** The merge gate fails
+  closed unless every step the base declares has, as its newest run on the
+  evaluated revision, a run dispatched under a `ci.yaml` with the same SHA-256
+  digest as the base's current one. The digest covers names, commands,
+  timeouts, optionality, instance and allowlist. A comparison of names alone
+  would pass a change tested under `run: npm test` after the base changed it to
+  something else — and could not see a removed step at all, since a check run
+  for a name stays the "newest" for its revision forever.
+- **A re-run re-runs the job.** Steps share a checkout, so one step cannot be
+  re-run alone.
+- **Who reads logs.** Logs live in an R2 bucket bound to the executor, with no
+  public access. The executor serves a log only to a request signed with the
+  shared secret, valid for five minutes and one check run. Stratum's
+  `GET /api/changes/:id/checks/:checkId/log` makes that request after
+  authorizing the caller: exactly those who can read the project.
+- **Stratum reaches the executor over a service binding** (`CI_EXECUTOR`), so
+  the dispatch and its token do not cross the public internet; the executor
+  reports to Stratum's public callback URL, with
+  `global_fetch_strictly_public` so that a same-zone callback reaches the
+  Worker. A URL (`CI_EXECUTOR_URL`) is supported for an executor that lives
+  elsewhere.
+- **Status mapping.** A step that exits non-zero or outlives its own timeout is
+  `failed`. Anything that prevented a step from producing a result — tree
+  mismatch, unbuildable checkout, the job's wall-clock limit, a lost container,
+  no capacity — is `errored`.
+- **The profile is a field.** A job carries `profile: "ci"`, and the image,
+  allowlist and (absent) injected credentials hang off it, so the deploy and
+  publish profiles (#416, #422) are additions rather than rewrites.
+- **`requireFreshBase` fails closed.** As this ADR required: under
+  `requireFreshBase`, a change with no recorded base is refused (`STALE_BASE`),
+  and an unresolvable project head is refused (`503 BASE_UNVERIFIABLE`), on the
+  single and the batch merge. The non-atomic window described above is
+  unchanged.
+
+### Where the implementation is narrower
+
+- **Slots and the coordinator.** A job keeps its slot until its container is
+  confirmed gone: a failed teardown is retried and the slot is not released
+  while the container still runs. The coordinator does not ask jobs for their
+  state, as the decision above describes. It takes a slot back on its own
+  clock, when the job's wall-clock limit plus a grace period has passed. That
+  bounds a lost job object, but it is a timer and not a confirmation, so a
+  container that outlives both its limit and its teardown can briefly run
+  beside its replacement.
+- **Non-text files.** The change diff is built from files decoded as UTF-8, so
+  a change that adds or modifies a binary file cannot be reconstructed. Its
+  tree does not verify and its checks are `errored`. Fails closed, as intended,
+  but it means such a change cannot pass first-party CI until the dispatch can
+  carry binary content. The diff builder was otherwise fixed to be applicable
+  byte for byte (final newlines, empty files, modes, symlinks), which the job's
+  verification depends on.
+- **Nothing in the container is a boundary.** With the `durable_object`
+  scheduling policy every process in the container has root's capabilities, so
+  the in-container supervisor that runs steps can be killed or impersonated by
+  the code it supervises. Limits are therefore enforced by the Durable Object:
+  it destroys the container when a step outlives its timeout plus a grace
+  period, and when the job outlives its wall clock. What a step can do to its
+  own result, or a later step's, it could already do by editing the checkout —
+  the trust model is the one stated under "What a job is".
+- **Read failures.** A `ci.yaml` that cannot be read while the same repository
+  answers for the policy file blocks merges. Only git's own "not in the tree"
+  counts as the file being absent; any other failed read is a failure. If no file can be read at all, the
+  loader cannot tell "no config" from "repository unavailable" — an empty
+  repository fails its clone too and has to stay usable — so it still falls
+  back to the default policy, as it always has for the policy file. For CI that
+  fallback is bounded: the policy is marked unverified, and while it is, the
+  merge gate refuses every change of a project that has ever dispatched a
+  first-party check run. So neither a failed step nor a change opened during
+  the outage can merge because a read failed. A project that has never run
+  first-party CI is unaffected — which is also every empty repository. The
+  policy file's own `merge:` rules are still lost to a total read failure, as
+  before this change; closing that needs a way to tell an empty repository from
+  an unreachable one, and is not attempted here.

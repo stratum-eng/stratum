@@ -2541,6 +2541,28 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+        "503":
+          description: >
+            Under `merge.requireFreshBase`, the project's current head could
+            not be read, and no change in the batch could be merged (code
+            BASE_UNVERIFIABLE). The body carries `skipped`. Nothing was merged;
+            try again. When other changes in the batch are mergeable they are
+            merged, and the unverified ones are listed under `skipped` in the
+            `200`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      skipped:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            changeId: { type: string }
+                            reason: { type: string }
 
   /api/changes/{id}:
     parameters:
@@ -2633,7 +2655,10 @@ paths:
           description: |
             Structured conflict responses; `code` is one of EVALUATION_PENDING,
             EVALUATION_MISSING (the evaluation failed closed and pinned no
-            revision; refused even with force), STALE_BASE, STALE_WORKSPACE, WORKSPACE_UNVERIFIABLE, or MERGE_CONFLICT (which
+            revision; refused even with force), STALE_BASE (under
+            `merge.requireFreshBase`: the recorded base is behind the project
+            head, or the change has no recorded base at all), STALE_WORKSPACE,
+            WORKSPACE_UNVERIFIABLE, or MERGE_CONFLICT (which
             includes `conflictId` and `conflictingFiles` for
             `POST /api/projects/conflicts/{id}/resolve`).
           content:
@@ -2652,6 +2677,14 @@ paths:
                         type: array
                         items: { type: string }
                       message: { type: string }
+        "503":
+          description: >
+            Under `merge.requireFreshBase`, the project's current head could
+            not be read, so the change's base could not be verified as fresh
+            (code BASE_UNVERIFIABLE). Nothing was merged; try again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2737,7 +2770,10 @@ paths:
         Check runs are per-job CI results a project's runner reports back
         asynchronously. Returns the newest run of each check on the change's
         evaluated revision, which is the set `merge.requiredChecks` is checked
-        against. Needs read access to the project.
+        against. Steps of first-party CI (`.stratum/ci.yaml`) are listed here
+        under their step names; each is a required check without being named in
+        `merge.requiredChecks`, unless the step is marked `optional`. Needs
+        read access to the project.
       parameters:
         - name: all
           in: query
@@ -2769,6 +2805,51 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/changes/{id}/checks/{checkId}/log:
+    parameters:
+      - $ref: "#/components/parameters/ChangeId"
+      - name: checkId
+        in: path
+        required: true
+        schema: { type: string }
+        description: Check run id of a first-party CI step
+    get:
+      operationId: getChangeCheckLog
+      tags: [changes]
+      summary: Read the log of a first-party CI step
+      description: |
+        The output of one step run by the instance's CI executor
+        (`.stratum/ci.yaml`). Needs read access to the project: a log holds
+        whatever the change's code printed. Stratum fetches it from the
+        executor on each request; it is the URL a step's `detailsUrl` points
+        at. Served as plain text that a browser will not render or sniff.
+        Check runs reported by a project's own runner have no log here.
+      responses:
+        "200":
+          description: The log so far (a running step's log grows)
+          content:
+            text/plain:
+              schema: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: >
+            No such change or check run on it (NOT_FOUND); the check is not a
+            first-party CI step (CHECK_HAS_NO_LOG); or the executor holds no
+            log for the run — not started yet, or expired (CHECK_LOG_NOT_FOUND).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: The executor could not be reached or refused the request (CI_EXECUTOR_UNAVAILABLE)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: This instance has no CI executor, or it is misconfigured; the message names the setting (CI_EXECUTOR_UNAVAILABLE)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/changes/{id}/checks/{checkId}/rerun:
     parameters:
       - $ref: "#/components/parameters/ChangeId"
@@ -2786,6 +2867,8 @@ paths:
         same check on the SAME revision and dispatches it to the runner; the
         run named in the URL stops counting toward `merge.requiredChecks`. It
         does not pick up new commits — re-evaluate the change for that.
+        Re-running a first-party CI step (`.stratum/ci.yaml`) re-runs the whole
+        job, so every step of it gets a new run.
       responses:
         "202":
           description: The new run, queued and dispatched
@@ -2847,7 +2930,11 @@ paths:
         Called by a project's check runner, not by an API client. The request
         carries no bearer token and no session; it is authenticated by the
         `X-Stratum-Signature` header, the HMAC-SHA256 of the raw request body
-        under the project secret named by the policy's `checks` entry.
+        under the project secret named by the policy's `checks` entry. A run
+        that is a step of first-party CI (`.stratum/ci.yaml`) is verified
+        against the instance's executor secret instead, and only that: which
+        key applies is decided by the run's own record, so neither key can
+        report the other kind of run.
 
         A report can only move an existing run's status forward. It cannot
         create a check or change a run's name, change or revision. Terminal
@@ -6784,12 +6871,13 @@ components:
           type: string
           description: >
             Machine-readable code present on some errors (e.g. TARGET_DELETING,
-            STALE_BASE, STALE_WORKSPACE, WORKSPACE_UNVERIFIABLE, MERGE_CONFLICT,
-            PROTECTION_BLOCKED, NOT_REDRIVABLE, GONE, INVALID_PATH,
+            STALE_BASE, BASE_UNVERIFIABLE, STALE_WORKSPACE, WORKSPACE_UNVERIFIABLE,
+            MERGE_CONFLICT, PROTECTION_BLOCKED, NOT_REDRIVABLE, GONE, INVALID_PATH,
             TOKEN_SCOPE_INSUFFICIENT, TOKEN_BINDING_EXCLUDES_ROUTE,
             TOKEN_LIMIT_REACHED, SESSION_REQUIRED, DOMAIN_VERIFICATION_FAILED,
             INVALID_SIGNATURE, INVALID_REPORT, STALE_REVISION, CHECK_SUPERSEDED,
-            CHECK_TERMINAL, CHECK_DEADLINE_EXCEEDED, CHECK_DISPATCH_FAILED)
+            CHECK_TERMINAL, CHECK_DEADLINE_EXCEEDED, CHECK_DISPATCH_FAILED,
+            CHECK_HAS_NO_LOG, CHECK_LOG_NOT_FOUND, CI_EXECUTOR_UNAVAILABLE)
 
     SsoConnectionEnvelope:
       type: object
@@ -7162,7 +7250,7 @@ components:
         evaluated revision (and for a re-run), signed with
         `X-Stratum-Signature`. Not a request any client sends to Stratum;
         documented here because a runner is built against it.
-      required: [event, changeId, project, baseSha, headSha, diff, checkRunIds, callbackUrl, deadline]
+      required: [event, changeId, project, baseSha, headSha, headTreeSha, diff, checkRunIds, callbackUrl, deadline]
       properties:
         event:
           type: string
@@ -7177,6 +7265,12 @@ components:
         headSha:
           type: string
           description: The evaluated revision
+        headTreeSha:
+          type: string
+          description: >
+            The git tree id of `headSha`. Checking out `baseSha` and applying
+            `diff` must produce exactly this tree; a runner compares
+            `git write-tree` against it before running anything.
         diff:
           type: string
           description: Unified diff of baseSha..headSha

@@ -53,8 +53,9 @@ are blocked** until it is fixed:
 
 - A check name belongs to exactly one `checks` entry. Two entries may not
   declare the same name.
-- Every name in `merge.requiredChecks` must be declared by a `checks` entry.
-  A required check nothing dispatches could never pass.
+- Every name in `merge.requiredChecks` must be declared somewhere: by a
+  `checks` entry, or as a step in [`.stratum/ci.yaml`](ci.md). A required check
+  nothing dispatches could never pass.
 - `merge.requiredChecks` must be a list of valid names. A string or a mistyped
   entry is an error, not "require nothing".
 
@@ -84,6 +85,22 @@ The policy is read from the project's **default branch**, never from the
 change. A change that edits `.stratum/policy.yaml` to drop a required check is
 still held to the checks the base requires (and, because it edits protected
 config, needs a human approval as well).
+
+A second source of names is [first-party CI](ci.md). Each step in the default
+branch's `.stratum/ci.yaml` is a check run of the same kind, named after the
+step and created by Stratum in the same way. Three things differ:
+
+- **A step is required without being listed** in `merge.requiredChecks`. A step
+  marked `optional: true` is reported and shown, and does not gate the merge,
+  unless `merge.requiredChecks` names it: the policy wins, and the step is
+  required.
+- **A name belongs to one source.** A step may not share a name with a check a
+  `checks` entry declares; that makes the configuration invalid.
+- **Its reports are signed with the instance's executor secret**, not with a
+  project secret. Stratum decides which key to verify a report against from the
+  check run's own record, set when the run was created, so a project's runner
+  key cannot report a CI step and the executor's key cannot report a project's
+  check.
 
 ## Lifecycle
 
@@ -120,6 +137,7 @@ runs with new ids, and ends any still-pending runs from before.
   "project": "@acme/api",
   "baseSha": "9c1e…",
   "headSha": "4a7d…",
+  "headTreeSha": "e21b…",
   "diff": "diff --git a/src/app.ts b/src/app.ts\n…",
   "checkRunIds": { "lint": "chk_51c0…", "test": "chk_a93e…" },
   "callbackUrl": "https://app.usestratum.dev/api/checks",
@@ -134,6 +152,7 @@ runs with new ids, and ends any still-pending runs from before.
 | `project` | The project, as `@namespace/slug`. |
 | `baseSha` | The commit `diff` was computed against. |
 | `headSha` | The evaluated revision. Echo it back in every report. |
+| `headTreeSha` | The git **tree** id of `headSha`: what checking out `baseSha` and applying `diff` must produce. See [Verifying what you built](#verifying-what-you-built). |
 | `diff` | Unified diff of `baseSha..headSha`. |
 | `checkRunIds` | Check name → check run id, for exactly the checks this request asks for. A re-run of one check carries only that one. |
 | `callbackUrl` | Report to `<callbackUrl>/<checkRunId>`. |
@@ -156,6 +175,24 @@ To apply the change, check out `baseSha` and apply `diff`, exactly as for the
 webhook evaluator — see [Wiring your CI to the contract](ci-integration.md#wiring-your-ci-to-the-contract)
 and [Running a Webhook Evaluator Executor Safely](webhook-executor.md). The
 diff is untrusted code; everything in that guide applies to a check runner.
+
+### Verifying what you built
+
+A runner does not receive the change's head commit; it rebuilds it from
+`baseSha` and `diff`. `headTreeSha` lets it prove the rebuild is the revision
+Stratum evaluated before it runs anything:
+
+```bash
+git checkout --detach "$BASE_SHA"
+git apply --index change.diff
+test "$(git write-tree)" = "$HEAD_TREE_SHA" || exit 1   # not the evaluated tree
+```
+
+The diff is written to be applied: it carries missing final newlines, empty
+files, executable bits and symlinks. What it cannot carry is a file that is not
+UTF-8 text. A change that adds or modifies a binary file does not reproduce
+its tree, and a runner that checks — as the [first-party executor](ci.md) does —
+must fail such a run rather than test something else.
 
 ## The callback (your runner → Stratum)
 
@@ -235,6 +272,16 @@ never read as a pass.
 
 ## The merge gate
 
+Required names come from two places: the names in `merge.requiredChecks`, and
+every step in [`.stratum/ci.yaml`](ci.md) that is not marked `optional` (a step
+needs no listing). Everything below applies to both alike.
+
+A CI step has one more condition. Its run must have been dispatched under the
+base branch's current `.stratum/ci.yaml`. If that file has changed since, the
+earlier result does not count, even a `passed` one, and the merge is blocked
+until the change is re-evaluated: see
+[First-party CI](ci.md#the-merge-gate).
+
 `merge.requiredChecks` is enforced with the other merge protections, on both
 `POST /api/changes/:id/merge` and the batch merge. For each required name
 Stratum reads the **newest run of that check for the change's evaluated
@@ -258,8 +305,11 @@ Things that follow from "evaluated revision":
   checks. A pass recorded for the previous revision does not count.
 - **Re-evaluating the same revision also starts over.** The new runs replace
   the old ones.
-- Checks that are declared but not required are shown on the change and never
-  block.
+- A check a `checks` entry declares but `merge.requiredChecks` does not name is
+  shown on the change and never blocks. An `optional` CI step is nearly the
+  same: its result never blocks, but it must still have run under the base's
+  current `.stratum/ci.yaml`, so a missing or out-of-date one blocks until the
+  change is re-evaluated.
 
 `merge.allowForce` behaves as it does for every other protection: a force
 merge skips `requiredChecks` only where the policy has explicitly enabled
@@ -294,6 +344,9 @@ re-evaluating a change, it is refused to agent tokens. It is also refused when:
 
 A re-run does not pick up new commits and cannot be used to carry a result to
 code that was never evaluated.
+
+Re-running a [first-party CI](ci.md) step re-runs the **whole job**: its steps
+share one checkout, so every step gets a new run.
 
 ## Seeing check runs
 
@@ -395,7 +448,8 @@ before you write it.
 ## Limits and what is not here yet
 
 - Check runs report a status, a summary and a link. There are no log uploads,
-  annotations or artifacts.
+  annotations or artifacts for a runner of your own; a
+  [first-party CI](ci.md) step has a log, served by Stratum.
 - Stratum does not cancel work on the runner. A run that has been replaced
   learns of it from the `409` on its next report.
 - There is no event or outbound webhook when a check finishes; poll the API or
@@ -406,6 +460,7 @@ before you write it.
 
 ## See also
 
+- [First-party CI](ci.md) — the same check runs, executed by Stratum's own executor from `.stratum/ci.yaml`
 - [CI Integration (Bring Your Own CI)](ci-integration.md) — the synchronous webhook evaluator, and what runs code where
 - [Running a Webhook Evaluator Executor Safely](webhook-executor.md)
 - [Changes API: check runs](../api/endpoints/changes.md#check-runs)

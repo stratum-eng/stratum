@@ -405,7 +405,8 @@ the full list and the response shapes):
 |---|---|
 | `EVALUATION_PENDING` | The change is still `evaluating`; refused even with `force` |
 | `EVALUATION_MISSING` | The evaluation failed closed and pinned no revision; refused even with `force` — re-evaluate first |
-| `STALE_BASE` | The recorded base is behind project HEAD (`merge.requireFreshBase`) |
+| `STALE_BASE` | Under `merge.requireFreshBase`: the recorded base is behind project HEAD, or the change has no recorded base |
+| `BASE_UNVERIFIABLE` (`503`) | Under `merge.requireFreshBase`: project HEAD could not be read, so freshness could not be verified. Nothing merged; retry |
 | `STALE_WORKSPACE` | The workspace advanced after evaluation |
 | `WORKSPACE_UNVERIFIABLE` | Workspace state could not be verified against what was evaluated |
 | `PROTECTION_BLOCKED` | Blocked by branch protection; the response lists `reasons`. A [required check](#check-runs) that is missing, `queued`, `running`, `failed` or `errored` for the evaluated revision appears here |
@@ -419,6 +420,16 @@ project head with a **single push** (see
 [ADR 004](https://github.com/stratum-eng/stratum/blob/main/docs/adr/004-high-frequency-agent-commits.md)). At most 80 changes per
 request, and requires the RepoDO backend. `force` is deny-by-default and must be
 allowed by project policy (`merge.allowForce: true`).
+
+The `200` response has three lists, and a client must read all of them:
+`merged` holds the ids that merged, `conflicted` the ids that hit a merge
+conflict, and `skipped` each change that was not attempted, with a `reason`.
+
+When nothing is eligible the answer is `400`. Its message gives the number
+skipped, not the reasons. One case is different: under
+`merge.requireFreshBase`, if the project head could not be read and that
+leaves nothing to merge, the answer is `503 BASE_UNVERIFIABLE` with the
+`skipped` list. That is a fault to retry, not an ineligible batch.
 
 ### Check runs
 
@@ -484,13 +495,32 @@ run, `queued`.
 | `409` | `CONFLICT` | The change is merged, rejected or reverted |
 | `502` | `CHECK_DISPATCH_FAILED` | The new run was created but the runner could not be reached. The body carries it as `check`, already `errored` |
 
+A [first-party CI](/guides/ci/) step is re-run as a whole job: every
+step in it gets a new run, and the response carries the one for the check named
+in the URL.
+
+#### Read a CI step's log
+`GET /api/changes/{id}/checks/{checkId}/log`
+
+The output of one [first-party CI](/guides/ci/) step, as
+`text/plain`. Needs read access to the project. This is the URL such a check's
+`detailsUrl` holds. A running step's log grows between requests.
+
+| Status | Code | Meaning |
+|---|---|---|
+| `404` | `NOT_FOUND` | No such change, or no such check run on it |
+| `404` | `CHECK_HAS_NO_LOG` | The check was reported by a project's own runner; follow its `detailsUrl` instead |
+| `404` | `CHECK_LOG_NOT_FOUND` | The executor has no log for this run: not started yet, or expired |
+| `502` / `503` | `CI_EXECUTOR_UNAVAILABLE` | `502`: the executor could not be reached or refused the request. `503`: the instance has no executor, or it is misconfigured; the error message names the setting |
+
 #### Report a check run (runner callback)
 `POST /api/checks/{checkRunId}`
 
 Called by the **runner**, not by an API client. It takes no bearer token and no
 session: the request is authenticated by `X-Stratum-Signature: sha256=<hex>`,
 the HMAC-SHA256 of the raw body under the project secret the policy's `checks`
-entry names. A token bound to one project or organization is refused before
+entry names — or, for a [first-party CI](/guides/ci/) step, under the
+instance's executor secret, which only the instance's own executor holds. A token bound to one project or organization is refused before
 routing.
 
 ```json

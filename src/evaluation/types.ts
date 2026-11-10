@@ -1,6 +1,7 @@
 import type { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import type { Result } from "../utils/result";
+import type { CiConfig } from "./ci-config";
 
 export interface EvalResult {
   score: number;
@@ -117,6 +118,21 @@ export interface EvalPolicy {
    * as fail-closed (blocks) rather than silently running on the default, so a
    * typo in a stricter policy can't quietly downgrade governance. */
   configError?: string;
+  /**
+   * The base branch's `.stratum/ci.yaml`, validated (#415). Present only when
+   * the file exists and is usable; an unusable one sets `configError` instead.
+   * Never taken from the policy file itself — `loadPolicy` attaches it.
+   */
+  ci?: CiConfig;
+  /**
+   * True when NOTHING could be read from the base branch, so whether it has a
+   * `.stratum/ci.yaml` is unknown rather than "no". The policy loader has
+   * always treated an unreadable repository as one with no config — an empty
+   * repository fails its clone too, and must stay usable — but "unknown" must
+   * not open a gate that is known to exist: while this is set the merge gate
+   * refuses every change of a project that has ever run first-party CI.
+   */
+  ciUnverified?: true;
   /**
    * Post-merge deploys declared under `deploys:`, after sanitization. Only
    * entries that passed every rule in `sanitizeDeploys` appear here; anything

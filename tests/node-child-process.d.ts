@@ -10,6 +10,10 @@ declare module "node:child_process" {
     options: {
       encoding?: "utf8";
       stdio?: "ignore" | readonly ("ignore" | "pipe")[];
+      /** Working directory, stdin and environment: what driving real `git` needs. */
+      cwd?: string;
+      input?: string;
+      env?: Record<string, string | undefined>;
     },
   ): string;
 }

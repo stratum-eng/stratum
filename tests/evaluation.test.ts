@@ -37,6 +37,7 @@ vi.mock("../src/utils/validation", async (importOriginal) => {
 
 import { readFileFromRepo } from "../src/storage/git-ops";
 import { validateWebhookUrl } from "../src/utils/validation";
+import { repoWithFiles } from "./helpers/repo-files";
 const mockReadFileFromRepo = vi.mocked(readFileFromRepo);
 const mockValidateWebhookUrl = vi.mocked(validateWebhookUrl);
 
@@ -807,15 +808,9 @@ describe("loadPolicy", () => {
       requireAll: false,
       minScore: 0.5,
     };
-    mockReadFileFromRepo
-      .mockResolvedValueOnce({
-        success: false,
-        error: new AppError("missing yaml", "NOT_FOUND", 404),
-      })
-      .mockResolvedValueOnce({
-        success: true,
-        data: JSON.stringify(config),
-      });
+    mockReadFileFromRepo.mockImplementation(
+      repoWithFiles({ "stratum.config.json": JSON.stringify(config) }),
+    );
     const policy = await loadPolicy("https://repo.example.com", "tok", mockLogger);
     expect(policy.requireAll).toBe(false);
     expect(policy.minScore).toBe(0.5);
@@ -824,15 +819,9 @@ describe("loadPolicy", () => {
 
   it("merges parsed config with defaults", async () => {
     const config = { evaluators: [{ type: "diff", maxLines: 100 }] };
-    mockReadFileFromRepo
-      .mockResolvedValueOnce({
-        success: false,
-        error: new AppError("missing yaml", "NOT_FOUND", 404),
-      })
-      .mockResolvedValueOnce({
-        success: true,
-        data: JSON.stringify(config),
-      });
+    mockReadFileFromRepo.mockImplementation(
+      repoWithFiles({ "stratum.config.json": JSON.stringify(config) }),
+    );
     const policy = await loadPolicy("https://repo.example.com", "tok", mockLogger);
     expect(policy.requireAll).toBe(true);
     expect(policy.minScore).toBe(0.7);
@@ -840,15 +829,9 @@ describe("loadPolicy", () => {
   });
 
   it("fails closed (configError) on a present-but-invalid JSON policy", async () => {
-    mockReadFileFromRepo
-      .mockResolvedValueOnce({
-        success: false,
-        error: new AppError("missing yaml", "NOT_FOUND", 404),
-      })
-      .mockResolvedValueOnce({
-        success: true,
-        data: "not { valid json",
-      });
+    mockReadFileFromRepo.mockImplementation(
+      repoWithFiles({ "stratum.config.json": "not { valid json" }),
+    );
     const policy = await loadPolicy("https://repo.example.com", "tok", mockLogger);
     // Evaluators still default so the change flow works, but the merge gate is
     // marked failed-closed rather than silently downgraded.
@@ -866,15 +849,9 @@ describe("loadPolicy", () => {
   });
 
   it("fails closed when a present policy is missing 'evaluators'", async () => {
-    mockReadFileFromRepo
-      .mockResolvedValueOnce({
-        success: false,
-        error: new AppError("missing yaml", "NOT_FOUND", 404),
-      })
-      .mockResolvedValueOnce({
-        success: true,
-        data: JSON.stringify({ minScore: 0.5 }),
-      });
+    mockReadFileFromRepo.mockImplementation(
+      repoWithFiles({ "stratum.config.json": JSON.stringify({ minScore: 0.5 }) }),
+    );
     const policy = await loadPolicy("https://repo.example.com", "tok", mockLogger);
     expect(policy.evaluators).toEqual([{ type: "diff" }]);
     expect(policy.configError).toBeDefined();
@@ -903,19 +880,27 @@ describe("loadPolicy", () => {
           ].join("\n"),
         };
       }
-      return {
-        success: true,
-        data: JSON.stringify({
-          evaluators: [{ type: "webhook", url: "https://example.com/eval" }],
-        }),
-      };
+      if (_path === "stratum.config.json") {
+        return {
+          success: true,
+          data: JSON.stringify({
+            evaluators: [{ type: "webhook", url: "https://example.com/eval" }],
+          }),
+        };
+      }
+      return { success: false, error: new AppError("missing", "FS_ERROR", 500) };
     });
 
     const policy = await loadPolicy("https://repo.example.com", "tok", mockLogger);
     expect(policy.requireAll).toBe(false);
     expect(policy.minScore).toBe(0.4);
     expect(policy.evaluators[0]).toMatchObject({ type: "diff", maxLines: 42 });
-    expect(mockReadFileFromRepo).toHaveBeenCalledTimes(1);
+    // The JSON file is never opened once the YAML one is found. The other read
+    // is the CI configuration, which is its own file with its own rules.
+    expect(mockReadFileFromRepo.mock.calls.map((call) => call[2]).sort()).toEqual([
+      ".stratum/ci.yaml",
+      ".stratum/policy.yaml",
+    ]);
   });
 });
 
@@ -926,7 +911,9 @@ describe("loadPolicy — evaluator sanitization", () => {
 
   /** Loads `config` as the YAML policy file. */
   async function loadConfig(config: unknown): Promise<EvalPolicy> {
-    mockReadFileFromRepo.mockResolvedValue({ success: true, data: JSON.stringify(config) });
+    mockReadFileFromRepo.mockImplementation(
+      repoWithFiles({ ".stratum/policy.yaml": JSON.stringify(config) }),
+    );
     return loadPolicy("https://repo.example.com", "tok", mockLogger);
   }
 
@@ -1103,7 +1090,7 @@ describe("loadPolicy — evaluator sanitization", () => {
 
   /** Loads a literal YAML document, for values JSON cannot express. */
   async function loadYaml(yaml: string): Promise<EvalPolicy> {
-    mockReadFileFromRepo.mockResolvedValue({ success: true, data: yaml });
+    mockReadFileFromRepo.mockImplementation(repoWithFiles({ ".stratum/policy.yaml": yaml }));
     return loadPolicy("https://repo.example.com", "tok", mockLogger);
   }
 

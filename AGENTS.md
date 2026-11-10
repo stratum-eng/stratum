@@ -35,6 +35,7 @@ generally: the next thing that wants to be an exception needs its own argument, 
 | `src/` | The Worker: routes, middleware, storage, queue consumers, evaluation engine, UI, and the remote MCP server (`src/mcp/`, served at `/mcp`) |
 | `cli/` | `@stratum-eng/cli` — standalone publishable package |
 | `agent/` | `@stratum-eng/agent` — reference agent, standalone publishable package |
+| `ci-executor/` | The first-party CI executor — a **separate Worker** with its own `package.json`, Wrangler config, tests and container image (`docs/adr/012-ci-executor-runtime.md`). Not published; AGPL like the server. It runs unreviewed code, so it must never gain a binding to D1, KV, Artifacts or the main Worker |
 | `tests/` | Vitest suites: unit (`tests/*.test.ts`), `tests/integration/`, `tests/smoke/` |
 | `migrations/` | D1 SQL migrations |
 | `docs/` | User, API, developer docs, ADRs (`docs/adr/`), and runbooks (`docs/runbooks/`) |
@@ -43,7 +44,7 @@ generally: the next thing that wants to be an exception needs its own argument, 
 
 ## Commands
 
-Run from the repo root unless noted. `cli/` and `agent/` have their own `package.json`.
+Run from the repo root unless noted. `cli/`, `agent/` and `ci-executor/` have their own `package.json`.
 
 ```bash
 npm install          # install deps
@@ -63,7 +64,7 @@ it is network-dependent and not part of the offline gate.
 
 ## Quality gates (must pass before a PR is mergeable)
 
-CI (`pr-checks.yml`) runs **lint, typecheck, unit tests, and the `cli/`/`agent/`
+CI (`pr-checks.yml`) runs **lint, typecheck, unit tests, and the `cli/`/`agent/`/`ci-executor/`
 package suites in parallel**, then integration tests. It deliberately deploys nothing —
 staging and production deploy only from `ci.yml` on `main`; PRs get an isolated per-PR
 preview Worker from `pr-preview.yml` instead.

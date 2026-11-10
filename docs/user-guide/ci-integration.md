@@ -397,6 +397,7 @@ evaluator (for gating) or via GitHub sync in layer mode (for everything else).
 ## See also
 
 - [Check runs](checks.md) — asynchronous, per-job results reported back to a change
+- [First-party CI](ci.md) — let Stratum run the steps itself, from `.stratum/ci.yaml`
 - [Running a Webhook Evaluator Executor Safely](webhook-executor.md) — isolating the code a receiver runs
 - [Deployments](deployments.md) — the `deploys:` policy block, targets, secrets, and limits
 - [FAQ: Does Stratum replace GitHub Actions?](faq.md#does-stratum-replace-github-actions)
