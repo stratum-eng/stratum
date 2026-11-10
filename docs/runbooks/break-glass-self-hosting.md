@@ -60,11 +60,23 @@ It matters because a resync only fast-forwards. If any merge lands on Stratum
 after the fix lands on GitHub, the two histories diverge, and the resync in
 step 5 is refused until someone reconciles them by hand.
 
+Set the names this runbook uses. Every command below reads them, so set them
+in the shell you will keep for the whole incident:
+
+```bash
+STRATUM_URL=https://app.usestratum.dev   # the instance; staging for a rehearsal
+PROJECT=@stratum/stratum                 # the affected project, as @namespace/slug
+ORG=stratum                              # the organization that owns it
+# STRATUM_TOKEN: a project admin's personal read_write token. Read it without
+# typing it on a command line:
+read -rs STRATUM_TOKEN
+```
+
 Record the project's current default-branch commit. You compare against it
 later:
 
 ```bash
-curl -s "$STRATUM_URL/api/projects/@stratum/stratum/mirror" \
+curl -s "$STRATUM_URL/api/projects/$PROJECT/mirror" \
   -H "Authorization: Bearer $STRATUM_TOKEN"
 ```
 
@@ -143,11 +155,20 @@ Deploy the commit you pushed, from the same clone, with the offline token.
 These are the commands the `Deploy Production` workflow runs. Set the
 environment first; everything below reads it.
 
+First choose the environment. Run exactly ONE of these two lines. There is no
+default, on purpose: a block that selected production unless edited would
+select production in a rehearsal.
+
 ```bash
-# Production incident:
-DEPLOY_ENV=production; D1_NAME=stratum
-# Rehearsal on staging (use a token scoped to staging only):
-# DEPLOY_ENV=staging;  D1_NAME=stratum-staging
+DEPLOY_ENV=staging;    D1_NAME=stratum-staging   # a rehearsal; staging-only token
+DEPLOY_ENV=production; D1_NAME=stratum           # a production incident
+```
+
+Then deploy. The first line stops if no environment was chosen:
+
+```bash
+: "${DEPLOY_ENV:?choose an environment first}" "${D1_NAME:?choose an environment first}"
+echo "Deploying to: $DEPLOY_ENV"     # read it before going on
 
 git status                           # clean, on the fix commit
 
@@ -195,7 +216,7 @@ Bring it level. An admin of the project runs this, with a browser session or a
 personal API token:
 
 ```bash
-curl -X POST "$STRATUM_URL/api/projects/@stratum/stratum/resync" \
+curl -X POST "$STRATUM_URL/api/projects/$PROJECT/resync" \
   -H "Authorization: Bearer $STRATUM_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"expectedSha": "<full SHA of the fix commit from step 3>"}'
@@ -228,7 +249,7 @@ equal, sends nothing, and records `ok`. If the mirror was `diverged` or `failed`
 during the incident, the resync resumed it first.
 
 ```bash
-curl -s "$STRATUM_URL/api/projects/@stratum/stratum/mirror" \
+curl -s "$STRATUM_URL/api/projects/$PROJECT/mirror" \
   -H "Authorization: Bearer $STRATUM_TOKEN"
 ```
 
@@ -236,11 +257,13 @@ Within a minute or two, expect `"state": "ok"`, `"pending": false`, and
 `lastPushedSha` equal to the fix commit. A sweep re-sends a lost message every
 five minutes, but on an instance with the mirror queue bound it sends it to
 that same queue, so it does not get around a queue that is not delivering.
-(Only an instance with no mirror queue pushes from the sweep itself.) If the
-mirror is still `pending` after ten minutes, the queue is the problem: check
-the `stratum-mirrors` queue and its consumer in the Cloudflare dashboard, and
-use **Push now** on the mirror card in project settings once it is delivering
-again.
+(Only an instance with no mirror queue pushes from the sweep itself, and it
+handles at most three mirrors per run, so a backlog of other projects' mirrors
+can delay this one.) If the mirror is still `pending` after ten minutes, find
+out which it is. With a queue bound, the likeliest cause is the queue: check
+the `stratum-mirrors` queue and its consumer in the Cloudflare dashboard. With
+no queue, look at how many mirrors are pending. Either way, **Push now** on the
+mirror card in project settings asks again once the cause is cleared.
 
 If the state is `diverged` again, read `lastError`. A tag that was moved on
 GitHub is the usual cause. Fix it on GitHub, then choose **Resume mirror**.
@@ -255,14 +278,14 @@ Do this the same day:
 
    ```bash
    for action in branch.resync_requested branch.resynced; do
-     curl -s "$STRATUM_URL/api/orgs/stratum/audit?action=$action" \
+     curl -s "$STRATUM_URL/api/orgs/$ORG/audit?action=$action" \
        -H "Authorization: Bearer $STRATUM_TOKEN"
    done
    ```
 
    What to expect depends on how step 6 ended:
 
-   - **The branch moved** (`status: "resynced"`): one `branch.resync_requested`
+   - **The branch moved** (`status: "fast-forwarded"`): one `branch.resync_requested`
      and one `branch.resynced`, by the admin who ran it, with the old and new
      commit.
    - **`up-to-date`**: only `branch.resync_requested`. Nothing moved, so there
