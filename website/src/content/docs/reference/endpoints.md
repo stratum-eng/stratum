@@ -716,8 +716,9 @@ the same credential rules as promotion.
 ```
 
 A pull request that is already ready succeeds with `alreadyReady: true`. A
-change that was not promoted, or whose pull request is closed, gets
-`409 NOT_PROMOTED`. If GitHub refuses, the answer is `502 GITHUB_ERROR` with
+change that was not promoted gets `409 NOT_PROMOTED`. A pull request that turns
+out to be closed on GitHub gets `409 PULL_REQUEST_CLOSED`, and the change's
+`githubPrState` is corrected to `closed`. If GitHub refuses, the answer is `502 GITHUB_ERROR` with
 GitHub's message.
 
 A change carries `githubPrDraft` once this is known. Marking the pull request

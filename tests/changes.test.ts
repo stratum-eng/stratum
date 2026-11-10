@@ -4309,6 +4309,19 @@ describe("POST /api/changes/:id/github-pr/ready", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("answers 409 for a pull request closed on GitHub, and records that it is closed", async () => {
+    fetchMock.mockImplementation(async () => json({ ...draftPr, state: "closed" }));
+
+    const res = await post(USER_AUTH);
+
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe("PULL_REQUEST_CLOSED");
+    // So the page stops offering the button after this one click.
+    expect(recordGithubPrLink).toHaveBeenCalledWith(env.DB, expect.anything(), "chg_abc123", {
+      githubPrState: "closed",
+    });
+  });
+
   it("reports GitHub's refusal and leaves the change marked as a draft", async () => {
     fetchMock.mockImplementation(async (url: string) =>
       url.endsWith("/graphql")

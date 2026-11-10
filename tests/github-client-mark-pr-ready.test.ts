@@ -66,7 +66,11 @@ describe("GitHubClient.markPRReady", () => {
 
     const result = await new GitHubClient("tok", logger).markPRReady("acme", "api", 7);
 
-    expect(result).toEqual({ success: false, error: "The pull request is closed" });
+    expect(result).toEqual({
+      success: false,
+      error: "The pull request is closed",
+      closed: true,
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
