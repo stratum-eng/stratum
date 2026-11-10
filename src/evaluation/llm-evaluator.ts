@@ -23,7 +23,17 @@ import type {
   LlmEvaluatorConfig,
 } from "./types";
 
-const DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct";
+// Workers AI retires models: the previous default,
+// `@cf/meta/llama-3.1-8b-instruct`, stopped answering on 2026-05-30 and took
+// every policy that relied on the default with it. When this one is announced
+// for deprecation (https://developers.cloudflare.com/changelog/product/workers-ai/),
+// replace it before the date, not after.
+//
+// Chosen by running this evaluator's own prompt against the live catalog: it
+// returns a verdict in 2 to 7 seconds. The models Cloudflare's deprecation
+// notice recommends (Gemma 4, Qwen 3.8, GLM 4.7 Flash) reason before they
+// answer and did not finish inside the 30-second default on a 13 KB diff.
+const DEFAULT_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
 const DEFAULT_THRESHOLD = 0.7;
 const DEFAULT_MAX_DIFF_CHARS = 24_000;
 // Policy-supplied window bounds: the ceiling stops a hostile policy blowing the

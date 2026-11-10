@@ -494,7 +494,7 @@ const LLM_CONFIG_KEYS = new Set([
 
 /**
  * Longest `model` a policy may name. Generous for every provider's identifiers
- * (`@cf/meta/llama-3.1-8b-instruct`, `anthropic/claude-sonnet-4-5`) and short
+ * (`@cf/meta/llama-4-scout-17b-16e-instruct`, `anthropic/claude-sonnet-4-5`) and short
  * enough that the value cannot become a payload in its own right.
  */
 const MAX_MODEL_LENGTH = 128;
@@ -573,7 +573,7 @@ export function sanitizeLlmConfig(
     config.model = model;
   }
 
-  // A BYOK entry must name its model. The default (`@cf/meta/llama-3.1-8b-instruct`)
+  // A BYOK entry must name its model. The default (`@cf/meta/llama-4-scout-17b-16e-instruct`)
   // is a Workers AI model id, and posting it to Anthropic or an OpenAI-compatible
   // endpoint fails every single call — a gate that never runs, discovered one
   // merge at a time. Requiring the field is clearer than inventing a default per

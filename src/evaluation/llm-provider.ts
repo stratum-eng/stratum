@@ -137,8 +137,9 @@ function withTimeout<T>(work: Promise<T>, timeoutMs: number, what: string): Prom
  * The Workers AI binding, and the default. Behaviour here is deliberately
  * identical to what `LLMEvaluator` did inline before the seam existed:
  * a `ReadableStream` is rejected rather than consumed, and a response object
- * with no usable `response` field yields `""` so the evaluator fails it closed
- * as unparseable output rather than treating it as a distinct condition.
+ * with no usable text (in either of the two shapes `run` reads) yields `""` so
+ * the evaluator fails it closed as unparseable output rather than treating it
+ * as a distinct condition.
  *
  * It does report token counts — Cloudflare documents the synchronous output of
  * a text-generation model as `response`, `tool_calls` and `usage`, and its own
@@ -170,13 +171,42 @@ export class WorkersAiProvider implements LlmProvider {
       return err(new LlmProviderResponseError("unexpected stream response"));
     }
 
-    // Checked, not asserted: the binding's own types make `response` optional,
-    // and the evaluator dereferences `.length` on whatever comes back.
-    const text = typeof raw.response === "string" ? raw.response : "";
-    return ok({
-      text,
-      ...usageOrNothing(raw.usage?.prompt_tokens, raw.usage?.completion_tokens),
-    });
+    const usage = usageOrNothing(raw.usage?.prompt_tokens, raw.usage?.completion_tokens);
+
+    // Workers AI answers in more than one shape, by model. Older models return
+    // `{ response: "<text>" }`. Current ones also return an OpenAI chat
+    // completion, with the text in `choices[0].message.content`; some of those
+    // leave `response` out, and some set it to the verdict ALREADY PARSED into
+    // an object. Reading only a string `response` turns every one of those
+    // verdicts into an empty string.
+    const choice = Array.isArray(raw.choices) ? raw.choices[0] : undefined;
+
+    // The newer models reason before they answer, and that counts toward their
+    // output limit. Cut off there, what is left is half a verdict or none; name
+    // it as that, the way the HTTP providers do, instead of as unparseable
+    // output. Billed, like theirs.
+    if (choice?.finish_reason === "length") {
+      return err(
+        new LlmProviderResponseError(
+          "provider response was truncated at the model's output limit",
+          undefined,
+          usage.usage,
+        ) as AppError,
+      );
+    }
+
+    // Checked, not asserted: every field here is optional in the binding's
+    // types, and the evaluator dereferences `.length` on whatever comes back.
+    const content = choice?.message?.content;
+    const text =
+      typeof raw.response === "string"
+        ? raw.response
+        : typeof content === "string"
+          ? content
+          : typeof raw.response === "object" && raw.response !== null
+            ? JSON.stringify(raw.response)
+            : "";
+    return ok({ text, ...usage });
   }
 }
 
