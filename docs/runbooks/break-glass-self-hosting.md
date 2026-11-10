@@ -42,6 +42,7 @@ Prepare these while everything works. During an incident it is too late.
 | A Cloudflare API token that can deploy the Worker | Offline: a hardware-backed password manager or a sealed envelope. **Not** in a repository, CI, or a chat tool | Scoped to the one account, with only the permissions `wrangler deploy` and `wrangler d1 migrations apply` need. Give it an expiry and rotate it at each rehearsal. *Verify in rehearsal* that the scope is sufficient and no wider. |
 | The Cloudflare account ID | With the token | Not a secret, but you need it. |
 | A maintainer with admin rights on the GitHub mirror repository | GitHub | Needed to lift and restore the branch lock. Use an account with a second factor. |
+| The exact branch-lock exception for this mirror, written down | With this runbook | Step 2 depends on how the mirror is protected: classic protection or rulesets, a personal or an organization repository, required pull requests or status checks, organization-level rulesets. Work out at a rehearsal which settings step 2 changes on your mirror and record them, so nobody derives it during an incident. If an organization-level ruleset applies to the mirror, an organization owner must be reachable too; better, keep the mirror out of organization-wide rulesets and give it its own. |
 | A Stratum admin for the project | Stratum | The project's owner, or an owner or admin of its organization. They run the resync. |
 | A personal Stratum API token with the `read_write` scope, or a browser session | The admin's password manager | An OAuth grant (MCP, the CLI's sign-in) cannot run a resync. |
 | A clone of the mirror repository on the maintainer's machine | Local disk | With `npm ci` already run. An incident is a bad time to find that a dependency registry is also down. |
@@ -139,7 +140,9 @@ possible.
    Before the maintainer pushes, read every rule that applies to the branch:
 
    - **Classic protection, required pull requests:** add the maintainer to
-     **Allow specified actors to bypass required pull requests**.
+     **Allow specified actors to bypass required pull requests**. That list
+     exists only on a repository an organization owns. On a personal
+     repository skip this: the owner's bypass above already covers it.
    - **Classic protection, required status checks:** these have no
      per-person exception. Write down the list of required checks, turn
      **Require status checks to pass before merging** off, and turn it back
@@ -147,6 +150,12 @@ possible.
    - **Rulesets:** a bypass covers only its own ruleset. Add the same team or
      role to the bypass list of every other active ruleset that targets the
      branch and requires a pull request or status checks.
+   - **Organization-level rulesets:** a repository admin cannot edit these,
+     so an organization owner must do it. Do not add the bypass to a ruleset
+     that targets other repositories: it would apply in every one of them.
+     Have the owner exclude the mirror from that ruleset's targets for the
+     incident instead, after checking that a repository-level ruleset on the
+     mirror still blocks force pushes, and include it again in step 4.
 
    The one rule that gets no exception is the block on force pushes. Write
    down each setting you change and its value before the change. Step 4 puts
