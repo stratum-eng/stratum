@@ -204,6 +204,12 @@ function isValidBaseRef(ref: string): boolean {
 }
 
 const MERGEABLE_STATUSES: Change["status"][] = ["approved", "accepted", "promoted"];
+/**
+ * Why a batch merge skipped a change whose base could not be compared with the
+ * project head. Named because the batch route tells this skip apart from the
+ * others: it is the one that means "try again".
+ */
+const BASE_UNVERIFIABLE_SKIP = "base freshness could not be verified";
 
 /** Default + hard cap for the paginated changes listing (bounds the response). */
 const DEFAULT_CHANGES_PAGE = 100;
@@ -1218,7 +1224,7 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
           const currentHead = await headPromise;
           // An unreadable head skips the change rather than merging it
           // unchecked — the same fail-closed rule as the single-merge path.
-          if (currentHead === null) return { id, skip: "base freshness could not be verified" };
+          if (currentHead === null) return { id, skip: BASE_UNVERIFIABLE_SKIP };
           if (change.baseSha !== currentHead) return { id, skip: "stale base" };
         }
       }
@@ -1292,6 +1298,20 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   }
 
   if (mergeItems.length === 0) {
+    // Nothing can merge, and at least one change was held back only because
+    // the head could not be read. That is a fault to retry, not a batch with
+    // nothing eligible in it, so answer as the single-merge route does.
+    if (skipped.some((s) => s.reason === BASE_UNVERIFIABLE_SKIP)) {
+      return c.json(
+        {
+          error:
+            "Could not read the project's current head to verify that the changes' bases are fresh; try again",
+          code: "BASE_UNVERIFIABLE",
+          skipped,
+        },
+        503,
+      );
+    }
     return badRequest(`No eligible changes to merge (${skipped.length} skipped)`);
   }
   const resolveMs = Date.now() - tResolve;

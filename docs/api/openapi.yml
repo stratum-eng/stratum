@@ -2541,6 +2541,17 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+        "503":
+          description: >
+            Under `merge.requireFreshBase`, the project's current head could
+            not be read, and no change in the batch could be merged (code
+            BASE_UNVERIFIABLE). The body carries `skipped`. Nothing was merged;
+            try again. When other changes in the batch are mergeable they are
+            merged, and the unverified ones are listed under `skipped` in the
+            `200`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/changes/{id}:
     parameters:
@@ -2824,7 +2835,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "503":
-          description: This instance has no CI executor configured (CI_EXECUTOR_UNAVAILABLE)
+          description: This instance has no CI executor, or it is misconfigured; the message names the setting (CI_EXECUTOR_UNAVAILABLE)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

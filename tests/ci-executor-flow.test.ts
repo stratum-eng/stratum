@@ -962,15 +962,30 @@ describe("requireFreshBase", () => {
     expect(merge.body.code).toBe("BASE_UNVERIFIABLE");
   });
 
-  it("skips such a change in merge-batch too", async () => {
+  it("answers a batch the same way when that leaves nothing to merge", async () => {
     const { id, job } = await createChange();
     await passAll(job);
     projectHead = null;
 
-    const batch = await api<{ error?: string }>(
+    const batch = await api<{ code?: string; skipped?: { changeId: string; reason: string }[] }>(
       "POST",
       "/api/projects/@owner%2Fapp/changes/merge-batch",
       { changeIds: [id] },
+    );
+    // Not a 400: the caller must be able to tell "try again" from "nothing
+    // here is eligible".
+    expect(batch.status).toBe(503);
+    expect(batch.body.code).toBe("BASE_UNVERIFIABLE");
+    expect(batch.body.skipped).toEqual([
+      { changeId: id, reason: "base freshness could not be verified" },
+    ]);
+  });
+
+  it("still answers 400 for a batch with nothing eligible and a readable head", async () => {
+    const batch = await api<{ error?: string }>(
+      "POST",
+      "/api/projects/@owner%2Fapp/changes/merge-batch",
+      { changeIds: ["chg_does_not_exist"] },
     );
     expect(batch.status).toBe(400);
     expect(batch.body.error).toBe("No eligible changes to merge (1 skipped)");

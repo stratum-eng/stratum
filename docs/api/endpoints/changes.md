@@ -79,6 +79,12 @@ project head with a **single push** (see
 request, and requires the RepoDO backend. `force` is deny-by-default and must be
 allowed by project policy (`merge.allowForce: true`).
 
+A change that cannot be merged is listed under `skipped` with a reason, and the
+rest are merged. When nothing is eligible the answer is `400`. One case is
+different: under `merge.requireFreshBase`, if the project head could not be
+read and that leaves nothing to merge, the answer is `503 BASE_UNVERIFIABLE`
+with the `skipped` list. That is a fault to retry, not an ineligible batch.
+
 ## Check runs
 
 Per-job CI results a project's runner reports back to a change, asynchronously.
@@ -159,7 +165,7 @@ The output of one [first-party CI](../../user-guide/ci.md) step, as
 | `404` | `NOT_FOUND` | No such change, or no such check run on it |
 | `404` | `CHECK_HAS_NO_LOG` | The check was reported by a project's own runner; follow its `detailsUrl` instead |
 | `404` | `CHECK_LOG_NOT_FOUND` | The executor has no log for this run: not started yet, or expired |
-| `502` / `503` | `CI_EXECUTOR_UNAVAILABLE` | The executor could not be reached, or the instance has none |
+| `502` / `503` | `CI_EXECUTOR_UNAVAILABLE` | `502`: the executor could not be reached or refused the request. `503`: the instance has no executor, or it is misconfigured; the error message names the setting |
 
 ### Report a check run (runner callback)
 `POST /api/checks/{checkRunId}`

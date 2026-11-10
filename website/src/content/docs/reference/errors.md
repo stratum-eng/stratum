@@ -122,7 +122,9 @@ codes are in the [OpenAPI specification](/reference/openapi/).
   the new base
 - `BASE_UNVERIFIABLE` — `503`; under `merge.requireFreshBase` the project HEAD
   could not be read, so the change's base could not be checked. The merge is
-  refused rather than allowed unverified; retry
+  refused rather than allowed unverified; retry. A batch merge answers this
+  way only when the unreadable head leaves nothing to merge; otherwise it
+  merges the rest and lists these changes under `skipped`
 - `STALE_WORKSPACE` — the workspace advanced after evaluation; the merge is
   rejected so unevaluated commits can never land
 - `STALE_PROJECT` — `409`; the project's default branch advanced between the
@@ -165,7 +167,8 @@ codes are in the [OpenAPI specification](/reference/openapi/).
 - `CHECK_LOG_NOT_FOUND` — `404`; the CI executor holds no log for this check
   run: the step has not started, never ran, or its log has expired
 - `CI_EXECUTOR_UNAVAILABLE` — `502` when the instance's CI executor could not
-  be reached or refused the request, `503` when the instance has none
+  be reached or refused the request, `503` when the instance has no executor
+  or it is misconfigured (the message names the setting)
 - `TARGET_DELETING` — `409`; the project (or its owner) is being deleted
 - `NOT_REDRIVABLE` — `409`; the deletion job is not in an incomplete state
 - `IMPORT_IN_PROGRESS` — `409`; the project's import has not finished, so the

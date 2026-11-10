@@ -34,8 +34,9 @@
 - **`merge.requireFreshBase` now refuses a merge it cannot verify.** A change
   with no recorded base is refused with `STALE_BASE`, and when the project's
   current head cannot be read the merge is refused with `503 BASE_UNVERIFIABLE`
-  instead of proceeding unchecked. The batch merge skips such a change. Retry,
-  or re-evaluate the change.
+  instead of proceeding unchecked. The batch merge skips such a change, and
+  answers `503 BASE_UNVERIFIABLE` itself when that leaves nothing to merge.
+  Retry, or re-evaluate the change.
 - `merge.requiredChecks` may name a step declared in `.stratum/ci.yaml`.
 
 ### Fixed
