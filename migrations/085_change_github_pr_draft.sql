@@ -1,4 +1,4 @@
--- Migration 078: whether a change's GitHub pull request is still a draft.
+-- Migration 085: whether a change's GitHub pull request is still a draft.
 --
 -- Promotion opens the pull request as a draft by default. The change page
 -- offers to mark it ready for review, and needs to know when to stop offering.
