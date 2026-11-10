@@ -216,7 +216,9 @@ Every `409` carries the current `check` so the runner can see why.
   report is acknowledged and ignored.
 - Report state transitions, not log lines. The callback shares the
   per-address rate limit for unauthenticated requests (60 per minute by
-  default), which is ample for `running` plus a result per check.
+  default). That is two reports for each of 30 checks in a minute; a policy
+  may declare 32, so a runner that reports them all at once can be answered
+  `429`. Retry, as above, and a lost report is never the result.
 
 ## The deadline
 
@@ -328,20 +330,34 @@ app.post("/stratum/checks", express.raw({ type: "application/json" }), (req, res
   }
 });
 
+app.listen(process.env.PORT ?? 8080);
+
+// One counter per check run. `sequence` must go up with every report for a
+// run; a clock can repeat or step backwards, and a report whose sequence is
+// not above the last one applied is acknowledged and ignored.
+const sequences = new Map();
+
 async function report(job, checkRunId, fields) {
-  const body = JSON.stringify({
-    checkRunId,
-    headSha: job.headSha,
-    sequence: Date.now(),
-    ...fields,
-  });
-  const res = await fetch(`${job.callbackUrl}/${checkRunId}`, {
+  const sequence = (sequences.get(checkRunId) ?? 0) + 1;
+  sequences.set(checkRunId, sequence);
+  // Built and signed ONCE. Every retry sends these same bytes, so a report
+  // that was applied the first time is recognised and not applied twice.
+  const body = JSON.stringify({ checkRunId, headSha: job.headSha, sequence, ...fields });
+  const request = {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Stratum-Signature": sign(body) },
     body,
-  });
-  // 409 means this run no longer counts (new revision, re-run, finished): stop.
-  return res.status;
+  };
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`${job.callbackUrl}/${checkRunId}`, request).catch(() => null);
+    // Lost in transit, rate limited, or Stratum is briefly unwell: try again.
+    // Anything else is an answer. 409 means this run no longer counts (new
+    // revision, re-run, finished, past its deadline): stop working on it.
+    const retry = res === null || res.status === 429 || res.status >= 500;
+    if (!retry) return res.status;
+    if (attempt >= 8) return 0; // gave up; the check's deadline will mark it errored
+    await new Promise((resolve) => setTimeout(resolve, Math.min(60_000, 1000 * 2 ** attempt)));
+  }
 }
 
 async function runCheck(job, name, checkRunId) {
@@ -354,6 +370,10 @@ async function runCheck(job, name, checkRunId) {
   });
 }
 ```
+
+The counter here lives in memory, which is enough for one process. A runner
+that can restart mid-job has to keep each run's last sequence somewhere that
+survives, or its first report after a restart is ignored as stale.
 
 `runJobInIsolation` is where your CI lives. It runs code from a diff an agent
 wrote: read [Running a Webhook Evaluator Executor Safely](webhook-executor.md)
