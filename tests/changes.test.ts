@@ -4192,3 +4192,148 @@ describe("PATCH /api/changes/:id", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("POST /api/changes/:id/github-pr/ready", () => {
+  let app: ReturnType<typeof makeApp>;
+  let env: Env;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const promotedChange: Change = {
+    ...mockChange,
+    status: "promoted",
+    githubOwner: "acme",
+    githubRepo: "widgets",
+    githubBranch: "stratum/chg_abc123",
+    githubPrNumber: 42,
+    githubPrUrl: "https://github.com/acme/widgets/pull/42",
+    githubPrState: "open",
+    githubPrDraft: true,
+  };
+  const githubProject = { ...mockProject, githubUrl: "https://github.com/acme/widgets" };
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  const draftPr = { number: 42, state: "open", draft: true, node_id: "PR_node" };
+  const readied = {
+    data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false } } },
+  };
+
+  beforeEach(() => {
+    app = makeApp();
+    env = makeEnv();
+    env.GITHUB_TOKEN = "ghp_secret_token";
+    vi.clearAllMocks();
+    resetCircuitBreakersForTests();
+    const user = (id: string, username: string) => ({
+      success: true as const,
+      data: {
+        id,
+        email: `${username}@example.com`,
+        username,
+        tokenHash: "hash",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    vi.mocked(getUserByToken).mockImplementation(async (_db, token) => {
+      if (token === "stratum_user_testtoken00000000000000000") return user("user_test", "test");
+      if (token === "stratum_user_othertoken000000000000000") return user("user_other", "other");
+      return { success: false, error: new NotFoundError("User", token) };
+    });
+    vi.mocked(getAgentByToken).mockImplementation(async (_db, token) =>
+      token === "stratum_agent_testtoken0000000000000000"
+        ? {
+            success: true,
+            data: {
+              id: "agent_test",
+              ownerId: "user_test",
+              name: "test-agent",
+              tokenHash: "hash",
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+          }
+        : { success: false, error: new NotFoundError("Agent", token) },
+    );
+    vi.mocked(getChange).mockResolvedValue({ success: true, data: promotedChange });
+    vi.mocked(getProject).mockResolvedValue({ success: true, data: githubProject });
+    vi.mocked(recordGithubPrLink).mockResolvedValue({ success: true, data: undefined });
+    fetchMock = vi.fn(async (url: string) =>
+      url.endsWith("/graphql") ? json(readied) : json(draftPr),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  const post = (auth?: Record<string, string>) =>
+    app.fetch(request("POST", "/api/changes/chg_abc123/github-pr/ready", undefined, auth), env);
+
+  it("marks the change's own pull request ready and records that", async () => {
+    const res = await post(USER_AUTH);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ready: boolean; alreadyReady: boolean };
+    expect(body).toMatchObject({ ready: true, alreadyReady: false });
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://api.github.com/repos/acme/widgets/pulls/42",
+      "https://api.github.com/graphql",
+    ]);
+    expect(recordGithubPrLink).toHaveBeenCalledWith(env.DB, expect.anything(), "chg_abc123", {
+      githubPrDraft: false,
+    });
+  });
+
+  it("succeeds without a mutation when the pull request is already ready", async () => {
+    fetchMock.mockImplementation(async () => json({ ...draftPr, draft: false }));
+
+    const res = await post(USER_AUTH);
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { alreadyReady: boolean }).alreadyReady).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Recorded all the same, so the page stops offering the button.
+    expect(recordGithubPrLink).toHaveBeenCalled();
+  });
+
+  it("refuses a change that has no open pull request", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted" },
+    });
+
+    const res = await post(USER_AUTH);
+
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe("NOT_PROMOTED");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reports GitHub's refusal and leaves the change marked as a draft", async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url.endsWith("/graphql")
+        ? json({ errors: [{ message: "Resource not accessible by integration" }] })
+        : json(draftPr),
+    );
+
+    const res = await post(USER_AUTH);
+
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { code: string; error: string };
+    expect(body.code).toBe("GITHUB_ERROR");
+    expect(body.error).toContain("Resource not accessible by integration");
+    expect(recordGithubPrLink).not.toHaveBeenCalled();
+  });
+
+  it("is a person's decision: agent tokens and signed-out callers are refused", async () => {
+    expect((await post(AGENT_AUTH)).status).toBe(401);
+    expect((await post()).status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses someone who cannot write to the project", async () => {
+    const res = await post(OTHER_USER_AUTH);
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

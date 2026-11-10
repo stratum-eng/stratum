@@ -236,6 +236,7 @@ export async function handlePullRequest(
       body: string;
       state: string;
       merged?: boolean;
+      draft?: boolean;
       html_url: string;
       head: { ref: string; sha: string; repo?: { full_name?: unknown } | null };
       base: { ref: string };
@@ -363,6 +364,19 @@ export async function handlePullRequest(
       });
       logger.info("Created Change from PR webhook", { changeId: createResult.data.id, prNumber });
     }
+    return;
+  }
+
+  // Someone marked the pull request ready, or put it back in draft, on GitHub.
+  // Only the flag moves: the change page uses it to decide whether to offer
+  // "Mark ready for review".
+  if (action === "ready_for_review" || action === "converted_to_draft") {
+    const existing = await getChangeByGitHubBranch(env.DB, logger, project.id, pr.head.ref);
+    if (!existing) return;
+    await recordGithubPrLink(env.DB, logger, existing.id, {
+      githubPrDraft: action === "converted_to_draft",
+    });
+    logger.info("Updated pull request draft state on Change", { changeId: existing.id, action });
     return;
   }
 

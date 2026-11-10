@@ -3461,6 +3461,45 @@ paths:
                           pullRequestNumber: { type: integer }
                           pullRequestUrl: { type: string }
 
+  /api/changes/{id}/github-pr/ready:
+    parameters:
+      - $ref: "#/components/parameters/ChangeId"
+    post:
+      operationId: markChangePullRequestReady
+      tags: [changes]
+      summary: Take a promoted change's GitHub pull request out of draft
+      description: >-
+        Users only, with write access to the project. Acts on the pull request
+        the change was promoted to. A pull request that is already ready
+        succeeds with `alreadyReady: true`.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The pull request is ready for review
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready: { type: boolean }
+                  changeId: { type: string }
+                  alreadyReady: { type: boolean }
+                  github:
+                    type: object
+                    properties:
+                      owner: { type: string }
+                      repo: { type: string }
+                      prNumber: { type: integer }
+                      url: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The change has no open pull request (`NOT_PROMOTED`)
+        "502":
+          description: GitHub refused or could not be reached (`GITHUB_ERROR`)
+
   /api/changes/{id}/comments:
     parameters:
       - $ref: "#/components/parameters/ChangeId"
@@ -7558,6 +7597,9 @@ components:
         githubPrNumber: { type: integer }
         githubPrUrl: { type: string }
         githubPrState: { type: string }
+        githubPrDraft:
+          type: boolean
+          description: Whether the pull request is still a draft; absent when not known
         githubHeadSha: { type: string }
         promotedAt: { type: string, format: date-time }
         promotedBy: { type: string }

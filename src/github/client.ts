@@ -42,6 +42,9 @@ export interface GitHubPullRequest {
   html_url: string;
   head: { ref: string; sha: string };
   base: { ref: string; sha: string };
+  draft?: boolean;
+  /** GraphQL id, which the ready-for-review mutation needs. */
+  node_id?: string;
 }
 
 export interface CreatePROpts {
@@ -735,6 +738,47 @@ export class GitHubClient {
     );
     if (!result.success) return { success: false, error: result.error, status: result.status };
     return { success: true, data: result.data };
+  }
+
+  /**
+   * Take a pull request out of draft. The REST API cannot do this (`draft` is
+   * not writable on update), so it goes through the one GraphQL mutation that
+   * can. A pull request that is already ready is success, not an error.
+   */
+  async markPRReady(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): Promise<{ success: true; alreadyReady: boolean } | { success: false; error: string }> {
+    const found = await this.getPR(owner, repo, pullNumber);
+    if (!found.success) return found;
+    if (found.pr.state !== "open") {
+      return { success: false, error: "The pull request is closed" };
+    }
+    if (found.pr.draft === false) return { success: true, alreadyReady: true };
+    if (!found.pr.node_id) {
+      return { success: false, error: "GitHub did not return the pull request's id" };
+    }
+    const result = await this.request<{
+      data?: { markPullRequestReadyForReview?: { pullRequest?: { isDraft?: boolean } } };
+      errors?: Array<{ message?: string }>;
+    }>("/graphql", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query:
+          "mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { isDraft } } }",
+        variables: { id: found.pr.node_id },
+      }),
+    });
+    if (!result.success) return { success: false, error: result.error };
+    // GraphQL reports a refused mutation in a 200 response.
+    const refused = result.data.errors?.map((e) => e.message).filter(Boolean) ?? [];
+    if (refused.length > 0) return { success: false, error: refused.join("; ") };
+    if (result.data.data?.markPullRequestReadyForReview?.pullRequest?.isDraft !== false) {
+      return { success: false, error: "GitHub did not confirm the pull request is ready" };
+    }
+    return { success: true, alreadyReady: false };
   }
 
   async getPR(

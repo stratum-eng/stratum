@@ -110,6 +110,23 @@ describe("run-keyed evaluation writes (#412)", () => {
     expect(cleared.success && cleared.data.title).toBe("New title");
   });
 
+  it("records whether the pull request is a draft, and leaves it unknown until told", async () => {
+    const { db } = makeSqliteD1();
+    const change = await queuedChange(db);
+    const before = await getChange(db, logger, change.id);
+    expect(before.success && before.data.githubPrDraft).toBeUndefined();
+
+    await recordGithubPrLink(db, logger, change.id, { githubPrNumber: 7, githubPrDraft: true });
+    const draft = await getChange(db, logger, change.id);
+    expect(draft.success && draft.data.githubPrDraft).toBe(true);
+
+    await recordGithubPrLink(db, logger, change.id, { githubPrDraft: false });
+    const ready = await getChange(db, logger, change.id);
+    expect(ready.success && ready.data.githubPrDraft).toBe(false);
+    // The rest of the link is untouched.
+    expect(ready.success && ready.data.githubPrNumber).toBe(7);
+  });
+
   it("opens a change with no title or description when none is given", async () => {
     const { db } = makeSqliteD1();
     const change = await queuedChange(db);
