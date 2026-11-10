@@ -179,6 +179,14 @@ vi.mock("../src/merge/post-merge", () => ({
   runPostMergeCheck: vi.fn(async () => ({ status: "skipped" })),
 }));
 
+// Who a promoted pull request is opened as. The app by default, as on a
+// deployment that has not turned the feature on; the cases that are about the
+// author set it themselves.
+vi.mock("../src/services/github-pr-author", () => ({
+  resolvePrAuthor: vi.fn(async () => ({ kind: "app", reason: "not_configured" })),
+  dropRejectedConnection: vi.fn(async () => undefined),
+}));
+
 vi.mock("../src/storage/users", () => ({
   getUserByToken: vi.fn(),
   // Agent auth resolves the agent's owner via getUser (fail-closed on the
@@ -212,6 +220,7 @@ import {
 import { resetCircuitBreakersForTests } from "../src/github/client";
 import { runPostMergeCheck } from "../src/merge/post-merge";
 import { emitEvent } from "../src/queue/events";
+import { dropRejectedConnection, resolvePrAuthor } from "../src/services/github-pr-author";
 import { getAgent, getAgentByToken } from "../src/storage/agents";
 import { recordAudit } from "../src/storage/audit";
 import {
@@ -2626,6 +2635,7 @@ describe("POST /api/changes/:id/github-pr", () => {
       branch: "stratum/chg_abc123",
       pullRequestNumber: 42,
       pullRequestUrl: "https://github.com/acme/widgets/pull/42",
+      openedAs: "app",
     });
     expect(updateChangeStatus).toHaveBeenCalledWith(
       env.DB,
@@ -2640,6 +2650,146 @@ describe("POST /api/changes/:id/github-pr", () => {
         promotedBy: "user_test",
       }),
     );
+  });
+
+  describe("who the pull request is opened as", () => {
+    const asPerson = { kind: "user", userId: "user_test", githubLogin: "tess", token: "ghu_tess" };
+    const tokenOf = (call: unknown[] | undefined) =>
+      new Headers((call?.[1] as RequestInit | undefined)?.headers).get("authorization");
+    const created = (login: string) =>
+      new Response(
+        JSON.stringify({
+          number: 42,
+          html_url: "https://github.com/acme/widgets/pull/42",
+          state: "open",
+          user: { login },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    const refused = (status: number) =>
+      new Response(JSON.stringify({ message: "Not Found" }), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    beforeEach(() => {
+      vi.mocked(resolvePrAuthor).mockReset();
+      vi.mocked(dropRejectedConnection).mockClear();
+    });
+
+    it("is the person promoting when they have connected GitHub", async () => {
+      vi.mocked(resolvePrAuthor).mockResolvedValue(asPerson as never);
+      fetchMock.mockImplementation(async () => created("tess"));
+
+      const res = await promote();
+      expect(res.status).toBe(200);
+      expect(resolvePrAuthor).toHaveBeenCalledWith(env, "user_test", expect.anything());
+      // Their token opens the pull request; the app's still pushed the branch.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(tokenOf(fetchMock.mock.calls[0])).toBe("Bearer ghu_tess");
+      expect(pushBranchToRemote).toHaveBeenCalledWith(
+        {},
+        "/",
+        expect.objectContaining({ token: "ghp_secret_token" }),
+        expect.anything(),
+      );
+      const body = (await res.json()) as { github: Record<string, unknown> };
+      expect(body.github).toMatchObject({ openedAs: "user", pullRequestAuthor: "tess" });
+      expect(body.github).not.toHaveProperty("openedAsAppBecause");
+    });
+
+    it("falls back to the app when GitHub will not have it from the person", async () => {
+      vi.mocked(resolvePrAuthor).mockResolvedValue(asPerson as never);
+      fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+        new Headers(init?.headers).get("authorization") === "Bearer ghu_tess"
+          ? refused(404)
+          : created("stratum-eng[bot]"),
+      );
+
+      const res = await promote();
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { github: Record<string, unknown> };
+      expect(body.github).toMatchObject({
+        openedAs: "app",
+        openedAsAppBecause: "github_refused",
+        pullRequestAuthor: "stratum-eng[bot]",
+      });
+      // A repository they cannot reach says nothing about their connection.
+      expect(dropRejectedConnection).not.toHaveBeenCalled();
+    });
+
+    it("removes a connection GitHub answers 401 for, and still promotes", async () => {
+      vi.mocked(resolvePrAuthor).mockResolvedValue(asPerson as never);
+      fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+        new Headers(init?.headers).get("authorization") === "Bearer ghu_tess"
+          ? refused(401)
+          : created("stratum-eng[bot]"),
+      );
+
+      expect((await promote()).status).toBe(200);
+      expect(dropRejectedConnection).toHaveBeenCalledWith(env, "user_test", expect.anything());
+    });
+
+    it("does not let one person's refusals stop the app reaching the repository", async () => {
+      vi.mocked(resolvePrAuthor).mockResolvedValue(asPerson as never);
+      fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+        new Headers(init?.headers).get("authorization") === "Bearer ghu_tess"
+          ? refused(403)
+          : created("stratum-eng[bot]"),
+      );
+      // More refusals than the per-repository circuit breaker tolerates.
+      for (let attempt = 0; attempt < 8; attempt++) {
+        expect((await promote()).status).toBe(200);
+      }
+    });
+
+    it("says why the app opened it when the person had a connection to use", async () => {
+      vi.mocked(resolvePrAuthor).mockResolvedValue({ kind: "app", reason: "connection_expired" });
+      const body = (await (await promote()).json()) as { github: Record<string, unknown> };
+      expect(body.github).toMatchObject({
+        openedAs: "app",
+        openedAsAppBecause: "connection_expired",
+      });
+    });
+
+    it("reports the existing author, and claims nothing, for a pull request it reused", async () => {
+      vi.mocked(resolvePrAuthor).mockResolvedValue(asPerson as never);
+      fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+        init?.method === "POST"
+          ? new Response(
+              JSON.stringify({
+                message: "Validation Failed",
+                errors: [{ message: "A pull request already exists for acme:stratum/chg_abc123." }],
+              }),
+              { status: 422, headers: { "Content-Type": "application/json" } },
+            )
+          : new Response(
+              JSON.stringify([
+                {
+                  number: 42,
+                  html_url: "https://github.com/acme/widgets/pull/42",
+                  state: "open",
+                  user: { login: "stratum-eng[bot]" },
+                },
+              ]),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+      );
+
+      const res = await promote();
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { github: Record<string, unknown> };
+      expect(body.github.pullRequestAuthor).toBe("stratum-eng[bot]");
+      expect(body.github).not.toHaveProperty("openedAs");
+    });
+
+    it("leaves out an author login that is not one", async () => {
+      vi.mocked(resolvePrAuthor).mockResolvedValue({ kind: "app", reason: "not_configured" });
+      fetchMock.mockImplementation(async () => created("<script>alert(1)</script>"));
+      const body = (await (await promote()).json()) as { github: Record<string, unknown> };
+      expect(body.github).not.toHaveProperty("pullRequestAuthor");
+      expect(body.github).not.toHaveProperty("openedAsAppBecause");
+    });
   });
 
   // #412: a re-evaluation began while the branch was being pushed, so the

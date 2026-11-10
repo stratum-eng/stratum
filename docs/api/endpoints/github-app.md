@@ -192,6 +192,39 @@ Allowed for the linked user, or an admin of the linked org. The installation's
 repositories then serve no project until it is linked again (or an operator
 binding covers them).
 
+## Connect a GitHub account
+
+Separate from installations: this is one person letting Stratum open the pull
+requests **they** promote as them, so that GitHub records them as the author
+and not the app. See
+[Who the pull request is opened as](../../user-guide/code-review.md#who-the-pull-request-is-opened-as).
+
+`POST /github/app/connect`
+
+A browser session only. Redirects to GitHub to authorize the app, and GitHub
+returns to the same [callback](#the-callback) as linking. The account that
+authorizes must be the GitHub account the Stratum account signs in with;
+anything else is refused and the authorization revoked. On success Stratum
+stores the user access token, and the refresh token when the app issues expiring
+tokens, encrypted with `GITHUB_USER_TOKEN_SECRET`. This is the only GitHub user
+token Stratum keeps: the token a link round trip uses is still revoked before
+that request ends.
+
+`POST /github/app/disconnect`
+
+A browser session only. Deletes the stored authorization and asks GitHub to
+revoke the token. The same happens when the account is deleted, and when GitHub
+reports that the person revoked the app (`github_app_authorization` webhook).
+
+Both end with a redirect to `/settings#github` carrying a fixed notice code.
+There is no JSON form of either. They need **`GITHUB_APP_CLIENT_ID`,
+`GITHUB_APP_CLIENT_SECRET` and `GITHUB_USER_TOKEN_SECRET`**; without all three
+the settings card is not shown, connecting is refused, and every pull request
+is opened as the app.
+
+Stored authorizations are deliberately left out of database backups. After a
+restore, people connect again.
+
 ## Operator bindings
 
 `GITHUB_ALLOWED_OWNERS` binds a GitHub owner to the Stratum owner allowed to

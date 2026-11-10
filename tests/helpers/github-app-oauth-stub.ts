@@ -48,6 +48,10 @@ export interface GitHubStub {
   outages: Map<string, number>;
   /** When set, the code exchange answers with this instead of minting a token. */
   exchangeAnswer?: { status: number; body: string };
+  /** Every refresh token the stub has issued, in order. Empty unless `expiring`. */
+  refreshTokens: string[];
+  /** When set, a refresh answers with this HTTP status instead of new tokens. */
+  refreshOutage?: number;
   /** The person approves on GitHub: returns the `code` their redirect carries. */
   approve(persona: GitHubPersona): string;
   /** Requests whose URL path starts with `path`. */
@@ -66,19 +70,42 @@ function json(body: unknown, status = 200, headers: Record<string, string> = {})
 /**
  * Replaces `globalThis.fetch` with the scripted GitHub.
  *
- * @param options - `pageSize` splits `GET /user/installations` into pages
+ * @param options - `pageSize` splits `GET /user/installations` into pages;
+ *   `expiring` issues eight-hour tokens with a single-use refresh token, as an
+ *   app with "Expire user authorization tokens" on does
  * @returns The stub's controls; call `restore()` when done
  */
-export function stubGitHub(options: { pageSize?: number } = {}): GitHubStub {
+export function stubGitHub(options: { pageSize?: number; expiring?: boolean } = {}): GitHubStub {
   const original = globalThis.fetch;
   const pageSize = options.pageSize ?? 100;
   const codes = new Map<string, GitHubPersona>();
   const live = new Map<string, GitHubPersona>();
+  /** Refresh token → whose it is and the access token it was issued beside. */
+  const refreshable = new Map<string, { persona: GitHubPersona; access: string }>();
   let minted = 0;
+
+  function issue(persona: GitHubPersona): Response {
+    const token = `ghu_STUBUSERTOKEN${stub.tokens.length + 1}x${persona.id}`;
+    stub.tokens.push(token);
+    live.set(token, persona);
+    if (!options.expiring) return json({ access_token: token, token_type: "bearer", scope: "" });
+    const refresh = `ghr_STUBREFRESHTOKEN${stub.refreshTokens.length + 1}x${persona.id}`;
+    stub.refreshTokens.push(refresh);
+    refreshable.set(refresh, { persona, access: token });
+    return json({
+      access_token: token,
+      expires_in: 28800,
+      refresh_token: refresh,
+      refresh_token_expires_in: 15897600,
+      token_type: "bearer",
+      scope: "",
+    });
+  }
 
   const stub: GitHubStub = {
     calls: [],
     tokens: [],
+    refreshTokens: [],
     revoked: [],
     outages: new Map(),
     approve(persona) {
@@ -106,13 +133,20 @@ export function stubGitHub(options: { pageSize?: number } = {}): GitHubStub {
     if (sent.client_id !== STUB_CLIENT_ID || sent.client_secret !== STUB_CLIENT_SECRET) {
       return json({ error: "incorrect_client_credentials" });
     }
+    if (sent.grant_type === "refresh_token") {
+      if (stub.refreshOutage !== undefined) return json({ message: "outage" }, stub.refreshOutage);
+      const held = typeof sent.refresh_token === "string" ? sent.refresh_token : "";
+      const entry = refreshable.get(held);
+      if (!entry) return json({ error: "bad_refresh_token" });
+      // Single use, and the access token issued beside it dies with it.
+      refreshable.delete(held);
+      live.delete(entry.access);
+      return issue(entry.persona);
+    }
     const persona = typeof sent.code === "string" ? codes.get(sent.code) : undefined;
     if (!persona || typeof sent.code !== "string") return json({ error: "bad_verification_code" });
     codes.delete(sent.code);
-    const token = `ghu_STUBUSERTOKEN${stub.tokens.length + 1}x${persona.id}`;
-    stub.tokens.push(token);
-    live.set(token, persona);
-    return json({ access_token: token, token_type: "bearer", scope: "" });
+    return issue(persona);
   }
 
   function api(method: string, url: URL, authorization: string | null, body: string | null) {
@@ -125,6 +159,9 @@ export function stubGitHub(options: { pageSize?: number } = {}): GitHubStub {
         return json({ message: "Not Found" }, 404);
       }
       live.delete(sent.access_token);
+      for (const [refresh, entry] of refreshable) {
+        if (entry.access === sent.access_token) refreshable.delete(refresh);
+      }
       stub.revoked.push(sent.access_token);
       return new Response(null, { status: 204 });
     }

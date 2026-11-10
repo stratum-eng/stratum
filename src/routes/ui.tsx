@@ -8,6 +8,7 @@ import { toExternalPullRequestView } from "../github/mirror-pulls";
 import { resolveResyncSource, resyncSourceRepo } from "../github/resync";
 import { cannotMintLegacyCredential } from "../middleware/auth";
 import { NO_ANALYTICS_HEADER } from "../middleware/web-analytics";
+import { userConnectionConfig } from "../services/github-pr-author";
 import {
   credentialMintRefusalMessage,
   mintFactorsOf,
@@ -51,6 +52,7 @@ import {
   resolveBranchRef,
 } from "../storage/git-ops";
 import { type IssueImportRun, getLatestIssueImportRun } from "../storage/github-issue-import";
+import { getConnectionSummary } from "../storage/github-user-connections";
 import { getImportProgress } from "../storage/imports";
 import { listIssueComments } from "../storage/issue-comments";
 import { getLabelsForIssues, listIssueLabels } from "../storage/issue-labels";
@@ -110,6 +112,7 @@ import { ProjectSettingsPage } from "../ui/pages/project-settings";
 import { RepoPage } from "../ui/pages/repo";
 import {
   type FreshCredential,
+  type GitHubConnectionView,
   type SettingsField,
   type SettingsFieldError,
   type SettingsFormValues,
@@ -363,6 +366,8 @@ type AccountUser = {
   displayName?: string;
   createdAt: string;
   githubUsername?: string;
+  /** Whether the account has a GitHub identity; the id itself is not needed here. */
+  hasGitHubIdentity: boolean;
 };
 
 /**
@@ -379,7 +384,7 @@ async function getAccountUser(
   const result = await getUser(c.env.DB, userId, logger);
   if (!result.success) return null;
 
-  const { id, email, username, displayName, createdAt, githubUsername, telemetryOptOut } =
+  const { id, email, username, displayName, createdAt, githubUsername, githubId, telemetryOptOut } =
     result.data;
   return {
     user: {
@@ -387,6 +392,7 @@ async function getAccountUser(
       email,
       username,
       createdAt,
+      hasGitHubIdentity: githubId !== undefined,
       ...(displayName !== undefined ? { displayName } : {}),
       ...(githubUsername !== undefined ? { githubUsername } : {}),
     },
@@ -512,6 +518,28 @@ async function usernameChangeState(
   return projects.data.length === 0 ? "allowed" : "blocked";
 }
 
+/**
+ * What the settings page says about the person's GitHub connection, or
+ * undefined when the deployment has not turned the feature on.
+ */
+async function githubConnectionView(
+  env: Env,
+  user: AccountUser,
+  logger: ReturnType<typeof createLogger>,
+): Promise<GitHubConnectionView | undefined> {
+  if (userConnectionConfig(env) === null) return undefined;
+  const summary = await getConnectionSummary(env.DB, user.id, logger);
+  if (!summary.success) return { state: "unknown" };
+  if (summary.data) {
+    return {
+      state: "connected",
+      githubLogin: summary.data.githubLogin,
+      connectedAt: summary.data.connectedAt,
+    };
+  }
+  return { state: "not_connected", canConnect: user.hasGitHubIdentity };
+}
+
 /** The settings page plus everything it lists, in one round of loads. */
 async function renderSettings(
   c: Context<{ Bindings: Env }>,
@@ -525,19 +553,21 @@ async function renderSettings(
     formValues?: SettingsFormValues;
   } = {},
 ) {
-  const [agents, tokens, grants, usernameChange, invites, usageNotice] = await Promise.all([
-    loadAgentSummaries(c.env.DB, user.id, logger),
-    loadApiTokens(c.env, user.id, logger),
-    loadOAuthGrants(c.env.DB, user.id, logger),
-    usernameChangeState(c.env, user, logger),
-    // Keyed off the service URL alone, not `betaGateEnabled`: codes minted while
-    // the gate was on stay redeemable after it is switched off, so gating the
-    // listing on the gate would hide real codes from the users holding them.
-    referralServiceConfigured(c.env)
-      ? fetchInviteCodes(c.env, user.id, logger)
-      : Promise.resolve(undefined),
-    usageBannerFor(c, logger),
-  ]);
+  const [agents, tokens, grants, usernameChange, invites, usageNotice, githubConnection] =
+    await Promise.all([
+      loadAgentSummaries(c.env.DB, user.id, logger),
+      loadApiTokens(c.env, user.id, logger),
+      loadOAuthGrants(c.env.DB, user.id, logger),
+      usernameChangeState(c.env, user, logger),
+      // Keyed off the service URL alone, not `betaGateEnabled`: codes minted while
+      // the gate was on stay redeemable after it is switched off, so gating the
+      // listing on the gate would hide real codes from the users holding them.
+      referralServiceConfigured(c.env)
+        ? fetchInviteCodes(c.env, user.id, logger)
+        : Promise.resolve(undefined),
+      usageBannerFor(c, logger),
+      githubConnectionView(c.env, user, logger),
+    ]);
   // A notice about the action just taken outranks a listing's own failure —
   // the caller needs to know what their POST did first.
   const notice = extras.notice ?? tokens.notice ?? grants.notice;
@@ -558,6 +588,7 @@ async function renderSettings(
       oauthGrantsUnavailable={grants.notice !== undefined}
       telemetryOptOut={telemetryOptOut}
       usageNotice={usageNotice}
+      {...(githubConnection !== undefined ? { githubConnection } : {})}
       // Threaded here rather than at each call site: this helper is the single
       // render path for the settings page, so the CSP nonce main added cannot
       // be forgotten by a future caller.
@@ -602,6 +633,44 @@ const SETTINGS_NOTICES: Record<string, SettingsNotice> = {
     kind: "error",
     message:
       "You're signed up, but approving the agent's request failed on our side. Create an agent token below, or connect the agent over OAuth.",
+  },
+  "github-connected": {
+    kind: "success",
+    message:
+      "GitHub connected. Pull requests you promote, and ones an agent you own promotes, are now opened as you.",
+  },
+  "github-disconnected": {
+    kind: "success",
+    message:
+      "GitHub disconnected. Pull requests you promote from now on are opened as the Stratum app.",
+  },
+  "github-connect-declined": {
+    kind: "error",
+    message: "GitHub was not connected: the authorization was not granted.",
+  },
+  "github-connect-mismatch": {
+    kind: "error",
+    message:
+      "GitHub was not connected: you authorized as a different GitHub account than the one this Stratum account signs in with. Switch accounts on GitHub and try again.",
+  },
+  "github-connect-needs-github": {
+    kind: "error",
+    message:
+      "GitHub was not connected: this account has no GitHub identity to check the authorization against. Sign in to Stratum with GitHub first.",
+  },
+  "github-connect-unavailable": {
+    kind: "error",
+    message: "Connecting a GitHub account is not set up on this instance.",
+  },
+  "github-connect-failed": {
+    kind: "error",
+    message:
+      "GitHub was not connected: something failed on the way. Nothing was stored. Try again.",
+  },
+  "github-disconnect-failed": {
+    kind: "error",
+    message:
+      "GitHub could not be disconnected just now. The connection is still in place. Try again.",
   },
   "legacy-disabled": {
     kind: "success",

@@ -6,10 +6,13 @@
  * `GITHUB_APP_CLIENT_SECRET`), not the login OAuth app's (`GITHUB_CLIENT_ID`):
  * only a token minted for the app can list the app's installations.
  *
- * The user token never leaves this module's callers' stack frames. It is not
- * stored, not returned inside an error, and not logged — every log line here
- * carries an HTTP status or a fixed string, never a response body, because the
- * token-exchange response body IS the token.
+ * A token is never returned inside an error and never logged — every log line
+ * here carries an HTTP status or a fixed string, never a response body, because
+ * the token-exchange response body IS the token. Linking an installation uses
+ * its token inside one request and revokes it. The one caller that keeps a
+ * token is a person connecting their account so their promoted pull requests
+ * are opened as them; it is stored encrypted by
+ * `src/storage/github-user-connections.ts` and nowhere else.
  */
 
 import type { GitHubInstallation } from "../storage/github-installations";
@@ -151,20 +154,52 @@ function safeOAuthErrorCode(value: unknown): string {
 }
 
 /**
+ * What GitHub issues for one authorization. The lifetimes are seconds from the
+ * moment of issue, and absent, with the refresh token, when the app is set to
+ * issue tokens that do not expire.
+ */
+export interface GitHubAppUserTokens {
+  accessToken: string;
+  refreshToken?: string;
+  accessExpiresIn?: number;
+  refreshExpiresIn?: number;
+}
+
+/** A positive whole number of seconds, or undefined. */
+function lifetime(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+/** The tokens in a token-endpoint answer, or null when it names no access token. */
+function toUserTokens(body: unknown): GitHubAppUserTokens | null {
+  if (!isRecord(body)) return null;
+  const { access_token: accessToken, refresh_token: refreshToken } = body;
+  if (typeof accessToken !== "string" || accessToken.length === 0) return null;
+  const accessExpiresIn = lifetime(body.expires_in);
+  const refreshExpiresIn = lifetime(body.refresh_token_expires_in);
+  return {
+    accessToken,
+    ...(typeof refreshToken === "string" && refreshToken.length > 0 ? { refreshToken } : {}),
+    ...(accessExpiresIn !== undefined ? { accessExpiresIn } : {}),
+    ...(refreshExpiresIn !== undefined ? { refreshExpiresIn } : {}),
+  };
+}
+
+/**
  * Exchanges the callback's `code` for a user-to-server token.
  *
  * @param config - The app's OAuth credentials
  * @param code - The `code` query parameter GitHub sent back
  * @param redirectUri - The same callback URL the authorize request named
  * @param logger - Request logger
- * @returns The token, to be used within this request and then dropped
+ * @returns The tokens GitHub issued
  */
 export async function exchangeGitHubAppCode(
   config: GitHubAppOAuthConfig,
   code: string,
   redirectUri: string,
   logger: Logger,
-): Promise<Result<string, AppError>> {
+): Promise<Result<GitHubAppUserTokens, AppError>> {
   let response: Response;
   try {
     response = await fetch(GITHUB_TOKEN_URL, {
@@ -194,14 +229,68 @@ export async function exchangeGitHubAppCode(
   }
   // GitHub answers a bad code with 200 and an `error` field, not a 4xx.
   const body = await readJson(response);
-  const token = isRecord(body) ? body.access_token : undefined;
-  if (typeof token !== "string" || token.length === 0) {
+  const tokens = toUserTokens(body);
+  if (tokens === null) {
     logger.warn("GitHub App code exchange returned no token", {
       reason: safeOAuthErrorCode(isRecord(body) ? body.error : undefined),
     });
     return err(githubError("GitHub App code exchange returned no token"));
   }
-  return ok(token);
+  return ok(tokens);
+}
+
+/**
+ * Trades a refresh token for a new pair. The old pair stops working the moment
+ * GitHub answers, so the caller must store what this returns.
+ *
+ * @param config - The app's OAuth credentials
+ * @param refreshToken - The refresh token last issued for this person
+ * @param logger - Request logger
+ * @returns The new tokens; null when GitHub refused the refresh token, which
+ *   means the person revoked the app or the token lapsed; an error when GitHub
+ *   could not be asked, which says nothing about the token
+ */
+export async function refreshGitHubAppUserTokens(
+  config: GitHubAppOAuthConfig,
+  refreshToken: string,
+  logger: Logger,
+): Promise<Result<GitHubAppUserTokens | null, AppError>> {
+  let response: Response;
+  try {
+    response = await fetch(GITHUB_TOKEN_URL, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "stratum",
+      },
+      body: JSON.stringify({
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+      }),
+      signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+    });
+  } catch (error) {
+    logger.warn("GitHub App token refresh did not complete", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return err(githubError("GitHub App token refresh did not complete"));
+  }
+  if (!response.ok) {
+    logger.warn("GitHub App token refresh was not answered", { status: response.status });
+    return err(githubError("GitHub App token refresh was not answered"));
+  }
+  // As with a bad code, a refused refresh token is a 200 carrying `error`.
+  const body = await readJson(response);
+  const tokens = toUserTokens(body);
+  if (tokens !== null) return ok(tokens);
+  if (isRecord(body) && typeof body.error === "string") {
+    logger.info("GitHub refused a refresh token", { reason: safeOAuthErrorCode(body.error) });
+    return ok(null);
+  }
+  return err(githubError("GitHub App token refresh returned no token"));
 }
 
 /** An installation as GitHub lists it for the token's user. */
@@ -233,8 +322,24 @@ function toListedInstallation(value: unknown): ListedInstallation | null {
   return { installationId: id, accountId: String(accountId), accountLogin: login, accountType };
 }
 
-/** The GitHub user id the token belongs to (`GET /user`). */
-async function fetchTokenUserId(token: string, logger: Logger): Promise<Result<string, AppError>> {
+/** Who a user token belongs to on GitHub. */
+export interface GitHubUserIdentity {
+  /** The account id, as a string: the stable name, since logins are reused. */
+  id: string;
+  login: string;
+}
+
+/**
+ * Asks GitHub whose token this is (`GET /user`).
+ *
+ * @param token - A user-to-server token
+ * @param logger - Request logger
+ * @returns The account's id and current login
+ */
+export async function fetchGitHubUserIdentity(
+  token: string,
+  logger: Logger,
+): Promise<Result<GitHubUserIdentity, AppError>> {
   const response = await githubGet("/user", token);
   if (!response.success) return response;
   if (!response.data.ok) {
@@ -247,7 +352,16 @@ async function fetchTokenUserId(token: string, logger: Logger): Promise<Result<s
   if (!isRecord(body) || typeof body.id !== "number") {
     return err(githubError("GitHub returned no user id"));
   }
-  return ok(String(body.id));
+  // A login is letters, digits and hyphens. Anything else is not shown or stored.
+  const login =
+    typeof body.login === "string" && /^[A-Za-z0-9-]{1,64}$/.test(body.login) ? body.login : "";
+  return ok({ id: String(body.id), login });
+}
+
+/** The GitHub user id the token belongs to. */
+async function fetchTokenUserId(token: string, logger: Logger): Promise<Result<string, AppError>> {
+  const identity = await fetchGitHubUserIdentity(token, logger);
+  return identity.success ? ok(identity.data.id) : identity;
 }
 
 /**
@@ -444,10 +558,10 @@ export async function revokeGitHubAppUserToken(
       },
     );
     if (!response.ok) {
-      logger.warn("GitHub did not revoke the link-check user token", { status: response.status });
+      logger.warn("GitHub did not revoke a user token", { status: response.status });
     }
   } catch (error) {
-    logger.warn("Could not ask GitHub to revoke the link-check user token", {
+    logger.warn("Could not ask GitHub to revoke a user token", {
       error: error instanceof Error ? error.message : String(error),
     });
   }

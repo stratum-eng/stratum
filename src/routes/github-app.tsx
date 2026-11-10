@@ -17,6 +17,15 @@
  * The user token that answers that question exists only inside the callback
  * request: it is never written to D1 or KV, never logged, and revoked on the
  * way out.
+ *
+ *   POST /github/app/connect                    — connect the caller's GitHub account
+ *   POST /github/app/disconnect                 — remove that connection
+ *
+ * Connecting is the one round trip whose token is kept: a person who asks for
+ * it lets Stratum open their promoted pull requests as them, and the token is
+ * stored encrypted for that (src/services/github-pr-author.ts). It shares the
+ * callback and the state table with linking, since GitHub gives an app one
+ * callback URL, and a state only ever does what it was issued for.
  */
 
 import type { Context } from "hono";
@@ -29,6 +38,7 @@ import {
   checkInstallationAccess,
   exchangeGitHubAppCode,
   fetchCurrentGitHubAccess,
+  fetchGitHubUserIdentity,
   githubAppAuthorizeUrl,
   githubAppCallbackUrl,
   githubAppOAuthConfig,
@@ -37,6 +47,7 @@ import {
 import { ipNotAllowedResponse } from "../middleware/org-ip-allowlist";
 import { secondFactorRequired } from "../middleware/org-second-factor";
 import { setHtmlSecurityHeaders } from "../middleware/security-headers";
+import { toConnectionTokens, userConnectionConfig } from "../services/github-pr-author";
 import { ipDenialFor, orgIpAllowsFor } from "../services/org-ip-allowlist";
 import { orgBlockedFor } from "../services/org-second-factor";
 import { recordAudit } from "../storage/audit";
@@ -55,6 +66,11 @@ import {
   listInstallationsVisibleTo,
   unlinkInstallation,
 } from "../storage/github-installations";
+import {
+  deleteConnection,
+  readConnection,
+  saveConnection,
+} from "../storage/github-user-connections";
 import { getOrg, getOrgBySlug, getOrgMemberRole, listOrgsForUser } from "../storage/orgs";
 import { getUser } from "../storage/users";
 import type { Env, User } from "../types";
@@ -614,6 +630,7 @@ app.get(GITHUB_APP_CALLBACK_PATH, async (c) => {
   if (!intent.data) return backToSetup(c, "state_invalid");
 
   const code = c.req.query("code");
+  if (intent.data.connectAccount) return finishConnect(c, user, code, logger);
   if (c.req.query("error") !== undefined || !code) return backToSetup(c, "authorization_denied");
 
   const config = githubAppOAuthConfig(c.env);
@@ -628,7 +645,7 @@ app.get(GITHUB_APP_CALLBACK_PATH, async (c) => {
     logger,
   );
   if (!exchanged.success) return backToSetup(c, "github_unavailable");
-  const token = exchanged.data;
+  const token = exchanged.data.accessToken;
 
   try {
     const access = await fetchCurrentGitHubAccess(token, logger);
@@ -658,6 +675,149 @@ app.get(GITHUB_APP_CALLBACK_PATH, async (c) => {
     if (waitUntil) waitUntil(revoked);
     else await revoked;
   }
+});
+
+/** Where connecting and disconnecting end: the settings page, carrying a fixed code. */
+function backToSettings(c: Ctx, notice: string): Response {
+  return c.redirect(`/settings?notice=${notice}#github`, 303);
+}
+
+/** Revokes a token without holding the response for it. */
+function revokeInBackground(
+  c: Ctx,
+  config: GitHubAppOAuthConfig,
+  token: string,
+  logger: Logger,
+): Promise<void> | void {
+  const revoked = revokeGitHubAppUserToken(config, token, logger);
+  const waitUntil = getWaitUntil(c);
+  if (!waitUntil) return revoked;
+  waitUntil(revoked);
+}
+
+app.post("/github/app/connect", async (c) => {
+  const logger = createLogger({ path: c.req.path, method: c.req.method });
+  const user = await signedInUser(c, logger);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const config = userConnectionConfig(c.env);
+  if (!config) return backToSettings(c, "github-connect-unavailable");
+  const sessionHash = await browserSessionHash(c);
+  if (sessionHash === undefined) return c.json({ error: "A browser session is required" }, 403);
+  // The account that authorizes must be the one this Stratum account is known
+  // by (see finishConnect), so without one there is nothing to match against.
+  if (user.githubId === undefined) return backToSettings(c, "github-connect-needs-github");
+
+  const state = await issueLinkState(
+    c.env.DB,
+    sessionHash,
+    { userId: user.id, connectAccount: true },
+    logger,
+  );
+  if (!state.success) return backToSettings(c, "github-connect-failed");
+  return c.redirect(
+    githubAppAuthorizeUrl(config.oauth, githubAppCallbackUrl(c.env, c.req.url), state.data),
+    303,
+  );
+});
+
+/**
+ * The callback half of connecting an account: redeem the code, check whose
+ * token it is, and keep it.
+ */
+async function finishConnect(
+  c: Ctx,
+  user: User,
+  code: string | undefined,
+  logger: Logger,
+): Promise<Response> {
+  if (c.req.query("error") !== undefined || !code) {
+    return backToSettings(c, "github-connect-declined");
+  }
+  const config = userConnectionConfig(c.env);
+  if (!config) return backToSettings(c, "github-connect-unavailable");
+  const githubId = user.githubId;
+  if (githubId === undefined) return backToSettings(c, "github-connect-needs-github");
+
+  const exchanged = await exchangeGitHubAppCode(
+    config.oauth,
+    code,
+    githubAppCallbackUrl(c.env, c.req.url),
+    logger,
+  );
+  if (!exchanged.success) return backToSettings(c, "github-connect-failed");
+  const tokens = exchanged.data;
+  // Every way out below this line that does not store the token revokes it.
+  const abandon = async (notice: string): Promise<Response> => {
+    await revokeInBackground(c, config.oauth, tokens.accessToken, logger);
+    return backToSettings(c, notice);
+  };
+
+  const identity = await fetchGitHubUserIdentity(tokens.accessToken, logger);
+  if (!identity.success) return abandon("github-connect-failed");
+  // Without this, a `code` lifted from someone else's browser would have this
+  // account opening pull requests as them.
+  if (identity.data.id !== githubId) {
+    logger.warn("GitHub connect refused: authorized as a different GitHub account", {
+      userId: user.id,
+    });
+    return abandon("github-connect-mismatch");
+  }
+
+  const saved = await saveConnection(
+    c.env.DB,
+    config.secret,
+    {
+      userId: user.id,
+      githubUserId: identity.data.id,
+      githubLogin: identity.data.login,
+      ...toConnectionTokens(tokens, Math.floor(Date.now() / 1000)),
+    },
+    logger,
+  );
+  if (!saved.success) return abandon("github-connect-failed");
+
+  await recordAudit(c.env.DB, logger, {
+    action: "github.account_connected",
+    actorType: "user",
+    actorId: user.id,
+    subject: identity.data.id,
+    detail: { githubLogin: identity.data.login },
+  });
+  logger.info("GitHub account connected", { userId: user.id });
+  return backToSettings(c, "github-connected");
+}
+
+app.post("/github/app/disconnect", async (c) => {
+  const logger = createLogger({ path: c.req.path, method: c.req.method });
+  const user = await signedInUser(c, logger);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  if ((await browserSessionHash(c)) === undefined) {
+    return c.json({ error: "A browser session is required" }, 403);
+  }
+
+  // Read for the token to revoke, but removal does not wait on that: a row
+  // that no longer decrypts, or a deployment whose secret has since been
+  // unset, must still be removable.
+  const config = userConnectionConfig(c.env);
+  const stored = config
+    ? await readConnection(c.env.DB, config.secret, user.id, logger)
+    : undefined;
+  const removed = await deleteConnection(c.env.DB, user.id, logger);
+  if (!removed.success) return backToSettings(c, "github-disconnect-failed");
+  if (config && stored?.success && stored.data) {
+    await revokeInBackground(c, config.oauth, stored.data.accessToken, logger);
+  }
+  if (removed.data) {
+    await recordAudit(c.env.DB, logger, {
+      action: "github.account_disconnected",
+      actorType: "user",
+      actorId: user.id,
+      subject: user.githubId ?? user.id,
+    });
+    logger.info("GitHub account disconnected", { userId: user.id });
+  }
+  return backToSettings(c, "github-disconnected");
 });
 
 app.post("/api/github/installations/:id/unlink", async (c) => {

@@ -390,11 +390,24 @@ npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app.pkcs8.pem
 # page. These are NOT GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET above, which
 # belong to the sign-in OAuth App. Until both are set, every link attempt is
 # refused with 501 NOT_CONFIGURED and the setup page says so; there is no
-# fallback rule. Existing links and unlinking keep working. The user token is
-# used inside the callback request only: never stored, never logged, revoked on
-# the way out.
+# fallback rule. Existing links and unlinking keep working. The user token a
+# link uses lives inside the callback request only: never stored, never logged,
+# revoked on the way out.
 npx wrangler secret put GITHUB_APP_CLIENT_ID
 npx wrangler secret put GITHUB_APP_CLIENT_SECRET
+# Optional: let people connect their GitHub account (Settings -> GitHub) so the
+# pull requests they promote are opened as them, not as the app's bot. This is
+# the one case where Stratum KEEPS a GitHub user token, encrypted with this
+# secret in the github_user_connections table. Generate it once
+# (openssl rand -base64 48) and do not change it: changing it makes every
+# stored connection unreadable, and people have to connect again. Unset, nobody
+# can connect, nothing is stored, and every pull request is opened as the app.
+# It needs the two secrets above, and on the GitHub App:
+#   - "Pull requests: Read and write" (already needed to open them at all);
+#   - "Expire user authorization tokens" left ON (GitHub's default), so a
+#     stored token is good for eight hours and is renewed when next used.
+# Stored connections are left out of D1 backups on purpose.
+npx wrangler secret put GITHUB_USER_TOKEN_SECRET
 # Optional operator bindings: comma-separated githubOwner=org:<orgId> or
 # githubOwner=user:<userId> entries. Each lets that Stratum org or user (and,
 # for a user, their agents) act on that GitHub owner's repos without an

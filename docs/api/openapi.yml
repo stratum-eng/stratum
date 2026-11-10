@@ -3421,6 +3421,27 @@ paths:
                       branch: { type: string }
                       pullRequestNumber: { type: integer }
                       pullRequestUrl: { type: string }
+                      pullRequestAuthor:
+                        type: string
+                        description: The PR author's GitHub login, as GitHub returned it.
+                      openedAs:
+                        type: string
+                        enum: [user, app]
+                        description: |
+                          Who this call opened the PR as: the person promoting,
+                          when they have connected their GitHub account, or the
+                          app. Absent when the PR already existed.
+                      openedAsAppBecause:
+                        type: string
+                        enum:
+                          - not_connected
+                          - connection_expired
+                          - refresh_in_progress
+                          - unavailable
+                          - github_refused
+                        description: |
+                          Why the app opened the PR, on an instance where
+                          accounts can be connected. The promotion succeeded.
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
