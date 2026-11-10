@@ -170,6 +170,19 @@ and then fails at load. If your build genuinely needs lifecycle scripts
 Re-evaluating runs under the current defaults, and the default install timeout
 dropped from 120s to 90s. Re-check against `totalBudgetMs` above.
 
+### Evaluation fails with `Could not find where this workspace forked from ...`
+
+A change is evaluated on what its workspace changed: the diff from the commit
+the workspace forked from to the workspace's tip. Commits the project gained
+after the fork are not part of it. To find the fork point Stratum reads the last
+64 commits of each side. A workspace further behind than that fails with this
+message (API code `FORK_POINT_NOT_FOUND`) instead of being judged on a diff that
+would show the project's newer commits as undone.
+
+Bring the workspace up to date, then evaluate again. From a checkout of the
+workspace, merge or rebase onto the project's default branch and push; or fork a
+new workspace and re-apply the change there.
+
 ### The `llm` gate fails with a reason about a provider
 
 These are all the same shape: the gate **ran and failed**, rather than being

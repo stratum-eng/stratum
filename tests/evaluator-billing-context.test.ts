@@ -208,6 +208,8 @@ function stubDiff() {
       workspaceTreeOid: "ws_tree",
       workspaceSha: "ws_tip",
       baseOid: "base_from_diff_clone",
+      mergeBaseOid: "base_from_diff_clone",
+      behindBy: 0,
     },
   });
 }

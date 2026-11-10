@@ -193,6 +193,12 @@ codes are in the [OpenAPI specification](/reference/openapi/).
 - `NO_DEFAULT_BRANCH` — `409`; the configured default branch is not advertised
   by the remote, so there is nothing to default a start point to
 - `DEFAULT_BRANCH_PROTECTED` — `409`; the default branch cannot be deleted
+- `FORK_POINT_NOT_FOUND` — a change could not be evaluated because its
+  workspace and the project share no commit within the last 64 commits of each,
+  so there is no fork point to diff from. The message is returned by the
+  evaluate endpoints and recorded as the reason on a change whose queued
+  evaluation could not complete. Bring the workspace up to date and evaluate
+  again (see [Troubleshooting](/guides/troubleshooting/#evaluation)).
 - `SUBMODULES_UNSUPPORTED` — a gitlink entry (any depth) and/or a root-level
   `.gitmodules` file was found on import, or in the workspace a change is being
   created from — a gated push and `POST /api/projects/{name}/changes` alike,

@@ -232,6 +232,8 @@ beforeEach(() => {
       workspaceTreeOid: "ws_tree",
       workspaceSha: "ws_tip",
       baseOid: "base_from_diff_clone",
+      mergeBaseOid: "base_from_diff_clone",
+      behindBy: 0,
     },
   });
   vi.mocked(createChange).mockResolvedValue({ success: true, data: CHANGE });

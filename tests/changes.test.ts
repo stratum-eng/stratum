@@ -417,6 +417,8 @@ describe("POST /api/projects/:name/changes", () => {
         workspaceTreeOid: "ws_tree_oid",
         workspaceSha: "ws_tip_sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
     vi.mocked(updateChangeStatus).mockResolvedValue({
@@ -3596,6 +3598,8 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceTreeOid: "new_tree",
         workspaceSha: "new_sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
     vi.mocked(updateChangeStatus).mockResolvedValue({ success: true, data: undefined });
@@ -3707,6 +3711,8 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceTreeOid: "new_tree",
         workspaceSha: "new_sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
     vi.mocked(diffTouchesProtectedConfig).mockReturnValue(true);
@@ -3783,6 +3789,8 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceTreeOid: "old_tree",
         workspaceSha: "old_sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
 
@@ -3817,6 +3825,8 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceTreeOid: "old_tree",
         workspaceSha: "old_sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
 
@@ -3863,6 +3873,8 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceTreeOid: "old_tree",
         workspaceSha: "old_sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
 

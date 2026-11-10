@@ -241,6 +241,8 @@ describe("POST /api/changes/:id/evaluate — GitHub verdict reporting", () => {
         workspaceTreeOid: "ws-tree-oid",
         workspaceSha: "ws-sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
     vi.mocked(recordEvalRuns).mockResolvedValue({ success: true, data: [] });

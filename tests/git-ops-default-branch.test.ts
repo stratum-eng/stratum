@@ -678,10 +678,72 @@ describe("getDiffBetweenRepos", () => {
     // The mock deletes the files of a noCheckout clone, so a diff at all means
     // both sides were read from git objects.
     expect(result.success && result.data.diff).toContain("+line2");
+    // Each side carries a little history, to find where the workspace forked.
     expect(h.calls.clone).toEqual([
-      expect.objectContaining({ url: "https://r/fork.git", depth: 1, noCheckout: true }),
-      expect.objectContaining({ url: "https://r/base.git", depth: 1, noCheckout: true }),
+      expect.objectContaining({ url: "https://r/fork.git", depth: 16, noCheckout: true }),
+      expect.objectContaining({ url: "https://r/base.git", depth: 16, noCheckout: true }),
     ]);
+  });
+
+  it("diffs against the commit the workspace forked from, not the project's newer tip", async () => {
+    const forkedFrom = { "a.txt": "line1\n", "kept.txt": "kept\n" };
+    const baseServer: { branch: string; commits: Record<string, string>[] } = {
+      branch: "trunk",
+      // Two commits landed on the project after the workspace forked.
+      commits: [forkedFrom, { "landed.txt": "landed later\n" }, { "a.txt": "line1\nmain\n" }],
+    };
+    h.servers.set("https://r/base.git", baseServer);
+    h.servers.set("https://r/fork.git", {
+      branch: "trunk",
+      commits: [forkedFrom, { "mine.txt": "my change\n" }],
+    });
+
+    const result = await getDiffBetweenRepos(
+      "https://r/base.git",
+      "btok",
+      "https://r/fork.git",
+      "wtok",
+      logger,
+      "trunk",
+    );
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    // Only what the workspace did. Against the tip, the project's two newer
+    // commits would read as this change deleting landed.txt and reverting a.txt.
+    expect(result.data.diff).toContain("diff --git a/mine.txt b/mine.txt");
+    expect(result.data.diff).not.toContain("landed.txt");
+    expect(result.data.diff).not.toContain("a.txt");
+
+    const [forkSha, , baseTip] = await precomputeShas(baseServer);
+    expect(result.data.mergeBaseOid).toBe(forkSha);
+    expect(result.data.baseOid).toBe(baseTip);
+    expect(result.data.behindBy).toBe(2);
+  });
+
+  it("reports an up-to-date workspace as forked from the project's tip", async () => {
+    const baseServer = { branch: "trunk", commits: [{ "a.txt": "line1\n" }] };
+    h.servers.set("https://r/base.git", baseServer);
+    h.servers.set("https://r/fork.git", {
+      branch: "trunk",
+      commits: [{ "a.txt": "line1\n" }, { "mine.txt": "my change\n" }],
+    });
+
+    const result = await getDiffBetweenRepos(
+      "https://r/base.git",
+      "btok",
+      "https://r/fork.git",
+      "wtok",
+      logger,
+      "trunk",
+    );
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const [baseTip] = await precomputeShas(baseServer);
+    expect(result.data.mergeBaseOid).toBe(baseTip);
+    expect(result.data.behindBy).toBe(0);
+    expect(result.data.diff).toContain("diff --git a/mine.txt b/mine.txt");
+    expect(h.calls.fetch).toEqual([]);
   });
 
   it("does not clone the base when the workspace clone fails", async () => {

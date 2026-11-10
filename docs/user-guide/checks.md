@@ -150,7 +150,7 @@ runs with new ids, and ends any still-pending runs from before.
 | `event` | Always `checks.requested`. Also sent as the `X-Stratum-Event` header. |
 | `changeId` | The change the checks belong to. |
 | `project` | The project, as `@namespace/slug`. |
-| `baseSha` | The commit `diff` was computed against. |
+| `baseSha` | The commit `diff` was computed against: where the workspace forked from the project. It is the project's tip only while the workspace is up to date. |
 | `headSha` | The evaluated revision. Echo it back in every report. |
 | `headTreeSha` | The git **tree** id of `headSha`: what checking out `baseSha` and applying `diff` must produce. See [Verifying what you built](#verifying-what-you-built). |
 | `diff` | Unified diff of `baseSha..headSha`. |

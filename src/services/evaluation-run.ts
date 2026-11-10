@@ -75,7 +75,7 @@ export type EvaluationJobOutcome =
  * Diff codes that no retry can change. Everything else a diff can fail with is
  * a clone or network failure, which redelivery can fix.
  */
-const PERMANENT_DIFF_CODES = new Set(["SUBMODULES_UNSUPPORTED"]);
+const PERMANENT_DIFF_CODES = new Set(["SUBMODULES_UNSUPPORTED", "FORK_POINT_NOT_FOUND"]);
 
 /**
  * Execute one evaluation run and record its verdict — if, when it finishes,
