@@ -448,6 +448,7 @@ response).
 | `409` | `PR_NOT_OPEN` | The pull request is closed, or no longer targets the default branch |
 | `409` | `EXTERNAL_IMPORT_UNAVAILABLE` | The mirror is disabled or no longer accepts pull requests |
 | `422` | `CONTRIBUTOR_AGREEMENT_REQUIRED` | `agreementConfirmed` was not `true` |
+| `502` | `GITHUB_ACCESS_DENIED` | GitHub refused the App's token for the mirror repository. Always `502`, whatever status GitHub gave |
 | `422` | `PR_TOO_MANY_COMMITS`, `PR_TOO_MANY_FILES`, `PR_TOO_LARGE` | Over a [limit](/guides/mirror-pull-requests/#limits) |
 | `422` | `SUBMODULES_UNSUPPORTED`, `LFS_UNSUPPORTED` | The pull request adds a submodule or a Git LFS pointer |
 | `422` | `PR_CONFLICTS`, `PR_UNRELATED_HISTORY`, `PR_EMPTY` | It cannot be joined to the default branch, or adds nothing to it |

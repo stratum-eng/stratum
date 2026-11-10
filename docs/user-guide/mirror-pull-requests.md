@@ -212,8 +212,12 @@ What GitHub shows next depends on how the change merged.
   reach the default branch, so GitHub cannot tell that the work landed. About
   two minutes after the comment, Stratum closes the pull request through the
   API. It shows **Closed**, not Merged, and the comment says why. The squash
-  commit carries a `Co-authored-by` line for each author of the pull request's
-  commits, so GitHub still credits them.
+  commit carries a `Co-authored-by` line for the authors of the pull request's
+  commits, so GitHub still credits them. At most 10 authors are recorded, in
+  the order their commits are read, and an author is left out when the commit's
+  name or email cannot be written safely into a trailer (an empty name, or an
+  email that is not of the form `name@host`). A plain merge has no such limit,
+  because it keeps the commits themselves.
 
 To keep contributors' commits, a change that came from a pull request always
 merges on its own. A batch merge skips it and says so.

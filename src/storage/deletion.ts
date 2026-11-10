@@ -734,6 +734,10 @@ const IDENTITY_COLUMNS: readonly [table: string, column: string][] = [
   // A run row outlives the member who started it whenever the project is
   // org-owned: project deletion removes the table, account erasure does not.
   ["github_issue_imports", "initiated_by"],
+  // Pull requests from the mirror (migration 080): who imported one, and who
+  // confirmed its contributor agreement. Org-owned projects outlive an erasure.
+  ["external_pull_requests", "imported_by"],
+  ["external_pull_requests", "agreement_confirmed_by"],
   // Cost rows outlive an erasure by two routes: the project is org-owned, or it
   // is agent-owned and so never cascaded at all (only `ownerType === "user"`
   // projects are). In the agent case the row was stamped with the *user* id by

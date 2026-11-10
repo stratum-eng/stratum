@@ -115,6 +115,7 @@ interface ExternalPullRequestRow {
 const SETTLED_CHANGE_STATUSES = ["merged", "rejected", "reverted"] as const;
 const SETTLED_LIST = SETTLED_CHANGE_STATUSES.map((status) => `'${status}'`).join(", ");
 
+/** The stored JSON list of commit authors; anything malformed reads as no authors. */
 function parseAuthors(raw: string | null): CommitAuthor[] {
   if (raw === null) return [];
   try {
@@ -131,6 +132,7 @@ function parseAuthors(raw: string | null): CommitAuthor[] {
   }
 }
 
+/** A row as the record the rest of the code uses, with unknown states read as the safest one. */
 function fromRow(row: ExternalPullRequestRow): ExternalPullRequest {
   const prState: ExternalPrState =
     row.pr_state === "closed" || row.pr_state === "merged" ? row.pr_state : "open";
@@ -174,6 +176,7 @@ function fromRow(row: ExternalPullRequestRow): ExternalPullRequest {
   };
 }
 
+/** Log a failed statement and return the error callers pass on. */
 function storageError(message: string, error: unknown, logger: Logger): AppError {
   logger.error(message, error instanceof Error ? error : undefined);
   return new AppError(message, "DATABASE_ERROR", 500);
@@ -181,6 +184,7 @@ function storageError(message: string, error: unknown, logger: Logger): AppError
 
 /** Stored text is trimmed: these columns are rendered to people. */
 const MAX_STORED_TEXT = 500;
+/** Cut text to the stored length, marking the cut. */
 const trim = (text: string): string =>
   text.length > MAX_STORED_TEXT ? `${text.slice(0, MAX_STORED_TEXT - 1)}…` : text;
 
@@ -678,6 +682,11 @@ export async function listPullRequestsToSettle(
  * Projects that have a merged change whose pull request is not settled. The
  * five-minute sweep's entry point: it finds the projects, and each is then
  * settled against its own mirror.
+ *
+ * Only projects with an enabled mirror are listed. One without cannot be
+ * settled, and a batch filled with those would keep every other project from
+ * its retries. Their records stay pending, and are picked up again once the
+ * mirror is back.
  */
 export async function listProjectsWithPullRequestsToSettle(
   db: D1Database,
@@ -690,6 +699,7 @@ export async function listProjectsWithPullRequestsToSettle(
         `SELECT DISTINCT e.project_id AS project_id
            FROM external_pull_requests e
            JOIN changes c ON c.id = e.change_id
+           JOIN push_mirrors m ON m.project_id = e.project_id AND m.enabled = 1
           WHERE c.status = 'merged' AND e.closure_state IN ('none', 'commented')
           LIMIT ?`,
       )

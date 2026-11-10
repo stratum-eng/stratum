@@ -1874,6 +1874,38 @@ describe("a pull request cannot choose its own gate", () => {
   });
 });
 
+describe("a push that lands between the import's head check and the start of its run", () => {
+  it("is caught after the run starts, and the old head is not left evaluating", async () => {
+    await configureMirror();
+    const { changeId, head } = await openPullRequest(7);
+
+    // The window is between two statements, so it is opened with a trigger:
+    // when the import writes its audit entry (after its head check, before it
+    // starts the run) the record gets a newer head, as the webhook for a push
+    // would give it. That webhook finds the change still `external` and has
+    // nothing to supersede, so nothing else would stop the run.
+    const newer = "f".repeat(40);
+    db.exec(
+      `CREATE TRIGGER push_in_the_window AFTER INSERT ON audit_log
+         WHEN NEW.action = 'external_change.imported'
+       BEGIN
+         UPDATE external_pull_requests SET head_sha = '${newer}';
+       END`,
+    );
+
+    const res = await importChange(changeId, cookies.writer, { headSha: head });
+    db.exec("DROP TRIGGER push_in_the_window");
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe("PR_HEAD_MOVED");
+
+    const body = await getChange(changeId);
+    // Back to `external`: the commits that were evaluated cannot merge.
+    expect(body.change.status).toBe("external");
+    expect(body.externalPullRequest?.headSha).toBe(newer);
+    expect((await mergeChange(changeId)).status).toBe(409);
+  });
+});
+
 describe("new commits on an imported pull request", () => {
   it("supersede the old revision, its checks and its approvals", async () => {
     await seedBase({

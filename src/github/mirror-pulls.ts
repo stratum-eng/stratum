@@ -264,6 +264,7 @@ export function refusalFromCounts(
 
 type PullsEnv = Env;
 
+/** `namespace/slug`, the name a project is shown by. */
 const projectLabel = (project: ProjectEntry): string => `${project.namespace}/${project.slug}`;
 
 /** The pull request's page, built from the mirror's own name, never from a payload. */
@@ -273,6 +274,10 @@ export function pullRequestUrl(
   return `https://github.com/${record.repoOwner}/${record.repoName}/pull/${record.prNumber}`;
 }
 
+/**
+ * Record that GitHub closed (or merged) a pull request, close its change if
+ * that is still open, and write the audit entry when this call closed it.
+ */
 async function closeFromGitHub(
   env: PullsEnv,
   logger: Logger,
@@ -510,7 +515,10 @@ export async function handleMirrorPullRequest(
   });
   if (!updated.success) throw updated.error;
 
-  if (headMoved && change.status !== "external") {
+  // Not decided from `change.status`: that was read before the head was
+  // recorded, and an import may have started evaluating the old head since.
+  // The statement itself moves only a change that is past `external` now.
+  if (headMoved) {
     const superseded = await supersedeImportedChange(env.DB, logger, change.id);
     if (!superseded.success) throw superseded.error;
     if (superseded.data.superseded) {
@@ -537,6 +545,7 @@ export async function handleMirrorPullRequest(
   return "handled";
 }
 
+/** Read a pull request's record again, after a write that may have raced another delivery. */
 async function reread(
   env: PullsEnv,
   logger: Logger,
@@ -559,6 +568,7 @@ interface LivePullRequest {
   changedFiles?: number;
 }
 
+/** The fields of GitHub's pull request object an import relies on, or null if they are not there. */
 function narrowLivePullRequest(data: unknown): LivePullRequest | null {
   const pr = data as {
     state?: unknown;
@@ -972,6 +982,28 @@ export async function importPullRequest(
   if (!begun.data.started) {
     return err(new AppError("This change can no longer be evaluated", "NOT_EXTERNAL", 409));
   }
+
+  // The head check above and the start of the run are two statements, and a
+  // push can land between them. Its webhook then records the new head while
+  // the change is still `external`, finds nothing to supersede, and is done.
+  // So look once more now that the change has left `external`: a webhook that
+  // arrives after this point supersedes the run by itself, and one that
+  // arrived before it is caught here. Either way no run on the old head
+  // survives a newer head.
+  const settled = await getExternalPullRequestByChange(env.DB, logger, change.id);
+  if (!settled.success) return settled;
+  if (settled.data !== null && settled.data.headSha !== live.headSha) {
+    const superseded = await supersedeImportedChange(env.DB, logger, change.id);
+    if (!superseded.success) return superseded;
+    return err(
+      new AppError(
+        `Pull request #${record.prNumber} got new commits while it was being imported. Look at it again before importing`,
+        "PR_HEAD_MOVED",
+        409,
+        { headSha: settled.data.headSha },
+      ),
+    );
+  }
   const dispatched = await dispatchEvaluationRun(
     env,
     logger,
@@ -1074,6 +1106,10 @@ export async function settleMergedPullRequests(
   }
 }
 
+/**
+ * One settlement pass over a project's merged pull requests. "Unsafe" because
+ * it may throw: the caller is what turns a throw into a logged failure.
+ */
 async function settleUnsafe(
   env: PullsEnv,
   logger: Logger,
@@ -1121,6 +1157,10 @@ async function settleUnsafe(
   }
 }
 
+/**
+ * Record a failed attempt to comment on or close a pull request. A permanent
+ * failure, or the last allowed attempt, stops the retries.
+ */
 async function failClosure(
   env: PullsEnv,
   logger: Logger,
@@ -1145,6 +1185,10 @@ async function failClosure(
   });
 }
 
+/**
+ * Take one merged pull request one step further on GitHub: post the link back
+ * to the change, or close the pull request once the grace period has passed.
+ */
 async function settleOne(
   env: PullsEnv,
   logger: Logger,

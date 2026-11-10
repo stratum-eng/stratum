@@ -1709,7 +1709,16 @@ app.post("/changes/:id/import", async (c) => {
   if (!imported.success) {
     const { code, message, statusCode } = imported.error;
     if (statusCode >= 500) logger.error("Pull request import failed", imported.error);
-    return refuse(code, message, statusCode >= 500 && statusCode !== 502 ? 500 : statusCode);
+    // GitHub refusing the App's token arrives carrying GitHub's own 401, 403
+    // or 404. Passed on, a caller would read those as a bad Stratum
+    // credential or a missing change; it is the upstream that said no.
+    const status =
+      code === "GITHUB_ACCESS_DENIED"
+        ? 502
+        : statusCode >= 500 && statusCode !== 502
+          ? 500
+          : statusCode;
+    return refuse(code, message, status);
   }
 
   if (isForm) return c.redirect(`/changes/${id}`, 302);

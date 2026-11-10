@@ -136,6 +136,7 @@ export function coAuthorTrailers(authors: CommitAuthor[]): string[] {
   return trailers;
 }
 
+/** The commits a shallow clone stops at (`.git/shallow`); empty for a full clone. */
 async function readShallowBoundary(fs: NodeFS, dir: string): Promise<Set<string>> {
   const path = `${dir.replace(/\/$/, "")}/.git/shallow`;
   const raw = await fromPromise(fs.promises.readFile(path, { encoding: "utf8" }));
@@ -213,6 +214,7 @@ async function collectNewCommits(
   return { status: "ok", count: seen.size, authors: [...authors.values()] };
 }
 
+/** Do these bytes begin with `prefix`? */
 function startsWith(bytes: Uint8Array, prefix: Uint8Array): boolean {
   if (bytes.length < prefix.length) return false;
   for (let i = 0; i < prefix.length; i++) if (bytes[i] !== prefix[i]) return false;
@@ -304,6 +306,7 @@ async function measureChange(
   return ok({ changedFiles });
 }
 
+/** Did isomorphic-git decline the merge (a conflict, or a merge it cannot do) rather than fail? */
 function isMergeRefusal(error: Error): boolean {
   const code = (error as { code?: unknown }).code;
   return code === "MergeConflictError" || code === "MergeNotSupportedError";
