@@ -24,6 +24,7 @@ import {
   recordImportFailed,
   recordImportStarted,
 } from "../storage/metrics";
+import { pushMirrorMode } from "../storage/push-mirrors";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { getProjectByPath, setProject } from "../storage/state";
 import { recordSyncHistory } from "../storage/sync";
@@ -594,6 +595,30 @@ async function processSyncJob(
     // Check cancellation before starting
     if (await checkAndHandleCancellation(env, namespace, slug)) {
       await recordImportCancelled(env.DB, namespace, slug, logger);
+      msg.ack();
+      return;
+    }
+
+    // Forge mode (#417), checked again HERE and not only where the job was
+    // queued: an admin can enable the mirror between the two, and this job
+    // would then pull GitHub's commits into a project that now publishes
+    // there. A mode that cannot be read is retried, never assumed.
+    const mirrorMode = await pushMirrorMode(env.DB, logger, project.id);
+    if (mirrorMode === "unknown") {
+      logger.warn("Sync job: could not read the project's mirror state; retrying", { projectId });
+      msg.retry();
+      return;
+    }
+    if (mirrorMode === "forge") {
+      logger.info("Sync job dropped: the project now mirrors to GitHub", { projectId });
+      await updateImportStatus(
+        env.DB,
+        namespace,
+        slug,
+        "cancelled",
+        logger,
+        "Sync cancelled: the project now mirrors to GitHub and no longer syncs from it",
+      );
       msg.ack();
       return;
     }

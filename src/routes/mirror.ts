@@ -144,10 +144,12 @@ function credentialRefusal(error: AppError): { code: MirrorNoticeCode; status: R
   }
 }
 
+/** Whether the request is an API call (JSON) and not the settings form. */
 function wantsJson(c: { req: { header: (name: string) => string | undefined } }): boolean {
   return c.req.header("content-type")?.includes("application/json") ?? false;
 }
 
+/** Where a form post is sent back to, carrying only a fixed notice code. */
 function settingsUrl(project: ProjectEntry, code: MirrorNoticeCode): string {
   return `/${project.namespace}/${project.slug}/settings?mirror=${code}#mirror`;
 }
@@ -196,6 +198,7 @@ async function requireAdmin(
   return { project, userId };
 }
 
+/** A logger carrying the request's path, for the mirror routes. */
 const routeLogger = (c: {
   get(key: "userId"): string | undefined;
   req: { path: string; method: string };
@@ -248,8 +251,15 @@ app.on(["PUT", "POST"], "/:namespace/:slug/mirror", async (c) => {
       logger,
     ).catch(() => ({}) as { repo?: unknown; enabled?: unknown });
     if (parsed instanceof Response) return parsed;
-    repoInput = parsed.repo;
-    if (parsed.enabled !== undefined) enabled = parsed.enabled === true;
+    // `null`, an array or a bare string parse without throwing. Reading
+    // `.repo` off `null` would be a 500 for input that is only malformed; an
+    // object with no usable `repo` falls through to the invalid-repo refusal.
+    const body =
+      parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed
+        : ({} as { repo?: unknown; enabled?: unknown });
+    repoInput = body.repo;
+    if (body.enabled !== undefined) enabled = body.enabled === true;
   } else {
     const form = await c.req.parseBody();
     repoInput = form.repo;
@@ -327,6 +337,7 @@ app.on(["PUT", "POST"], "/:namespace/:slug/mirror", async (c) => {
   });
 });
 
+/** Remove a project's mirror configuration and audit it. Never touches the GitHub repository. */
 async function removeMirror(
   env: Env,
   logger: Logger,

@@ -64,7 +64,7 @@ import {
   releaseNamespaceClaim,
 } from "../storage/project-namespace";
 import { listProvenance } from "../storage/provenance";
-import { getPushMirror, isPushMirrorEnabled } from "../storage/push-mirrors";
+import { getPushMirror, pushMirrorMode } from "../storage/push-mirrors";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import {
   getProjectById,
@@ -2542,7 +2542,23 @@ app.post("/:namespace/:slug/sync", async (c) => {
   // Forge mode (#417): with a push mirror enabled, GitHub is this project's
   // read-only copy, not an upstream it follows. Pulling from it here would
   // quietly make it a second place to write.
-  if (await isPushMirrorEnabled(c.env.DB, logger, project.id)) {
+  const mirrorMode = await pushMirrorMode(c.env.DB, logger, project.id);
+  if (mirrorMode === "unknown") {
+    // Not read as "no mirror": that would sync GitHub into a project that may
+    // be mirroring to it. A retry costs the caller a moment.
+    if (!isJson) {
+      return c.redirect(`/${namespace}/${slug}?sync=error&reason=mirror-unknown`);
+    }
+    return c.json(
+      {
+        error:
+          "Could not check whether this project mirrors to GitHub, so nothing was synced. Try again.",
+        code: "PUSH_MIRROR_UNKNOWN",
+      },
+      503,
+    );
+  }
+  if (mirrorMode === "forge") {
     if (!isJson) {
       return c.redirect(`/${namespace}/${slug}?sync=error&reason=push-mirror`);
     }

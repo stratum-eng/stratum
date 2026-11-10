@@ -62,6 +62,13 @@ interface ProjectSettingsProps {
     defaultBranch: string;
     notice?: string;
   };
+  /**
+   * The mirror could not be read. Shown INSTEAD of the card: rendering a
+   * failed lookup as "no mirror configured" would offer the set-up form to an
+   * admin who already has a mirror, and saving it would overwrite one they
+   * could not see. An empty state and a failed read must not look the same.
+   */
+  mirrorUnavailable?: boolean;
   user?: { id: string; email: string; username: string } | null;
 }
 
@@ -109,6 +116,7 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
   secretErrorField,
   issueImport,
   mirror,
+  mirrorUnavailable,
   user,
 }) => {
   const nameError = secretErrorField === "name" ? secretError : undefined;
@@ -153,6 +161,16 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
               Sync settings &amp; history
             </a>
           </div>
+        </div>
+      )}
+
+      {mirrorUnavailable && (
+        <div class="card" id="mirror">
+          <h3 style={{ marginTop: 0 }}>GitHub mirror</h3>
+          <p class="settings-help" role="alert">
+            The mirror's settings could not be read just now, so they are not shown and cannot be
+            changed from this page. Nothing has been changed. Reload the page to try again.
+          </p>
         </div>
       )}
 

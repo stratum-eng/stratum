@@ -20,6 +20,7 @@ import { type MirrorQueueMessage, runPushMirror } from "../github/mirror";
 import type { Env, Message, MessageBatch } from "../types";
 import { type Logger, createLogger } from "../utils/logger";
 
+/** Whether a queue body is a mirror push request this consumer understands. */
 function isMirrorMessage(body: unknown): body is MirrorQueueMessage {
   if (typeof body !== "object" || body === null) return false;
   const candidate = body as Record<string, unknown>;
@@ -30,6 +31,7 @@ function isMirrorMessage(body: unknown): body is MirrorQueueMessage {
   );
 }
 
+/** Run one mirror message and ack or retry it according to the run's outcome. */
 async function consumeOne(env: Env, msg: Message<unknown>, logger: Logger): Promise<void> {
   if (!isMirrorMessage(msg.body)) {
     logger.error("Malformed mirror queue message; acking", undefined, { messageId: msg.id });

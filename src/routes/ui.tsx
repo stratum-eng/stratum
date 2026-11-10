@@ -2760,14 +2760,20 @@ app.get("/:namespace/:slug/settings", async (c) => {
   let mirror:
     | { current: PushMirrorView | null; defaultBranch: string; notice?: string }
     | undefined;
+  let mirrorUnavailable = false;
   if (await isProjectAdmin(c.env.DB, project, credentialBindingFrom(c), userId)) {
     const stored = await getPushMirror(c.env.DB, logger, project.id);
     const notice = mirrorNotice(c.req.query("mirror"));
-    mirror = {
-      current: stored.success && stored.data ? toPushMirrorView(stored.data) : null,
-      defaultBranch: projectDefaultBranch(project),
-      ...(notice !== undefined ? { notice } : {}),
-    };
+    if (!stored.success) {
+      // Not rendered as "no mirror": see `mirrorUnavailable` on the page.
+      mirrorUnavailable = true;
+    } else {
+      mirror = {
+        current: stored.data ? toPushMirrorView(stored.data) : null,
+        defaultBranch: projectDefaultBranch(project),
+        ...(notice !== undefined ? { notice } : {}),
+      };
+    }
   }
 
   return c.html(
@@ -2787,6 +2793,7 @@ app.get("/:namespace/:slug/settings", async (c) => {
       }
       {...(issueImport !== undefined ? { issueImport } : {})}
       {...(mirror !== undefined ? { mirror } : {})}
+      {...(mirrorUnavailable ? { mirrorUnavailable: true } : {})}
       user={userResult}
     />,
   );

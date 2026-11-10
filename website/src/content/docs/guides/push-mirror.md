@@ -28,6 +28,10 @@ Enabling a mirror puts the project in forge mode. While the mirror is enabled:
   trigger a sync;
 - promoting a change to a GitHub pull request is refused
   (`409 PUSH_MIRROR_ENABLED`).
+- If Stratum cannot read whether a project has a mirror, it refuses both with
+  `503 PUSH_MIRROR_UNKNOWN` and tries again later. It never treats a failed
+  read as "no mirror", and it ignores pull request events from GitHub in the
+  same case.
 
 Disable or remove the mirror to go back to layer mode. An imported project can
 mirror to the same repository it was imported from. That is the usual way to

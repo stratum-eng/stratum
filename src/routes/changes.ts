@@ -57,7 +57,7 @@ import {
 import { parseRepoUrl } from "../storage/git-providers";
 import { projectPrincipal } from "../storage/github-installations";
 import { recordProvenance } from "../storage/provenance";
-import { isPushMirrorEnabled } from "../storage/push-mirrors";
+import { pushMirrorMode } from "../storage/push-mirrors";
 import { getProject, getWorkspace } from "../storage/state";
 import { getProjectSourceUrl } from "../storage/sync";
 import type { Change, Env, ProjectEntry } from "../types";
@@ -1955,7 +1955,18 @@ app.post("/changes/:id/github-pr", async (c) => {
   // mirror enabled its GitHub repository is a read-only copy: a pull request
   // opened there could only ever be merged on GitHub, which is exactly the
   // divergence the mirror then stops on.
-  if (await isPushMirrorEnabled(c.env.DB, logger, project.id)) {
+  const mirrorMode = await pushMirrorMode(c.env.DB, logger, project.id);
+  if (mirrorMode === "unknown") {
+    return c.json(
+      {
+        error:
+          "Could not check whether this project mirrors to GitHub, so the change was not promoted. Try again.",
+        code: "PUSH_MIRROR_UNKNOWN",
+      },
+      503,
+    );
+  }
+  if (mirrorMode === "forge") {
     return c.json(
       {
         error:

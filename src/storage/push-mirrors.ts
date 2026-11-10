@@ -82,10 +82,12 @@ interface PushMirrorRow {
   updated_at: string;
 }
 
+/** Narrow a stored state column to a known mirror state. */
 function isState(value: string): value is PushMirrorState {
   return (PUSH_MIRROR_STATES as readonly string[]).includes(value);
 }
 
+/** Maps a `push_mirrors` row to the public `PushMirror`, omitting unset nullable columns. */
 function fromRow(row: PushMirrorRow): PushMirror {
   return {
     projectId: row.project_id,
@@ -110,6 +112,7 @@ function fromRow(row: PushMirrorRow): PushMirror {
   };
 }
 
+/** Log a storage failure and return it as an `AppError`, so callers get a value and a trace exists. */
 function storageError(message: string, error: unknown, logger: Logger): AppError {
   logger.error(message, error instanceof Error ? error : undefined);
   return new AppError(message, "DATABASE_ERROR", 500);
@@ -153,17 +156,29 @@ export async function getPushMirror(
  * Is this project a forge-mode project — one whose GitHub copy is a mirror it
  * pushes to, rather than an upstream it follows?
  *
- * The answer gates every layer-mode path (inbound sync, PR promotion). It fails
- * OPEN to `false` on a storage error: those paths predate the mirror, and a D1
- * blip must not start refusing every sync on the instance.
+ * The answer gates every layer-mode path (inbound sync, PR promotion), and it
+ * has three values on purpose. `unknown` is a storage error, and a caller must
+ * treat it as "do not touch": reading a failed lookup as "no mirror" would let
+ * a D1 blip pull GitHub's commits into a forge-mode project, or mark a change
+ * merged that never merged, which is the divergence the mirror exists to
+ * prevent. Refusing a sync for the length of a blip costs a retry.
  */
-export async function isPushMirrorEnabled(
+export type PushMirrorMode = "forge" | "layer" | "unknown";
+
+/** Which mode `projectId` is in. See {@link PushMirrorMode}. */
+export async function pushMirrorMode(
   db: D1Database,
   logger: Logger,
   projectId: string,
-): Promise<boolean> {
+): Promise<PushMirrorMode> {
   const mirror = await getPushMirror(db, logger, projectId);
-  return mirror.success && mirror.data !== null && mirror.data.enabled;
+  if (!mirror.success) return "unknown";
+  return mirror.data?.enabled ? "forge" : "layer";
+}
+
+/** Whether layer-mode work may proceed: only when the project is known to be in layer mode. */
+export function layerModeAllowed(mode: PushMirrorMode): boolean {
+  return mode === "layer";
 }
 
 /**
@@ -429,13 +444,21 @@ export async function claimPushLease(
  * did, the lease is kept and `released` is false: the caller pushes again, so
  * the request that found the lease taken is not lost.
  *
- * @returns Whether the lease was released (nothing further to push)
+ * Like every write that ends or extends a run, it applies only while the run
+ * still holds the lease it claimed (`lease`, the `lease_expires_at` it was
+ * given). A run that stalled past its lease finds the row claimed by another
+ * and writes nothing: without that, a slow run finishing late would move
+ * `pushed_seq` and `last_pushed_sha` backwards over a newer run's result and
+ * hand itself a fresh lease beside the run that holds it.
+ *
+ * @returns `released`: nothing further to push. `lost`: the lease was no longer
+ *   this run's, and nothing was written. `lease`: the renewed lease when kept.
  */
 export async function recordPushSuccess(
   db: D1Database,
   logger: Logger,
-  input: { projectId: string; seq: number; sha: string; leaseMs: number },
-): Promise<Result<{ released: boolean }, AppError>> {
+  input: { projectId: string; seq: number; sha: string; leaseMs: number; lease: string },
+): Promise<Result<{ released: boolean; lost: boolean; lease?: string }, AppError>> {
   const nowMs = Date.now();
   const now = new Date(nowMs).toISOString();
   try {
@@ -451,8 +474,8 @@ export async function recordPushSuccess(
                 state = CASE WHEN requested_seq > ? THEN 'pushing' ELSE 'ok' END,
                 lease_expires_at = CASE WHEN requested_seq > ? THEN ? ELSE NULL END,
                 updated_at = ?
-          WHERE project_id = ?
-          RETURNING requested_seq`,
+          WHERE project_id = ? AND lease_expires_at = ?
+          RETURNING requested_seq, lease_expires_at`,
       )
       .bind(
         input.seq,
@@ -463,23 +486,31 @@ export async function recordPushSuccess(
         new Date(nowMs + input.leaseMs).toISOString(),
         now,
         input.projectId,
+        input.lease,
       )
-      .first<{ requested_seq: number }>();
-    return ok({ released: !row || row.requested_seq <= input.seq });
+      .first<{ requested_seq: number; lease_expires_at: string | null }>();
+    if (!row) return ok({ released: true, lost: true });
+    const released = row.requested_seq <= input.seq;
+    return ok({
+      released,
+      lost: false,
+      ...(!released && row.lease_expires_at !== null ? { lease: row.lease_expires_at } : {}),
+    });
   } catch (error) {
     return err(storageError("Failed to record a mirror push", error, logger));
   }
 }
 
 /**
- * Records a failed attempt and releases the lease.
+ * Records a failed attempt and releases the lease, if the run still holds it
+ * (see {@link recordPushSuccess}).
  *
  * @param input.nextAttemptAt - When the retry is due; omit to give up (`failed`)
  */
 export async function recordPushFailure(
   db: D1Database,
   logger: Logger,
-  input: { projectId: string; error: string; nextAttemptAt?: string },
+  input: { projectId: string; error: string; nextAttemptAt?: string; lease: string },
 ): Promise<Result<void, AppError>> {
   try {
     await db
@@ -491,7 +522,7 @@ export async function recordPushFailure(
                 last_error = ?,
                 lease_expires_at = NULL,
                 updated_at = ?
-          WHERE project_id = ?`,
+          WHERE project_id = ? AND lease_expires_at = ?`,
       )
       .bind(
         input.nextAttemptAt !== undefined ? "retrying" : "failed",
@@ -499,6 +530,7 @@ export async function recordPushFailure(
         trimError(input.error),
         new Date().toISOString(),
         input.projectId,
+        input.lease,
       )
       .run();
     return ok(undefined);
@@ -507,11 +539,14 @@ export async function recordPushFailure(
   }
 }
 
-/** Marks the mirror diverged and releases the lease. Sticky until resumed. */
+/**
+ * Marks the mirror diverged and releases the lease, if the run still holds it
+ * (see {@link recordPushSuccess}). Sticky until resumed.
+ */
 export async function recordPushDiverged(
   db: D1Database,
   logger: Logger,
-  input: { projectId: string; reason: string },
+  input: { projectId: string; reason: string; lease: string },
 ): Promise<Result<void, AppError>> {
   try {
     await db
@@ -522,9 +557,9 @@ export async function recordPushDiverged(
                 last_error = ?,
                 lease_expires_at = NULL,
                 updated_at = ?
-          WHERE project_id = ?`,
+          WHERE project_id = ? AND lease_expires_at = ?`,
       )
-      .bind(trimError(input.reason), new Date().toISOString(), input.projectId)
+      .bind(trimError(input.reason), new Date().toISOString(), input.projectId, input.lease)
       .run();
     return ok(undefined);
   } catch (error) {
@@ -540,6 +575,7 @@ export async function releasePushLease(
   db: D1Database,
   logger: Logger,
   projectId: string,
+  lease: string,
 ): Promise<Result<void, AppError>> {
   try {
     await db
@@ -548,9 +584,9 @@ export async function releasePushLease(
             SET lease_expires_at = NULL,
                 state = CASE WHEN state = 'pushing' THEN 'idle' ELSE state END,
                 updated_at = ?
-          WHERE project_id = ?`,
+          WHERE project_id = ? AND lease_expires_at = ?`,
       )
-      .bind(new Date().toISOString(), projectId)
+      .bind(new Date().toISOString(), projectId, lease)
       .run();
     return ok(undefined);
   } catch (error) {

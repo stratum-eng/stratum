@@ -206,6 +206,7 @@ export async function sendNudge(
   }
 }
 
+/** A commit id shortened for a message a person reads. */
 const short = (sha: string): string => sha.slice(0, 7);
 
 /**
@@ -383,6 +384,7 @@ async function pushOne(
   };
 }
 
+/** Tell people a mirror diverged: one event for subscribers and one audit entry. */
 async function surfaceDivergence(
   env: MirrorEnv,
   logger: Logger,
@@ -428,32 +430,21 @@ export async function runPushMirror(
   try {
     return await runPushMirrorUnsafe(env, logger, projectId);
   } catch (error) {
-    // Reached only by a fault below the Result-returning layers.
+    // A fault in a push pass never reaches here: the loop turns it into a
+    // failed attempt, so it is counted, backed off and, at the cap, reported
+    // like any other. What is left is a fault around the passes. Nothing is
+    // written for it, because this point does not know whether the run still
+    // holds its lease, and an unconditional write could overwrite the state of
+    // a run that does. The lease expires by itself and the sweep re-sends.
     const message = error instanceof Error ? error.message : String(error);
     logger.error("Mirror push threw", error instanceof Error ? error : new Error(message), {
       projectId,
     });
-    // Counted like any other failed attempt. A thrown fault is the kind most
-    // likely to be deterministic, so releasing the lease and retrying without
-    // recording anything would retry it every 30 seconds for ever: the row
-    // would stay pending with no backoff, and never reach `failed`.
-    // `recordPushFailure` releases the lease as well.
-    const current = await getPushMirror(env.DB, logger, projectId);
-    const attempt = (current.success && current.data !== null ? current.data.attempts : 0) + 1;
-    if (attempt >= MIRROR_MAX_ATTEMPTS) {
-      await recordPushFailure(env.DB, logger, { projectId, error: message });
-      return { kind: "failed", error: message };
-    }
-    const delaySeconds = mirrorBackoffSeconds(attempt);
-    await recordPushFailure(env.DB, logger, {
-      projectId,
-      error: message,
-      nextAttemptAt: new Date(Date.now() + delaySeconds * 1000).toISOString(),
-    });
-    return { kind: "retry", delaySeconds, error: message };
+    return { kind: "retry", delaySeconds: mirrorBackoffSeconds(1), error: message };
   }
 }
 
+/** The body of {@link runPushMirror}, which may throw; the wrapper turns that into an outcome. */
 async function runPushMirrorUnsafe(
   env: MirrorEnv,
   logger: Logger,
@@ -483,10 +474,15 @@ async function runPushMirrorUnsafe(
   }
   if (claimed.data === null) return { kind: "busy" };
   let mirror = claimed.data;
+  // The lease this run holds. Every write that ends or extends the run names
+  // it, so a run that stalled past its lease cannot write over the run that
+  // claimed the row after it.
+  let lease = mirror.leaseExpiresAt;
+  if (lease === undefined) return { kind: "busy" };
 
   const found = await getProjectByPath(env.STATE, mirror.namespace, mirror.slug, logger);
   if (!found.success || found.data.id !== projectId) {
-    await releasePushLease(env.DB, logger, projectId);
+    await releasePushLease(env.DB, logger, projectId, lease);
     if (!found.success && found.error.code !== "NOT_FOUND") {
       return { kind: "retry", delaySeconds: mirrorBackoffSeconds(1), error: found.error.message };
     }
@@ -499,10 +495,26 @@ async function runPushMirrorUnsafe(
   let lastSha = "";
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     const seq = mirror.requestedSeq;
-    const result = await pushPass(env, logger, mirror, project, mirror.attempts > 0);
+    // A pass that throws is a failed attempt like one that returns an error:
+    // counted, backed off, and at the cap recorded as `failed` with its
+    // `mirror.failed` event. A thrown fault is the kind most likely to repeat,
+    // so it must not be the one route to `failed` that tells nobody.
+    const result: PassResult = await pushPass(
+      env,
+      logger,
+      mirror,
+      project,
+      mirror.attempts > 0,
+    ).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error("Mirror push pass threw", error instanceof Error ? error : new Error(message), {
+        projectId,
+      });
+      return { kind: "error", message, permanent: false } as const;
+    });
 
     if (result.kind === "diverged") {
-      await recordPushDiverged(env.DB, logger, { projectId, reason: result.reason });
+      await recordPushDiverged(env.DB, logger, { projectId, reason: result.reason, lease });
       await surfaceDivergence(env, logger, mirror, project, result.reason);
       return { kind: "diverged", reason: result.reason };
     }
@@ -510,7 +522,7 @@ async function runPushMirrorUnsafe(
     if (result.kind === "error") {
       const attempt = mirror.attempts + 1;
       if (result.permanent || attempt >= MIRROR_MAX_ATTEMPTS) {
-        await recordPushFailure(env.DB, logger, { projectId, error: result.message });
+        await recordPushFailure(env.DB, logger, { projectId, error: result.message, lease });
         logger.error("Push mirror failed; no further retries", undefined, {
           projectId,
           attempts: attempt,
@@ -537,6 +549,7 @@ async function runPushMirrorUnsafe(
         projectId,
         error: result.message,
         nextAttemptAt: new Date(Date.now() + delaySeconds * 1000).toISOString(),
+        lease,
       });
       logger.warn("Push mirror attempt failed; will retry", {
         projectId,
@@ -556,7 +569,19 @@ async function runPushMirrorUnsafe(
       seq,
       sha: result.sha,
       leaseMs: LEASE_MS,
+      lease,
     });
+    if (recorded.success && recorded.data.lost) {
+      // This run outlived its lease and another claimed the row. The commits
+      // are on GitHub, and a fast-forward cannot have undone anything, but the
+      // row is the other run's to write.
+      logger.warn("Push mirror run finished after losing its lease; leaving the row alone", {
+        projectId,
+        sha: result.sha,
+      });
+      return { kind: "busy" };
+    }
+    if (recorded.success && recorded.data.lease !== undefined) lease = recorded.data.lease;
     if (!recorded.success || recorded.data.released) {
       logger.info("Push mirror up to date", { projectId, sha: result.sha });
       return { kind: "pushed", sha: result.sha };
@@ -572,7 +597,7 @@ async function runPushMirrorUnsafe(
 
   // Requests kept arriving for MAX_PASSES pushes. Hand the rest to a fresh
   // invocation rather than hold this one open.
-  await releasePushLease(env.DB, logger, projectId);
+  await releasePushLease(env.DB, logger, projectId, lease);
   await sendNudge(env, logger, projectId);
   return { kind: "pushed", sha: lastSha };
 }

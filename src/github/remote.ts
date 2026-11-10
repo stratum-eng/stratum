@@ -88,6 +88,7 @@ export function parseGitHubRepo(input: unknown): GitHubRepoRef | null {
   return { owner, repo };
 }
 
+/** The HTTPS git URL of a GitHub repository. */
 export function githubRemoteUrl(target: GitHubRepoRef): string {
   return `https://github.com/${target.owner}/${target.repo}.git`;
 }
@@ -150,6 +151,7 @@ export function isPermanentRemoteRefusal(error: AppError): boolean {
   );
 }
 
+/** isomorphic-git auth callback that presents the remote's installation token. */
 const auth = (remote: GitHubRemote) => () => ({
   username: "x-access-token",
   password: remote.token,
@@ -162,6 +164,7 @@ export interface GitHubRefs {
   tags: Record<string, string>;
 }
 
+/** The HTTP status carried by a git transport error, when it has one. */
 function httpStatusOf(error: unknown): number | undefined {
   const data = (error as { code?: unknown; data?: { statusCode?: unknown } } | null)?.data;
   return (error as { code?: unknown } | null)?.code === "HttpError" &&

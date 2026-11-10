@@ -55,13 +55,20 @@ import {
 } from "../src/github/mirror";
 import { parseGitHubRepo } from "../src/github/remote";
 import { ensureCanonicalProject } from "../src/github/repo-authorization";
+import { handlePullRequest } from "../src/github/webhooks";
 import worker from "../src/index";
 import { syncAllProjects } from "../src/routes/sync";
 import { freshRepoToken } from "../src/storage/git-ops";
+import { getProjectByGitHubRepo } from "../src/storage/github-bridge";
 import { linkInstallation, upsertInstallation } from "../src/storage/github-installations";
 import { MemoryFS } from "../src/storage/memory-fs";
 import { addOrgMember, createOrg } from "../src/storage/orgs";
-import { getPushMirror } from "../src/storage/push-mirrors";
+import {
+  claimPushLease,
+  getPushMirror,
+  recordPushFailure,
+  recordPushSuccess,
+} from "../src/storage/push-mirrors";
 import { createSession } from "../src/storage/sessions";
 import { addTeamMember, createTeam } from "../src/storage/teams";
 import type { Env, Message, MessageBatch } from "../src/types";
@@ -1305,6 +1312,8 @@ describe("a failing mirror", () => {
       expect(mirror).toMatchObject({ state: "failed", attempts: MIRROR_MAX_ATTEMPTS });
       expect(mirror.lastError).toContain("artifacts exploded");
       expect(mirror.nextAttemptAt).toBeUndefined();
+      // It tells subscribers, like any other route to `failed`.
+      expect(rows("SELECT id FROM events WHERE type = 'mirror.failed'")).toHaveLength(1);
     } finally {
       vi.mocked(freshRepoToken).mockImplementation(async () => ({
         success: true,
@@ -1415,7 +1424,127 @@ describe("a failing mirror", () => {
   });
 });
 
+describe("a run that outlives its lease", () => {
+  it("writes nothing over the run that claimed the row after it", async () => {
+    await configureMirror();
+    await merge();
+    queued.length = 0;
+
+    // Run A claims the lease, then stalls past it.
+    const a = await claimPushLease(env.DB, logger, PROJECT_ID, 60_000);
+    if (!a.success || a.data === null || a.data.leaseExpiresAt === undefined) {
+      throw new Error("run A did not get a lease");
+    }
+    const staleLease = a.data.leaseExpiresAt;
+    // Run B claims it after A's lease has expired, and records a newer push.
+    const b = await claimPushLease(env.DB, logger, PROJECT_ID, 60_000, Date.now() + 120_000);
+    if (!b.success || b.data === null || b.data.leaseExpiresAt === undefined) {
+      throw new Error("run B did not get a lease");
+    }
+    const newer = await recordPushSuccess(env.DB, logger, {
+      projectId: PROJECT_ID,
+      seq: b.data.requestedSeq,
+      sha: "b".repeat(40),
+      leaseMs: 60_000,
+      lease: b.data.leaseExpiresAt,
+    });
+    expect(newer.success && newer.data.lost).toBe(false);
+
+    // Run A finishes late, with an older result.
+    const late = await recordPushSuccess(env.DB, logger, {
+      projectId: PROJECT_ID,
+      seq: 0,
+      sha: "a".repeat(40),
+      leaseMs: 60_000,
+      lease: staleLease,
+    });
+    expect(late.success && late.data.lost).toBe(true);
+    await recordPushFailure(env.DB, logger, {
+      projectId: PROJECT_ID,
+      error: "late",
+      lease: staleLease,
+    });
+
+    // B's result stands: nothing moved backwards, and no failure was recorded.
+    const after = await mirrorRow();
+    expect(after.lastPushedSha).toBe("b".repeat(40));
+    expect(after.state).toBe("ok");
+    expect(after.attempts).toBe(0);
+  });
+});
+
 describe("forge mode excludes layer mode", () => {
+  /** Make every read of the mirror table fail, as a D1 outage would. */
+  async function withMirrorUnreadable<T>(run: () => Promise<T>): Promise<T> {
+    const prepare = env.DB.prepare.bind(env.DB);
+    env.DB.prepare = ((sql: string) => {
+      if (/FROM push_mirrors/i.test(sql)) throw new Error("D1 is unwell");
+      return prepare(sql);
+    }) as typeof env.DB.prepare;
+    try {
+      return await run();
+    } finally {
+      env.DB.prepare = prepare;
+    }
+  }
+
+  it("refuses to sync when the mirror's state cannot be read, and does not assume there is none", async () => {
+    await configureMirror();
+    const res = await withMirrorUnreadable(() =>
+      json("/api/projects/@acme/app/sync", cookies.admin, "POST", {}),
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: "PUSH_MIRROR_UNKNOWN" });
+  });
+
+  it("does not mark a change merged because its old pull request was merged on GitHub", async () => {
+    // The dogfooding shape: imported from a GitHub repository, then set to
+    // mirror back to it. GitHub events for that repository still route here.
+    const stored = JSON.parse((await env.STATE.get("project:@acme:app")) ?? "{}");
+    await env.STATE.put(
+      "project:@acme:app",
+      JSON.stringify({ ...stored, sourceUrl: `https://github.com/${MIRROR_REPO}` }),
+    );
+    // Promoted to a pull request before the mirror was turned on.
+    raw
+      .prepare(
+        // `project` holds the project id on this path: it is what the handler looks the change up by.
+        "INSERT INTO changes (id, project, project_id, workspace, status, github_branch) VALUES ('chg_old_pr', ?, ?, 'ws', 'accepted', 'stratum/old')",
+      )
+      .run(PROJECT_ID, PROJECT_ID);
+    await configureMirror();
+
+    const [owner, name] = MIRROR_REPO.split("/") as [string, string];
+    const closedAsMerged = {
+      action: "closed",
+      number: 7,
+      pull_request: {
+        title: "Old",
+        body: "",
+        state: "closed",
+        merged: true,
+        html_url: `https://github.com/${MIRROR_REPO}/pull/7`,
+        head: { ref: "stratum/old", sha: "c".repeat(40) },
+        base: { ref: "main" },
+        user: { login: "someone" },
+      },
+      repository: { owner: { login: owner }, name },
+      installation: { id: INSTALLATION_ID },
+    };
+    // The event has to reach this project for the test to mean anything.
+    const routed = await getProjectByGitHubRepo(env, owner, name, INSTALLATION_ID, logger);
+    if (!routed.success) throw routed.error;
+    expect(routed.data.id).toBe(PROJECT_ID);
+
+    await handlePullRequest(env, closedAsMerged, logger);
+    // Nor when the mirror's state cannot be read.
+    await withMirrorUnreadable(() => handlePullRequest(env, closedAsMerged, logger));
+
+    expect(rows<{ status: string }>("SELECT status FROM changes WHERE id = 'chg_old_pr'")).toEqual([
+      { status: "accepted" },
+    ]);
+  });
+
   it("refuses to sync from the source while the mirror is enabled", async () => {
     await configureMirror();
     const res = await json("/api/projects/@acme/app/sync", cookies.admin, "POST", {});

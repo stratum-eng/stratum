@@ -950,7 +950,15 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: The project has a push mirror enabled and does not sync from its source (`code` = `PUSH_MIRROR_ENABLED`)
+          description: >-
+            The project has a push mirror enabled and does not sync from its source (`code` = `PUSH_MIRROR_ENABLED`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: >-
+            Whether the project has a push mirror could not be read, so nothing was synced (`code` =
+            `PUSH_MIRROR_UNKNOWN`). Retry. A failed read is never treated as "no mirror".
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
