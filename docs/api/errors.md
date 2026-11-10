@@ -123,6 +123,26 @@ codes are in the [OpenAPI specification](openapi.yml).
   commonly `sandbox`, whose `[[sandboxes]]` binding is commented out by default —
   fails closed rather than being skipped, so it shows up here permanently until
   the binding is enabled or the evaluator is dropped from the policy
+  A `merge.requiredChecks` entry blocks the same way: a required
+  [check run](../user-guide/checks.md) that is missing, `queued`, `running`,
+  `failed` or `errored` for the evaluated revision is listed in `reasons`
+- `INVALID_SIGNATURE` — `401`; a check-run callback (`POST /api/checks/{id}`)
+  had no valid `X-Stratum-Signature`, **or** named a check run that does not
+  exist. The two are deliberately the same response
+- `INVALID_REPORT` — `400`; a check-run callback was signed but its body is not
+  a valid report
+- `STALE_REVISION` — `409`; a check-run report or re-run refers to a revision
+  the change has moved on from. For a re-run, re-evaluate the change instead
+- `CHECK_SUPERSEDED` — `409`; a newer run of the same check has replaced the
+  one addressed
+- `CHECK_TERMINAL` — `409`; the check run already finished as `passed`,
+  `failed` or `errored`, and a terminal state is final
+- `CHECK_DEADLINE_EXCEEDED` — `409`; the report arrived after the check run's
+  deadline, and the run is `errored`
+- `CHECK_NOT_DECLARED` — `409`; a re-run was asked for a check the project's
+  policy no longer declares
+- `CHECK_DISPATCH_FAILED` — `502`; a re-run was created but the runner could
+  not be reached. The response carries the new run, already `errored`
 - `TARGET_DELETING` — `409`; the project (or its owner) is being deleted
 - `NOT_REDRIVABLE` — `409`; the deletion job is not in an incomplete state
 - `IMPORT_IN_PROGRESS` — `409`; the project's import has not finished, so the

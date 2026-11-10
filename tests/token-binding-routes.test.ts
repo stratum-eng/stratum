@@ -390,7 +390,15 @@ describe("no existence oracle on the routes that answer non-writers with 403", (
       existing: () => "/api/projects/@owner%2Fother/changes/merge-batch",
       missing: "/api/projects/@owner%2Fnope/changes/merge-batch",
     },
-    ...["merge", "reject", "evaluate", "github-pr", "reviews"].map((action) => ({
+    ...[
+      "merge",
+      "reject",
+      "evaluate",
+      "github-pr",
+      "reviews",
+      // #414: re-running a check authorizes through canWriteProject.
+      "checks/chk_any/rerun",
+    ].map((action) => ({
       label: `change ${action}`,
       method: "POST",
       existing: () => `/api/changes/${otherChange}/${action}`,
@@ -789,6 +797,11 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   "DELETE /api/projects/:namespace/:slug/webhooks/:id",
   "DELETE /api/workspaces/:name",
   "GET /api/changes/:id",
+  // #414: check runs. Listing authorizes through canReadProject, re-running
+  // through canWriteProject, both with the request's binding. The runner's
+  // callback (`POST /api/checks/:id`) is NOT here: it sits outside the bound
+  // prefixes, so a bound token is refused before routing.
+  "GET /api/changes/:id/checks",
   "GET /api/changes/:id/comments",
   "GET /api/changes/:id/reviews",
   "GET /api/deployments/:id",
@@ -817,6 +830,7 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   "GET /api/projects/:namespace/:slug/webhooks/:id/deliveries",
   "GET /api/workspaces/:namespace/:slug/workspaces",
   "PATCH /api/projects/:namespace/:slug/issues/:number",
+  "POST /api/changes/:id/checks/:checkId/rerun",
   "POST /api/changes/:id/comments",
   "POST /api/changes/:id/comments/:commentId/resolve",
   "POST /api/changes/:id/comments/:commentId/unresolve",

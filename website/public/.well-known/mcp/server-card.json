@@ -50,6 +50,8 @@
     "stratum_get_sync_status",
     "stratum_sync_project",
     "stratum_evaluate_change",
+    "stratum_list_checks",
+    "stratum_rerun_check",
     "stratum_promote_change",
     "stratum_comment_change",
     "stratum_list_change_comments",

@@ -39,8 +39,19 @@ limitations recorded below.
   are the ones the provider reported, and fall back to a `~4 chars/token`
   estimate — marked `estimated` on the cost record — only for a response that
   omits them.
+- **Check runs** (#414, ADR 011): a `checks` evaluator entry dispatches each
+  evaluated revision to an external runner (signed POST, returns immediately)
+  and the runner reports per-job results — `queued → running →
+  passed|failed|errored` — through a signed callback, `POST /api/checks/:id`.
+  Check names are declared in the base policy; a runner cannot create one. A
+  check that has not finished by its deadline (default 30 minutes) is flipped
+  to `errored` by the five-minute cron. Shown on the change page, listed and
+  re-run over the API and MCP. Status, summary and a link only: no logs,
+  annotations or artifacts, no cancellation, no events, no CLI commands.
 - Branch protection in `.stratum/policy.yaml` (`merge:`): required evaluators
-  (latest run per type), required human approvals, force-merge control
+  (latest run per type), required check runs (`requiredChecks`: the newest run
+  per name for the evaluated revision must be `passed`; missing, queued,
+  running, failed and errored all block), required human approvals, force-merge control
   (**deny-by-default** — force is only allowed when the policy sets
   `merge.allowForce: true`), and staleness rejection: `requireFreshBase` blocks a
   moved project base (409 STALE_BASE), and a merge is rejected if the workspace
@@ -135,10 +146,10 @@ environment (`wrangler.toml:84-85`), so it works out of the box.
 - Issue tracker with per-project numbering and auto-close when a linked change
   merges. Bidirectional GitHub sync (inbound webhooks, outbound PR promotion).
 - Remote **MCP server** at `/mcp` (a protected resource of the OAuth server
-  above), advertising `tools` only — 38 tools spanning whoami, usage, projects
+  above), advertising `tools` only — 40 tools spanning whoami, usage, projects
   (create/import/import status/sync/branches), files, activity, workspaces,
   workspace git remotes, commits, changes (create/list/get/review/merge/reject/re-evaluate/comment/
-  promote to GitHub), issues, and organizations, members and teams
+  promote to GitHub), check runs (list/re-run), issues, and organizations, members and teams
   (`buildTools` in `src/mcp/tools.ts`). The tools call the same route
   handlers as the REST API, so scope and agent-identity rules apply unchanged.
 

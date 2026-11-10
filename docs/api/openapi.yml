@@ -2429,6 +2429,203 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/changes/{id}/checks:
+    parameters:
+      - $ref: "#/components/parameters/ChangeId"
+    get:
+      operationId: listChangeChecks
+      tags: [changes]
+      summary: List a change's check runs
+      description: |
+        Check runs are per-job CI results a project's runner reports back
+        asynchronously. Returns the newest run of each check on the change's
+        evaluated revision, which is the set `merge.requiredChecks` is checked
+        against. Needs read access to the project.
+      parameters:
+        - name: all
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: >
+            Return every run instead — all revisions and all attempts, oldest
+            first.
+      responses:
+        "200":
+          description: The change's check runs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [changeId, revision, checks]
+                properties:
+                  changeId: { type: string }
+                  revision:
+                    type: [string, "null"]
+                    description: The change's evaluated head sha; null before its first evaluation
+                  checks:
+                    type: array
+                    items: { $ref: "#/components/schemas/CheckRun" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/changes/{id}/checks/{checkId}/rerun:
+    parameters:
+      - $ref: "#/components/parameters/ChangeId"
+      - name: checkId
+        in: path
+        required: true
+        schema: { type: string }
+        description: Check run id
+    post:
+      operationId: rerunChangeCheck
+      tags: [changes]
+      summary: Re-run one check on the revision it ran against
+      description: |
+        Users only, with write access to the project. Creates a new run of the
+        same check on the SAME revision and dispatches it to the runner; the
+        run named in the URL stops counting toward `merge.requiredChecks`. It
+        does not pick up new commits — re-evaluate the change for that.
+      responses:
+        "202":
+          description: The new run, queued and dispatched
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [check]
+                properties:
+                  check: { $ref: "#/components/schemas/CheckRun" }
+        "302":
+          description: Redirect back to the change page (HTML form posts only)
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The re-run is refused: the change is still evaluating
+            (EVALUATION_PENDING); the workspace or the change has moved to
+            another revision (STALE_REVISION); a newer run of this check exists
+            (CHECK_SUPERSEDED); the policy no longer declares the check
+            (CHECK_NOT_DECLARED) or is invalid (POLICY_INVALID); or the change
+            is merged, rejected or reverted (CONFLICT).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: >
+            The new run was created but the runner could not be reached (code
+            CHECK_DISPATCH_FAILED). `check` is the new run, already errored.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      check: { $ref: "#/components/schemas/CheckRun" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/checks/{checkRunId}:
+    parameters:
+      - name: checkRunId
+        in: path
+        required: true
+        schema: { type: string }
+        description: The check run id handed to the runner in the dispatch request's `checkRunIds`
+    post:
+      operationId: reportCheckRun
+      tags: [changes]
+      summary: Report a check run's progress or result (runner callback)
+      description: |
+        Called by a project's check runner, not by an API client. The request
+        carries no bearer token and no session; it is authenticated by the
+        `X-Stratum-Signature` header, the HMAC-SHA256 of the raw request body
+        under the project secret named by the policy's `checks` entry.
+
+        A report can only move an existing run's status forward. It cannot
+        create a check or change a run's name, change or revision. Terminal
+        states (`passed`, `failed`, `errored`) are final.
+
+        Safe to retry: a report whose `sequence` is not above the last one
+        applied is acknowledged with `applied: false` and changes nothing.
+      security: []
+      parameters:
+        - name: X-Stratum-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^sha256=[0-9a-f]{64}$"
+          description: "`sha256=` followed by the hex HMAC-SHA256 of the raw request body"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckRunReport" }
+      responses:
+        "200":
+          description: >
+            The report was recorded (`applied: true`), or was a redelivered or
+            out-of-order report that changed nothing (`applied: false`).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [applied, check]
+                properties:
+                  applied: { type: boolean }
+                  check: { $ref: "#/components/schemas/CheckRun" }
+        "400":
+          description: Signed, but not a valid report (code INVALID_REPORT)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: >
+            Missing or wrong signature, or no such check run (code
+            INVALID_SIGNATURE). Deliberately the same response in every case, so
+            the endpoint does not reveal which check run ids exist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >
+            The report cannot land: it names, or arrives for, a revision the
+            change has moved on from (STALE_REVISION); a newer run replaced
+            this one (CHECK_SUPERSEDED); the run already finished
+            (CHECK_TERMINAL); or its deadline passed (CHECK_DEADLINE_EXCEEDED).
+            `check` is the run's current state.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      check: { $ref: "#/components/schemas/CheckRun" }
+        "413":
+          description: The body is over 64 KB (code PAYLOAD_TOO_LARGE)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Rate limited; unauthenticated callers share the per-address anonymous budget
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/changes/{id}/github-pr:
     parameters:
       - $ref: "#/components/parameters/ChangeId"
@@ -6255,7 +6452,9 @@ components:
             STALE_BASE, STALE_WORKSPACE, WORKSPACE_UNVERIFIABLE, MERGE_CONFLICT,
             PROTECTION_BLOCKED, NOT_REDRIVABLE, GONE, INVALID_PATH,
             TOKEN_SCOPE_INSUFFICIENT, TOKEN_BINDING_EXCLUDES_ROUTE,
-            TOKEN_LIMIT_REACHED, SESSION_REQUIRED, DOMAIN_VERIFICATION_FAILED)
+            TOKEN_LIMIT_REACHED, SESSION_REQUIRED, DOMAIN_VERIFICATION_FAILED,
+            INVALID_SIGNATURE, INVALID_REPORT, STALE_REVISION, CHECK_SUPERSEDED,
+            CHECK_TERMINAL, CHECK_DEADLINE_EXCEEDED, CHECK_DISPATCH_FAILED)
 
     SsoConnectionEnvelope:
       type: object
@@ -6550,6 +6749,114 @@ components:
           type: array
           items: { type: string }
         ranAt: { type: string, format: date-time }
+
+    CheckRun:
+      type: object
+      description: >
+        One attempt at one named check on one revision of a change. Created by
+        Stratum when it dispatches the checks a project's policy declares;
+        moved by the runner's signed reports.
+      required: [id, changeId, revision, name, attempt, status, createdAt, deadlineAt]
+      properties:
+        id:
+          type: string
+          description: Check run id (`chk_…`); also the last path segment of the runner's callback URL
+        changeId: { type: string }
+        revision:
+          type: string
+          description: The evaluated head sha this run was dispatched for
+        baseSha:
+          type: string
+          description: The commit the dispatched diff was computed against
+        name:
+          type: string
+          description: The check name, as declared by a `checks` evaluator in the policy
+        attempt:
+          type: integer
+          minimum: 1
+          description: Counts runs of the same check on the same revision; the highest is the one that counts
+        status:
+          type: string
+          enum: [queued, running, passed, failed, errored]
+        summary: { type: string }
+        detailsUrl: { type: string, format: uri }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        completedAt:
+          type: string
+          format: date-time
+          description: Present once the status is terminal
+        deadlineAt:
+          type: string
+          format: date-time
+          description: When a run that is still queued or running becomes errored
+
+    CheckRunReport:
+      type: object
+      required: [checkRunId, headSha, status, sequence]
+      properties:
+        checkRunId:
+          type: string
+          description: Must equal the id in the URL, binding the signed body to one check run
+        headSha:
+          type: string
+          description: Must equal the `headSha` of the dispatch request
+        status:
+          type: string
+          enum: [running, passed, failed, errored]
+        sequence:
+          type: integer
+          minimum: 1
+          description: >
+            Strictly increasing per check run (a counter, or milliseconds since
+            the epoch). A report at or below the last applied value is treated
+            as a redelivery.
+        summary:
+          type: string
+          description: Plain text; truncated to 4000 characters. Omit to keep the previous value.
+        detailsUrl:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: An http(s) URL without credentials. Omit to keep the previous value.
+
+    CheckDispatch:
+      type: object
+      description: >
+        The body Stratum POSTs to a `checks` evaluator's `url` for each
+        evaluated revision (and for a re-run), signed with
+        `X-Stratum-Signature`. Not a request any client sends to Stratum;
+        documented here because a runner is built against it.
+      required: [event, changeId, project, baseSha, headSha, diff, checkRunIds, callbackUrl, deadline]
+      properties:
+        event:
+          type: string
+          enum: [checks.requested]
+        changeId: { type: string }
+        project:
+          type: string
+          description: "`@namespace/slug`"
+        baseSha:
+          type: string
+          description: The commit `diff` was computed against
+        headSha:
+          type: string
+          description: The evaluated revision
+        diff:
+          type: string
+          description: Unified diff of baseSha..headSha
+        checkRunIds:
+          type: object
+          additionalProperties: { type: string }
+          description: Check name to check run id, for exactly the checks this request asks for
+        callbackUrl:
+          type: string
+          format: uri
+          description: Report to `<callbackUrl>/<checkRunId>`
+        deadline:
+          type: string
+          format: date-time
+          description: After this instant an unfinished check is errored
 
     Issue:
       type: object

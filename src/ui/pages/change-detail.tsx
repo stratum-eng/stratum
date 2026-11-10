@@ -1,6 +1,7 @@
 import type { FC } from "hono/jsx";
 import type { UsageBannerNotice } from "../../billing/usage-banner";
 import type { ChangeComment, ChangeReview } from "../../storage/change-reviews";
+import type { CheckRunView, CheckStatus } from "../../storage/checks";
 import type { CostSummaryEntry } from "../../storage/costs";
 import { type DiffFile, DiffView, LineCommentThreads } from "../components/diff-view";
 import { ProjectHeader } from "../components/project-header";
@@ -35,6 +36,11 @@ interface ChangeDetailProps {
     evalScore?: number;
     mergedAt: string;
   } | null;
+  /**
+   * The newest run of each check on the evaluated revision (#414) — the same
+   * set the merge gate reads. Empty for a project that declares no checks.
+   */
+  checks?: CheckRunView[];
   comments?: ChangeComment[];
   reviews?: ChangeReview[];
   costs?: CostSummaryEntry[];
@@ -72,6 +78,22 @@ function statusBadgeClass(status: string): string {
   }
 }
 
+/** The badge class for a check's status, so each state reads at a glance. */
+function checkBadgeClass(status: CheckStatus): string {
+  switch (status) {
+    case "queued":
+      return "badge badge-queued";
+    case "running":
+      return "badge badge-running";
+    case "passed":
+      return "badge badge-approved";
+    case "failed":
+      return "badge badge-rejected";
+    default:
+      return "badge badge-error";
+  }
+}
+
 const REVIEWABLE_STATUSES = ["open", "evaluating", "needs_changes", "accepted", "approved"];
 
 /** Mirrors MERGEABLE_STATUSES in routes/changes.ts — the API rejects other statuses. */
@@ -99,6 +121,7 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   change,
   evalRuns,
   provenance,
+  checks = [],
   comments = [],
   reviews = [],
   costs = [],
@@ -125,6 +148,9 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   // draft in progress. Signed-in viewers get a link to reload when they choose.
   const isPending = change.status === "open" || isEvaluating;
   const autoRefresh = isPending && !user;
+  // Mirrors the API: a re-run is refused while a run is being evaluated (its
+  // checks are about to be dispatched anyway) and once the change is closed.
+  const canRerunChecks = canReview && !isEvaluating && !TERMINAL_STATUSES.includes(change.status);
 
   return (
     <Layout
@@ -295,6 +321,67 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
           </div>
         )}
       </div>
+
+      {checks.length > 0 && (
+        <div class="card">
+          <h2>Checks</h2>
+          <p class="text-muted">
+            Reported by the project's runner for revision{" "}
+            <span class="mono">{checks[0]?.revision.slice(0, 12)}</span>. A required check blocks
+            the merge until it has passed.
+          </p>
+          <div class="table-scroll">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Check</th>
+                  <th>Status</th>
+                  <th>Summary</th>
+                  {canRerunChecks && <th>Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {checks.map((check) => (
+                  <tr key={check.id}>
+                    <td>
+                      {check.name}
+                      {check.attempt > 1 && (
+                        <span class="text-muted"> (attempt {check.attempt})</span>
+                      )}
+                    </td>
+                    <td>
+                      <span class={checkBadgeClass(check.status)}>{check.status}</span>
+                    </td>
+                    <td>
+                      {check.summary ?? "—"}
+                      {check.detailsUrl !== undefined && (
+                        <>
+                          {" "}
+                          <a href={check.detailsUrl} target="_blank" rel="noreferrer noopener">
+                            Details
+                          </a>
+                        </>
+                      )}
+                    </td>
+                    {canRerunChecks && (
+                      <td>
+                        <form
+                          method="post"
+                          action={`/api/changes/${change.id}/checks/${check.id}/rerun`}
+                        >
+                          <button type="submit" class="btn">
+                            Re-run
+                          </button>
+                        </form>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {provenance !== null && (
         <div class="card">

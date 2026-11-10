@@ -49,6 +49,11 @@ export const BACKUP_TABLES: readonly string[] = [
   "import_jobs",
   "changes",
   "eval_runs",
+  // Check runs (migration 074, #414). The merge gate reads these for
+  // `merge.requiredChecks`; a restore without them would not open any gate —
+  // a missing required check blocks — but would lose every change's CI record
+  // and force a re-run of each. `secret_ref` is a secret's NAME, not a key.
+  "checks",
   "provenance",
   "change_comments",
   "change_reviews",

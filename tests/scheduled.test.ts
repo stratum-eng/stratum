@@ -17,6 +17,7 @@ const noopRunners: JobRunners = {
   "import-cleanup": () => Promise.resolve(),
   "oauth-code-sweep": () => Promise.resolve(),
   "evaluation-sweep": () => Promise.resolve(),
+  "check-deadline-sweep": () => Promise.resolve(),
 };
 
 describe("jobsForCron", () => {
@@ -38,13 +39,14 @@ describe("jobsForCron", () => {
     expect(jobs).not.toContain("backup");
   });
 
-  it("runs the event, deletion, import and evaluation sweeps on the */5 trigger", () => {
+  it("runs the event, deletion, import, evaluation and check-deadline sweeps on the */5 trigger", () => {
     expect(jobsForCron("*/5 * * * *")).toEqual([
       "event-sweep",
       "deletion-sweep",
       "import-sweep",
       "oauth-code-sweep",
       "evaluation-sweep",
+      "check-deadline-sweep",
     ]);
   });
 

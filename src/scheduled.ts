@@ -4,6 +4,7 @@ import { sweepStaleEvents } from "./queue/event-consumer";
 import { runImportSweep } from "./queue/import-sweep";
 import { runTtlSweep } from "./queue/ttl-sweep";
 import { syncAllProjects } from "./routes/sync";
+import { sweepOverdueChecks } from "./services/check-runs";
 import { sweepStuckEvaluations } from "./services/evaluation-run";
 import { purgeExpiredAgentSignups } from "./storage/agent-signups";
 import { cleanupOldImports } from "./storage/imports";
@@ -23,7 +24,8 @@ export type ScheduledJob =
   | "oauth-code-sweep"
   | "oidc-state-purge"
   | "agent-signup-purge"
-  | "evaluation-sweep";
+  | "evaluation-sweep"
+  | "check-deadline-sweep";
 
 /** How long a finished import job is kept before `import-cleanup` prunes it. */
 const IMPORT_RETENTION_DAYS = 30;
@@ -47,6 +49,9 @@ const IMPORT_RETENTION_DAYS = 30;
  * `evaluation-sweep` (#412) is the same shape — one indexed query, a bounded
  * batch of conditional writes and queue sends — and the change it recovers is
  * one whose author is waiting on a verdict.
+ *
+ * `check-deadline-sweep` (#414) is a single indexed UPDATE: check runs still
+ * `queued` or `running` past their deadline become `errored`.
  */
 export function jobsForCron(cron: string): ScheduledJob[] {
   switch (cron) {
@@ -57,6 +62,7 @@ export function jobsForCron(cron: string): ScheduledJob[] {
         "import-sweep",
         "oauth-code-sweep",
         "evaluation-sweep",
+        "check-deadline-sweep",
       ];
     case "0 4 * * *":
       return ["backup"];
@@ -87,6 +93,7 @@ const JOB_RUNNERS: JobRunners = {
   "import-cleanup": (env, logger) => cleanupOldImports(env.DB, IMPORT_RETENTION_DAYS, logger),
   "oauth-code-sweep": (env, logger) => sweepExpiredAuthorizationCodes(env.DB, logger),
   "evaluation-sweep": (env, logger) => sweepStuckEvaluations(env, logger),
+  "check-deadline-sweep": (env, logger) => sweepOverdueChecks(env, logger),
 };
 
 /**

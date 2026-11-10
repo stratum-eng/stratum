@@ -213,7 +213,7 @@ vetted by anyone. A name you do not recognise should be disconnected.
 
 ## The tools
 
-Thirty-eight tools cover the full contribution loop, from creating or importing
+Forty tools cover the full contribution loop, from creating or importing
 a project to promoting a change to GitHub, plus organization management. Project
 arguments take a `namespace/slug` reference (`@acme/api` and `acme/api` both
 work); organization arguments take the org's slug (`acme` or `@acme`). Every
@@ -354,6 +354,8 @@ it into files, commits or messages.
 | `stratum_reject_change` | Close a change without merging. |
 | `stratum_review_change` | Submit a `request_changes` verdict. `approve` is refused over MCP: approvals are made by a signed-in human in the browser. |
 | `stratum_evaluate_change` | Re-run a change's gates against its workspace's current state — after pushing more commits. Needs write access to the project. |
+| `stratum_list_checks` | A change's [check runs](/guides/checks/): the newest run of each check on the evaluated revision, which is what `merge.requiredChecks` reads. Poll it until every required check is terminal; only `passed` lets the merge through. `all` returns every revision and attempt. Needs read access to the project. |
+| `stratum_rerun_check` | Re-run one check on the revision it ran against — a flaky failure, or a runner that never reported. It does not pick up new commits: after a push, use `stratum_evaluate_change`. Needs write access to the project; user credentials only. |
 | `stratum_comment_change` | Comment on a change: change-wide, anchored to a diff line (`file` + `line`), or as a reply (`parent_comment_id`). Needs read access to the project. |
 | `stratum_list_change_comments` | A change's comments in order, with anchors, replies and resolved state. |
 | `stratum_promote_change` | Push an **accepted** change's branch to the project's linked GitHub repository and open a PR (a draft by default) against the default branch. Needs write access to the project. |
@@ -402,7 +404,8 @@ them alike. With an **agent token**, or an OAuth connection
   `get_file`, `get_activity`), `stratum_create_workspace`, `stratum_commit`,
   `stratum_workspace_remote` (the credential then pushes as the agent),
   `stratum_create_change`, `stratum_comment_change`,
-  `stratum_list_change_comments`, `stratum_create_issue`, `stratum_list_issues`,
+  `stratum_list_change_comments`, `stratum_list_checks`, `stratum_create_issue`,
+  `stratum_list_issues`,
   and `stratum_get_usage` (which reports the **owner's** allowance) — an agent
   can do everything up to and including proposing a gated change, discussing it,
   and opening issues about its work. Address projects by `namespace/slug`
@@ -411,6 +414,7 @@ them alike. With an **agent token**, or an OAuth connection
   token gets a 401 from `stratum_whoami`; a bound connection gets its identity.
 - **Always refused:** `stratum_merge_change`, `stratum_reject_change`,
   `stratum_review_change`, `stratum_update_issue`, `stratum_evaluate_change`,
+  `stratum_rerun_check`,
   `stratum_promote_change`, `stratum_create_project`, `stratum_import_project`,
   `stratum_sync_project`, and the organization tools that change anything.
   Merging, deciding, issue triage, re-running gates, publishing to GitHub,

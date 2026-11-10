@@ -295,6 +295,14 @@ REPO_DO_ENABLED = "false"
 # inherit top-level vars: deploying with --env requires it in that env's
 # [env.<name>.vars] block too, or the deployed Worker is silently unrestricted.
 # DO_JURISDICTION = "eu"
+# The canonical public URL of this instance. Check runs (#414) put it in the
+# `callbackUrl` a project's CI runner reports to, and an instance that evaluates
+# on the evaluation queue has no request to take an origin from — so without it
+# every dispatched check is `errored` with a summary naming this setting. It
+# also pins the passkey relying party (see docs/user-guide/passkeys.md), so set
+# it to the hostname users already sign in on. Declare it PER ENVIRONMENT:
+# named envs do not inherit top-level vars.
+# APP_URL = "https://stratum.example.com"
 # Set these to your own host when self-hosting (and register the callback URLs
 # in your GitHub/Google OAuth apps):
 OAUTH_REDIRECT_URI = "http://localhost:8787/auth/github/callback"

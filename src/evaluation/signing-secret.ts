@@ -66,6 +66,27 @@ export function isSigningSecretName(name: string): boolean {
 export const SIGNING_SECRET_NAME_RULE =
   "must be a project secret name starting with WEBHOOK_ (matching ^WEBHOOK_[A-Z0-9_]+$, at most 64 characters, not ending in _API_KEY)";
 
+/**
+ * Hex HMAC-SHA256 of `body` under `secret` — the value after `sha256=` in an
+ * `X-Stratum-Signature` header. One implementation for both directions: what
+ * the webhook and checks evaluators send, and what the check-run callback
+ * recomputes to verify a runner (#414).
+ */
+export async function hmacSha256Hex(secret: string, body: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(body));
+  return Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 /** The two ways a policy entry may supply a signing key. */
 export interface SigningSecretSpec {
   /** Deprecated: a literal key, readable by anyone with repo read access. */

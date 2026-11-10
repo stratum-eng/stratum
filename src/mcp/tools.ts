@@ -1,5 +1,5 @@
 /**
- * The thirty-eight tools the MCP server exposes.
+ * The forty tools the MCP server exposes.
  *
  * The full agent contribution loop: create or import a project, read it, fork a
  * workspace, commit, open an evaluation-gated change, re-evaluate it, discuss it
@@ -445,6 +445,28 @@ export function buildTools(client: StratumClient): ToolDef[] {
       "Re-run a change's evaluation gates against its workspace's current state — do this after pushing new commits to the workspace. On instances with an evaluation queue the change comes back `evaluating` with no verdict yet: poll stratum_get_change until the status leaves `evaluating`. Otherwise the verdicts are returned directly. Merged, rejected and promoted changes cannot be re-evaluated. Needs write access to the project; user credentials only (agent tokens are refused). Needs a write grant (mcp:write).",
       { change_id: changeIdArg },
       (a) => client.evaluateChange(a.change_id),
+    ),
+    tool(
+      "stratum_list_checks",
+      "List a change's check runs: per-job CI results a project's runner reports back asynchronously, after evaluation. Returns the newest run of each check on the change's evaluated revision — exactly what the merge gate reads for `merge.requiredChecks` — with status `queued`, `running`, `passed`, `failed` or `errored`, a summary and a details link. A required check that is missing, queued, running, failed or errored blocks the merge; only `passed` satisfies it, so poll this until every required check is terminal rather than merging on a pending one. Checks belong to one revision: after new commits and a re-evaluation the list starts again. Pass `all` for every revision and attempt. Needs read access to the project.",
+      {
+        change_id: changeIdArg,
+        all: {
+          type: "boolean",
+          description: "Include every revision and attempt, not just the current ones",
+          optional: true,
+        },
+      },
+      (a) => client.listChecks(a.change_id, a.all === true ? { all: true } : {}),
+    ),
+    tool(
+      "stratum_rerun_check",
+      "Re-run one check on the revision it ran against — for a flaky failure or a runner that never reported. Creates a new run (a new id) and dispatches it to the project's runner; the old run no longer counts. It does not pick up new commits: if the workspace has changed, the call is refused with STALE_REVISION and stratum_evaluate_change is what dispatches checks for the new revision. Also refused while the change is still `evaluating`, on a merged or rejected change, and for a run that a newer one has already replaced. Get the check id from stratum_list_checks. Needs write access to the project; user credentials only (agent tokens are refused, as for stratum_evaluate_change — ask the user to re-run it). Needs a write grant (mcp:write).",
+      {
+        change_id: changeIdArg,
+        check_id: { type: "string", description: "Check run id, e.g. chk_abc123" },
+      },
+      (a) => client.rerunCheck(a.change_id, a.check_id),
     ),
     tool(
       "stratum_promote_change",

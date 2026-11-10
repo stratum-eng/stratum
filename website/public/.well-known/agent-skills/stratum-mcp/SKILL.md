@@ -41,7 +41,7 @@ On an **agent token it returns 401, and that is the expected answer**, not a
 misconfiguration: the endpoint behind it is user-only. A 401 here means you are
 an agent, so plan for `stratum_review_change`, `stratum_merge_change`,
 `stratum_reject_change`, `stratum_update_issue`, `stratum_evaluate_change`,
-`stratum_promote_change`, project creation, import and sync, and org changes to
+`stratum_rerun_check`, `stratum_promote_change`, project creation, import and sync, and org changes to
 be refused, and address
 projects by `namespace/slug` rather than through `stratum_list_projects`, which
 returns an empty list for you.
@@ -65,6 +65,8 @@ returns an empty list for you.
 | `stratum_list_branches` | List a project's branches |
 | `stratum_comment_change`, `stratum_list_change_comments` | Your feedback channel on a change — agent tokens may comment, even though they cannot review |
 | `stratum_evaluate_change` | Re-run a change's gates after pushing more commits; poll `stratum_get_change` while it is `evaluating`. User credentials only. |
+| `stratum_list_checks` | Read a change's check runs: per-job CI results the project's runner reports asynchronously. A required check blocks the merge until it is `passed`, so **poll this until every required check is terminal** before asking for a merge. Checks belong to one revision and start again after a re-evaluation. |
+| `stratum_rerun_check` | Re-run one check on the same revision (a flaky failure, a runner that never reported). Does not pick up new commits. User credentials only. |
 | `stratum_promote_change` | Open the GitHub PR for an accepted change. User credentials only. |
 | `stratum_create_project`, `stratum_import_project` | Create a project, or import one from GitHub/GitLab/Bitbucket — into your namespace or, with `org`, an organization you can write to. User credentials only. |
 | `stratum_get_import_status`, `stratum_get_sync_status` | Follow an import, or read an imported project's sync state. Needs read access to the project (write access while an import is unfinished); agent tokens may use them. |

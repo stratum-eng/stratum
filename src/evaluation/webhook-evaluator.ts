@@ -5,7 +5,7 @@ import type { Result } from "../utils/result";
 import { err, ok } from "../utils/result";
 import { validateWebhookUrl } from "../utils/validation";
 import { sanitizePolicy } from "./sanitize-policy";
-import { type ProjectSecretSource, resolveSigningKey } from "./signing-secret";
+import { type ProjectSecretSource, hmacSha256Hex, resolveSigningKey } from "./signing-secret";
 import type {
   EvalPolicy,
   EvalResult,
@@ -13,21 +13,6 @@ import type {
   Evaluator,
   WebhookEvaluatorConfig,
 } from "./types";
-
-async function computeHmacSha256(secret: string, body: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(body));
-  return Array.from(new Uint8Array(signature))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
 
 export class WebhookEvaluator implements Evaluator {
   /**
@@ -113,7 +98,7 @@ export class WebhookEvaluator implements Evaluator {
       });
     }
     if (signing.status === "resolved") {
-      const hex = await computeHmacSha256(signing.key, body);
+      const hex = await hmacSha256Hex(signing.key, body);
       headers["X-Stratum-Signature"] = `sha256=${hex}`;
     }
 
