@@ -1161,6 +1161,44 @@ describe("with the RepoDO enabled", () => {
     expect(uncertain[0]?.detail).toMatchObject({ code: "RESYNC_FAILED", evaluated: false });
   });
 
+  it("records both commits and the pin when the push times out", async () => {
+    const { before, fixes } = await landFixOnMirror();
+    const pinned = fixes[1] ?? "";
+    env.REPO_DO_ENABLED = "true";
+    env.REPO_DO = {
+      idFromName: (name: string) => name,
+      get: () => ({
+        resync: async () => ({
+          status: "refused",
+          code: "RESYNC_PUSH_TIMEOUT",
+          message: "The push did not finish in time.",
+          httpStatus: 504,
+          branch: "main",
+          projectSha: before,
+          upstreamSha: pinned,
+        }),
+      }),
+    } as unknown as DurableObjectNamespace;
+
+    const res = await json(RESYNC, cookies.admin, "POST", { expectedSha: pinned });
+    expect(res.status).toBe(504);
+    expect(await res.json()).toMatchObject({ code: "RESYNC_PUSH_TIMEOUT" });
+    // The push may still land, and a retry would then answer `up-to-date` and
+    // write nothing. This entry is the only record of the two commits.
+    const uncertain = audit("branch.resync_uncertain");
+    expect(uncertain).toHaveLength(1);
+    const detail = uncertain[0]?.detail as Record<string, unknown>;
+    expect(detail).toMatchObject({
+      code: "RESYNC_PUSH_TIMEOUT",
+      evaluated: false,
+      oldSha: before,
+      upstreamSha: pinned,
+      expectedSha: pinned,
+    });
+    expect(typeof detail.repo).toBe("string");
+    expect(typeof detail.source).toBe("string");
+  });
+
   it("runs inline, without the object, when the kill switch is off", async () => {
     const { fixes } = await landFixOnMirror();
     const repoDo = enableRepoDo();

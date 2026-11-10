@@ -114,8 +114,20 @@ possible.
 
 1. On GitHub, open the mirror repository's **Settings → Rules → Rulesets** (or
    **Branches**, for classic branch protection).
-2. Add the maintainer to the bypass list of the rule that restricts pushes to
-   the default branch. Do not delete or disable the rule. Do not allow force pushes.
+2. Let the maintainer push, and nothing more. Do not delete or disable any
+   rule. Do not allow force pushes: a force push can rewrite the branch so
+   that the resync in step 6 is refused.
+
+   - **Classic branch protection:** add the maintainer to **Restrict who can
+     push to matching branches**. Leave **Allow force pushes** off.
+   - **Rulesets:** a bypass covers every rule in its ruleset, and the bypass
+     list takes roles, teams and apps, not single people. So check first that
+     **Block force pushes** is in a different ruleset from the one that
+     restricts updates. If one ruleset holds both, create a second ruleset
+     that targets the default branch, holds only **Block force pushes**, and
+     has an empty bypass list. Then add a team whose only member is the
+     maintainer to the bypass list of the ruleset that restricts updates, with
+     bypass mode **Always**.
 3. Note the time. The lock is restored in step 4.
 
 ### 3. Land the fix on the mirror
@@ -271,7 +283,7 @@ Read the answer:
 | `200`, `"status": "fast-forwarded"` | The project now holds the fix. `commits` lists what came in. | Check that `commits` is exactly what you pushed. Go to step 7. |
 | `200`, `"status": "up-to-date"` | The project already had the fix. | Go to step 7. |
 | `409 RESYNC_DIVERGED` | Something was merged on Stratum after the fix landed on GitHub. The error names both commits. Nothing was changed. | See [If the resync is refused](#if-the-resync-is-refused). |
-| `409 RESYNC_SHA_MISMATCH` | GitHub's default branch is not at the commit you pinned. Nothing was changed. | Find out who pushed, and what. Do not resync until you know. |
+| `409 RESYNC_SHA_MISMATCH` | `$BRANCH` on GitHub is not at the commit you pinned. That is the project's default branch, which need not be the one GitHub calls default. Nothing was changed. | Find out who pushed, and what. Do not resync until you know. |
 | `409 RESYNC_PROJECT_MOVED` | A merge landed during the resync. Nothing was changed by the resync. | Stop merges (step 1) and run it again. It will probably report divergence now. |
 | `403 SECOND_FACTOR_REQUIRED` or `IP_NOT_ALLOWED` | The organization's policy applies to this action too. | Sign in with a passkey, or run it from an allowed network. |
 | `403 ADMIN_REQUIRES_DIRECT_CREDENTIAL` | You used an OAuth grant. | Use a browser session or a personal API token. |
@@ -339,6 +351,13 @@ Do this the same day:
    done
    ```
 
+   That log covers every project on the instance, and each answer holds at
+   most 100 entries, newest first. Find the entries for this project at the
+   time of the incident. If they are not on the first page and the answer has
+   a `nextCursor`, ask again with `&cursor=<nextCursor>` until they appear or
+   no `nextCursor` comes back. Do not conclude that an entry is missing from
+   the first page alone.
+
    What to expect depends on how step 6 ended:
 
    - **The branch moved** (`status: "fast-forwarded"`): one `branch.resync_requested`
@@ -385,12 +404,21 @@ so the project's history stays, and the fix has to join it:
    made by a person on GitHub, and Stratum never makes it.
 
    The branch lock you restored in step 4 refuses it, and step 2 told you not
-   to allow force pushes. So this needs its own, separate exception: on the
-   rule that protects the default branch, add the one maintainer to the bypass
-   list **and** allow force pushes for that bypass only. Make the push, then
-   remove the bypass and turn force pushes off again at once, and confirm that
-   a push from that account is refused. Record who did it, and for how long,
-   in the incident issue.
+   to allow force pushes. So this needs its own, separate exception, for one
+   maintainer:
+
+   - **Classic branch protection:** add the maintainer to **Restrict who can
+     push to matching branches**, and set **Allow force pushes** to **Specify
+     who can force push**, naming only that maintainer.
+   - **Rulesets:** leave **Block force pushes** enabled, so that everyone else
+     who can push is still refused. Add a team whose only member is the
+     maintainer to the bypass list of the ruleset that restricts updates and
+     of the ruleset that blocks force pushes.
+
+   Make the push, then undo the exception at once: remove the maintainer or
+   the team from every list it was added to, and turn **Allow force pushes**
+   off again. Confirm that a push from that account is refused. Record who did
+   it, and for how long, in the incident issue.
 3. Choose **Resume mirror**. Stratum pushes the project's history, and the
    mirror returns to `ok`.
 

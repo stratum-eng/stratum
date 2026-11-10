@@ -260,7 +260,10 @@ number.
   exists even if the request fails later.
 - An audit entry `branch.resync_uncertain` when the resync stopped without
   knowing whether its push landed: it timed out, or its run died. It holds the
-  commits where they were known, and the reason.
+  commits where they were known, and the reason. The request itself writes
+  it, so a request that was cut off after its push leaves no such entry. If
+  you never received an answer, check the branch whether or not this entry
+  exists.
 - An audit entry `branch.resynced` when the branch moves. It holds the old and
   new commit, the source repository, the commits that came in, and
   `evaluated: false`. Every entry names the admin.
