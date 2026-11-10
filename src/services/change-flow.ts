@@ -775,6 +775,7 @@ export async function createChangeWithEvaluation(
     evaluatedSha,
     evaluatedTreeOid,
     workspaceHeadSha,
+    baseOid,
     mergeBaseOid,
     evalRuns,
     evalResult,
@@ -821,6 +822,11 @@ export async function createChangeWithEvaluation(
     evalReason: evalResult.reason,
     evaluatedSha,
     evaluatedTreeOid,
+    // Both ends from the diff's own clones. The base recorded at creation was
+    // read before the diff was made and can be a commit behind it; left in
+    // place, an up-to-date workspace would compare unequal to its own fork
+    // point and be treated as behind the project.
+    baseSha: baseOid,
     forkPointSha: mergeBaseOid,
     ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
     // Flag a change that edits the merge-protection config so the merge gate can

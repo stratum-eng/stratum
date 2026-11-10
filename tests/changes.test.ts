@@ -457,6 +457,24 @@ describe("POST /api/projects/:name/changes", () => {
     expect(vi.mocked(createChange)).not.toHaveBeenCalled();
   });
 
+  it("pins the base and the fork point from the same diff when evaluating inline", async () => {
+    await app.fetch(
+      request("POST", "/api/projects/my-project/changes", { workspace: "fix-bug" }, USER_AUTH),
+      env,
+    );
+    // Equal for an up-to-date workspace, so it is not taken for one that is behind.
+    expect(updateChangeStatus).toHaveBeenCalledWith(
+      env.DB,
+      expect.anything(),
+      expect.any(String),
+      "accepted",
+      expect.objectContaining({
+        baseSha: "base_sha_from_diff_clone",
+        forkPointSha: "base_sha_from_diff_clone",
+      }),
+    );
+  });
+
   it("creates a change, runs evaluators, and returns accepted status when eval passes", async () => {
     const res = await app.fetch(
       request("POST", "/api/projects/my-project/changes", { workspace: "fix-bug" }, USER_AUTH),
