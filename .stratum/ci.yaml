@@ -2,8 +2,9 @@
 #
 # Read from the BASE branch, never from the change under test: a change cannot
 # edit the list of steps it is gated by. That protects this list — not what
-# `npm test` does, which is whatever the change's package.json says. The path
-# rules and approvals in .stratum/policy.yaml cover that.
+# `npm test` does, which is whatever the change's package.json says. Only
+# review covers that: `merge.requiredApprovals` in .stratum/policy.yaml. There
+# is no path-specific approval rule yet (ADR 012).
 #
 # Every step is a required check unless marked `optional`. They run in order in
 # one fresh container, in one checkout, and a failing step does not stop the
