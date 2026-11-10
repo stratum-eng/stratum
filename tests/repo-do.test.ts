@@ -628,6 +628,32 @@ describe("RepoDO.mergeViaR2 sha-keyed staged trees (#124)", () => {
     expect(loadStagedTree).not.toHaveBeenCalled();
   });
 
+  it("falls back when the workspace was behind the project when evaluated", async () => {
+    // The staged tree as a child of baseSha would undo what the project gained
+    // after the fork, which the evaluated diff (from the fork point) never showed.
+    setChange("base-sha", {
+      forkPointSha: "older-commit",
+      workspaceHeadSha: "pinned-sha",
+      evaluatedTreeOid: EVAL_TREE,
+    });
+    const { ctx } = makeCtx();
+    const repo = new RepoDO(ctx, r2env);
+    expect(await repo.mergeViaR2("chg_1")).toEqual({ fallback: true });
+    expect(loadStagedTree).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back for a workspace that was up to date", async () => {
+    setChange("base-sha", {
+      forkPointSha: "base-sha",
+      workspaceHeadSha: "pinned-sha",
+      evaluatedTreeOid: EVAL_TREE,
+    });
+    const { ctx } = makeCtx();
+    const repo = new RepoDO(ctx, r2env);
+    await repo.mergeViaR2("chg_1");
+    expect(loadStagedTree).toHaveBeenCalled();
+  });
+
   it("falls back when REPO_OBJECTS is not bound", async () => {
     const { ctx } = makeCtx();
     const repo = new RepoDO(ctx, env); // env without REPO_OBJECTS

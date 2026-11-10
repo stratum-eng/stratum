@@ -195,6 +195,9 @@ codes are in the [OpenAPI specification](openapi.yml).
   evaluate endpoints and recorded as the reason on a change whose queued
   evaluation could not complete. Bring the workspace up to date and evaluate
   again (see [Troubleshooting](../user-guide/troubleshooting.md#evaluation)).
+- `WORKSPACE_BEHIND` — `409` on a merge with `strategy=squash`; the workspace
+  does not contain the project's latest commits, and a squash would undo them.
+  Bring the workspace up to date and evaluate again, or merge without squash.
 - `SUBMODULES_UNSUPPORTED` — a gitlink entry (any depth) and/or a root-level
   `.gitmodules` file was found on import, or in the workspace a change is being
   created from — a gated push and `POST /api/projects/{name}/changes` alike,

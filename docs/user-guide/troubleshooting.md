@@ -291,6 +291,17 @@ The response lists the specific `reasons`. Common ones:
 - The change edits the merge-protection config, which requires an approval
   even when `requiredApprovals` is 0.
 
+### `WORKSPACE_BEHIND` on a squash merge
+
+A squash merge replaces the project's files with the workspace's. If the
+workspace does not contain the project's latest commits, that would undo them,
+and the gates never saw that: a change is evaluated on what its workspace
+changed since it forked. Bring the workspace up to date and evaluate again, or
+merge without `squash`, which merges three ways and keeps both sides.
+
+For the same reason a batch merge skips such a change with `workspace is behind
+the project; merge this change on its own`.
+
 ### `MERGE_CONFLICT`
 
 The response carries a conflict id for

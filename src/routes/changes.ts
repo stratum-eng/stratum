@@ -68,7 +68,7 @@ import { pushMirrorMode } from "../storage/push-mirrors";
 import { getProject, getWorkspace } from "../storage/state";
 import { getProjectSourceUrl } from "../storage/sync";
 import type { Change, Env, ProjectEntry } from "../types";
-import { projectDefaultBranch } from "../types";
+import { isBehindProject, projectDefaultBranch } from "../types";
 import {
   canReadProject,
   canWriteProject,
@@ -1059,8 +1059,11 @@ app.post("/changes/:id/merge", async (c) => {
         409,
       );
     }
-    if (mergeResult.error.code === "STALE_WORKSPACE") {
-      return c.json({ error: mergeResult.error.message, code: "STALE_WORKSPACE" }, 409);
+    if (
+      mergeResult.error.code === "STALE_WORKSPACE" ||
+      mergeResult.error.code === "WORKSPACE_BEHIND"
+    ) {
+      return c.json({ error: mergeResult.error.message, code: mergeResult.error.code }, 409);
     }
     logger.error("Failed to merge workspace into project", mergeResult.error);
     return badRequest(mergeResult.error.message);
@@ -1283,6 +1286,12 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
       if (lacksEvaluatedRevision(change)) return { id, skip: "no evaluated revision" };
       if (!MERGEABLE_STATUSES.includes(change.status)) return { id, skip: "not mergeable" };
       if (!change.baseSha) return { id, skip: "no base" };
+      // A batch lands each workspace's whole tree on top of `baseSha`, which
+      // for a workspace that is behind is more than was evaluated. Not waived
+      // by `force`: it is about what would land, not about a gate.
+      if (isBehindProject(change)) {
+        return { id, skip: "workspace is behind the project; merge this change on its own" };
+      }
       if (!force) {
         let mergePolicy: EvalPolicy;
         try {
@@ -1956,6 +1965,7 @@ app.post("/changes/:id/evaluate", async (c) => {
     evaluatedTreeOid,
     workspaceHeadSha,
     baseOid,
+    mergeBaseOid,
     evalRuns,
     evalResult,
     billingSubject: evaluateSubject,
@@ -1999,6 +2009,7 @@ app.post("/changes/:id/evaluate", async (c) => {
     // be un-staled, and re-evaluating it — the documented remedy — would report
     // a fresh pass while the merge kept returning STALE_BASE.
     baseSha: baseOid,
+    forkPointSha: mergeBaseOid,
     // Re-pin to the commit this re-evaluation actually ran against (#115).
     ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
     // Recompute the protected-config flag from the diff this run actually saw
@@ -2100,7 +2111,7 @@ app.post("/changes/:id/evaluate", async (c) => {
     project,
     policy: evaluatedPolicy,
     diff,
-    baseSha: baseOid,
+    baseSha: mergeBaseOid,
     headSha: evaluatedSha,
     headTreeSha: evaluatedTreeOid,
     requestOrigin: new URL(c.req.url).origin,

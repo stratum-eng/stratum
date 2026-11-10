@@ -7470,7 +7470,17 @@ components:
         evalReason: { type: string }
         baseSha:
           type: string
-          description: Project HEAD at change creation — the base the evaluation ran against
+          description: >-
+            The project's tip when the change was last evaluated (at creation,
+            until the first verdict). `merge.requireFreshBase` compares it with
+            the project head.
+        forkPointSha:
+          type: string
+          description: >-
+            The commit the workspace forked from the project. The evaluated
+            diff runs from this commit to `evaluatedSha`. Differs from
+            `baseSha` when the workspace is behind the project. Absent on
+            changes evaluated before this field existed.
         evaluatedSha:
           type: string
           description: Workspace tip the evaluation ran against; merges reject if it moved

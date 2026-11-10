@@ -14,3 +14,13 @@
   evaluated as it stands.** Evaluation fails with `FORK_POINT_NOT_FOUND` and
   says to bring the workspace up to date. A merge already needed the fork point
   within the project's last 50 commits.
+- **A squash merge of a workspace that is behind its project is refused** with
+  `409 WORKSPACE_BEHIND`. A squash replaces the project's files with the
+  workspace's, which would undo the project's newer commits. It used to go
+  through. Merge without squash, or bring the workspace up to date first. A
+  batch merge skips such a change for the same reason.
+
+### Added
+- **`forkPointSha` on a change**: the commit its workspace forked from, which
+  is where the evaluated diff starts. `baseSha` remains the project's tip at
+  evaluation.

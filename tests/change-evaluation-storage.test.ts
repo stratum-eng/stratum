@@ -86,6 +86,27 @@ describe("run-keyed evaluation writes (#412)", () => {
     expect(evalRunCount(raw, change.id)).toBe(1);
   });
 
+  it("records the fork point the evaluated diff started from, beside the project's tip", async () => {
+    const { db } = makeSqliteD1();
+    const change = await queuedChange(db);
+
+    await finalizeEvaluationRun(db, logger, {
+      changeId: change.id,
+      runId: "erun_first",
+      ...passing,
+      opts: { ...passing.opts, baseSha: "project-tip", forkPointSha: "fork-point" },
+    });
+
+    const read = await getChange(db, logger, change.id);
+    expect(read.success && read.data.baseSha).toBe("project-tip");
+    expect(read.success && read.data.forkPointSha).toBe("fork-point");
+
+    // The inline path writes it through updateChangeStatus.
+    await updateChangeStatus(db, logger, change.id, "accepted", { forkPointSha: "moved" });
+    const after = await getChange(db, logger, change.id);
+    expect(after.success && after.data.forkPointSha).toBe("moved");
+  });
+
   it("never lets a superseded run overwrite a newer revision's run", async () => {
     const { db, raw } = makeSqliteD1();
     const change = await queuedChange(db);

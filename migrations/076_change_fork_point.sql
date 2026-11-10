@@ -1,0 +1,12 @@
+-- Migration 076: the commit a change's workspace forked from.
+--
+-- A change is evaluated on the diff from this commit to the workspace's tip.
+-- `base_sha` stays the project's tip at evaluation, which is what
+-- `merge.requireFreshBase` compares against the project head. The two differ
+-- when the workspace is behind the project, and a merge path that lands the
+-- workspace's whole tree on top of `base_sha` would then land more than was
+-- evaluated, so those paths read this column and stand aside.
+--
+-- NULL on changes evaluated before this migration. Those were evaluated on the
+-- diff against `base_sha`, so for them the two are the same by construction.
+ALTER TABLE changes ADD COLUMN fork_point_sha TEXT;

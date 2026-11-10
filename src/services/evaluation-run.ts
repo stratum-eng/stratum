@@ -178,6 +178,7 @@ export async function runEvaluationJob(
     evaluatedTreeOid,
     workspaceHeadSha,
     baseOid,
+    mergeBaseOid,
     evalRuns,
     evalResult,
     billingSubject,
@@ -199,6 +200,7 @@ export async function runEvaluationJob(
     evaluatedSha,
     evaluatedTreeOid,
     baseSha: baseOid,
+    forkPointSha: mergeBaseOid,
     ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
     touchesProtectedConfig: diffTouchesProtectedConfig(diff),
   };
@@ -253,7 +255,7 @@ export async function runEvaluationJob(
     project,
     policy,
     diff,
-    baseSha: baseOid,
+    baseSha: mergeBaseOid,
     headSha: evaluatedSha,
     headTreeSha: evaluatedTreeOid,
     ...(options.requestOrigin !== undefined ? { requestOrigin: options.requestOrigin } : {}),
@@ -310,6 +312,7 @@ export async function runEvaluationJob(
     evaluatedSha,
     evaluatedTreeOid,
     baseSha: baseOid,
+    forkPointSha: mergeBaseOid,
     ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
   };
 

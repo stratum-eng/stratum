@@ -506,7 +506,10 @@ workspace  →  commit  →  change (evaluation runs)  →  review  →  merge
    required evaluator is failing, approvals are short, the base is stale
    (`requireFreshBase`), or the workspace moved since evaluation. A conflicting
    three-way merge is refused with `409 MERGE_CONFLICT` and a conflict id rather
-   than silently falling back to a squash. If a `postMergeCommand` is configured
+   than silently falling back to a squash. A squash replaces the project's files
+   with the workspace's, so it is refused with `409 WORKSPACE_BEHIND` when the
+   workspace lacks the project's latest commits; bring the workspace up to date
+   or merge three ways. If a `postMergeCommand` is configured
    *and* the Sandboxes binding is present, it runs against the merged HEAD and a
    failure auto-reverts.
 

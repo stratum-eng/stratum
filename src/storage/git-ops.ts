@@ -1180,6 +1180,25 @@ async function resolveFetchedTip(
 }
 
 /**
+ * Whether `commit` has the tip of `branch` among its ancestors (or is it).
+ * Anything that stops the walk short of an answer counts as no.
+ */
+async function containsProjectTip(
+  fs: NodeFS,
+  dir: string,
+  branch: string,
+  commit: string,
+): Promise<boolean> {
+  const tip = await fromPromise(git.resolveRef({ fs, dir, ref: branch }));
+  if (!tip.success) return false;
+  if (tip.data === commit) return true;
+  const descends = await fromPromise(
+    git.isDescendent({ fs, dir, oid: commit, ancestor: tip.data, depth: -1 }),
+  );
+  return descends.success && descends.data;
+}
+
+/**
  * Merges a workspace into its parent project repo.
  *
  * Performs a true three-way merge via isomorphic-git's multi-remote fetch. A
@@ -1314,6 +1333,23 @@ export async function mergeWorkspaceIntoProject(
   }
 
   if (options.strategy === "squash") {
+    // A squash replaces the project's files with the workspace's. That is the
+    // change that was evaluated only if the workspace already holds everything
+    // the project has; otherwise it would also undo the project's newer
+    // commits, which no gate saw.
+    if (!(await containsProjectTip(fs, dir, branch, workspaceSha))) {
+      logger.warn("Refusing squash merge of a workspace that is behind the project", {
+        projectRemote,
+        workspaceSha,
+      });
+      return err(
+        new AppError(
+          `This workspace does not contain the latest commits on ${branch}, and a squash merge would undo them. Bring the workspace up to date and evaluate again, or merge without squash.`,
+          "WORKSPACE_BEHIND",
+          409,
+        ),
+      );
+    }
     return squashMerge(
       fs,
       dir,

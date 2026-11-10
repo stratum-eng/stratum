@@ -804,6 +804,18 @@ export interface Agent {
 
 export type AgentCredentialKind = "token" | "oauth_grant";
 
+/**
+ * Whether a change's workspace was behind the project when it was evaluated,
+ * so that the evaluated diff (from the fork point) is not the same as the
+ * difference between the project's tip and the workspace's tree. A merge path
+ * that lands the workspace's tree as it stands must not take such a change.
+ * False for changes evaluated before the fork point was recorded: those were
+ * evaluated on the difference from the project's tip.
+ */
+export function isBehindProject(change: Pick<Change, "baseSha" | "forkPointSha">): boolean {
+  return change.forkPointSha !== undefined && change.forkPointSha !== change.baseSha;
+}
+
 export interface Change {
   id: string;
   project: string;
@@ -836,8 +848,15 @@ export interface Change {
   evalScore?: number;
   evalPassed?: boolean;
   evalReason?: string;
-  /** Project HEAD at change creation — the base the evaluation ran against. */
+  /** The project's tip when the change was last evaluated (at creation, until
+   * the first verdict). `merge.requireFreshBase` compares it with the project
+   * head. */
   baseSha?: string;
+  /** The commit the workspace forked from the project: the evaluated diff runs
+   * from here to `evaluatedSha`. Differs from `baseSha` when the workspace is
+   * behind the project. Absent on changes evaluated before migration 076, which
+   * were evaluated on the diff against `baseSha`. */
+  forkPointSha?: string;
   /** Workspace tip the evaluation ran against; a merge rejects if it moved
    * (SEC-2 defense-in-depth assertion). Same revision as `workspaceHeadSha`. */
   evaluatedSha?: string;

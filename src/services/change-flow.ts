@@ -775,7 +775,7 @@ export async function createChangeWithEvaluation(
     evaluatedSha,
     evaluatedTreeOid,
     workspaceHeadSha,
-    baseOid,
+    mergeBaseOid,
     evalRuns,
     evalResult,
     billingSubject: createSubject,
@@ -821,6 +821,7 @@ export async function createChangeWithEvaluation(
     evalReason: evalResult.reason,
     evaluatedSha,
     evaluatedTreeOid,
+    forkPointSha: mergeBaseOid,
     ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
     // Flag a change that edits the merge-protection config so the merge gate can
     // require a human approval and forbid force-merging it (SA-3).
@@ -847,7 +848,7 @@ export async function createChangeWithEvaluation(
     project,
     policy,
     diff,
-    baseSha: baseOid,
+    baseSha: mergeBaseOid,
     headSha: evaluatedSha,
     headTreeSha: evaluatedTreeOid,
     ...(requestOrigin !== undefined ? { requestOrigin } : {}),
