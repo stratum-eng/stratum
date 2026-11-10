@@ -1180,6 +1180,25 @@ async function resolveFetchedTip(
 }
 
 /**
+ * Whether `commit` has the tip of `branch` among its ancestors (or is it).
+ * Anything that stops the walk short of an answer counts as no.
+ */
+async function containsProjectTip(
+  fs: NodeFS,
+  dir: string,
+  branch: string,
+  commit: string,
+): Promise<boolean> {
+  const tip = await fromPromise(git.resolveRef({ fs, dir, ref: branch }));
+  if (!tip.success) return false;
+  if (tip.data === commit) return true;
+  const descends = await fromPromise(
+    git.isDescendent({ fs, dir, oid: commit, ancestor: tip.data, depth: -1 }),
+  );
+  return descends.success && descends.data;
+}
+
+/**
  * Merges a workspace into its parent project repo.
  *
  * Performs a true three-way merge via isomorphic-git's multi-remote fetch. A
@@ -1314,6 +1333,23 @@ export async function mergeWorkspaceIntoProject(
   }
 
   if (options.strategy === "squash") {
+    // A squash replaces the project's files with the workspace's. That is the
+    // change that was evaluated only if the workspace already holds everything
+    // the project has; otherwise it would also undo the project's newer
+    // commits, which no gate saw.
+    if (!(await containsProjectTip(fs, dir, branch, workspaceSha))) {
+      logger.warn("Refusing squash merge of a workspace that is behind the project", {
+        projectRemote,
+        workspaceSha,
+      });
+      return err(
+        new AppError(
+          `This workspace does not contain the latest commits on ${branch}, and a squash merge would undo them. Bring the workspace up to date and evaluate again, or merge without squash.`,
+          "WORKSPACE_BEHIND",
+          409,
+        ),
+      );
+    }
     return squashMerge(
       fs,
       dir,
@@ -4255,9 +4291,245 @@ function fileDiff(
 }
 
 /**
- * Produce the change-gate's view of a workspace fork: the unified diff against
- * its base project plus the exact workspace revision that diff was computed
- * from.
+ * History each side of a change diff is cloned with. The usual change is a few
+ * commits on top of a project tip that is current or a few commits old, and
+ * this finds where it forked without a second fetch. Measured on an 830-file
+ * repository with the workspace three commits behind, the whole diff peaked at
+ * 49 to 79 MB over seven runs, against 61 to 63 MB with tip-only clones.
+ * Starting the project at its tip and fetching the rest when needed was worse:
+ * 86 MB in the one run measured.
+ */
+const DIFF_START_DEPTH = 16;
+
+/**
+ * The most history either side of a change diff is given while looking for the
+ * commit the workspace forked from. This runs in a Worker holding two clones:
+ * measured on an 830-file repository, a clone with no checked-out files keeps
+ * 6 MB at depth 1, 18 MB at depth 50 and 28 MB at depth 100. A merge needs the
+ * same commit inside {@link DEFAULT_SHALLOW_DEPTH}, so a workspace further
+ * behind than this could not be merged as it stands either.
+ */
+const DIFF_MAX_HISTORY_DEPTH = 64;
+
+/** The commits of one side that are present locally, nearest the tip first. */
+interface KnownHistory {
+  /** Commit oid -> distance from the tip. Iterates nearest first. */
+  distance: Map<string, number>;
+  parents: Map<string, string[]>;
+  /** True when some parent is not present locally, so a deeper fetch may reveal more. */
+  truncated: boolean;
+}
+
+async function readKnownHistory(fs: NodeFS, tip: string): Promise<KnownHistory> {
+  const distance = new Map<string, number>([[tip, 0]]);
+  const parents = new Map<string, string[]>();
+  let truncated = false;
+  let frontier = [tip];
+  for (let depth = 0; frontier.length > 0; depth++) {
+    const next: string[] = [];
+    for (const oid of frontier) {
+      const commit = await fromPromise(git.readCommit({ fs, dir: DIR, oid }));
+      if (!commit.success) {
+        // The far side of a shallow boundary: named by a child, not fetched.
+        distance.delete(oid);
+        truncated = true;
+        continue;
+      }
+      parents.set(oid, commit.data.commit.parent);
+      for (const parent of commit.data.commit.parent) {
+        if (distance.has(parent)) continue;
+        distance.set(parent, depth + 1);
+        next.push(parent);
+      }
+    }
+    frontier = next;
+  }
+  return { distance, parents, truncated };
+}
+
+/**
+ * The commit a workspace forked from, out of what both sides hold locally:
+ * a commit on both sides that no other such commit descends from. With more
+ * than one (the project was merged into the workspace along the way), the one
+ * nearest the project's tip, which leaves the smallest diff.
+ *
+ * Within shallow history this can name an older commit than the true fork
+ * point when a merge commit in the workspace reaches an old project commit by a
+ * shorter path than a newer one. {@link findForkPoint} fetches more history
+ * before accepting such an answer; see {@link forkPointIsSettled}.
+ */
+function pickForkPoint(workspace: KnownHistory, base: KnownHistory): string | null {
+  const common = [...workspace.distance.keys()].filter((oid) => base.distance.has(oid));
+  const superseded = new Set(
+    common.flatMap((oid) => workspace.parents.get(oid) ?? base.parents.get(oid) ?? []),
+  );
+  const candidates = common.filter((oid) => !superseded.has(oid));
+  if (candidates.length === 0) return null;
+  const rank = (oid: string) => base.distance.get(oid) ?? Number.POSITIVE_INFINITY;
+  return candidates.reduce((best, oid) => (rank(oid) < rank(best) ? oid : best));
+}
+
+/** How many commits in `history` are not `oid` or one of its ancestors. */
+function countCommitsSince(history: KnownHistory, oid: string): number {
+  const reached = new Set<string>();
+  for (let frontier = [oid]; frontier.length > 0; ) {
+    const next: string[] = [];
+    for (const commit of frontier) {
+      if (reached.has(commit) || !history.distance.has(commit)) continue;
+      reached.add(commit);
+      next.push(...(history.parents.get(commit) ?? []));
+    }
+    frontier = next;
+  }
+  return history.distance.size - reached.size;
+}
+
+/**
+ * Whether `oid` can be accepted as the fork point on what is known so far, or
+ * more history could still turn up a newer one.
+ *
+ * Settled when it is the project's tip, since nothing is newer. Settled too
+ * when the workspace's own commits (those the fork point does not reach) form
+ * a single line: a line enters the project's history at one commit, and every
+ * other shared commit lies behind it. A merge among them is what makes a second
+ * way in possible, at a depth not fetched yet, so that case is not settled.
+ */
+function forkPointIsSettled(workspace: KnownHistory, baseTip: string, oid: string): boolean {
+  if (oid === baseTip) return true;
+  const behind = new Set<string>();
+  for (let frontier = [oid]; frontier.length > 0; ) {
+    const next: string[] = [];
+    for (const commit of frontier) {
+      if (behind.has(commit)) continue;
+      behind.add(commit);
+      next.push(...(workspace.parents.get(commit) ?? []));
+    }
+    frontier = next;
+  }
+  for (const [commit, parents] of workspace.parents) {
+    if (!behind.has(commit) && parents.length > 1) return false;
+  }
+  return true;
+}
+
+/** Where a workspace's history meets its project's. */
+export type ForkPoint =
+  | { kind: "found"; oid: string }
+  /** Both histories were read to their roots and share no commit. */
+  | { kind: "unrelated" };
+
+/**
+ * Find the commit a workspace forked from, fetching more history on whichever
+ * side still has some until the two meet or {@link maxDepth} is reached.
+ *
+ * Network-free: the caller supplies the fetches, so the search can be tested
+ * against real in-memory repositories (as {@link applySourceUpdateWithDeepening}
+ * is).
+ */
+export async function findForkPoint(args: {
+  workspaceFs: NodeFS;
+  baseFs: NodeFS;
+  workspaceTip: string;
+  baseTip: string;
+  /** Depth each side was cloned at. */
+  depth: { workspace: number; base: number };
+  maxDepth: number;
+  deepen: { workspace: DeepenFetch; base: DeepenFetch };
+  branch: string;
+}): Promise<Result<ForkPoint, AppError>> {
+  const { workspaceFs, baseFs, workspaceTip, baseTip, maxDepth, deepen, branch } = args;
+  const depth = {
+    workspace: Math.max(1, args.depth.workspace),
+    base: Math.max(1, args.depth.base),
+  };
+
+  for (;;) {
+    const [workspace, base] = await Promise.all([
+      readKnownHistory(workspaceFs, workspaceTip),
+      readKnownHistory(baseFs, baseTip),
+    ]);
+    const oid = pickForkPoint(workspace, base);
+    if (oid !== null && forkPointIsSettled(workspace, baseTip, oid)) {
+      return ok({ kind: "found", oid });
+    }
+    if (!workspace.truncated && !base.truncated) {
+      // Everything there is has been read: the answer in hand is the answer.
+      return ok(oid !== null ? { kind: "found", oid } : { kind: "unrelated" });
+    }
+
+    // Bring the shallower side level first, then grow both.
+    const deepest = Math.max(depth.workspace, depth.base);
+    const targets = [deepest, Math.min(deepest * 4, maxDepth)];
+    let grew = false;
+    for (const target of targets) {
+      for (const side of ["workspace", "base"] as const) {
+        const truncated = side === "workspace" ? workspace.truncated : base.truncated;
+        if (!truncated || depth[side] >= target) continue;
+        const fetched = await deepen[side](target - depth[side]);
+        if (!fetched.success) return err(fetched.error);
+        depth[side] = target;
+        grew = true;
+      }
+      if (grew) break;
+    }
+    if (!grew && oid !== null) {
+      // Nothing more can be fetched within the cap. The commit in hand is
+      // shared, and at worst older than the true fork point: the diff then
+      // repeats changes the project already has, and leaves none of the
+      // workspace's own out.
+      return ok({ kind: "found", oid });
+    }
+    if (!grew) {
+      return err(
+        new AppError(
+          `Could not find where this workspace forked from ${branch} within the last ${maxDepth} commits. Bring the workspace up to date with ${branch}, then evaluate again. If the history of ${branch} was replaced after the workspace was forked, fork a new workspace and re-apply the change there.`,
+          "FORK_POINT_NOT_FOUND",
+          409,
+        ),
+      );
+    }
+  }
+}
+
+/** Fetch more history for the branch a clone made by {@link cloneRepo} tracks. */
+function deepenClone(fs: NodeFS, token: string, branch: string, logger: Logger): DeepenFetch {
+  return async (increment) => {
+    const result = await fromPromise(
+      withTimeout(
+        git.fetch({
+          fs,
+          http,
+          dir: DIR,
+          remote: "origin",
+          ref: branch,
+          singleBranch: true,
+          depth: increment,
+          relative: true,
+          onAuth: makeAuth(token),
+        }),
+        DEEPEN_FETCH_TIMEOUT_MS,
+        "getDiffBetweenRepos: git.fetch deepen",
+      ),
+    );
+    if (!result.success) {
+      logger.error("Failed to fetch more history for a change diff", result.error, { branch });
+      return err(
+        new ExternalServiceError("Git", "Failed to fetch more history for the diff", result.error),
+      );
+    }
+    return ok(undefined);
+  };
+}
+
+/**
+ * Produce the change-gate's view of a workspace fork: the unified diff of what
+ * the workspace changed, plus the exact workspace revision that diff was
+ * computed from.
+ *
+ * The diff is against the commit the workspace forked from, not the project's
+ * tip. Against the tip, every commit the project gained after the fork reads
+ * as the workspace undoing it: a 33-line change in a workspace a day behind
+ * came out as a 176,000-character diff, and the gates judged that.
  *
  * Both sides are cloned at the SAME `branch` -- an imported project keeps its
  * source branch name (master/trunk/...), and its fork inherits it -- so a caller
@@ -4285,12 +4557,19 @@ export async function getDiffBetweenRepos(
       workspaceOid: string;
       workspaceTreeOid: string;
       workspaceSha: string;
-      /** The base commit the diff was computed against, resolved from the same
-       * clone that produced it. Callers forward this to evaluators so a
-       * receiver can reproduce the exact tree the diff applies to (#274);
-       * re-resolving the project head separately would name a commit the diff
-       * may not have been built from. */
+      /** The project's tip when the diff was made, resolved from the same
+       * clone the fork point was searched in. It is what `merge.requireFreshBase`
+       * compares the project head against. */
       baseOid: string;
+      /** The commit the diff was computed against: where the workspace forked
+       * from the project. Equal to `baseOid` when the workspace is up to date.
+       * Callers forward this to evaluators so a receiver can reproduce the
+       * exact tree the diff applies to (#274). */
+      mergeBaseOid: string;
+      /** Commits the project has gained since the workspace forked, as far as
+       * the fetched history shows; 0 when the workspace is up to date, and 0
+       * when the histories are unrelated and there is no fork to count from. */
+      behindBy: number;
     },
     AppError
   >
@@ -4298,12 +4577,13 @@ export async function getDiffBetweenRepos(
   logger.debug("Getting diff between repos", { baseRemote, workspaceRemote });
 
   // This runs in a Worker with a fixed memory limit and holds two clones, so
-  // each is as small as the diff allows: the tip only (it reads no history) and
-  // no checked-out files (it reads trees and blobs, never a path on disk). They
+  // each is as small as the diff allows: a short history (see DIFF_START_DEPTH)
+  // and no checked-out files (it reads trees and blobs, never a path on disk). They
   // are made one after the other because a clone's peak is about three times
   // what it keeps. Measured on an 830-file repository: 17 MB at peak and 6 MB
-  // kept, against 50 MB and 35 MB for the default shallow clone.
-  const diffClone = { ref: branch, depth: 1, noCheckout: true };
+  // kept for a tip-only clone, against 50 MB and 35 MB for the default shallow
+  // clone.
+  const diffClone = { ref: branch, depth: DIFF_START_DEPTH, noCheckout: true };
   const workspaceCloneResult = await cloneRepo(workspaceRemote, workspaceToken, logger, diffClone);
   if (!workspaceCloneResult.success) return err(workspaceCloneResult.error);
   const baseCloneResult = await cloneRepo(baseRemote, baseToken, logger, diffClone);
@@ -4363,9 +4643,37 @@ export async function getDiffBetweenRepos(
   }
   const baseOid = baseOidResult.data;
 
+  const forkPoint = await findForkPoint({
+    workspaceFs,
+    baseFs,
+    workspaceTip: workspaceOid,
+    baseTip: baseOid,
+    depth: { workspace: DIFF_START_DEPTH, base: DIFF_START_DEPTH },
+    maxDepth: DIFF_MAX_HISTORY_DEPTH,
+    deepen: {
+      workspace: deepenClone(workspaceFs, workspaceToken, branch, logger),
+      base: deepenClone(baseFs, baseToken, branch, logger),
+    },
+    branch,
+  });
+  if (!forkPoint.success) {
+    logger.warn("No fork point for change diff", { baseRemote, workspaceRemote, baseOid });
+    return err(forkPoint.error);
+  }
+  // Histories with nothing in common have no fork point to diff from, and the
+  // two trees as they stand are the only comparison there is.
+  const mergeBaseOid = forkPoint.data.kind === "found" ? forkPoint.data.oid : baseOid;
+  // A fork point is in both clones; the project's tip, used when the histories
+  // are unrelated, is only in the project's.
+  const mergeBaseFs = mergeBaseOid === baseOid ? baseFs : workspaceFs;
+  const behindBy =
+    forkPoint.data.kind === "found"
+      ? countCommitsSince(await readKnownHistory(baseFs, baseOid), mergeBaseOid)
+      : 0;
+
   const [workspaceFilesResult, baseFilesResult] = await Promise.all([
-    listFilesAtCommit(workspaceFs, branch, logger),
-    listFilesAtCommit(baseFs, branch, logger),
+    listFilesAtCommit(workspaceFs, workspaceOid, logger),
+    listFilesAtCommit(mergeBaseFs, mergeBaseOid, logger),
   ]);
 
   if (!workspaceFilesResult.success) return err(workspaceFilesResult.error);
@@ -4384,7 +4692,7 @@ export async function getDiffBetweenRepos(
 
   await Promise.all([
     ...baseChanged.map(async ([path]) => {
-      const contentResult = await readFileAtCommit(baseFs, baseOid, path, logger);
+      const contentResult = await readFileAtCommit(mergeBaseFs, mergeBaseOid, path, logger);
       if (contentResult.success) {
         baseContent.set(path, contentResult.data);
       }
@@ -4401,8 +4709,22 @@ export async function getDiffBetweenRepos(
     base: new Map(baseFilesResult.data.map(([path, , mode]) => [path, mode])),
     workspace: new Map(workspaceFilesResult.data.map(([path, , mode]) => [path, mode])),
   });
-  logger.info("Successfully generated diff between repos", { baseRemote, workspaceRemote });
-  return ok({ diff, workspaceOid, workspaceTreeOid, workspaceSha, baseOid });
+  logger.info("Successfully generated diff between repos", {
+    baseRemote,
+    workspaceRemote,
+    baseOid,
+    mergeBaseOid,
+    behindBy,
+  });
+  return ok({
+    diff,
+    workspaceOid,
+    workspaceTreeOid,
+    workspaceSha,
+    baseOid,
+    mergeBaseOid,
+    behindBy,
+  });
 }
 
 /**

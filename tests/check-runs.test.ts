@@ -295,6 +295,8 @@ beforeEach(async () => {
       workspaceTreeOid: `tree-${workspaceTip}`,
       workspaceSha: workspaceTip,
       baseOid: "base-1",
+      mergeBaseOid: "base-1",
+      behindBy: 0,
     },
   }));
   vi.mocked(getCommitLogPreferNative).mockImplementation((async (

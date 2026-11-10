@@ -417,6 +417,8 @@ describe("POST /api/projects/:name/changes", () => {
         workspaceTreeOid: "ws_tree_oid",
         workspaceSha: "ws_tip_sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
     vi.mocked(updateChangeStatus).mockResolvedValue({
@@ -453,6 +455,30 @@ describe("POST /api/projects/:name/changes", () => {
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe("TARGET_DELETING");
     expect(vi.mocked(createChange)).not.toHaveBeenCalled();
+  });
+
+  it("pins the base and the fork point from the same diff when evaluating inline", async () => {
+    const res = await app.fetch(
+      request("POST", "/api/projects/my-project/changes", { workspace: "fix-bug" }, USER_AUTH),
+      env,
+    );
+    // And answers with what it stored, not the base read before the diff.
+    const body = (await res.json()) as { change: Change };
+    expect(body.change).toMatchObject({
+      baseSha: "base_sha_from_diff_clone",
+      forkPointSha: "base_sha_from_diff_clone",
+    });
+    // Equal for an up-to-date workspace, so it is not taken for one that is behind.
+    expect(updateChangeStatus).toHaveBeenCalledWith(
+      env.DB,
+      expect.anything(),
+      expect.any(String),
+      "accepted",
+      expect.objectContaining({
+        baseSha: "base_sha_from_diff_clone",
+        forkPointSha: "base_sha_from_diff_clone",
+      }),
+    );
   });
 
   it("creates a change, runs evaluators, and returns accepted status when eval passes", async () => {
@@ -1216,6 +1242,26 @@ describe("POST /api/changes/:id/merge", () => {
     expect(res.status).toBe(409);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe("STALE_WORKSPACE");
+  });
+
+  it("maps a refused squash of a workspace that is behind to 409 WORKSPACE_BEHIND", async () => {
+    vi.mocked(getChange).mockResolvedValue({
+      success: true,
+      data: { ...mockChange, status: "accepted", evaluatedSha: "sha_head" },
+    });
+    vi.mocked(mergeWorkspaceIntoProject).mockResolvedValue({
+      success: false,
+      error: new AppError("a squash merge would undo them", "WORKSPACE_BEHIND", 409),
+    });
+
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/merge?strategy=squash", undefined, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code: string; error: string };
+    expect(body.code).toBe("WORKSPACE_BEHIND");
+    expect(body.error).toContain("squash");
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -2149,6 +2195,55 @@ describe("POST /api/projects/:name/changes/merge-batch", () => {
     }[];
     expect(items.map((i) => i.changeId)).toEqual(["chg_b1"]);
     expect(items[0]?.expectedTreeOid).toBe("a".repeat(40));
+  });
+
+  it("skips a batch change whose workspace was behind the project when evaluated", async () => {
+    // A batch lands each workspace's whole tree on top of baseSha. chg_b2 was
+    // evaluated on the diff from an older fork point, so its tree would also
+    // undo what the project gained since — skipped, even in a force batch.
+    vi.mocked(getChangesByIds).mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: "chg_b1",
+          project: "my-project",
+          workspace: "fix-bug",
+          status: "approved",
+          baseSha: "base1",
+          forkPointSha: "base1",
+          evaluatedTreeOid: "a".repeat(40),
+        },
+        {
+          id: "chg_b2",
+          project: "my-project",
+          workspace: "feat-x",
+          status: "approved",
+          baseSha: "base1",
+          forkPointSha: "older-commit",
+          evaluatedTreeOid: "a".repeat(40),
+        },
+      ],
+      // biome-ignore lint/suspicious/noExplicitAny: minimal Change stubs
+    } as any);
+
+    const res = await app.fetch(
+      request(
+        "POST",
+        "/api/projects/my-project/changes/merge-batch",
+        { changeIds: ["chg_b1", "chg_b2"], force: true },
+        USER_AUTH,
+      ),
+      env,
+      // biome-ignore lint/suspicious/noExplicitAny: minimal ExecutionContext
+      exec() as any,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { skipped: { changeId: string; reason: string }[] };
+    expect(body.skipped.find((s) => s.changeId === "chg_b2")?.reason).toBe(
+      "workspace is behind the project; merge this change on its own",
+    );
+    const items = vi.mocked(batchMergeStagedTrees).mock.calls[0]?.[4] as { changeId: string }[];
+    expect(items.map((i) => i.changeId)).toEqual(["chg_b1"]);
   });
 
   it("#124: GCs both the latest and the sha-keyed staged-tree copies of a merged pinned change", async () => {
@@ -3596,6 +3691,8 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceTreeOid: "new_tree",
         workspaceSha: "new_sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
     vi.mocked(updateChangeStatus).mockResolvedValue({ success: true, data: undefined });
@@ -3707,6 +3804,8 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceTreeOid: "new_tree",
         workspaceSha: "new_sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
     vi.mocked(diffTouchesProtectedConfig).mockReturnValue(true);
@@ -3783,6 +3882,8 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceTreeOid: "old_tree",
         workspaceSha: "old_sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
 
@@ -3817,6 +3918,8 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceTreeOid: "old_tree",
         workspaceSha: "old_sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
 
@@ -3863,6 +3966,8 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         workspaceTreeOid: "old_tree",
         workspaceSha: "old_sha",
         baseOid: "base_sha_from_diff_clone",
+        mergeBaseOid: "base_sha_from_diff_clone",
+        behindBy: 0,
       },
     });
 

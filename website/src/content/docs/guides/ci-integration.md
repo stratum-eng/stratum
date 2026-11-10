@@ -219,8 +219,10 @@ it takes effect on the next evaluation with no policy change.
   `secret` and `secretRef` from every webhook evaluator entry, so no receiver sees any
   evaluator's signing secret — including its own. Provision your receiver's
   copy of the secret out of band; do not expect to read it from the payload.
-- `baseSha` is the commit the diff was computed against, resolved from the
-  same clone that produced the diff. **Check out that exact commit and apply
+- `baseSha` is the commit the diff was computed against: the commit the
+  workspace forked from, which is the project's tip only while the workspace is
+  up to date. It is resolved from the same clones that produced the diff.
+  **Check out that exact commit and apply
   the diff to it.** Do not apply the diff to your mirror's current default
   branch: the branch can advance between diff generation and delivery, and
   `git apply` will often succeed anyway wherever the context lines still

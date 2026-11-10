@@ -75,7 +75,7 @@ export type EvaluationJobOutcome =
  * Diff codes that no retry can change. Everything else a diff can fail with is
  * a clone or network failure, which redelivery can fix.
  */
-const PERMANENT_DIFF_CODES = new Set(["SUBMODULES_UNSUPPORTED"]);
+const PERMANENT_DIFF_CODES = new Set(["SUBMODULES_UNSUPPORTED", "FORK_POINT_NOT_FOUND"]);
 
 /**
  * Execute one evaluation run and record its verdict — if, when it finishes,
@@ -178,6 +178,7 @@ export async function runEvaluationJob(
     evaluatedTreeOid,
     workspaceHeadSha,
     baseOid,
+    mergeBaseOid,
     evalRuns,
     evalResult,
     billingSubject,
@@ -199,6 +200,7 @@ export async function runEvaluationJob(
     evaluatedSha,
     evaluatedTreeOid,
     baseSha: baseOid,
+    forkPointSha: mergeBaseOid,
     ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
     touchesProtectedConfig: diffTouchesProtectedConfig(diff),
   };
@@ -253,7 +255,7 @@ export async function runEvaluationJob(
     project,
     policy,
     diff,
-    baseSha: baseOid,
+    baseSha: mergeBaseOid,
     headSha: evaluatedSha,
     headTreeSha: evaluatedTreeOid,
     ...(options.requestOrigin !== undefined ? { requestOrigin: options.requestOrigin } : {}),
@@ -310,6 +312,7 @@ export async function runEvaluationJob(
     evaluatedSha,
     evaluatedTreeOid,
     baseSha: baseOid,
+    forkPointSha: mergeBaseOid,
     ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
   };
 

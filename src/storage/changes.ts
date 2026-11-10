@@ -16,6 +16,7 @@ interface ChangeRow {
   eval_passed: number | null;
   eval_reason: string | null;
   base_sha: string | null;
+  fork_point_sha: string | null;
   evaluated_sha: string | null;
   evaluated_tree_oid: string | null;
   agent_model: string | null;
@@ -55,6 +56,9 @@ function rowToChange(row: ChangeRow): Change {
   if (row.eval_passed !== null) change.evalPassed = row.eval_passed === 1;
   if (row.eval_reason !== null) change.evalReason = row.eval_reason;
   if (row.base_sha !== null) change.baseSha = row.base_sha;
+  if (row.fork_point_sha !== null && row.fork_point_sha !== undefined) {
+    change.forkPointSha = row.fork_point_sha;
+  }
   if (row.evaluated_sha !== null) change.evaluatedSha = row.evaluated_sha;
   if (row.evaluated_tree_oid !== null) change.evaluatedTreeOid = row.evaluated_tree_oid;
   if (row.agent_model !== null) change.agentModel = row.agent_model;
@@ -319,6 +323,8 @@ export interface UpdateChangeStatusOpts {
    * re-evaluated change stays STALE_BASE forever and re-evaluation can never
    * clear it. */
   baseSha?: string;
+  /** The commit the evaluated diff starts from. See `Change.forkPointSha`. */
+  forkPointSha?: string;
   evalScore?: number;
   evalPassed?: boolean;
   evalReason?: string;
@@ -385,6 +391,7 @@ function buildUpdateChangeStatusStatement(
   };
 
   addOptional("base_sha", opts?.baseSha);
+  addOptional("fork_point_sha", opts?.forkPointSha);
   addOptional("eval_score", opts?.evalScore);
   addOptional(
     "eval_passed",

@@ -22,7 +22,7 @@ import { putObject } from "../storage/object-store";
 import { recordProvenance } from "../storage/provenance";
 import { getProject, getWorkspace } from "../storage/state";
 import type { Env, ProjectEntry } from "../types";
-import { projectDefaultBranch } from "../types";
+import { isBehindProject, projectDefaultBranch } from "../types";
 import { type Logger, createLogger } from "../utils/logger";
 import { PhaseTimer } from "../utils/phase-timer";
 import { GroupCommitCoordinator, type ItemOutcome } from "./group-commit";
@@ -229,6 +229,11 @@ export class RepoDO extends DurableObject<Env> {
       return { success: false, error: "Change not found or not ready to merge" };
     }
     if (!change.baseSha) return { fallback: true }; // need a base for the synthetic merge
+    // The synthetic merge lands the workspace's whole tree as a child of
+    // `baseSha`. For a workspace that is behind, that is more than was
+    // evaluated: it would also undo what the project gained after the fork. The
+    // git path merges three ways from the real fork point.
+    if (isBehindProject(change)) return { fallback: true };
 
     const projectResult = await getProject(this.env.STATE, change.project, log);
     if (!projectResult.success) return { success: false, error: projectResult.error.message };

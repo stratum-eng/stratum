@@ -164,6 +164,8 @@ describe("asynchronous evaluation (#412)", () => {
         workspaceTreeOid: "tree-1",
         workspaceSha: "tip-1",
         baseOid: "base-sha",
+        mergeBaseOid: "base-sha",
+        behindBy: 0,
       },
     });
     secretScanEvaluate.mockResolvedValue({

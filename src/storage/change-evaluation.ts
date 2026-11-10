@@ -211,6 +211,7 @@ export async function finalizeEvaluationRun(
     };
     const { opts } = args;
     set("base_sha", opts.baseSha);
+    set("fork_point_sha", opts.forkPointSha);
     set("eval_score", opts.evalScore);
     set("eval_passed", opts.evalPassed !== undefined ? (opts.evalPassed ? 1 : 0) : undefined);
     set("eval_reason", opts.evalReason);

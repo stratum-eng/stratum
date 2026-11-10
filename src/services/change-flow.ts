@@ -477,8 +477,13 @@ export interface WorkspaceEvaluation {
   evaluatedSha: string;
   evaluatedTreeOid: string;
   workspaceHeadSha: string;
-  /** The base the diff was built against, from the same clone (#274). */
+  /** The project's tip when the diff was made, from the same clone (#274). */
   baseOid: string;
+  /** Where the workspace forked from the project: the commit the diff is
+   * against. Equal to `baseOid` when the workspace is up to date. */
+  mergeBaseOid: string;
+  /** Commits the project gained since the workspace forked. */
+  behindBy: number;
   evalRuns: EvaluationRun[];
   evalResult: EvalResult;
   /** Resolved once and shared by the meters and the ledger. */
@@ -556,6 +561,8 @@ export async function evaluateWorkspace(
     workspaceTreeOid: evaluatedTreeOid,
     workspaceSha: workspaceHeadSha,
     baseOid,
+    mergeBaseOid,
+    behindBy,
   } = diffResult.data;
 
   const evaluators = await buildEvaluators(
@@ -574,11 +581,10 @@ export async function evaluateWorkspace(
   // subject gates the meters and is recorded in the ledger, so resolving it
   // twice would pay for two agent walks and could name two different payers.
   const billingSubject = await resolveBillingSubject(env.DB, logger, project);
-  // `baseOid`, not a base resolved before the diff clone: the default branch
-  // can advance in between, and the evaluated base must be the one the diff
-  // was actually built against (#274).
+  // The commit the diff was built against, from the diff's own clones: a base
+  // resolved separately could name a tree these hunks do not apply to (#274).
   const { evalRuns, evalResult } = await runEvaluation(evaluators, diff, policy, logger, {
-    baseSha: baseOid,
+    baseSha: mergeBaseOid,
     billing: billingContextFor(billingSubject, project.id, actorUserId),
   });
 
@@ -588,6 +594,8 @@ export async function evaluateWorkspace(
     evaluatedTreeOid,
     workspaceHeadSha,
     baseOid,
+    mergeBaseOid,
+    behindBy,
     evalRuns,
     evalResult,
     billingSubject,
@@ -768,6 +776,7 @@ export async function createChangeWithEvaluation(
     evaluatedTreeOid,
     workspaceHeadSha,
     baseOid,
+    mergeBaseOid,
     evalRuns,
     evalResult,
     billingSubject: createSubject,
@@ -813,6 +822,12 @@ export async function createChangeWithEvaluation(
     evalReason: evalResult.reason,
     evaluatedSha,
     evaluatedTreeOid,
+    // Both ends from the diff's own clones. The base recorded at creation was
+    // read before the diff was made and can be a commit behind it; left in
+    // place, an up-to-date workspace would compare unequal to its own fork
+    // point and be treated as behind the project.
+    baseSha: baseOid,
+    forkPointSha: mergeBaseOid,
     ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
     // Flag a change that edits the merge-protection config so the merge gate can
     // require a human approval and forbid force-merging it (SA-3).
@@ -839,7 +854,7 @@ export async function createChangeWithEvaluation(
     project,
     policy,
     diff,
-    baseSha: baseOid,
+    baseSha: mergeBaseOid,
     headSha: evaluatedSha,
     headTreeSha: evaluatedTreeOid,
     ...(requestOrigin !== undefined ? { requestOrigin } : {}),
@@ -868,6 +883,9 @@ export async function createChangeWithEvaluation(
     evalReason: evalResult.reason,
     evaluatedSha,
     evaluatedTreeOid,
+    // As stored just above, so the response is the change as it now stands.
+    baseSha: baseOid,
+    forkPointSha: mergeBaseOid,
     ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
   };
 

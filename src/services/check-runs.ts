@@ -601,7 +601,7 @@ export async function rerunCheck(
     project,
     policy,
     diff: diffResult.data.diff,
-    baseSha: diffResult.data.baseOid,
+    baseSha: diffResult.data.mergeBaseOid,
     headSha: check.revision,
     headTreeSha: diffResult.data.workspaceTreeOid,
     ...(args.requestOrigin !== undefined ? { requestOrigin: args.requestOrigin } : {}),

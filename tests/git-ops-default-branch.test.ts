@@ -26,6 +26,8 @@ const h = vi.hoisted(() => ({
   },
   /** When set, every `readBlob` throws this instead of reading. */
   failReadBlob: null as Error | null,
+  /** When set, the project gains a commit the fetched workspace does not have. */
+  projectAheadOfWorkspace: false,
 }));
 
 vi.mock("isomorphic-git", async (importOriginal) => {
@@ -104,6 +106,11 @@ vi.mock("isomorphic-git", async (importOriginal) => {
       const wsSha = await real.commit({ fs, dir, message: "ws commit", author, committer: author });
       await real.writeRef({ fs, dir, ref: `refs/heads/${ref}`, value: tip, force: true });
       await real.checkout({ fs, dir, ref, force: true });
+      if (h.projectAheadOfWorkspace) {
+        await fs.promises.writeFile(dir === "/" ? "/landed.txt" : `${dir}/landed.txt`, "newer\n");
+        await real.add({ fs, dir, filepath: "landed.txt" });
+        await real.commit({ fs, dir, message: "landed after the fork", author, committer: author });
+      }
       await real.writeRef({
         fs,
         dir,
@@ -180,6 +187,7 @@ beforeEach(() => {
   h.calls.fetch.length = 0;
   h.calls.readBlob.length = 0;
   h.calls.push.length = 0;
+  h.projectAheadOfWorkspace = false;
 });
 
 describe("cloneRepo ref threading", () => {
@@ -535,6 +543,47 @@ describe("mergeWorkspaceIntoProject", () => {
     expect(squash.commit.message).toContain("Squash merge workspace");
   });
 
+  it("refuses to squash a workspace that lacks the project's latest commit", async () => {
+    h.servers.set(projectRemote, { branch: "master", commits: [{ "a.txt": "v1\n" }] });
+    h.projectAheadOfWorkspace = true;
+
+    const result = await mergeWorkspaceIntoProject(
+      projectRemote,
+      "ptok",
+      workspaceRemote,
+      "wtok",
+      logger,
+      { branch: "master", strategy: "squash" },
+    );
+
+    // A squash copies the workspace's files over the project's, which here
+    // would delete landed.txt: a change no gate was shown.
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.code).toBe("WORKSPACE_BEHIND");
+    expect(result.error.message).toContain("merge without squash");
+    expect(h.calls.push).toEqual([]);
+  });
+
+  it("still merges such a workspace three ways", async () => {
+    h.servers.set(projectRemote, { branch: "master", commits: [{ "a.txt": "v1\n" }] });
+    h.projectAheadOfWorkspace = true;
+
+    const result = await mergeWorkspaceIntoProject(
+      projectRemote,
+      "ptok",
+      workspaceRemote,
+      "wtok",
+      logger,
+      { branch: "master" },
+    );
+
+    expect(result.success).toBe(true);
+    const { fs, dir } = h.calls.push[0];
+    const files = await git.listFiles({ fs, dir, ref: "master" });
+    expect(files).toEqual(expect.arrayContaining(["landed.txt", "ws-extra.txt"]));
+  });
+
   it("still defaults to main for main-default repos (regression)", async () => {
     h.servers.set(projectRemote, { branch: "main", commits: [{ "a.txt": "v1\n" }] });
     const result = await mergeWorkspaceIntoProject(
@@ -678,10 +727,72 @@ describe("getDiffBetweenRepos", () => {
     // The mock deletes the files of a noCheckout clone, so a diff at all means
     // both sides were read from git objects.
     expect(result.success && result.data.diff).toContain("+line2");
+    // Each side carries a little history, to find where the workspace forked.
     expect(h.calls.clone).toEqual([
-      expect.objectContaining({ url: "https://r/fork.git", depth: 1, noCheckout: true }),
-      expect.objectContaining({ url: "https://r/base.git", depth: 1, noCheckout: true }),
+      expect.objectContaining({ url: "https://r/fork.git", depth: 16, noCheckout: true }),
+      expect.objectContaining({ url: "https://r/base.git", depth: 16, noCheckout: true }),
     ]);
+  });
+
+  it("diffs against the commit the workspace forked from, not the project's newer tip", async () => {
+    const forkedFrom = { "a.txt": "line1\n", "kept.txt": "kept\n" };
+    const baseServer: { branch: string; commits: Record<string, string>[] } = {
+      branch: "trunk",
+      // Two commits landed on the project after the workspace forked.
+      commits: [forkedFrom, { "landed.txt": "landed later\n" }, { "a.txt": "line1\nmain\n" }],
+    };
+    h.servers.set("https://r/base.git", baseServer);
+    h.servers.set("https://r/fork.git", {
+      branch: "trunk",
+      commits: [forkedFrom, { "mine.txt": "my change\n" }],
+    });
+
+    const result = await getDiffBetweenRepos(
+      "https://r/base.git",
+      "btok",
+      "https://r/fork.git",
+      "wtok",
+      logger,
+      "trunk",
+    );
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    // Only what the workspace did. Against the tip, the project's two newer
+    // commits would read as this change deleting landed.txt and reverting a.txt.
+    expect(result.data.diff).toContain("diff --git a/mine.txt b/mine.txt");
+    expect(result.data.diff).not.toContain("landed.txt");
+    expect(result.data.diff).not.toContain("a.txt");
+
+    const [forkSha, , baseTip] = await precomputeShas(baseServer);
+    expect(result.data.mergeBaseOid).toBe(forkSha);
+    expect(result.data.baseOid).toBe(baseTip);
+    expect(result.data.behindBy).toBe(2);
+  });
+
+  it("reports an up-to-date workspace as forked from the project's tip", async () => {
+    const baseServer = { branch: "trunk", commits: [{ "a.txt": "line1\n" }] };
+    h.servers.set("https://r/base.git", baseServer);
+    h.servers.set("https://r/fork.git", {
+      branch: "trunk",
+      commits: [{ "a.txt": "line1\n" }, { "mine.txt": "my change\n" }],
+    });
+
+    const result = await getDiffBetweenRepos(
+      "https://r/base.git",
+      "btok",
+      "https://r/fork.git",
+      "wtok",
+      logger,
+      "trunk",
+    );
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const [baseTip] = await precomputeShas(baseServer);
+    expect(result.data.mergeBaseOid).toBe(baseTip);
+    expect(result.data.behindBy).toBe(0);
+    expect(result.data.diff).toContain("diff --git a/mine.txt b/mine.txt");
+    expect(h.calls.fetch).toEqual([]);
   });
 
   it("does not clone the base when the workspace clone fails", async () => {
