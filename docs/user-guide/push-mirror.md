@@ -269,8 +269,10 @@ number.
   `evaluated: false`. Every entry names the admin.
 - A `branch.resynced` event, with the same data. The event's actor is the admin.
 
-A refused resync and an up-to-date resync write only the first entry, except
-the two refusals above that leave the outcome unknown.
+A refused resync writes only the first entry, except the two refusals above
+that leave the outcome unknown. An up-to-date resync writes the first entry,
+and a `mirror.resumed` entry too when it resumed a `failed` or `diverged`
+mirror (see [The mirror afterwards](#the-mirror-afterwards)).
 
 Audit entries are written best-effort. If one cannot be written, the failure
 is logged and the resync still runs, so that a broken audit table cannot block

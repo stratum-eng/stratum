@@ -247,8 +247,9 @@ branch must be at; any other commit there is refused.
 ```
 
 `200` with `"status": "up-to-date"` when the project already contains GitHub's
-commit. It carries `branch`, `source`, `projectSha`, `upstreamSha` and `mirror`,
-and nothing was changed.
+commit. It carries `branch`, `source`, `projectSha`, `upstreamSha` and `mirror`.
+The branch was not moved. A push mirror that was `failed` or `diverged` is
+still resumed, with a `mirror.resumed` audit entry, as after a fast-forward.
 
 `source.kind` is `mirror` or `source`. `commits` holds at most 50 entries,
 newest first. `mirror` is the mirror after the resync, or `null`.
