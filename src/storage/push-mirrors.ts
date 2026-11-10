@@ -276,6 +276,14 @@ export async function upsertPushMirror(
              WHEN push_mirrors.repo_owner = excluded.repo_owner
               AND push_mirrors.repo_name = excluded.repo_name THEN push_mirrors.next_attempt_at
              ELSE NULL END,
+           -- A run in flight was pushing to the OLD target. Clearing the lease
+           -- takes its claim away, so when it finishes its guarded writes match
+           -- no row and it cannot record the old repository's outcome as the
+           -- new one's status.
+           lease_expires_at = CASE
+             WHEN push_mirrors.repo_owner = excluded.repo_owner
+              AND push_mirrors.repo_name = excluded.repo_name THEN push_mirrors.lease_expires_at
+             ELSE NULL END,
            repo_owner = excluded.repo_owner,
            repo_name = excluded.repo_name
          RETURNING *`,
@@ -506,14 +514,17 @@ export async function recordPushSuccess(
  * (see {@link recordPushSuccess}).
  *
  * @param input.nextAttemptAt - When the retry is due; omit to give up (`failed`)
+ * @returns `written`: false when the lease was no longer this run's and nothing
+ *   was recorded. The caller must then announce nothing: the failure belongs
+ *   to a run that has been superseded.
  */
 export async function recordPushFailure(
   db: D1Database,
   logger: Logger,
   input: { projectId: string; error: string; nextAttemptAt?: string; lease: string },
-): Promise<Result<void, AppError>> {
+): Promise<Result<{ written: boolean }, AppError>> {
   try {
-    await db
+    const result = await db
       .prepare(
         `UPDATE push_mirrors
             SET state = ?,
@@ -533,7 +544,7 @@ export async function recordPushFailure(
         input.lease,
       )
       .run();
-    return ok(undefined);
+    return ok({ written: (result.meta?.changes ?? 0) > 0 });
   } catch (error) {
     return err(storageError("Failed to record a mirror push failure", error, logger));
   }
@@ -542,14 +553,17 @@ export async function recordPushFailure(
 /**
  * Marks the mirror diverged and releases the lease, if the run still holds it
  * (see {@link recordPushSuccess}). Sticky until resumed.
+ *
+ * @returns `written`: false when the lease was no longer this run's. The caller
+ *   must then announce nothing, as for {@link recordPushFailure}.
  */
 export async function recordPushDiverged(
   db: D1Database,
   logger: Logger,
   input: { projectId: string; reason: string; lease: string },
-): Promise<Result<void, AppError>> {
+): Promise<Result<{ written: boolean }, AppError>> {
   try {
-    await db
+    const result = await db
       .prepare(
         `UPDATE push_mirrors
             SET state = 'diverged',
@@ -561,7 +575,7 @@ export async function recordPushDiverged(
       )
       .bind(trimError(input.reason), new Date().toISOString(), input.projectId, input.lease)
       .run();
-    return ok(undefined);
+    return ok({ written: (result.meta?.changes ?? 0) > 0 });
   } catch (error) {
     return err(storageError("Failed to record mirror divergence", error, logger));
   }

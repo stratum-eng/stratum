@@ -66,8 +66,10 @@ import { addOrgMember, createOrg } from "../src/storage/orgs";
 import {
   claimPushLease,
   getPushMirror,
+  recordPushDiverged,
   recordPushFailure,
   recordPushSuccess,
+  upsertPushMirror,
 } from "../src/storage/push-mirrors";
 import { createSession } from "../src/storage/sessions";
 import { addTeamMember, createTeam } from "../src/storage/teams";
@@ -1459,17 +1461,70 @@ describe("a run that outlives its lease", () => {
       lease: staleLease,
     });
     expect(late.success && late.data.lost).toBe(true);
-    await recordPushFailure(env.DB, logger, {
+    // Its failure and divergence writes report that nothing was written,
+    // which is what tells the run to announce nothing.
+    const lateFailure = await recordPushFailure(env.DB, logger, {
       projectId: PROJECT_ID,
       error: "late",
       lease: staleLease,
     });
+    expect(lateFailure.success && lateFailure.data.written).toBe(false);
+    const lateDivergence = await recordPushDiverged(env.DB, logger, {
+      projectId: PROJECT_ID,
+      reason: "late",
+      lease: staleLease,
+    });
+    expect(lateDivergence.success && lateDivergence.data.written).toBe(false);
 
     // B's result stands: nothing moved backwards, and no failure was recorded.
     const after = await mirrorRow();
     expect(after.lastPushedSha).toBe("b".repeat(40));
     expect(after.state).toBe("ok");
     expect(after.attempts).toBe(0);
+  });
+});
+
+describe("retargeting a mirror while a push is in flight", () => {
+  it("takes the claim away, so the old target's outcome is not recorded as the new one's", async () => {
+    await configureMirror();
+    await merge();
+    queued.length = 0;
+
+    // A run is pushing to the current target.
+    const run = await claimPushLease(env.DB, logger, PROJECT_ID, 60_000);
+    if (!run.success || run.data === null || run.data.leaseExpiresAt === undefined) {
+      throw new Error("the run did not get a lease");
+    }
+    const lease = run.data.leaseExpiresAt;
+
+    // An admin points the mirror somewhere else before it finishes.
+    const retargeted = await upsertPushMirror(env.DB, logger, {
+      projectId: PROJECT_ID,
+      namespace: "@acme",
+      slug: "app",
+      repoOwner: "acme-gh",
+      repoName: "somewhere-else",
+      enabled: true,
+      configuredBy: "usr_admin",
+    });
+    if (!retargeted.success) throw retargeted.error;
+    expect(retargeted.data.leaseExpiresAt).toBeUndefined();
+
+    // The run finishes, successfully, against the OLD repository.
+    const late = await recordPushSuccess(env.DB, logger, {
+      projectId: PROJECT_ID,
+      seq: run.data.requestedSeq,
+      sha: "d".repeat(40),
+      leaseMs: 60_000,
+      lease,
+    });
+    expect(late.success && late.data.lost).toBe(true);
+
+    // The new target shows nothing pushed, because nothing has been.
+    const after = await mirrorRow();
+    expect(after.repoName).toBe("somewhere-else");
+    expect(after.lastPushedSha).toBeUndefined();
+    expect(after.state).toBe("idle");
   });
 });
 

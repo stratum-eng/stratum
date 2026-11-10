@@ -444,6 +444,17 @@ export async function runPushMirror(
   }
 }
 
+/**
+ * The outcome of a run that finished after losing its claim: its lease expired
+ * and another run took the row, or the mirror was pointed at a different
+ * repository. Its result is not the mirror's any more, so it records nothing
+ * and announces nothing. Whoever holds the row now reports for it.
+ */
+function superseded(logger: Logger, projectId: string): MirrorRunOutcome {
+  logger.warn("Push mirror run was superseded; its outcome is not recorded", { projectId });
+  return { kind: "busy" };
+}
+
 /** The body of {@link runPushMirror}, which may throw; the wrapper turns that into an outcome. */
 async function runPushMirrorUnsafe(
   env: MirrorEnv,
@@ -514,7 +525,14 @@ async function runPushMirrorUnsafe(
     });
 
     if (result.kind === "diverged") {
-      await recordPushDiverged(env.DB, logger, { projectId, reason: result.reason, lease });
+      const marked = await recordPushDiverged(env.DB, logger, {
+        projectId,
+        reason: result.reason,
+        lease,
+      });
+      // Superseded: another run, or a new target, owns the row now. Nothing
+      // was recorded, so nothing is announced either.
+      if (marked.success && !marked.data.written) return superseded(logger, projectId);
       await surfaceDivergence(env, logger, mirror, project, result.reason);
       return { kind: "diverged", reason: result.reason };
     }
@@ -522,7 +540,12 @@ async function runPushMirrorUnsafe(
     if (result.kind === "error") {
       const attempt = mirror.attempts + 1;
       if (result.permanent || attempt >= MIRROR_MAX_ATTEMPTS) {
-        await recordPushFailure(env.DB, logger, { projectId, error: result.message, lease });
+        const failed = await recordPushFailure(env.DB, logger, {
+          projectId,
+          error: result.message,
+          lease,
+        });
+        if (failed.success && !failed.data.written) return superseded(logger, projectId);
         logger.error("Push mirror failed; no further retries", undefined, {
           projectId,
           attempts: attempt,
@@ -545,12 +568,13 @@ async function runPushMirrorUnsafe(
         return { kind: "failed", error: result.message };
       }
       const delaySeconds = mirrorBackoffSeconds(attempt);
-      await recordPushFailure(env.DB, logger, {
+      const retried = await recordPushFailure(env.DB, logger, {
         projectId,
         error: result.message,
         nextAttemptAt: new Date(Date.now() + delaySeconds * 1000).toISOString(),
         lease,
       });
+      if (retried.success && !retried.data.written) return superseded(logger, projectId);
       logger.warn("Push mirror attempt failed; will retry", {
         projectId,
         attempt,
