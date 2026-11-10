@@ -372,6 +372,17 @@ describe("ChangeDetailPage: what the change is", () => {
       expect(html).toContain("still as a draft");
     });
 
+    it("shows one button at a time, and links to the pull request in the text either way", () => {
+      const draft = page({ change: { ...promoted, githubPrDraft: true }, canReview: true });
+      expect(draft).not.toContain("Open GitHub PR");
+      expect(draft).toContain('href="https://github.com/acme/api/pull/42"');
+
+      const ready = page({ change: { ...promoted, githubPrDraft: false }, canReview: true });
+      expect(ready).toContain("Open GitHub PR");
+      expect(ready).not.toContain("Mark ready for review");
+      expect(ready).toContain('href="https://github.com/acme/api/pull/42"');
+    });
+
     it("offers it when the draft state was never recorded", () => {
       expect(page({ change: promoted, canReview: true })).toContain(readyAction);
     });
