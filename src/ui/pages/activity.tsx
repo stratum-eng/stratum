@@ -89,6 +89,14 @@ export function describeEvent(event: EventRecord): string {
       const repo = asString(payload.repo);
       return `Push mirror${repo ? ` to ${repo}` : ""} failed`;
     }
+    case "branch.resynced": {
+      const repo = asString(payload.repo);
+      const branch = asString(payload.branch);
+      const newSha = asString(payload.newSha);
+      return `${branch ?? "Default branch"} resynced${repo ? ` from ${repo}` : ""}${
+        newSha ? ` → ${newSha.slice(0, 7)}` : ""
+      } (break-glass, not evaluated)`;
+    }
     default:
       return event.type;
   }

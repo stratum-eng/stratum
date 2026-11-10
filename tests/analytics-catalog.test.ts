@@ -116,7 +116,7 @@ describe("analytics catalog", () => {
     // enforce the reverse direction (no name here that is not an event type).
     // This pins the count so a new StratumEvent member cannot be added to the
     // union and silently left out of the runtime list.
-    expect(DOMAIN_EVENT_NAMES).toHaveLength(19);
+    expect(DOMAIN_EVENT_NAMES).toHaveLength(20);
     for (const name of DOMAIN_EVENT_NAMES) expect(name.startsWith("stratum.")).toBe(true);
   });
 });

@@ -119,7 +119,19 @@ export type AuditAction =
   | "mirror.configured"
   | "mirror.removed"
   | "mirror.resumed"
-  | "mirror.diverged";
+  | "mirror.diverged"
+  // Break-glass resync (#418): an admin fast-forwarding the default branch to
+  // its GitHub copy, which brings in commits no evaluator ran on.
+  // `branch.resync_requested` is written BEFORE anything runs, the same way
+  // `backup.repo_restore` is, so an attempt that dies between the push and the
+  // response still leaves a trail; `branch.resynced` records the move itself,
+  // with both commits.
+  | "branch.resync_requested"
+  | "branch.resynced"
+  // The resync stopped without knowing whether its push landed: it timed out
+  // (the push is not cancelled) or its run died. Written so the audit log
+  // names the two commits when nothing else will.
+  | "branch.resync_uncertain";
 
 export interface AuditEntry {
   id: string;

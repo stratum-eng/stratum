@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { type ResyncOutcome, type ResyncSource, runResync } from "../github/resync";
 import { getChange, markChangeMerged, mergeTransitionOpts } from "../storage/changes";
 import { isTargetDeleting } from "../storage/deletion";
 import { blobObject, commitObject, treeObject } from "../storage/git-objects";
@@ -20,7 +21,7 @@ import { type CommitOutcome, commitPhasesFromSpans, recordCommitMetrics } from "
 import { putObject } from "../storage/object-store";
 import { recordProvenance } from "../storage/provenance";
 import { getProject, getWorkspace } from "../storage/state";
-import type { Env } from "../types";
+import type { Env, ProjectEntry } from "../types";
 import { projectDefaultBranch } from "../types";
 import { type Logger, createLogger } from "../utils/logger";
 import { PhaseTimer } from "../utils/phase-timer";
@@ -458,6 +459,49 @@ export class RepoDO extends DurableObject<Env> {
       this.projectBranch = "main";
       this.stagedTableReady = false;
     });
+  }
+
+  /**
+   * Break-glass resync (#418): fast-forward the project's default branch to
+   * its GitHub copy, serialized with this repo's merges.
+   *
+   * Reading and comparing the two histories runs unlocked — it can take a
+   * while and writes nothing. Only the push that moves the branch runs behind
+   * `blockConcurrencyWhile`, the same barrier `advance` takes, so no merge can
+   * interleave with it. A merge that landed while the histories were being
+   * read is caught by the push itself: it is not forced, so Artifacts refuses
+   * it and the resync reports that the project moved.
+   *
+   * The route has already decided the caller may do this and that `source` is
+   * the project's own mirror or linked repository; this method is not
+   * reachable from outside the Worker.
+   */
+  async resync(input: {
+    project: ProjectEntry;
+    source: ResyncSource;
+    expectedSha?: string;
+  }): Promise<ResyncOutcome> {
+    const log = createLogger({ component: "RepoDO.resync", projectId: input.project.id });
+    return runResync(
+      this.env,
+      input.project,
+      input.source,
+      {
+        ...(input.expectedSha !== undefined ? { expectedSha: input.expectedSha } : {}),
+        landing: (newSha, push) =>
+          this.ctx.blockConcurrencyWhile(async () => {
+            const pushed = await push();
+            // Dropped whatever the push reported: on success the warm clone is
+            // now behind the branch, and after a timeout nobody knows where the
+            // branch is. Either way the next batch must re-clone, not push from
+            // a stale tip and fail every change in it.
+            this.warm = undefined;
+            if (pushed.success && pushed.data.status === "pushed") await this.setHead(newSha);
+            return pushed;
+          }),
+      },
+      log,
+    );
   }
 
   private async getHead(): Promise<string | undefined> {

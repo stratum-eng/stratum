@@ -416,6 +416,81 @@ export async function pushMain(
   return ok(undefined);
 }
 
+/** What {@link pushBranchFastForward} did with a branch. */
+export type BranchFastForwardPush =
+  | { status: "pushed" }
+  /**
+   * The remote's branch is not an ancestor of the local one — by
+   * isomorphic-git's own check before any pack is sent, or by the remote
+   * refusing the update because the branch moved after it was read. Nothing
+   * changed on the remote.
+   */
+  | { status: "rejected"; detail: string };
+
+/**
+ * Pushes a local branch to the same branch on an Artifacts remote, fast-forward
+ * only.
+ *
+ * There is no `force` to pass, unlike {@link pushMain}: this exists for callers
+ * that must never overwrite a project's branch, and an option that is not there
+ * cannot be set by mistake. A refusal is an ordinary outcome and comes back as
+ * `rejected`; `err` means the push was not judged at all.
+ *
+ * @param timeoutMs - How long to wait. Required, because the right budget
+ *   belongs to the caller: one holding a Durable Object's input gate has 30s
+ *   in total.
+ * @returns `PUSH_TIMEOUT` (504) when the wait ran out — {@link withTimeout}
+ *   cannot cancel the push, so it may still land
+ */
+export async function pushBranchFastForward(
+  remote: string,
+  token: string,
+  fs: NodeFS,
+  dir: string,
+  branch: string,
+  logger: Logger,
+  timeoutMs: number,
+): Promise<Result<BranchFastForwardPush, AppError>> {
+  const pushed = await fromPromise(
+    withTimeout(
+      git.push({
+        fs,
+        dir,
+        http,
+        url: remote,
+        ref: branch,
+        remoteRef: branch,
+        onAuth: makeAuth(token),
+        force: false,
+      }),
+      timeoutMs,
+      "pushBranchFastForward: git.push",
+    ),
+  );
+  if (pushed.success) return ok({ status: "pushed" });
+
+  const error = pushed.error as Error & { code?: string; data?: { prettyDetails?: string } };
+  // Structured codes only, never the message text — see isNonFastForwardRejection.
+  if (error.code === "PushRejectedError") {
+    return ok({ status: "rejected", detail: error.message });
+  }
+  if (error.code === "GitPushError") {
+    return ok({ status: "rejected", detail: (error.data?.prettyDetails ?? error.message).trim() });
+  }
+  logger.error("Failed to fast-forward a branch", error, { remote, branch });
+  if (error instanceof TimeoutError) {
+    return err(
+      new AppError(
+        `Push timed out: ${error.message}. The push may still be in progress and could still land — do not assume it failed.`,
+        "PUSH_TIMEOUT",
+        504,
+        { remote },
+      ),
+    );
+  }
+  return err(new ExternalServiceError("Git", "Failed to push the branch", error));
+}
+
 /**
  * Pushes local `refs/tags/*` to an Artifacts remote.
  *

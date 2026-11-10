@@ -9,6 +9,8 @@
  * - {@link openGitHubRemote} — the URL plus a GitHub App installation token
  *   narrowed to that one repository;
  * - {@link listGitHubRefs} — its branches and tags, one handshake, no objects;
+ * - {@link fetchGitHubBranch} — one branch's commits, into a clone the caller
+ *   holds;
  * - {@link isAncestor} — the fast-forward test, on a clone the caller holds;
  * - {@link pushRefFastForward} — push one ref, never forced, with the refusal
  *   classified.
@@ -229,6 +231,100 @@ export async function listGitHubRefs(
     if (!name.endsWith("^{}")) tags[name] = oid;
   }
   return ok({ branches: flattenRefTree(advertised?.heads), tags });
+}
+
+/**
+ * Bounds a shallow branch fetch. The same 30s a request-path clone gets: a
+ * person is waiting on it, and a shallow window of a healthy repository
+ * arrives in a few seconds.
+ */
+const FETCH_TIMEOUT_MS = 30_000;
+
+/** The remote-tracking namespace {@link fetchGitHubBranch} writes under. */
+export const GITHUB_TRACKING_REMOTE = "github";
+
+/**
+ * Fetches one branch of a GitHub repository into a clone the caller already
+ * holds, without touching any local branch.
+ *
+ * The fetched tip lands under `refs/remotes/github/<branch>` and is returned;
+ * the clone's own branches, and whatever remote it was cloned from, are left
+ * exactly as they were. Deciding what the commits mean — a fast-forward, a
+ * divergence, nothing new — is the caller's job, as is moving any ref.
+ *
+ * The clone's own tip is offered as a `have`, so when GitHub already knows
+ * that commit (a mirror, in the normal case) only what lies past it is sent.
+ *
+ * @param opts.depth - Shallow window, in commits from the tip. Omit for the
+ *   branch's whole history — and pass a `timeoutMs` to match.
+ * @param opts.timeoutMs - Overrides the request-path default of 30s.
+ * @returns The branch's tip on GitHub at the moment of the fetch
+ */
+export async function fetchGitHubBranch(
+  fs: NodeFS,
+  dir: string,
+  remote: GitHubRemote,
+  branch: string,
+  opts: { depth?: number; timeoutMs?: number },
+  logger: Logger,
+): Promise<Result<{ tip: string }, AppError>> {
+  // isomorphic-git will not record a fetched tip for a remote it has no
+  // refspec for, even when the URL is passed explicitly. Only the refspec is
+  // written — into this request's in-memory clone — never the URL or a token.
+  const configured = await fromPromise(
+    git.setConfig({
+      fs,
+      dir,
+      path: `remote.${GITHUB_TRACKING_REMOTE}.fetch`,
+      value: `+refs/heads/*:refs/remotes/${GITHUB_TRACKING_REMOTE}/*`,
+    }),
+  );
+  if (!configured.success) {
+    return err(remoteError(`preparing to fetch ${branch}`, remote, configured.error));
+  }
+
+  const fetched = await fromPromise(
+    withTimeout(
+      git.fetch({
+        fs,
+        http: httpClient(),
+        dir,
+        url: remote.url,
+        remote: GITHUB_TRACKING_REMOTE,
+        ref: branch,
+        singleBranch: true,
+        tags: false,
+        // A server may reject `deepen 0`, so a nonsensical depth is floored
+        // rather than forwarded.
+        ...(opts.depth !== undefined ? { depth: Math.max(1, opts.depth) } : {}),
+        onAuth: auth(remote),
+      }),
+      opts.timeoutMs ?? FETCH_TIMEOUT_MS,
+      `fetchGitHubBranch: git.fetch ${branch}`,
+    ),
+  );
+  if (!fetched.success) {
+    logger.warn("Failed to fetch a branch from GitHub", {
+      owner: remote.owner,
+      repo: remote.repo,
+      branch,
+      error: fetched.error.message,
+    });
+    return err(remoteError(`fetching ${branch}`, remote, fetched.error));
+  }
+  const tip = fetched.data.fetchHead;
+  if (typeof tip !== "string" || tip.length === 0) {
+    // An empty repository answers the handshake with no refs at all, and
+    // isomorphic-git reports that as a fetch of nothing rather than an error.
+    return err(
+      new AppError(
+        `${remote.owner}/${remote.repo} has no branch '${branch}' to fetch`,
+        "GITHUB_BRANCH_NOT_FOUND",
+        409,
+      ),
+    );
+  }
+  return ok({ tip });
 }
 
 /**

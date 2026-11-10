@@ -66,6 +66,7 @@ const SUBSCRIBABLE_EVENT_TYPES: Record<StratumEvent["type"], true> = {
   "deployment.failed": true,
   "mirror.diverged": true,
   "mirror.failed": true,
+  "branch.resynced": true,
 };
 
 const SUBSCRIBABLE_EVENTS: string[] = Object.keys(SUBSCRIBABLE_EVENT_TYPES);

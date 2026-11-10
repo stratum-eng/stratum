@@ -144,8 +144,13 @@ function credentialRefusal(error: AppError): { code: MirrorNoticeCode; status: R
   }
 }
 
-/** Whether the request is an API call (JSON) and not the settings form. */
-function wantsJson(c: { req: { header: (name: string) => string | undefined } }): boolean {
+/**
+ * Whether the request declared a JSON body. On the mirror routes anything else
+ * is the settings page's form, and is answered with a redirect.
+ */
+export function wantsJson(c: {
+  req: { header: (name: string) => string | undefined };
+}): boolean {
   return c.req.header("content-type")?.includes("application/json") ?? false;
 }
 
@@ -154,7 +159,8 @@ function settingsUrl(project: ProjectEntry, code: MirrorNoticeCode): string {
   return `/${project.namespace}/${project.slug}/settings?mirror=${code}#mirror`;
 }
 
-type AccessContext = BindingContext & {
+/** What {@link requireAdmin} needs from a Hono context. */
+export type AccessContext = BindingContext & {
   env: Env;
   get(key: "userId"): string | undefined;
   req: { param(key: string): string };
@@ -165,13 +171,23 @@ type AccessContext = BindingContext & {
  * owner, or an owner/admin of the org that owns it. Agents are refused — they
  * carry no `userId` — because an agent that could repoint a project's mirror
  * could publish its history anywhere its owner's App is installed.
+ *
+ * `isProjectAdmin` is what applies the owning org's second-factor policy and
+ * IP allowlist, so a caller of this helper gets both without asking.
+ *
+ * Shared with the break-glass resync route (`src/routes/resync.ts`), which is
+ * gated on exactly the same role for the same reason: one definition of "may
+ * administer this project's GitHub side" rather than two that drift.
+ *
+ * @param action - Completes "Only authenticated users can …" in the 401
  */
-async function requireAdmin(
+export async function requireAdmin(
   c: AccessContext,
   logger: Logger,
+  action = "manage a mirror",
 ): Promise<{ project: ProjectEntry; userId: string } | { response: Response }> {
   const userId = c.get("userId");
-  if (!userId) return { response: unauthorized("Only authenticated users can manage a mirror") };
+  if (!userId) return { response: unauthorized(`Only authenticated users can ${action}`) };
 
   const namespace = c.req.param("namespace");
   const slug = c.req.param("slug");
@@ -198,8 +214,8 @@ async function requireAdmin(
   return { project, userId };
 }
 
-/** A logger carrying the request's path, for the mirror routes. */
-const routeLogger = (c: {
+/** A logger carrying a fresh request id and the caller, for one request. */
+export const routeLogger = (c: {
   get(key: "userId"): string | undefined;
   req: { path: string; method: string };
 }): Logger =>

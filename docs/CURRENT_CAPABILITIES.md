@@ -85,6 +85,15 @@ limitations recorded below.
   **Tags are mirrored but there is still no way to create one on a project** —
   the project remote refuses tag pushes (#182) — so only tags that arrived by
   import or restore exist to mirror. See `user-guide/push-mirror.md`.
+- Break-glass resync (#418): `POST /api/projects/:namespace/:slug/resync` and a
+  settings card fast-forward a project's default branch to the same branch on
+  its mirror (or, with no mirror, its linked GitHub repository)
+  (`src/github/resync.ts`, `src/routes/resync.ts`). Fast-forward only; project
+  admins only, with no OAuth grants, no agents and no MCP tool. **The commits it
+  brings in bypass evaluation, the post-merge check and deploys**, and the audit
+  entries and `branch.resynced` event say so. Default branch only: no tags, no
+  other branches, no dry run. The operator procedure is
+  `runbooks/break-glass-self-hosting.md`, **not yet rehearsed on staging**.
 - Human reviews (approve / request changes) move the change state machine and are
   human-only; agents cannot approve work.
 

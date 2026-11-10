@@ -67,7 +67,30 @@ export type StratumEvent =
   // project and will not catch up by itself: `diverged` until an admin resumes
   // the mirror, `failed` until the next merge or a resume.
   | { type: "mirror.diverged"; project: string; repo: string; reason: string }
-  | { type: "mirror.failed"; project: string; repo: string; reason: string };
+  | { type: "mirror.failed"; project: string; repo: string; reason: string }
+  // Break-glass resync (#418): an admin fast-forwarded the default branch to
+  // its GitHub copy. The one way commits reach a default branch without going
+  // through a change, so the event says so (`evaluated: false`) and lists what
+  // came in. Who did it is the event's actor.
+  | {
+      type: "branch.resynced";
+      project: string;
+      branch: string;
+      /** The branch's tip before. */
+      oldSha: string;
+      /** The branch's tip now. */
+      newSha: string;
+      /** `owner/repo` on GitHub the commits were read from. */
+      repo: string;
+      /** Whether `repo` is the project's push mirror or its linked source. */
+      source: "mirror" | "source";
+      /** From the new tip backwards, capped; `commitCount` is the true total. */
+      commits: { sha: string; summary: string; author: string }[];
+      commitCount: number;
+      commitsTruncated: boolean;
+      /** Always `false`: Stratum's evaluators never ran on these commits. */
+      evaluated: false;
+    };
 
 export interface EventActor {
   type: EventActorType;
