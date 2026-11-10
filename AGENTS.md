@@ -28,6 +28,51 @@ set**, separately from server-side telemetry, so a self-hoster never gets browse
 they did not ask for. Do not widen this into a precedent for shipping client-side JS
 generally: the next thing that wants to be an exception needs its own argument, not this one.
 
+## How changes reach `main`: through Stratum
+
+This repository is developed on Stratum itself, in layer mode (tracker #423). The project is
+`@stratum/stratum` on `https://app.usestratum.dev`. GitHub (`stratum-eng/stratum`) is still where
+`main` lives and where pull requests are reviewed and merged, but **Stratum opens those pull
+requests. Do not open one yourself, and do not push a branch to GitHub** (`gh pr create`,
+`git push origin`). Every change goes this way, with the Stratum MCP tools:
+
+1. **Sync first.** `stratum_sync_project`, then `stratum_get_sync_status` until it has finished.
+   Auto-sync is off, so the project's `main` is only as new as its last sync, and a workspace forked
+   from a stale one is evaluated against the wrong base.
+2. **Fork a workspace**: `stratum_create_workspace`. Work in a local git worktree as usual, then
+   push it with the remote and short-lived token from `stratum_workspace_remote`
+   (`git push <remote> HEAD:main`). That token is a secret: never write it to a file or a commit.
+3. **Open a change**: `stratum_create_change`, with a `title` and a `description` (they become
+   the pull request's). Poll `stratum_get_change` until its status leaves `evaluating`. On
+   `needs_changes`, fix, push to the workspace again, and `stratum_evaluate_change`.
+4. **Promote** an `accepted` change: `stratum_promote_change`. That pushes the branch
+   `stratum/<change id>` to GitHub and opens the pull request, as a draft, with the change's
+   title and description (see "Commit & PR conventions" for what they should say). The pull
+   request is opened as the person promoting if they have connected GitHub under Settings, and
+   as the Stratum app otherwise; review tools may skip one opened by the app.
+5. **Review, CI and merge happen on that pull request**, as before.
+
+The connection must act as a person for steps 1 and 4 (`stratum_whoami` reports
+`actingAs: "user"`); an agent-bound connection is refused there.
+
+What still needs GitHub directly, because Stratum does not do it yet. `gh` is fine for these and
+only these:
+
+- reading a pull request's CI results and review comments, and replying on review threads;
+- marking a draft pull request ready, and merging it;
+- **a follow-up commit to a pull request that is already open.** A promoted change cannot be
+  re-evaluated (Stratum issue #2), so push the fix to the pull request's `stratum/<change id>`
+  branch. A review that *requests changes* is the exception: it moves the change to
+  `needs_changes`, and then the fix goes workspace → `stratum_evaluate_change` → promote again,
+  which updates the same pull request;
+- the release pull request, which Release Autopilot opens;
+- a pull request that was opened on GitHub before this rule: finish it where it is.
+
+If Stratum itself is what is broken (a change will not evaluate, the project will not sync), say
+so to the person you are working for before going around it, and fix Stratum in the same piece of
+work where you can. Anything else that made you leave Stratum is a finding: add it to
+`docs/developer/dogfooding-friction-log.md`.
+
 ## Repository layout
 
 | Path | What it is |
@@ -68,7 +113,8 @@ CI (`pr-checks.yml`) runs **lint, typecheck, unit tests, and the `cli/`/`agent/`
 package suites in parallel**, then integration tests. It deliberately deploys nothing —
 staging and production deploy only from `ci.yml` on `main`; PRs get an isolated per-PR
 preview Worker from `pr-preview.yml` instead.
-Mirror lint → typecheck → test locally before pushing.
+Mirror lint → typecheck → test locally before pushing to a workspace: passing Stratum's evaluation gates
+does not mean this suite passes.
 
 1. **Typecheck and tests must pass.** Never comment out, skip, or `.skip` a test to get green.
 2. **Run lint last.** Biome autofixes formatting — running it before you finish editing just
@@ -137,8 +183,10 @@ A release is finished when `gh release view vX.Y.Z` succeeds, not when a workflo
   ```
   Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
   ```
-- Commit or push only when asked; if on `main`, branch first.
-- Keep PRs focused; describe what changed and how it was verified (which gates ran).
+- Commit or push only when asked; if on `main`, branch first. "Push" means to a Stratum
+  workspace: see "How changes reach `main`" above.
+- Keep PRs focused; describe what changed and how it was verified (which gates ran). The
+  description is the change's `description` in Stratum.
 - Every PR receives an automated AI review (PR-Agent via Cloudflare AI Gateway — see
   `docs/runbooks/ai-review.md`). Its findings are advisory, never a merge gate; collaborators
   can run `/review`, `/improve`, or `/ask <question>` in PR comments.
