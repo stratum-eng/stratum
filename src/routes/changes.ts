@@ -33,6 +33,7 @@ import {
   mergeTransitionOpts,
   recordGithubPrLink,
   updateChangeStatus,
+  updateChangeText,
 } from "../storage/changes";
 import {
   type CostSample,
@@ -75,6 +76,7 @@ import {
   credentialBindingFrom,
   refuseProjectAccess,
 } from "../utils/authz";
+import { parseChangeText } from "../utils/change-text";
 import { durableObjectNamespace } from "../utils/durable-objects";
 import { getWaitUntil } from "../utils/execution-ctx";
 import { newId } from "../utils/ids";
@@ -401,15 +403,20 @@ app.post("/projects/:name/changes", async (c) => {
     return c.json({ error: "Project is being deleted", code: "TARGET_DELETING" }, 409);
   }
 
-  const body = await readJsonWithLimit<{ workspace?: unknown }>(
-    c,
-    MAX_CHANGE_CREATE_BODY_BYTES,
-    logger,
-  ).catch(() => ({ workspace: undefined }));
+  const body = await readJsonWithLimit<{
+    workspace?: unknown;
+    title?: unknown;
+    description?: unknown;
+  }>(c, MAX_CHANGE_CREATE_BODY_BYTES, logger).catch(
+    () =>
+      ({ workspace: undefined }) as { workspace?: unknown; title?: unknown; description?: unknown },
+  );
   if (body instanceof Response) return body;
   if (typeof body.workspace !== "string" || !body.workspace.trim()) {
     return badRequest("workspace is required");
   }
+  const text = parseChangeText(body);
+  if (!text.success) return badRequest(text.error);
 
   const workspaceResult = await getWorkspace(c.env.STATE, project.id, body.workspace, logger);
   if (!workspaceResult.success) {
@@ -437,6 +444,8 @@ app.post("/projects/:name/changes", async (c) => {
     projectName,
     workspaceName: body.workspace,
     workspaceRemote: workspace.remote,
+    ...(typeof text.data.title === "string" ? { title: text.data.title } : {}),
+    ...(typeof text.data.description === "string" ? { description: text.data.description } : {}),
     actor: {
       ...(userId !== undefined ? { userId } : {}),
       ...(agentId !== undefined ? { agentId } : {}),
@@ -1783,6 +1792,66 @@ app.post("/changes/:id/import", async (c) => {
   );
 });
 
+// PATCH /changes/:id — set or clear the title and description.
+//
+// Open to anyone who can write to the project, agents included: the text is the
+// author's account of the change, not a gate, and nothing reads it to decide
+// whether the change may merge.
+app.patch("/changes/:id", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const userId = c.get("userId");
+  const agentId = c.get("agentId");
+  const agentOwnerId = c.get("agentOwnerId");
+  if (!userId && !agentId) return unauthorized("Authentication required");
+
+  const { id } = c.req.param();
+  const changeResult = await getChange(c.env.DB, logger, id);
+  if (!changeResult.success) {
+    if (changeResult.error.code === "NOT_FOUND") return notFound("Change", id);
+    logger.error("Failed to get change", changeResult.error);
+    return internalError(changeResult.error.message);
+  }
+  const change = changeResult.data;
+
+  const projectResult = await getProject(c.env.STATE, change.project, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") return notFound("Project", change.project);
+    logger.error("Failed to get project", projectResult.error);
+    return internalError(projectResult.error.message);
+  }
+  const project = projectResult.data;
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
+    return refuseProjectAccess(credentialBindingFrom(c), project, () => notFound("Change", id));
+
+  const body = await readJsonWithLimit<{ title?: unknown; description?: unknown }>(
+    c,
+    MAX_CHANGE_CREATE_BODY_BYTES,
+    logger,
+  ).catch(() => ({}) as { title?: unknown; description?: unknown });
+  if (body instanceof Response) return body;
+  const text = parseChangeText(body);
+  if (!text.success) return badRequest(text.error);
+  if (text.data.title === undefined && text.data.description === undefined) {
+    return badRequest("Give a title, a description, or both");
+  }
+
+  const updated = await updateChangeText(c.env.DB, logger, id, text.data);
+  if (!updated.success) {
+    // The change can be deleted between the lookup above and the write.
+    if (updated.error.code === "NOT_FOUND") return notFound("Change", id);
+    logger.error("Failed to update change text", updated.error);
+    return internalError(updated.error.message);
+  }
+  logger.info("Change text updated", { changeId: id });
+  return c.json({ change: updated.data });
+});
+
 app.post("/changes/:id/reject", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
@@ -2551,7 +2620,7 @@ app.post("/changes/:id/github-pr", async (c) => {
   }
 
   const prBody =
-    `## Stratum review\n\n- Change: \`${change.id}\`\n- Workspace: \`${change.workspace}\`\n- Evaluation: ${change.evalPassed ? "passed" : "failed"}, score ${change.evalScore ?? "n/a"}\n\n${body.body ?? ""}`.trim();
+    `## Stratum review\n\n- Change: \`${change.id}\`\n- Workspace: \`${change.workspace}\`\n- Evaluation: ${change.evalPassed ? "passed" : "failed"}, score ${change.evalScore ?? "n/a"}\n\n${body.body ?? change.description ?? ""}`.trim();
 
   // Duplicate-head 422 → look up + reuse the open PR GitHub already has for
   // this head lives in the client (createOrReusePR): a re-promotion race, or
@@ -2562,7 +2631,7 @@ app.post("/changes/:id/github-pr", async (c) => {
     {
       owner: repo.owner,
       repo: repo.repo,
-      title: body.title ?? `Stratum: ${change.id}`,
+      title: body.title ?? change.title ?? `Stratum: ${change.id}`,
       body: prBody,
       head: branch,
       base,

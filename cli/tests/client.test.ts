@@ -84,6 +84,15 @@ describe("StratumClient", () => {
     await client.createChange("@user/repo", "ws-1");
     expect(lastCall().url).toBe("https://stratum.example.com/api/projects/%40user%2Frepo/changes");
 
+    expect(JSON.parse(String(lastCall().init.body))).toEqual({ workspace: "ws-1" });
+
+    await client.createChange("@user/repo", "ws-1", { title: "A title", description: "Why." });
+    expect(JSON.parse(String(lastCall().init.body))).toEqual({
+      workspace: "ws-1",
+      title: "A title",
+      description: "Why.",
+    });
+
     await client.mergeChange("chg_1", { force: true, strategy: "squash" });
     expect(lastCall().url).toBe(
       "https://stratum.example.com/api/changes/chg_1/merge?force=true&strategy=squash",

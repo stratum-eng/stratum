@@ -27,6 +27,7 @@ vi.mock("../src/storage/changes", () => ({
   getChangesByIds: vi.fn(),
   listChanges: vi.fn(),
   updateChangeStatus: vi.fn(async () => ({ success: true, data: undefined })),
+  updateChangeText: vi.fn(),
   recordGithubPrLink: vi.fn(async () => ({ success: true, data: undefined })),
   dismissApprovalsAndUpdateStatus: vi.fn(async () => ({
     success: true,
@@ -222,6 +223,7 @@ import {
   markChangeMerged,
   recordGithubPrLink,
   updateChangeStatus,
+  updateChangeText,
 } from "../src/storage/changes";
 import { isTargetDeleting } from "../src/storage/deletion";
 import { listEvalRuns, recordEvalRuns } from "../src/storage/eval-runs";
@@ -480,6 +482,49 @@ describe("POST /api/projects/:name/changes", () => {
         forkPointSha: "base_sha_from_diff_clone",
       }),
     );
+  });
+
+  it("stores the title and description the opener gave, trimmed", async () => {
+    const res = await app.fetch(
+      request(
+        "POST",
+        "/api/projects/my-project/changes",
+        { workspace: "fix-bug", title: "  Retry on 5xx only  ", description: "Why.\n\nDetails." },
+        USER_AUTH,
+      ),
+      env,
+    );
+    expect(res.status).toBe(201);
+    expect(vi.mocked(createChange).mock.calls[0]?.[2]).toMatchObject({
+      title: "Retry on 5xx only",
+      description: "Why.\n\nDetails.",
+    });
+  });
+
+  it("opens a change with neither when none is given", async () => {
+    await app.fetch(
+      request("POST", "/api/projects/my-project/changes", { workspace: "fix-bug" }, USER_AUTH),
+      env,
+    );
+    const opts = vi.mocked(createChange).mock.calls[0]?.[2];
+    expect(opts).not.toHaveProperty("title");
+    expect(opts).not.toHaveProperty("description");
+  });
+
+  it("refuses a multi-line or over-long title before creating anything", async () => {
+    for (const title of ["two\nlines", "x".repeat(201)]) {
+      const res = await app.fetch(
+        request(
+          "POST",
+          "/api/projects/my-project/changes",
+          { workspace: "fix-bug", title },
+          USER_AUTH,
+        ),
+        env,
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(vi.mocked(createChange)).not.toHaveBeenCalled();
   });
 
   it("creates a change, runs evaluators, and returns accepted status when eval passes", async () => {
@@ -4030,5 +4075,120 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
     // never actually landed.
     expect(updateChangeStatus).not.toHaveBeenCalled();
     expect(recordAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/changes/:id", () => {
+  let app: ReturnType<typeof makeApp>;
+  let env: Env;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = makeApp();
+    env = makeEnv();
+    vi.mocked(getChange).mockResolvedValue({ success: true, data: mockChange });
+    vi.mocked(getProject).mockResolvedValue({ success: true, data: mockProject });
+    const user = (id: string, username: string) => ({
+      success: true as const,
+      data: {
+        id,
+        email: `${username}@example.com`,
+        username,
+        tokenHash: "hash",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    vi.mocked(getUserByToken).mockImplementation(async (_db, token) => {
+      if (token === "stratum_user_testtoken00000000000000000") return user("user_test", "test");
+      if (token === "stratum_user_othertoken000000000000000") return user("user_other", "other");
+      return { success: false, error: new NotFoundError("User", token) };
+    });
+    vi.mocked(getAgentByToken).mockImplementation(async (_db, token) =>
+      token === "stratum_agent_testtoken0000000000000000"
+        ? {
+            success: true,
+            data: {
+              id: "agent_test",
+              ownerId: "user_test",
+              name: "test-agent",
+              tokenHash: "hash",
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+          }
+        : { success: false, error: new NotFoundError("Agent", token) },
+    );
+    vi.mocked(updateChangeText).mockImplementation(async (_db, _logger, _id, text) => ({
+      success: true,
+      data: { ...mockChange, ...(text.title ? { title: text.title } : {}) },
+    }));
+  });
+
+  it("sets the title and description and returns the change", async () => {
+    const res = await app.fetch(
+      request(
+        "PATCH",
+        "/api/changes/chg_abc123",
+        { title: " Retry on 5xx only ", description: "Why." },
+        USER_AUTH,
+      ),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(vi.mocked(updateChangeText).mock.calls[0]?.[3]).toEqual({
+      title: "Retry on 5xx only",
+      description: "Why.",
+    });
+    const body = (await res.json()) as { change: Change };
+    expect(body.change.title).toBe("Retry on 5xx only");
+  });
+
+  it("clears a field given as an empty string and leaves the other alone", async () => {
+    await app.fetch(request("PATCH", "/api/changes/chg_abc123", { title: "" }, USER_AUTH), env);
+    expect(vi.mocked(updateChangeText).mock.calls[0]?.[3]).toEqual({ title: null });
+  });
+
+  it("lets the authoring agent edit the text", async () => {
+    const res = await app.fetch(
+      request("PATCH", "/api/changes/chg_abc123", { title: "From the agent" }, AGENT_AUTH),
+      env,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("refuses a body with neither field, and an invalid title", async () => {
+    for (const body of [{}, { title: "a\nb" }, { description: 7 }]) {
+      const res = await app.fetch(
+        request("PATCH", "/api/changes/chg_abc123", body, USER_AUTH),
+        env,
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(vi.mocked(updateChangeText)).not.toHaveBeenCalled();
+  });
+
+  it("refuses someone who can read the project but not write to it", async () => {
+    const res = await app.fetch(
+      request("PATCH", "/api/changes/chg_abc123", { title: "x" }, OTHER_USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(vi.mocked(updateChangeText)).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 when the change is deleted between the lookup and the write", async () => {
+    vi.mocked(updateChangeText).mockResolvedValueOnce({
+      success: false,
+      error: new NotFoundError("Change", "chg_abc123"),
+    });
+    const res = await app.fetch(
+      request("PATCH", "/api/changes/chg_abc123", { title: "x" }, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("requires authentication", async () => {
+    const res = await app.fetch(request("PATCH", "/api/changes/chg_abc123", { title: "x" }), env);
+    expect(res.status).toBe(401);
   });
 });

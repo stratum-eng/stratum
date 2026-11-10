@@ -1,5 +1,5 @@
 /**
- * The forty tools the MCP server exposes.
+ * The forty-one tools the MCP server exposes.
  *
  * The full agent contribution loop: create or import a project, read it, fork a
  * workspace, commit, open an evaluation-gated change, re-evaluate it, discuss it
@@ -371,11 +371,51 @@ export function buildTools(client: StratumClient): ToolDef[] {
     tool(
       "stratum_create_change",
       "Open a change (merge proposal) from a workspace. The project's evaluation gates from .stratum/policy.yaml — secret scan, diff policy, LLM review, sandbox tests — run on it. On instances with an evaluation queue the change comes back with status `evaluating` and no verdict yet: poll stratum_get_change until the status leaves `evaluating` (it becomes `accepted` or `needs_changes`) before deciding anything. Otherwise the verdicts are returned directly. A failing gate blocks the merge, and a change still evaluating cannot be merged.",
-      { project: projectArg, workspace: { type: "string", description: "Source workspace name" } },
+      {
+        project: projectArg,
+        workspace: { type: "string", description: "Source workspace name" },
+        title: {
+          type: "string",
+          description:
+            "One line saying what the change does, up to 200 characters. Give one: it heads the change page and names the pull request if the change is promoted. Without it the change is headed by its first commit's subject.",
+          optional: true,
+        },
+        description: {
+          type: "string",
+          description:
+            "Why the change exists and what a reviewer should know (markdown, up to 20,000 characters). Becomes the pull request body on promotion.",
+          optional: true,
+        },
+      },
       (a) => {
         const ref = parseProjectRef(a.project);
-        return client.createChange(`${ref.namespace}/${ref.slug}`, a.workspace);
+        return client.createChange(`${ref.namespace}/${ref.slug}`, a.workspace, {
+          ...(a.title !== undefined ? { title: a.title } : {}),
+          ...(a.description !== undefined ? { description: a.description } : {}),
+        });
       },
+    ),
+    tool(
+      "stratum_update_change",
+      "Set or replace a change's title and description after it was opened. Pass either or both; an empty string clears the field. This changes only the text: it does not re-run the gates or affect whether the change may merge. Agent tokens may use it. Needs write access to the project and a write grant (mcp:write).",
+      {
+        change_id: changeIdArg,
+        title: {
+          type: "string",
+          description: "One line, up to 200 characters",
+          optional: true,
+        },
+        description: {
+          type: "string",
+          description: "Markdown, up to 20,000 characters",
+          optional: true,
+        },
+      },
+      (a) =>
+        client.updateChange(a.change_id, {
+          ...(a.title !== undefined ? { title: a.title } : {}),
+          ...(a.description !== undefined ? { description: a.description } : {}),
+        }),
     ),
     tool(
       "stratum_list_changes",

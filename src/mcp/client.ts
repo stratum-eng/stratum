@@ -309,14 +309,27 @@ export class StratumClient {
 
   // ── Changes ─────────────────────────────────────────────────────────────
 
-  async createChange(projectName: string, workspace: string) {
+  async createChange(
+    projectName: string,
+    workspace: string,
+    text: { title?: string; description?: string } = {},
+  ) {
     return this.request<unknown>(
       "POST",
       `/api/projects/${encodeURIComponent(projectName)}/changes`,
       {
         workspace,
+        ...(text.title !== undefined ? { title: text.title } : {}),
+        ...(text.description !== undefined ? { description: text.description } : {}),
       },
     );
+  }
+
+  async updateChange(id: string, text: { title?: string; description?: string }) {
+    return this.request<unknown>("PATCH", `/api/changes/${encodeURIComponent(id)}`, {
+      ...(text.title !== undefined ? { title: text.title } : {}),
+      ...(text.description !== undefined ? { description: text.description } : {}),
+    });
   }
 
   async listChanges(projectName: string, status?: string) {

@@ -648,6 +648,9 @@ export async function createChangeWithEvaluation(
     projectName: string;
     workspaceName: string;
     workspaceRemote: string;
+    /** What the change is, in its opener's words. Already validated. */
+    title?: string;
+    description?: string;
     actor: ChangeCreationActor;
     /** Cloudflare Workers `ExecutionContext.waitUntil`, when the caller has one. */
     waitUntil?: (promise: Promise<unknown>) => void;
@@ -698,6 +701,8 @@ export async function createChangeWithEvaluation(
     project: projectName,
     projectId: project.id,
     workspace: workspaceName,
+    ...(args.title !== undefined ? { title: args.title } : {}),
+    ...(args.description !== undefined ? { description: args.description } : {}),
     ...(agentId !== undefined ? { agentId } : {}),
     ...(baseSha !== null ? { baseSha } : {}),
     ...(agentModel !== undefined ? { agentModel } : {}),

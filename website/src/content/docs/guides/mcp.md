@@ -213,7 +213,7 @@ vetted by anyone. A name you do not recognise should be disconnected.
 
 ## The tools
 
-Forty tools cover the full contribution loop, from creating or importing
+Forty-one tools cover the full contribution loop, from creating or importing
 a project to promoting a change to GitHub, plus organization management. Project
 arguments take a `namespace/slug` reference (`@acme/api` and `acme/api` both
 work); organization arguments take the org's slug (`acme` or `@acme`). Every
@@ -347,7 +347,8 @@ it into files, commits or messages.
 
 | Tool | What it does |
 |---|---|
-| `stratum_create_change` | Open a change and run every gate in `.stratum/policy.yaml`. With an evaluation queue (the hosted instance) the change comes back `evaluating` with no verdict yet — poll `stratum_get_change` until its status leaves `evaluating`. Without one, the verdicts are returned directly. |
+| `stratum_create_change` | Open a change and run every gate in `.stratum/policy.yaml`. With an evaluation queue (the hosted instance) the change comes back `evaluating` with no verdict yet — poll `stratum_get_change` until its status leaves `evaluating`. Without one, the verdicts are returned directly. Pass a `title` (one line) and a `description`: they head the change page and become the pull request's title and body on promotion. |
+| `stratum_update_change` | Set or replace a change's `title` and `description`. Text only: it does not re-run the gates. |
 | `stratum_list_changes` | List changes, optionally by status. |
 | `stratum_get_change` | One change with per-gate evidence and metered costs. |
 | `stratum_merge_change` | Merge a change that passed its gates and approvals. |
@@ -403,7 +404,7 @@ them alike. With an **agent token**, or an OAuth connection
 - **Works:** the project reading tools (`get_project`, `list_files`,
   `get_file`, `get_activity`), `stratum_create_workspace`, `stratum_commit`,
   `stratum_workspace_remote` (the credential then pushes as the agent),
-  `stratum_create_change`, `stratum_comment_change`,
+  `stratum_create_change`, `stratum_update_change`, `stratum_comment_change`,
   `stratum_list_change_comments`, `stratum_list_checks`, `stratum_create_issue`,
   `stratum_list_issues`,
   and `stratum_get_usage` (which reports the **owner's** allowance) — an agent

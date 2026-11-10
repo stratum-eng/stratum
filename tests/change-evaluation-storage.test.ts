@@ -17,6 +17,7 @@ import {
   getChange,
   recordGithubPrLink,
   updateChangeStatus,
+  updateChangeText,
 } from "../src/storage/changes";
 import type { Env } from "../src/types";
 import type { Logger } from "../src/utils/logger";
@@ -84,6 +85,37 @@ describe("run-keyed evaluation writes (#412)", () => {
     expect(read.success && read.data.status).toBe("accepted");
     expect(read.success && read.data.evaluatedSha).toBe("sha-new");
     expect(evalRunCount(raw, change.id)).toBe(1);
+  });
+
+  it("keeps a change's title and description, and lets them be replaced or cleared", async () => {
+    const { db } = makeSqliteD1();
+    const created = await createChange(db, logger, {
+      project: "p",
+      workspace: "ws",
+      title: "Retry on 5xx only",
+      description: "Why.",
+    });
+    if (!created.success) throw created.error;
+    const read = await getChange(db, logger, created.data.id);
+    expect(read.success && read.data.title).toBe("Retry on 5xx only");
+    expect(read.success && read.data.description).toBe("Why.");
+
+    const edited = await updateChangeText(db, logger, created.data.id, { title: "New title" });
+    expect(edited.success && edited.data.title).toBe("New title");
+    // A field left out is not touched.
+    expect(edited.success && edited.data.description).toBe("Why.");
+
+    const cleared = await updateChangeText(db, logger, created.data.id, { description: null });
+    expect(cleared.success && cleared.data.description).toBeUndefined();
+    expect(cleared.success && cleared.data.title).toBe("New title");
+  });
+
+  it("opens a change with no title or description when none is given", async () => {
+    const { db } = makeSqliteD1();
+    const change = await queuedChange(db);
+    const read = await getChange(db, logger, change.id);
+    expect(read.success && read.data.title).toBeUndefined();
+    expect(read.success && read.data.description).toBeUndefined();
   });
 
   it("records the fork point the evaluated diff started from, beside the project's tip", async () => {
