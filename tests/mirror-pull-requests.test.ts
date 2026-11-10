@@ -186,6 +186,7 @@ import {
 import {
   coAuthorTrailers,
   landPullRequest,
+  mergeCommitAuthors,
   sanitizeCommitAuthor,
 } from "../src/github/pull-request-content";
 import { fetchPullRequestHead } from "../src/github/remote";
@@ -2304,6 +2305,25 @@ describe("commit authors as data", () => {
       "Co-authored-by: Eve X: y <eve@example.com>",
     ]);
     expect(trailers.every((line) => !line.includes("\n"))).toBe(true);
+  });
+
+  it("keeps the authors of an earlier import when a later one adds more", () => {
+    const second = { name: "Sam Second", email: "sam@example.com" };
+    // The later import saw only its own commits: `second`, and the first
+    // author again under another capitalisation.
+    expect(
+      mergeCommitAuthors([contributor], [{ name: "Casey", email: "CASEY@example.com" }, second]),
+    ).toEqual([contributor, second]);
+  });
+
+  it("stops at the limit, keeping the earliest", () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({
+      name: `A${i}`,
+      email: `a${i}@example.com`,
+    }));
+    const merged = mergeCommitAuthors(many.slice(0, 6), many.slice(6));
+    expect(merged).toHaveLength(10);
+    expect(merged[0]).toEqual(many[0]);
   });
 });
 

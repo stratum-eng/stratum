@@ -136,6 +136,26 @@ export function coAuthorTrailers(authors: CommitAuthor[]): string[] {
   return trailers;
 }
 
+/**
+ * The authors to record after an import: those already recorded, then the new
+ * ones, once each by email and no more than {@link MAX_RECORDED_AUTHORS}.
+ *
+ * A second import of the same pull request reads only the commits that are
+ * new, so its authors alone would drop everyone credited by the first.
+ */
+export function mergeCommitAuthors(
+  recorded: CommitAuthor[],
+  added: CommitAuthor[],
+): CommitAuthor[] {
+  const byEmail = new Map<string, CommitAuthor>();
+  for (const author of [...recorded, ...added]) {
+    if (byEmail.size >= MAX_RECORDED_AUTHORS) break;
+    const key = author.email.toLowerCase();
+    if (!byEmail.has(key)) byEmail.set(key, author);
+  }
+  return [...byEmail.values()];
+}
+
 /** The commits a shallow clone stops at (`.git/shallow`); empty for a full clone. */
 async function readShallowBoundary(fs: NodeFS, dir: string): Promise<Set<string>> {
   const path = `${dir.replace(/\/$/, "")}/.git/shallow`;

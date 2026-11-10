@@ -89,6 +89,7 @@ import {
   type PullRequestLimits,
   type PullRequestRefusal,
   landPullRequest,
+  mergeCommitAuthors,
   refusalError,
   singleLine,
 } from "./pull-request-content";
@@ -913,8 +914,13 @@ export async function importPullRequest(
     changeId: change.id,
     importedHeadSha: live.headSha,
     importedBy: userId,
-    // A re-import that found nothing new keeps the authors already recorded.
-    commitAuthors: landed.data.status === "landed" ? landed.data.authors : record.commitAuthors,
+    // An import reads only the commits that are new, so its authors are added
+    // to the ones already recorded. Replacing them would drop the people a
+    // first import credited from a later squash's `Co-authored-by` lines.
+    commitAuthors:
+      landed.data.status === "landed"
+        ? mergeCommitAuthors(record.commitAuthors, landed.data.authors)
+        : record.commitAuthors,
     agreementConfirmed: mirror.requireContributorAgreement && input.agreementConfirmed,
   });
   if (!stored.success) return stored;
