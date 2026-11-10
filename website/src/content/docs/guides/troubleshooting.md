@@ -221,16 +221,17 @@ Once a day an instance checks its own evaluation in two ways:
 - **Counts over the last 24 hours**, from real evaluations. It reports when at
   least five `llm` reviews, and at least half of them, ended with no verdict
   from the model (a provider error or a timeout). It also reports when at least
-  three changes had an evaluation that never reported back at all, which
-  usually means the evaluation worker is being stopped mid-run by a memory or
-  time limit; look for `exceededMemory` or `exceededCpu` on the
+  three changes had an evaluation run that never reported back, counting those
+  that got a verdict on a retry, which usually means the evaluation worker is
+  being stopped mid-run by a memory or time limit; look for `exceededMemory` or `exceededCpu` on the
   `stratum-evaluations` queue consumer in the Worker's logs.
 
 Set `OPS_ALERT_PROJECT` in the environment's `[vars]` to a project on the
 instance, as `"@namespace/slug"`, and a failed check opens an issue there
 titled *Evaluation health check is failing*, authored by *Stratum (automated)*.
 It lists what failed. While it is open no second issue is filed, and it is
-closed automatically when the check passes again. Left unset, which is the
+closed automatically when the check passes again. On a day the counts cannot
+be read it is left open: half a check is not a pass. Left unset, which is the
 default, the result is written to the Worker's logs only.
 
 To be emailed as well, set the `OPS_ALERT_EMAIL` secret to an address. A secret

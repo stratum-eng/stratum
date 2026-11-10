@@ -186,12 +186,17 @@ export async function runEvaluationCanary(
   return { skipped: false, findings };
 }
 
-/** Count real runs in the last day that ended without a verdict. */
+/**
+ * Count real runs in the last day that ended without a verdict.
+ *
+ * `complete` is false when the counts could not be read. "Nothing found" then
+ * means "nothing known", and the caller must not take it for a clean bill.
+ */
 export async function countEvaluationFailures(
   env: Pick<Env, "DB">,
   logger: Logger,
   now: Date,
-): Promise<{ findings: string[] }> {
+): Promise<{ findings: string[]; complete: boolean }> {
   const since = new Date(now.getTime() - WINDOW_MS).toISOString();
   const findings: string[] = [];
   try {
@@ -212,15 +217,25 @@ export async function countEvaluationFailures(
       );
     }
 
-    const incomplete = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM changes WHERE eval_reason LIKE ? AND eval_requested_at >= ?",
+    // A run that never reported back is either given up on, which leaves this
+    // reason on the change, or re-dispatched by the sweep, which leaves only
+    // `eval_attempts` above zero. Both are a worker that stopped mid-run, and a
+    // retry that then succeeded must not erase the evidence: an instance that
+    // loses every first attempt and passes on the second is not healthy.
+    const lost = await env.DB.prepare(
+      `SELECT COUNT(*) AS count,
+              COALESCE(SUM(CASE WHEN eval_reason LIKE ? THEN 0 ELSE 1 END), 0) AS recovered
+         FROM changes
+        WHERE (eval_reason LIKE ? OR eval_attempts > 0) AND eval_requested_at >= ?`,
     )
-      .bind(`${RUN_INCOMPLETE_REASON_PREFIX}%`, since)
-      .first<{ count: number }>();
-    const stuck = incomplete?.count ?? 0;
+      .bind(`${RUN_INCOMPLETE_REASON_PREFIX}%`, `${RUN_INCOMPLETE_REASON_PREFIX}%`, since)
+      .first<{ count: number; recovered: number }>();
+    const stuck = lost?.count ?? 0;
+    const recovered = lost?.recovered ?? 0;
     if (stuck >= RUN_INCOMPLETE_MIN_COUNT) {
+      const retried = recovered > 0 ? ` (${recovered} got a verdict on a retry)` : "";
       findings.push(
-        `${stuck} changes in the last 24 hours had an evaluation that never reported back. The evaluation worker is probably being stopped mid-run (memory or time limit).`,
+        `${stuck} changes in the last 24 hours had an evaluation run that never reported back${retried}. The evaluation worker is probably being stopped mid-run (memory or time limit).`,
       );
     }
   } catch (error) {
@@ -230,8 +245,9 @@ export async function countEvaluationFailures(
       "Evaluation health: could not count failures",
       error instanceof Error ? error : undefined,
     );
+    return { findings, complete: false };
   }
-  return { findings };
+  return { findings, complete: true };
 }
 
 function alertBody(findings: string[], model: string): string {
@@ -258,18 +274,28 @@ export async function runEvaluationHealthCheck(
   env: Pick<Env, "AI"> & OpsAlertEnv,
   logger: Logger,
   now: Date = new Date(),
-): Promise<{ findings: string[]; canarySkipped: boolean; alert: OpsAlertOutcome }> {
+): Promise<{
+  findings: string[];
+  canarySkipped: boolean;
+  alert: OpsAlertOutcome | { status: "left-as-is"; why: string };
+}> {
   const canary = await runEvaluationCanary(env, logger);
   const counted = await countEvaluationFailures(env, logger, now);
   const findings = [...(canary.skipped ? [] : canary.findings), ...counted.findings];
 
-  const alert =
-    findings.length > 0
-      ? await raiseOpsAlert(env, logger, {
-          title: EVALUATION_HEALTH_ALERT_TITLE,
-          body: alertBody(findings, LLMEvaluator.DEFAULT_MODEL),
-        })
-      : await resolveOpsAlert(env, logger, EVALUATION_HEALTH_ALERT_TITLE);
+  let alert: OpsAlertOutcome | { status: "left-as-is"; why: string };
+  if (findings.length > 0) {
+    alert = await raiseOpsAlert(env, logger, {
+      title: EVALUATION_HEALTH_ALERT_TITLE,
+      body: alertBody(findings, LLMEvaluator.DEFAULT_MODEL),
+    });
+  } else if (!counted.complete) {
+    // Half the check did not run. Closing an open alert, and mailing that the
+    // check passed, would be reporting a recovery nobody observed.
+    alert = { status: "left-as-is", why: "the failure counts could not be read" };
+  } else {
+    alert = await resolveOpsAlert(env, logger, EVALUATION_HEALTH_ALERT_TITLE);
+  }
 
   logger.info("Evaluation health check finished", {
     findings: findings.length,

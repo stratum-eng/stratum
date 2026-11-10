@@ -454,7 +454,10 @@ describe("countEvaluationFailures", () => {
     const { llmRun } = seed(raw);
     for (let i = 0; i < 20; i++) llmRun("Looks fine", recent);
     llmRun("LLM error: blip", recent);
-    expect(await countEvaluationFailures(env, logger, NOW)).toEqual({ findings: [] });
+    expect(await countEvaluationFailures(env, logger, NOW)).toEqual({
+      findings: [],
+      complete: true,
+    });
   });
 
   it("reports AI reviews that mostly got no verdict", async () => {
@@ -510,9 +513,32 @@ describe("countEvaluationFailures", () => {
     expect(findings[0]).toContain(`${RUN_INCOMPLETE_MIN_COUNT} changes`);
   });
 
+  it("counts a lost run that got its verdict on a retry", async () => {
+    const { env, raw } = makeEnv();
+    const { change } = seed(raw);
+    const reason = evaluationFailureReason("the evaluation run never reported back");
+    // One given up on, and two the sweep re-dispatched that then passed: the
+    // retry leaves no reason behind, only the attempt count.
+    change(reason, recent);
+    for (let i = 0; i < 2; i++) {
+      raw.prepare("UPDATE changes SET eval_attempts = 1 WHERE id = ?").run(change(null, recent));
+    }
+    // A retried run from before the window does not count.
+    raw.prepare("UPDATE changes SET eval_attempts = 2 WHERE id = ?").run(change(null, old));
+
+    const { findings } = await countEvaluationFailures(env, logger, NOW);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain("3 changes");
+    expect(findings[0]).toContain("(2 got a verdict on a retry)");
+  });
+
   it("treats a database failure as no finding, and logs it", async () => {
     const { env } = makeEnv({ DB: makeThrowingD1() } as Partial<Env>);
-    expect(await countEvaluationFailures(env, logger, NOW)).toEqual({ findings: [] });
+    expect(await countEvaluationFailures(env, logger, NOW)).toEqual({
+      findings: [],
+      complete: false,
+    });
     expect(logger.error).toHaveBeenCalledWith(
       "Evaluation health: could not count failures",
       expect.anything(),
@@ -557,6 +583,34 @@ describe("runEvaluationHealthCheck", () => {
     const result = await runEvaluationHealthCheck(env, logger, NOW);
     expect(result).toMatchObject({ canarySkipped: true, alert: { status: "opened" } });
     expect(result.findings).toHaveLength(1);
+  });
+
+  it("does not close an open alert on a day the counts could not be read", async () => {
+    const broken = makeAi(() => new Error("5028: model was deprecated"));
+    const { env } = makeEnv({ AI: broken } as Partial<Env>);
+    await runEvaluationHealthCheck(env, logger, NOW);
+    expect(await openAlerts(env)).toHaveLength(1);
+
+    // The model answers again, but the counting queries fail: half the check.
+    const working = env.DB;
+    const countsFail = {
+      ...env,
+      AI: makeAi(),
+      DB: {
+        prepare: (sql: string) => {
+          if (sql.includes("FROM eval_runs")) throw new Error("D1 is unwell");
+          return working.prepare(sql);
+        },
+      } as unknown as D1Database,
+    };
+    const result = await runEvaluationHealthCheck(countsFail, logger, NOW);
+
+    expect(result.findings).toEqual([]);
+    expect(result.alert).toEqual({
+      status: "left-as-is",
+      why: "the failure counts could not be read",
+    });
+    expect(await openAlerts(env)).toHaveLength(1);
   });
 
   it("does nothing visible on a healthy instance", async () => {
