@@ -68,6 +68,8 @@ export class FakeContainer implements JobContainer {
   failStart = false;
   /** How many more `destroy()` calls throw and leave the container running. */
   failDestroys = 0;
+  /** When set, registering an intercept on a RUNNING container throws. */
+  failInterceptsWhileRunning = false;
 
   /** Say what the step with this agent id (`prepare`, `s0`, `s1`, …) does. */
   script(id: string, script: StepScript): void {
@@ -105,6 +107,7 @@ export class FakeContainer implements JobContainer {
   }
 
   async interceptOutboundHttps(addr: string, binding: Fetcher): Promise<void> {
+    if (this.running && this.failInterceptsWhileRunning) throw new Error("intercept failed");
     this.intercepts.set(addr, binding);
     this.events.push(`intercept:${addr}`);
   }

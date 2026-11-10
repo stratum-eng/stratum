@@ -155,6 +155,23 @@ describe("a job that runs to the end", () => {
     expect(await h.machine.tick()).toBeNull();
   });
 
+  it("starts no step when the repository proxy cannot be closed after the checkout", async () => {
+    // Before any step runs, the job's route to its repository, the one path
+    // that carries a credential, is replaced with a handler that refuses
+    // everything. If that replacement fails, no step may start.
+    const h = harness();
+    h.container.failInterceptsWhileRunning = true;
+    await h.begin();
+    await h.run();
+
+    expect(h.container.running).toBe(false);
+    expect(h.container.destroys).toContain("repository proxy not closed");
+    expect(h.sent.length).toBeGreaterThan(0);
+    expect(h.sent.every((report) => report.status === "errored")).toBe(true);
+    expect(h.sent[0]?.summary).toContain("could not be closed");
+    expect(h.control.released).toBe(1);
+  });
+
   it("keeps its slot until the container is actually gone", async () => {
     const h = harness();
     await h.begin();

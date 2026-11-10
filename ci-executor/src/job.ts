@@ -576,7 +576,21 @@ export class JobMachine {
         this.deps.egress.allowlist({ hosts: [] }),
       );
     } catch (error) {
+      // Fail closed. A step must never start while the job can still reach
+      // its repository with the executor's credential attached: the steps of
+      // a CI job are unreviewed code, and the steps of a deploy job run
+      // beside credentials for somewhere that matters more. Nothing has run
+      // yet, so stopping here costs a re-run and nothing else.
       console.error("job: could not close the repository proxy", String(error));
+      await this.destroyContainer("repository proxy not closed");
+      job.repository.authorization = "";
+      this.failRemaining(
+        state,
+        "errored",
+        "Not run: the job's access to its repository could not be closed after the checkout, so no step was started. This is a fault in the executor, not in the change; run it again.",
+      );
+      state.phase = "finishing";
+      return;
     }
     job.repository.authorization = "";
     for (let i = 0; i < state.diffChunks; i++) await this.deps.storage.delete(`diff:${i}`);
