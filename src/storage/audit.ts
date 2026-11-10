@@ -127,7 +127,11 @@ export type AuditAction =
   // response still leaves a trail; `branch.resynced` records the move itself,
   // with both commits.
   | "branch.resync_requested"
-  | "branch.resynced";
+  | "branch.resynced"
+  // The resync stopped without knowing whether its push landed: it timed out
+  // (the push is not cancelled) or its run died. Written so the audit log
+  // names the two commits when nothing else will.
+  | "branch.resync_uncertain";
 
 export interface AuditEntry {
   id: string;

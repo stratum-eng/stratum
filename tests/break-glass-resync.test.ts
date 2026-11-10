@@ -1153,6 +1153,12 @@ describe("with the RepoDO enabled", () => {
     expect(await project.repo.tip()).toBe(before);
     // The attempt is on record even though nothing reported back.
     expect(audit("branch.resync_requested")).toHaveLength(1);
+    // And so is the fact that its outcome is not known. A dead run may have
+    // pushed first, and nothing else would say which commits were involved.
+    const uncertain = audit("branch.resync_uncertain");
+    expect(uncertain).toHaveLength(1);
+    expect(uncertain[0]?.actor_id).toBe("usr_admin");
+    expect(uncertain[0]?.detail).toMatchObject({ code: "RESYNC_FAILED", evaluated: false });
   });
 
   it("runs inline, without the object, when the kill switch is off", async () => {

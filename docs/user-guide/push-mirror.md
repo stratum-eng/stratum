@@ -258,12 +258,21 @@ number.
 
 - An audit entry `branch.resync_requested`, written before anything runs. It
   exists even if the request fails later.
+- An audit entry `branch.resync_uncertain` when the resync stopped without
+  knowing whether its push landed: it timed out, or its run died. It holds the
+  commits where they were known, and the reason.
 - An audit entry `branch.resynced` when the branch moves. It holds the old and
   new commit, the source repository, the commits that came in, and
-  `evaluated: false`. Both entries name the admin.
+  `evaluated: false`. Every entry names the admin.
 - A `branch.resynced` event, with the same data. The event's actor is the admin.
 
-A refused resync and an up-to-date resync write only the first entry.
+A refused resync and an up-to-date resync write only the first entry, except
+the two refusals above that leave the outcome unknown.
+
+Audit entries are written best-effort. If one cannot be written, the failure
+is logged and the resync still runs, so that a broken audit table cannot block
+a recovery. After a break-glass resync, check that the entries exist, and
+record anything missing where the incident is written up.
 
 ### The mirror afterwards
 

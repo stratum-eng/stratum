@@ -7,7 +7,10 @@
   commits, and nothing is forced, rewritten or merged. **The commits it brings in
   are not evaluated**. The `branch.resynced` audit entry and the new
   `branch.resynced` event say so and list them; a `branch.resync_requested`
-  entry, written before anything runs, records who asked and from where. It is
+  entry, written before anything runs, records who asked and from where, and
+  a `branch.resync_uncertain` entry records a resync that stopped without
+  knowing whether its push landed. Audit entries are best-effort: a failed
+  write is logged and does not stop the resync. It is
   available as `POST /api/projects/{namespace}/{slug}/resync` and as a card in
   project settings with a typed confirmation. OAuth grants and agents cannot run
   it, there is no MCP tool for it, and the organization's second-factor policy

@@ -28,7 +28,10 @@ Use it when **all** of these are true:
 
 Do not use it to skip a slow review, to land a change that evaluators rejected,
 or because the merge queue is busy. Every commit that comes in this way bypasses
-the evaluation gate, and the audit log says so permanently.
+the evaluation gate. The audit log is meant to say so permanently, and normally
+does, but an audit write that fails is logged and does not stop the resync. So
+the audit log is the first record, not the only one: step 8 has you check it
+and write anything missing into the incident issue.
 
 ## What you need before an incident
 
@@ -45,7 +48,7 @@ Prepare these while everything works. During an incident it is too late.
 
 The deploy token is the most dangerous item in this table: it can replace the
 running Worker. Keep it offline, give it to as few people as possible, and
-record each use in the [incident log](#record-the-incident).
+record each use in the [incident log](#8-record-the-incident).
 
 ## Procedure
 
@@ -84,6 +87,7 @@ Then the rest:
 ```bash
 : "${STRATUM_URL:?set STRATUM_URL first}" && echo "Instance: $STRATUM_URL"
 PROJECT=@stratum/stratum                 # the affected project, as @namespace/slug
+BRANCH=main                              # that project's DEFAULT branch, if it is not main
 ORG=stratum                              # the organization that owns it
 # STRATUM_TOKEN: a project admin's personal read_write token. Read it without
 # typing it on a command line:
@@ -100,7 +104,7 @@ curl -s "$STRATUM_URL/api/projects/$PROJECT/mirror" \
 
 `lastPushedSha` is the commit the mirror last received. With `"state": "ok"`
 and `"pending": false`, it is also the project's commit. If Stratum cannot
-answer, read the mirror's `main` on GitHub.
+answer, read the mirror's default branch on GitHub.
 
 ### 2. Lift the branch lock on the mirror
 
@@ -111,7 +115,7 @@ possible.
 1. On GitHub, open the mirror repository's **Settings → Rules → Rulesets** (or
    **Branches**, for classic branch protection).
 2. Add the maintainer to the bypass list of the rule that restricts pushes to
-   `main`. Do not delete or disable the rule. Do not allow force pushes.
+   the default branch. Do not delete or disable the rule. Do not allow force pushes.
 3. Note the time. The lock is restored in step 4.
 
 ### 3. Land the fix on the mirror
@@ -120,13 +124,13 @@ On the maintainer's machine, in the clone of the mirror:
 
 ```bash
 git fetch origin
-git switch main
+git switch "$BRANCH"
 git status --porcelain              # must print nothing: a clean checkout
-git merge --ff-only origin/main
-# Local main must be EXACTLY the mirror's main, not merely a descendant of it.
-# `--ff-only` also succeeds when local main is already ahead, and those extra
+git merge --ff-only "origin/$BRANCH"
+# The local branch must be EXACTLY the mirror's, not merely a descendant of it.
+# `--ff-only` also succeeds when the local branch is already ahead, and those extra
 # commits would then be pushed and resynced in without evaluation.
-test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || echo "STOP: local main differs"
+test "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$BRANCH")" || echo "STOP: the local branch differs"
 ```
 
 If that last line prints `STOP`, do not continue from this clone. Take a fresh
@@ -147,7 +151,7 @@ must contain every file the fix needs, and nothing else:
 
 ```bash
 git show --stat HEAD
-git push origin main                # a plain push, never --force
+git push origin "$BRANCH"           # a plain push, never --force
 ```
 
 If a gate failed, there is no commit and nothing to push. Fix it and run the
@@ -157,8 +161,8 @@ Rules for this step:
 
 - **Keep the fix small.** No evaluator sees it. The local gates are the only
   checks it gets.
-- **Only add commits on top of `main`.** Never rebase, amend or force-push
-  `main`. A rewritten `main` cannot be resynced.
+- **Only add commits on top of the default branch.** Never rebase, amend or
+  force-push it. A rewritten branch cannot be resynced.
 - **Record the fix commit's full SHA.** You pin the resync to it in step 5.
 
 ### 4. Restore the branch lock
@@ -235,7 +239,7 @@ Notes:
   `npx wrangler rollback --env="$DEPLOY_ENV" --message "<reason>"`. The token
   is gone once the deploy block ends, so run this inside a block of the same
   shape, in place of the deploy and health-check lines.
-- If GitHub Actions on the mirror still deploys from `main` and is healthy, the
+- If GitHub Actions on the mirror still deploys from the default branch and is healthy, the
   push in step 3 may already have deployed the fix. Check the running version
   before you deploy by hand.
 
@@ -267,7 +271,7 @@ Read the answer:
 | `200`, `"status": "fast-forwarded"` | The project now holds the fix. `commits` lists what came in. | Check that `commits` is exactly what you pushed. Go to step 7. |
 | `200`, `"status": "up-to-date"` | The project already had the fix. | Go to step 7. |
 | `409 RESYNC_DIVERGED` | Something was merged on Stratum after the fix landed on GitHub. The error names both commits. Nothing was changed. | See [If the resync is refused](#if-the-resync-is-refused). |
-| `409 RESYNC_SHA_MISMATCH` | GitHub's `main` is not at the commit you pinned. Nothing was changed. | Find out who pushed, and what. Do not resync until you know. |
+| `409 RESYNC_SHA_MISMATCH` | GitHub's default branch is not at the commit you pinned. Nothing was changed. | Find out who pushed, and what. Do not resync until you know. |
 | `409 RESYNC_PROJECT_MOVED` | A merge landed during the resync. Nothing was changed by the resync. | Stop merges (step 1) and run it again. It will probably report divergence now. |
 | `403 SECOND_FACTOR_REQUIRED` or `IP_NOT_ALLOWED` | The organization's policy applies to this action too. | Sign in with a passkey, or run it from an allowed network. |
 | `403 ADMIN_REQUIRES_DIRECT_CREDENTIAL` | You used an OAuth grant. | Use a browser session or a personal API token. |
@@ -278,9 +282,15 @@ The other codes are in the
 
 ### 7. Confirm the mirror is back to `ok`
 
-The resync queues a mirror push. That push finds the project and GitHub already
-equal, sends nothing, and records `ok`. If the mirror was `diverged` or `failed`
-during the incident, the resync resumed it first.
+A resync that moved the branch queues a mirror push. That push finds the
+project and GitHub already equal, sends nothing, and records `ok`. If the mirror
+was `diverged` or `failed` during the incident, the resync resumed it first.
+
+A resync that answered `up-to-date` queues nothing for a healthy mirror. That
+is the case after a push that timed out and then landed: the retry finds
+nothing to do, and the mirror can sit at `"pending": false` with
+`lastPushedSha` still at the old commit. If you see that, choose **Push now**
+on the mirror card in project settings.
 
 ```bash
 curl -s "$STRATUM_URL/api/projects/$PROJECT/mirror" \
@@ -311,9 +321,21 @@ Do this the same day:
 1. Check the audit log, with one query per action:
 
    ```bash
-   for action in branch.resync_requested branch.resynced; do
+   for action in branch.resync_requested branch.resynced branch.resync_uncertain; do
      curl -s "$STRATUM_URL/api/orgs/$ORG/audit?action=$action" \
        -H "Authorization: Bearer $STRATUM_TOKEN"
+   done
+   ```
+
+   That query is scoped to an organization. A project a person owns has no
+   organization, so its entries are not there. Read them from the instance
+   audit log instead, which needs the instance admin key:
+
+   ```bash
+   read -rs ADMIN_API_KEY
+   for action in branch.resync_requested branch.resynced branch.resync_uncertain; do
+     curl -s "$STRATUM_URL/api/admin/audit?action=$action" \
+       -H "X-Admin-API-Key: $ADMIN_API_KEY"
    done
    ```
 
@@ -325,10 +347,18 @@ Do this the same day:
    - **`up-to-date`**: only `branch.resync_requested`. Nothing moved, so there
      is no `branch.resynced` entry and none is missing.
    - **The push timed out and then landed** (`RESYNC_PUSH_TIMEOUT`, and a retry
-     answered `up-to-date`): two `branch.resync_requested` entries and **no**
-     `branch.resynced`. The branch moved without the entry that normally
-     records it. Write the old and new commit into the incident issue by hand,
-     from the first request's time and the branch's current tip.
+     answered `up-to-date`): two `branch.resync_requested` entries, one
+     `branch.resync_uncertain`, and **no** `branch.resynced`. The branch moved
+     without the entry that normally records it. The `branch.resync_uncertain`
+     entry names the commit the branch was at and the one GitHub had, where
+     they were known. Write both into the incident issue, and confirm the new
+     one against the branch's current tip.
+   - **The run died** (`RESYNC_FAILED`): one `branch.resync_requested` and one
+     `branch.resync_uncertain`, which may carry no commits, because the run
+     did not report back. Read the default branch to learn what happened.
+
+   If an entry you expect is missing, an audit write failed. Say so in the
+   incident issue and record the details there by hand.
 
 2. Open an issue that records: what broke, when merging stopped and restarted,
    the fix commit, who lifted the branch lock and for how long, who used the
@@ -350,9 +380,17 @@ so the project's history stays, and the fix has to join it:
    through the normal gate. The fix is then evaluated like any other change.
 2. The mirror is still diverged, because GitHub holds the original fix commits
    and the project holds copies with different SHAs. Agree with the other
-   maintainers, then remove the original commits from the mirror's `main` by
-   hand on GitHub. This is the one force push in this runbook, it is made by a
-   person on GitHub, and Stratum never makes it.
+   maintainers, then remove the original commits from the mirror's default
+   branch by hand on GitHub. This is the one force push in this runbook, it is
+   made by a person on GitHub, and Stratum never makes it.
+
+   The branch lock you restored in step 4 refuses it, and step 2 told you not
+   to allow force pushes. So this needs its own, separate exception: on the
+   rule that protects the default branch, add the one maintainer to the bypass
+   list **and** allow force pushes for that bypass only. Make the push, then
+   remove the bypass and turn force pushes off again at once, and confirm that
+   a push from that account is refused. Record who did it, and for how long,
+   in the incident issue.
 3. Choose **Resume mirror**. Stratum pushes the project's history, and the
    mirror returns to `ok`.
 

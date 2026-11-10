@@ -60,6 +60,12 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
  * one of these codes and, for the outcomes that name commits, two SHAs that
  * are re-validated before they are shown — never text the request supplied.
  */
+/** Refusals after which the branch may have moved anyway. See the route. */
+const UNCERTAIN_RESYNC_CODES: ReadonlySet<string> = new Set([
+  "RESYNC_PUSH_TIMEOUT",
+  "RESYNC_FAILED",
+]);
+
 export const RESYNC_NOTICES = {
   done: "Fast-forwarded. The commits that came in were not evaluated by this project's policy; the audit log lists them.",
   "up-to-date": "Already up to date: the project has everything GitHub has. Nothing was changed.",
@@ -420,6 +426,31 @@ app.post("/:namespace/:slug/resync", async (c) => {
   const outcome = await dispatchResync(c.env, project, source, expectedSha, logger);
 
   if (outcome.status === "refused") {
+    // Two refusals do not mean nothing changed. A push that timed out is not
+    // cancelled and may still land; a run that died may have pushed first. If
+    // it did, unevaluated commits are on the default branch with no
+    // `branch.resynced` entry to say so, and a retry answers `up-to-date` and
+    // writes none either. This entry is the record: which commit the branch
+    // was at, which it may now be at, and why that is not known.
+    if (UNCERTAIN_RESYNC_CODES.has(outcome.code)) {
+      await recordAudit(c.env.DB, logger, {
+        action: "branch.resync_uncertain",
+        actorType: "user",
+        actorId: userId,
+        subject: project.id,
+        project,
+        detail: {
+          project: project.name,
+          repo,
+          source: source.kind,
+          code: outcome.code,
+          evaluated: false,
+          ...(outcome.projectSha !== undefined ? { oldSha: outcome.projectSha } : {}),
+          ...(outcome.upstreamSha !== undefined ? { upstreamSha: outcome.upstreamSha } : {}),
+          ...(expectedSha !== undefined ? { expectedSha } : {}),
+        },
+      });
+    }
     logger.info("Resync refused", {
       projectId: project.id,
       repo,
