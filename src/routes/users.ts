@@ -2,7 +2,11 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { buildUsageReport } from "../billing/usage-report";
 import { cannotMintLegacyCredential } from "../middleware/auth";
-import { credentialMintRefused, orgBlockingCredentialMint } from "../services/org-second-factor";
+import {
+  credentialMintRefused,
+  mintFactorsOf,
+  orgBlockingCredentialMint,
+} from "../services/org-second-factor";
 import {
   describeTokenBindings,
   parseBindingRequest,
@@ -176,7 +180,7 @@ app.post("/me/rotate-token", async (c) => {
   const blockingOrg = orgBlockingCredentialMint(c);
   if (blockingOrg) return credentialMintRefused(c, blockingOrg, { bindable: false });
 
-  const result = await rotateUserToken(c.env.DB, userId, logger);
+  const result = await rotateUserToken(c.env.DB, userId, logger, mintFactorsOf(c));
   if (!result.success) {
     logger.error("Failed to rotate API key", result.error, { userId });
     return c.json({ error: "Failed to rotate API key" }, 500);
@@ -335,6 +339,7 @@ app.post("/me/tokens", async (c) => {
     scope: (scope ?? "read") as ApiTokenScope,
     ...(expiresInDays !== undefined ? { expiresInDays } : {}),
     ...(resolvedBinding.data !== null ? { binding: resolvedBinding.data.binding } : {}),
+    mintFactors: mintFactorsOf(c),
   });
   if (!result.success) {
     // A rejected name or expiry is a 400; only the active-token cap is a 409.

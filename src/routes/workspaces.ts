@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import { type EventActor, emitEvent } from "../queue/events";
-import { credentialMintRefused, orgBlockingCredentialMint } from "../services/org-second-factor";
+import {
+  credentialMintRefused,
+  mintFactorsOf,
+  orgBlockingCredentialMint,
+} from "../services/org-second-factor";
 import { recordAudit } from "../storage/audit";
 import { isTargetDeleting } from "../storage/deletion";
 import {
@@ -366,6 +370,7 @@ app.post("/:namespace/:slug/workspaces/:name/remote-credential", async (c) => {
     workspaceName: workspace.name,
     workspaceCreatedAt: workspace.createdAt,
     ttlMinutes: ttl,
+    mintFactors: mintFactorsOf(c),
   });
   if (!minted.success) return appError(minted.error);
 

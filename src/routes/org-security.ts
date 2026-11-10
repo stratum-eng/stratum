@@ -12,6 +12,8 @@ import {
   setOrgIpAllowlist,
   setOrgRequireSecondFactor,
 } from "../storage/orgs";
+import { countSecondFactorImpact } from "../storage/second-factor-impact";
+import { listProjectsByNamespace } from "../storage/state";
 import { countPasskeys } from "../storage/webauthn";
 import type { Env } from "../types";
 import { createLogger } from "../utils/logger";
@@ -24,7 +26,8 @@ import { badRequest, forbidden, internalError, notFound, ok } from "../utils/res
  * Two settings:
  * - `requireSecondFactor`: every member's browser session must have passed a
  *   passkey check (or, for a session that signed in through THIS org's SSO,
- *   the IdP's own MFA is trusted). Tokens are unaffected.
+ *   the IdP's own MFA is trusted). A token, agent or OAuth grant is held to
+ *   the same rule by how the session that minted it had signed in (#441).
  * - `ipAllowlist` (#399): CIDR ranges the org's resources may be reached from,
  *   by any credential. Empty means no restriction. Enforced in authz and
  *   `orgIpAllowlistMiddleware`.
@@ -39,6 +42,10 @@ const MAX_BODY_BYTES = 16 * 1024;
 
 type AppContext = Context<{ Bindings: Env }>;
 
+/**
+ * Resolve the org in the path for the signed-in caller. Non-members get the
+ * missing-org 404; members get a 403 only where an admin is required.
+ */
 async function loadOrgFor(c: AppContext, needAdmin: boolean) {
   const userId = c.get("userId");
   if (!userId) return { response: c.json({ error: "Unauthorized" }, 401) };
@@ -58,7 +65,28 @@ async function loadOrgFor(c: AppContext, needAdmin: boolean) {
     if (!isMember) return { response: notFound("Org", slug) };
     if (needAdmin) return { response: forbidden("Only an org admin can change security policy") };
   }
-  return { org, userId, logger };
+  return { org, userId, logger, isAdmin };
+}
+
+/**
+ * The credentials the second-factor policy refuses (#441), for an admin
+ * deciding whether to turn it on. Undefined on a failed count: the policy
+ * itself is still readable, and a wrong zero would be worse than no number.
+ */
+async function secondFactorImpactFor(
+  c: AppContext,
+  org: { id: string; slug: string },
+  logger: ReturnType<typeof createLogger>,
+) {
+  const projects = await listProjectsByNamespace(c.env.STATE, `@${org.slug}`, logger);
+  if (!projects.success) return undefined;
+  const orgProjectIds = new Set(
+    projects.data
+      .filter((project) => project.ownerType === "org" && project.ownerId === org.id)
+      .map((project) => project.id),
+  );
+  const impact = await countSecondFactorImpact(c.env.DB, logger, org.id, orgProjectIds);
+  return impact.success ? impact.data : undefined;
 }
 
 function policyBody(org: { requireSecondFactor: boolean; ipAllowlist: string[] }) {
@@ -68,7 +96,12 @@ function policyBody(org: { requireSecondFactor: boolean; ipAllowlist: string[] }
 app.get("/:slug/security", async (c) => {
   const ctx = await loadOrgFor(c, false);
   if ("response" in ctx) return ctx.response;
-  return ok(policyBody(ctx.org));
+  // Admins only: the counts describe other members' credentials.
+  const impact = ctx.isAdmin ? await secondFactorImpactFor(c, ctx.org, ctx.logger) : undefined;
+  return ok({
+    ...policyBody(ctx.org),
+    ...(impact !== undefined ? { secondFactorImpact: impact } : {}),
+  });
 });
 
 interface PolicyUpdate {

@@ -28,6 +28,13 @@ import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 import { isExpired, narrowTokenBinding, narrowTokenScope } from "./api-tokens";
+import {
+  type CredentialPolicy,
+  type MintFactors,
+  credentialPolicyFromRow,
+  mintFactorColumns,
+  unmetPolicyOrgsSql,
+} from "./credential-factors";
 import { narrowOAuthScope } from "./oauth";
 
 /** The plaintext prefix. Distinct from `stratum_user_` so the API middleware,
@@ -85,6 +92,12 @@ export interface ResolvedWorkspaceGitCredential {
    * the project as well as the child's, so a project moved out of an org the
    * parent was bound to takes the child with it. */
   parentBinding: CredentialBinding;
+  /**
+   * What the minter of this credential was minted with, and the orgs whose second-factor policy that
+   * falls short of (#441). The resolver always sets it; see
+   * `LegacyKeyHolder.keyPolicy` for why the type leaves it optional.
+   */
+  policy?: CredentialPolicy;
 }
 
 function dbError(error: unknown, operation: string): AppError {
@@ -224,6 +237,9 @@ export async function mintWorkspaceGitCredential(
     workspaceName: string;
     workspaceCreatedAt: string;
     ttlMinutes: number;
+    /** The MINTER's own factors (#441): this credential is always minted by
+     * another credential, and must satisfy no policy its minter does not. */
+    mintFactors?: MintFactors;
   },
 ): Promise<Result<MintedWorkspaceGitCredential, AppError>> {
   const { userId, minter, projectId, workspaceName, workspaceCreatedAt, ttlMinutes } = opts;
@@ -302,8 +318,9 @@ export async function mintWorkspaceGitCredential(
         `INSERT INTO api_tokens
            (id, user_id, name, token_hash, token_prefix, scope, expires_at, created_at,
             binding_kind, binding_id, purpose, workspace_name, workspace_created_at,
-            parent_kind, parent_id)
-         VALUES (?, ?, ?, ?, ?, 'read_write', ?, ?, 'project', ?, 'workspace_git', ?, ?, ?, ?)`,
+            parent_kind, parent_id, minted_second_factor, minted_sso_org_id)
+         VALUES (?, ?, ?, ?, ?, 'read_write', ?, ?, 'project', ?, 'workspace_git', ?, ?, ?, ?,
+                 ?, ?)`,
       )
       .bind(
         id,
@@ -318,6 +335,7 @@ export async function mintWorkspaceGitCredential(
         workspaceCreatedAt,
         parent.kind,
         parent.id,
+        ...mintFactorColumns(opts.mintFactors),
       )
       .run();
 
@@ -357,6 +375,10 @@ interface ResolvedRow {
   workspace_created_at: string | null;
   parent_kind: string | null;
   parent_id: string | null;
+  /** Migration 072. Absent on a stub row. */
+  minted_second_factor?: string | null;
+  minted_sso_org_id?: string | null;
+  unmet_policy_orgs?: string | null;
 }
 
 function storedParent(kind: string | null, id: string | null): ParentRef | null {
@@ -392,7 +414,13 @@ export async function resolveWorkspaceGitCredential(
                 u.token_hash AS user_token_hash, u.created_at AS user_created_at,
                 u.deleting_at, u.disabled_at, u.telemetry_opt_out,
                 t.id AS token_id, t.expires_at, t.revoked_at, t.binding_kind, t.binding_id,
-                t.workspace_name, t.workspace_created_at, t.parent_kind, t.parent_id
+                t.workspace_name, t.workspace_created_at, t.parent_kind, t.parent_id,
+                t.minted_second_factor, t.minted_sso_org_id,
+                ${unmetPolicyOrgsSql({
+                  userId: "t.user_id",
+                  secondFactor: "t.minted_second_factor",
+                  ssoOrgId: "t.minted_sso_org_id",
+                })} AS unmet_policy_orgs
            FROM api_tokens t JOIN users u ON u.id = t.user_id
           WHERE t.token_hash = ? AND t.purpose = 'workspace_git'`,
       )
@@ -442,6 +470,7 @@ export async function resolveWorkspaceGitCredential(
       workspaceName: row.workspace_name,
       workspaceCreatedAt: row.workspace_created_at,
       parentBinding: status.data.binding,
+      policy: credentialPolicyFromRow(row),
     };
     if (status.data.agentId !== undefined) resolved.agentId = status.data.agentId;
     return ok(resolved);

@@ -24,6 +24,7 @@ import { Hono } from "hono";
 import { contextStorage } from "hono/context-storage";
 import { authMiddleware } from "../middleware/auth";
 import { orgIpAllowlistMiddleware } from "../middleware/org-ip-allowlist";
+import { orgSecondFactorMiddleware } from "../middleware/org-second-factor";
 import { changesRouter } from "../routes/changes";
 import { changeChecksRouter } from "../routes/checks";
 import { issuesRouter } from "../routes/issues";
@@ -59,6 +60,14 @@ api.use("*", async (c, next) => {
   await next();
 });
 api.use("*", authMiddleware);
+// An org's second-factor policy (#441). Authz already withholds the org's
+// projects from a grant that was not minted with a second factor, but the
+// org's own endpoints (members, teams) are refused only by this middleware,
+// and `orgsRouter` is mounted below. Without it, a grant the policy refuses
+// could still manage the org through the org tools. It also turns the
+// refusal into `SECOND_FACTOR_REQUIRED` with a message the tool result can
+// show. Same position relative to the allowlist as in src/index.ts.
+api.use("*", orgSecondFactorMiddleware);
 // Turns an IP-allowlist refusal into `IP_NOT_ALLOWED` with a message the tool
 // result can show, instead of a bare "not found" for a project the caller can
 // see from an allowed network.

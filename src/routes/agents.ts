@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import { cannotMintLegacyCredential } from "../middleware/auth";
-import { credentialMintRefused, orgBlockingCredentialMint } from "../services/org-second-factor";
+import {
+  credentialMintRefused,
+  mintFactorsOf,
+  orgBlockingCredentialMint,
+} from "../services/org-second-factor";
 import { createAgent, deleteAgent, getAgent, listAgents } from "../storage/agents";
 import { recordAudit } from "../storage/audit";
 import type { Env } from "../types";
@@ -71,6 +75,7 @@ app.post("/", async (c) => {
     model,
     description,
     promptHash,
+    mintFactorsOf(c),
   );
 
   if (!result.success) {

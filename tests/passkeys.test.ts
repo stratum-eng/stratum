@@ -789,8 +789,15 @@ describe("passkeys as a second factor", () => {
           .prepare("SELECT org_id FROM audit_log WHERE action = 'org.second_factor_policy_changed'")
           .get(),
       ).toEqual({ org_id: "org_1" });
+      // An admin's read also says what the policy refuses (#441). Nobody here
+      // holds a token, agent or grant; neither account key was rotated from a
+      // session with a second factor.
       const read = await req("/api/orgs/acme/security", { cookie: admin });
-      expect(await jsonOf(read)).toEqual({ requireSecondFactor: true, ipAllowlist: [] });
+      expect(await jsonOf(read)).toEqual({
+        requireSecondFactor: true,
+        ipAllowlist: [],
+        secondFactorImpact: { members: 0, apiTokens: 0, agents: 0, oauthGrants: 0, accountKeys: 2 },
+      });
     });
 
     it("binds only the requiring org's resources, never the member's other access", async () => {
@@ -932,15 +939,24 @@ describe("passkeys as a second factor", () => {
       }
     });
 
-    it("does not apply to API tokens", async () => {
+    it("applies to an API key by how the key was minted (#441)", async () => {
       requirePolicy();
-      const res = await app.fetch(
-        new Request(`${BASE}/test/project/org/org_1`, {
-          headers: { Authorization: `Bearer ${LEGACY_TOKEN}` },
-        }),
-        env,
-      );
-      expect(res.status).toBe(200);
+      const withKey = () =>
+        app.fetch(
+          new Request(`${BASE}/test/project/org/org_1`, {
+            headers: { Authorization: `Bearer ${LEGACY_TOKEN}` },
+          }),
+          env,
+        );
+      // Nothing is recorded about how this key was minted, so the org's
+      // policy refuses it, and says so rather than answering "not found".
+      const refused = await withKey();
+      expect(refused.status).toBe(403);
+      expect(await jsonOf(refused)).toMatchObject({ code: "SECOND_FACTOR_REQUIRED", org: "acme" });
+
+      // The same key, had it been rotated from a passkey-verified session.
+      raw.prepare("UPDATE users SET token_minted_second_factor = 'passkey' WHERE id = ?").run(USER);
+      expect((await withKey()).status).toBe(200);
     });
   });
 });

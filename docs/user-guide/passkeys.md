@@ -59,8 +59,8 @@ add a passkey again. Nothing else changes.
 
 ## What a second factor does not cover
 
-A passkey protects **interactive browser sign-in**. These credentials work as
-before and never ask for a passkey:
+A passkey protects **interactive browser sign-in**. These credentials never ask
+for a passkey when they are used:
 
 - API tokens (`stratum_user_…`) and the legacy API key
 - Agent tokens (`stratum_agent_…`)
@@ -79,6 +79,10 @@ These credentials are not all limited in what they can do:
 Treat each one like a password, and revoke or disable any you no longer trust
 from **Settings**. No token can read or change your passkeys.
 
+An organization that requires a second factor does hold these credentials to
+it, by how you had signed in when you created them. See
+[Using credentials](#using-credentials).
+
 ## Requiring a second factor for an organization
 
 An org admin or owner can require every member to use a second factor:
@@ -91,6 +95,34 @@ curl -X PUT https://app.usestratum.dev/api/orgs/acme/security \
 ```
 
 `GET /api/orgs/{slug}/security` reads the setting. Any member can read it.
+
+For an admin, the same response includes `secondFactorImpact`: how many of the
+members' credentials the policy refuses. Read it **before** you turn the policy
+on, because those tokens, agents and connections stop reaching the org the
+moment you do. See [Using credentials](#using-credentials).
+
+```json
+{
+  "requireSecondFactor": false,
+  "ipAllowlist": [],
+  "secondFactorImpact": {
+    "members": 3,
+    "apiTokens": 4,
+    "agents": 2,
+    "oauthGrants": 1,
+    "accountKeys": 7
+  }
+}
+```
+
+- `members`: members who hold at least one affected token, agent or connection.
+- `apiTokens`: tokens that are account-wide, limited to this org, or limited to
+  one of its projects.
+- `agents`: agents with their own token.
+- `oauthGrants`: MCP and CLI connections.
+- `accountKeys`: members whose legacy API key would be refused. Every account
+  has one, in use or not, and a disabled key cannot be told from a live one, so
+  read this as an upper bound.
 
 To prevent locking yourself out, you must have a passkey on your own account
 before you can turn the policy on. The exception is when your current session
@@ -128,12 +160,41 @@ resources return `403` with code `SECOND_FACTOR_REQUIRED` and a link to
 Two org endpoints stay open even when the policy blocks you: reading the policy
 (`GET /api/orgs/{slug}/security`) and leaving the org.
 
+### Using credentials
+
+A token, agent or connection cannot use a passkey, so the org's policy is
+applied to **how you had signed in when you created it**. Stratum records that
+on the credential:
+
+- created from a session that passed a passkey or recovery code: it meets every
+  org's policy;
+- created from a session that signed in through an org's SSO: it meets that
+  org's policy, and no other's;
+- anything else: it meets no org's policy. This includes **every credential
+  created before this rule existed**, because nothing was recorded for them.
+
+A credential that does not meet an org's policy gets `403 SECOND_FACTOR_REQUIRED`
+on that org's projects and endpoints, over the API, MCP, and `git`. It keeps
+working everywhere else: your own projects, and organizations without the
+policy.
+
+This applies whenever the credential is used, so it covers a credential created
+before the org turned the policy on, and one created before you joined the org.
+
+To restore access, **create the credential again** from a session that meets
+the policy: sign in with your passkey, then create a new token, rotate the
+legacy key, create a new agent, or reconnect the MCP client or CLI. Revoke the
+old one.
+
+A credential created by another credential inherits from it. An agent you create
+with an API key, or a workspace remote credential an MCP client asks for, meets
+exactly the policies the credential that created it does.
+
 ### Creating credentials
 
-A credential you create keeps working after you create it, whatever session it
-came from, so the policy also applies when a credential is **created**. While
-your session has not met an org's policy, you cannot create anything that could
-reach that org:
+The policy also applies when a credential is **created**, so that you find out
+in the browser and not later from a failing script. While your session has not
+met an org's policy, you cannot create anything that could reach that org:
 
 - an API token that is not limited to one project or organization
 - a token limited to that org, or to one of its projects, public or private (a

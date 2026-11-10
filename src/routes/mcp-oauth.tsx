@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { setHtmlSecurityHeaders } from "../middleware/security-headers";
 import {
   credentialMintRefusalMessage,
+  mintFactorsOf,
   orgBlockingCredentialMint,
 } from "../services/org-second-factor";
 import { createGrantAgent, getAgent, listAgents } from "../storage/agents";
@@ -885,6 +886,7 @@ app.post("/oauth/authorize", async (c) => {
     codeChallenge: params.codeChallenge,
     resource: params.resource,
     ...(actAs !== undefined ? { actAs } : {}),
+    mintFactors: mintFactorsOf(c),
   });
   if (!code.success) {
     redirect.searchParams.set("error", "server_error");
@@ -1088,6 +1090,7 @@ async function handleCodeGrant(
     scope: record.scope,
     codeId: record.codeId,
     ...(agentId.data !== undefined ? { agentId: agentId.data } : {}),
+    ...(record.mintFactors !== undefined ? { mintFactors: record.mintFactors } : {}),
   });
   if (!tokens.success) return oauthError("server_error", "Could not issue tokens", 500);
 

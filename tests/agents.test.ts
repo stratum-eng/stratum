@@ -135,6 +135,7 @@ describe("POST /api/agents", () => {
       undefined,
       undefined,
       undefined,
+      {},
     );
   });
 
@@ -166,6 +167,7 @@ describe("POST /api/agents", () => {
       "claude-3-5-sonnet",
       undefined,
       undefined,
+      {},
     );
   });
 

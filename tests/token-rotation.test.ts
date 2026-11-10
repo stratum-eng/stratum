@@ -30,7 +30,7 @@ function makeUsersD1(rows: UserRow[]): D1Database {
       bind: (...args: unknown[]) => makeStmt(sql, args),
       run: async () => {
         if (upper.startsWith("UPDATE USERS SET TOKEN_HASH")) {
-          const row = rows.find((r) => r.id === bindings[1]);
+          const row = rows.find((r) => r.id === bindings[bindings.length - 1]);
           if (!row) return { success: true, meta: { changes: 0 } };
           row.token_hash = bindings[0] as string;
           return { success: true, meta: { changes: 1 } };

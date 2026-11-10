@@ -3,8 +3,10 @@ import { getCookie } from "hono/cookie";
 import { warmEntitlements } from "../billing/entitlements";
 import { isGitHttpPath } from "../routes/git-http";
 import { isOAuthClientEndpoint } from "../routes/mcp-oauth";
+import { applyCredentialPolicy } from "../services/org-second-factor";
 import { getAgentByToken } from "../storage/agents";
 import { resolveApiToken, touchApiTokenLastUsed } from "../storage/api-tokens";
+import type { CredentialPolicy, MintFactors } from "../storage/credential-factors";
 import { SCOPE_WRITE, resolveOAuthAccessToken, touchOAuthTokenLastUsed } from "../storage/oauth";
 import {
   type SessionSecondFactor,
@@ -75,12 +77,17 @@ declare module "hono" {
     /** Session callers only: the org whose IdP authenticated the session. */
     sessionSsoOrgId?: string;
     /**
-     * Session callers only: orgs whose "require a second factor" policy this
-     * session does not satisfy. Consulted ONLY when the request reaches one of
-     * those orgs' resources (`src/middleware/org-second-factor.tsx` and
-     * `src/utils/authz.ts`); it never restricts the user's other access.
+     * Orgs whose "require a second factor" policy this caller does not
+     * satisfy: a session by the factors it passed at sign-in, a credential by
+     * the factors its minter had passed (#441). Consulted ONLY when the
+     * request reaches one of those orgs' resources
+     * (`src/middleware/org-second-factor.tsx` and `src/utils/authz.ts`); it
+     * never restricts the caller's other access.
      */
     secondFactorUnmetOrgs?: UnmetSecondFactorOrg[];
+    /** Credential callers only (#441): the factors this credential was minted
+     * with, which anything it mints inherits. See `mintFactorsOf`. */
+    credentialMintFactors?: MintFactors;
     logger: Logger;
   }
 }
@@ -286,8 +293,10 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
       let tokenId: string | null;
       let lastUsedAt: string | undefined;
       let binding: CredentialBinding | null = null;
+      let policy: CredentialPolicy | undefined;
 
       if (scopedToken.success) {
+        policy = scopedToken.data.policy;
         user = scopedToken.data.user;
         scope = scopedToken.data.scope;
         tokenId = scopedToken.data.tokenId;
@@ -319,21 +328,23 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         // deleting_at flag rides on the same user row (no second round-trip) and
         // we reject BEFORE setting any context so nothing downstream trusts it.
         // A disabled (SCIM-deprovisioned, reversible) account is equally inert.
-        if (userResult.data.deletingAt || userResult.data.disabledAt) {
+        const keyHolder = userResult.data;
+        if (keyHolder.deletingAt || keyHolder.disabledAt) {
           logger.warn("Auth rejected - user is deleting or disabled", {
             path: c.req.path,
-            userId: userResult.data.id,
+            userId: keyHolder.id,
           });
           await auditAuthFailure(c, c.env.DB, logger, {
             method: "legacy_token",
-            reason: userResult.data.deletingAt ? "owner-deleting" : "owner-disabled",
+            reason: keyHolder.deletingAt ? "owner-deleting" : "owner-disabled",
             actorType: "user",
-            actorId: userResult.data.id,
-            subject: userResult.data.id,
+            actorId: keyHolder.id,
+            subject: keyHolder.id,
           });
           return rejectToken("Invalid token");
         }
-        user = userResult.data;
+        user = keyHolder;
+        policy = keyHolder.keyPolicy;
         // The legacy credential predates scopes and carries the full account
         // power it always had. Time-boxed: it can be disabled explicitly.
         scope = "read_write";
@@ -388,6 +399,10 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
       c.set("tokenScope", scope);
       if (tokenId !== null) c.set("apiTokenId", tokenId);
       if (binding !== null) c.set("credentialBinding", binding);
+      // Org second-factor policy (#441): recorded here, enforced only where
+      // the request reaches one of those orgs' resources, exactly as for a
+      // session below.
+      applyCredentialPolicy(c, policy);
       // Read off `user`, which both branches above populate — the scoped-token
       // join selects `telemetry_opt_out` for exactly this reason, so opting out
       // is not defeated by authenticating with a scoped token instead of the
@@ -461,6 +476,7 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
       c.set("agentId", agentResult.data.id);
       c.set("agentOwnerId", agentResult.data.ownerId);
       c.set("authVia", "token");
+      applyCredentialPolicy(c, agentResult.data.policy);
       // An agent acts under its owner's account, so the owner's telemetry
       // choice governs it — otherwise opting out could be defeated by routing
       // traffic through an agent. The owner row is already in hand.
@@ -601,6 +617,9 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
       c.set("tokenScope", grant.data.scope);
       c.set("oauthGrantId", grant.data.grantId);
       c.set("oauthClientId", grant.data.clientId);
+      // The grant's own factors govern, including for a bound agent: the
+      // grant is that agent's only credential (#441).
+      applyCredentialPolicy(c, grant.data.policy);
       c.set("telemetryOptOut", grant.data.user.telemetryOptOut === true);
 
       // Off the response path and debounced inside the helper, exactly as the
@@ -667,9 +686,9 @@ export const authMiddleware: MiddlewareHandler<{ Bindings: Env }> = async (c, ne
         // Org second-factor policy (#256): recorded, not enforced, here. An org
         // grants membership without the member's consent, so its policy may
         // bind only its OWN resources — enforced at org-resource access
-        // (authz + org routes), never as a gate on the whole session. Tokens
-        // never reach this branch, so the policy must also hold when this
-        // session MINTS a credential: see `orgBlockingCredentialMint`.
+        // (authz + org routes), never as a gate on the whole session. A
+        // credential this session mints records the session's factors and is
+        // held to the same policy on use (#441): see `mintFactorsOf`.
         const unmetOrgs = sessionResult.data.unmetSecondFactorOrgs ?? [];
         if (unmetOrgs.length > 0) c.set("secondFactorUnmetOrgs", unmetOrgs);
 
