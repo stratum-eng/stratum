@@ -2720,7 +2720,9 @@ paths:
         stale-base (`requireFreshBase`), and stale-workspace (SEC-2) gates run
         before the merge. A change still `evaluating` is refused with `409`
         `EVALUATION_PENDING`, with or without force, and an `external` change
-        with `409` `EXTERNAL_NOT_IMPORTED`.
+        with `409` `EXTERNAL_NOT_IMPORTED`. A change from a pull request that
+        has commits newer than the ones imported is refused with `409`
+        `PR_HEAD_MOVED`, also with or without force.
 
         A change that came from a pull request on the mirror keeps its commits
         when it merges; with `strategy=squash` the squash commit names their

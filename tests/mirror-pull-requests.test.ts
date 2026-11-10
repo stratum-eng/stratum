@@ -1907,6 +1907,27 @@ describe("a push that lands between the import's head check and the start of its
   });
 });
 
+describe("a change whose pull request moved on without it", () => {
+  it("cannot merge, even when nothing sent it back to external", async () => {
+    await configureMirror();
+    const { changeId } = await openPullRequest(7);
+    expect((await importChange(changeId)).status).toBe(202);
+    expect((await getChange(changeId)).change.status).toBe("accepted");
+
+    // What an interrupted import leaves behind: the push's new head is on
+    // record, but the step that returns the change to `external` never ran,
+    // so the old commits finished evaluating and look mergeable.
+    const newer = "e".repeat(40);
+    db.prepare("UPDATE external_pull_requests SET head_sha = ?").run(newer);
+    expect((await getChange(changeId)).change.status).toBe("accepted");
+
+    const merge = await mergeChange(changeId);
+    expect(merge.status).toBe(409);
+    expect(await merge.json()).toMatchObject({ code: "PR_HEAD_MOVED", headSha: newer });
+    expect((await getChange(changeId)).change.status).toBe("accepted");
+  });
+});
+
 describe("new commits on an imported pull request", () => {
   it("supersede the old revision, its checks and its approvals", async () => {
     await seedBase({

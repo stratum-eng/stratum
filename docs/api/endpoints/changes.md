@@ -134,6 +134,7 @@ the full list and the response shapes):
 |---|---|
 | `EVALUATION_PENDING` | The change is still `evaluating`; refused even with `force` |
 | `EXTERNAL_NOT_IMPORTED` | The change is `external`: a pull request nobody has imported; refused even with `force` |
+| `PR_HEAD_MOVED` | The change came from a pull request that now has commits newer than the ones imported; refused even with `force` — import them first |
 | `EVALUATION_MISSING` | The evaluation failed closed and pinned no revision; refused even with `force` — re-evaluate first |
 | `STALE_BASE` | Under `merge.requireFreshBase`: the recorded base is behind project HEAD, or the change has no recorded base |
 | `BASE_UNVERIFIABLE` (`503`) | Under `merge.requireFreshBase`: project HEAD could not be read, so freshness could not be verified. Nothing merged; retry |

@@ -197,6 +197,10 @@ When the contributor pushes again, the change returns to `external`. Choose
 **Import new commits** to bring them in. They are added to the same workspace,
 so commits a maintainer made there are kept.
 
+A merge checks this again by itself. If the pull request has commits newer
+than the ones that were imported, the merge is refused with `PR_HEAD_MOVED`,
+whatever state the change is in and even with `force`.
+
 A maintainer can commit to the workspace like any other. Those commits carry
 the maintainer's name, and the contributor's commits keep theirs.
 

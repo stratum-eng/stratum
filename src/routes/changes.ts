@@ -653,6 +653,22 @@ app.post("/changes/:id/merge", async (c) => {
   const externalOrigin = await getExternalPullRequestByChange(c.env.DB, logger, id);
   if (!externalOrigin.success) return internalError("Failed to read the change's origin");
   const fromPullRequest = externalOrigin.data;
+  // The one thing it does refuse: commits the pull request has moved past. A
+  // push normally sends the change back to `external`, but that takes two
+  // writes, and an import that died between starting its run and noticing
+  // the new head leaves the old commits evaluating, and later mergeable.
+  // This reads the stored record, so it holds whatever was interrupted, and
+  // it is not something `force` may skip.
+  if (fromPullRequest !== null && fromPullRequest.headSha !== fromPullRequest.importedHeadSha) {
+    return c.json(
+      {
+        error: `Pull request #${fromPullRequest.prNumber} has commits newer than the ones that were imported; import them before merging`,
+        code: "PR_HEAD_MOVED",
+        headSha: fromPullRequest.headSha,
+      },
+      409,
+    );
+  }
 
   // Branch protection: the policy's merge rules gate every merge path. Cached +
   // coalesced so a swarm of merges doesn't each clone the repo for the policy file.
