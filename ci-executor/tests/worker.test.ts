@@ -20,6 +20,8 @@ let accepted: Array<{ jobId: string; job: Job }>;
 let calls: string[];
 let logs: Map<string, string>;
 let env: Env;
+let failSubmit = false;
+let failBegin = false;
 
 function namespace(stub: object) {
   return { idFromName: (name: string) => name, get: () => stub };
@@ -27,6 +29,8 @@ function namespace(stub: object) {
 
 beforeEach(() => {
   decision = { decision: "start" };
+  failSubmit = false;
+  failBegin = false;
   submitted = [];
   accepted = [];
   calls = [];
@@ -39,7 +43,11 @@ beforeEach(() => {
       submit: async (jobId: string, request: AdmissionRequest) => {
         submitted.push({ jobId, request });
         calls.push("submit");
+        if (failSubmit) throw new Error("coordinator reset");
         return decision;
+      },
+      release: async () => {
+        calls.push("release");
       },
     }),
     JOB: namespace({
@@ -50,6 +58,7 @@ beforeEach(() => {
       },
       begin: async () => {
         calls.push("begin");
+        if (failBegin) throw new Error("runner reset");
       },
       discard: async () => {
         calls.push("discard");
@@ -92,6 +101,25 @@ describe("POST /jobs", () => {
     expect(accepted[0]?.job.steps.map((step) => step.name)).toEqual(["lint", "test"]);
     expect(submitted[0]?.jobId).toBe(accepted[0]?.jobId);
     expect(submitted[0]?.request.timeoutMs).toBe(1800_000);
+  });
+
+  it("discards the stored job, and its token, when admission throws", async () => {
+    failSubmit = true;
+    const response = await postJob(body());
+
+    expect(response.status).toBe(503);
+    expect(response.body.code).toBe("ADMISSION_FAILED");
+    // Nothing owns the job, so nothing else would ever delete it.
+    expect(calls).toEqual(["accept", "submit", "discard"]);
+  });
+
+  it("gives the slot back and discards the job when an admitted job cannot start", async () => {
+    failBegin = true;
+    const response = await postJob(body());
+
+    expect(response.status).toBe(503);
+    expect(response.body.code).toBe("START_FAILED");
+    expect(calls).toEqual(["accept", "submit", "begin", "release", "discard"]);
   });
 
   it("leaves a queued job for the coordinator to start", async () => {

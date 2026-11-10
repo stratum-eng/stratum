@@ -89,6 +89,20 @@ change. A change that edits `.stratum/policy.yaml` to drop a required check is
 still held to the checks the base requires (and, because it edits protected
 config, needs a human approval as well).
 
+A second source of names is [first-party CI](/guides/ci/). Each step in the default
+branch's `.stratum/ci.yaml` is a check run of the same kind, named after the
+step and created by Stratum in the same way. Three things differ:
+
+- **A step is required without being listed** in `merge.requiredChecks`. A step
+  marked `optional: true` is reported and shown, and does not gate the merge.
+- **A name belongs to one source.** A step may not share a name with a check a
+  `checks` entry declares; that makes the configuration invalid.
+- **Its reports are signed with the instance's executor secret**, not with a
+  project secret. Stratum decides which key to verify a report against from the
+  check run's own record, set when the run was created, so a project's runner
+  key cannot report a CI step and the executor's key cannot report a project's
+  check.
+
 ## Lifecycle
 
 ```

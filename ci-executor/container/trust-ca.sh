@@ -30,9 +30,12 @@ until mkdir "$LOCK" 2>/dev/null; do
   fi
   sleep 0.1
 done
+# Held from here. Released on EVERY exit, including a failed copy or rebuild
+# under `set -e`: a lock left behind makes the second caller wait out its 30
+# seconds and fail the checkout, when a retry of the install might have worked.
+trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
 if [ ! -f "$DONE" ]; then
   cp "$CA" /usr/local/share/ca-certificates/cloudflare-containers-ca.crt
   update-ca-certificates >/dev/null 2>&1
   touch "$DONE"
 fi
-rmdir "$LOCK"

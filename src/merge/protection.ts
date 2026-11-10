@@ -347,6 +347,9 @@ export async function checkResolutionMergeProtection(
     diff: string;
     evalRuns: Array<{ evaluatorType: string; result: { passed: boolean } }>;
     originatingChange?: { id: string; createdByUserId?: string };
+    /** The project the resolution writes to. Needed to ask whether it has ever
+     * run first-party CI, when the base branch could not be read (#415). */
+    projectId?: string;
   },
   policy: EvalPolicy,
 ): Promise<Result<ProtectionVerdict, AppError>> {
@@ -356,11 +359,30 @@ export async function checkResolutionMergeProtection(
 
   const merge = policy.merge;
   const touchesProtectedConfig = diffTouchesProtectedConfig(args.diff);
-  if (!merge && !touchesProtectedConfig && policy.ci === undefined) {
+  if (
+    !merge &&
+    !touchesProtectedConfig &&
+    policy.ci === undefined &&
+    policy.ciUnverified !== true
+  ) {
     return ok({ allowed: true, reasons: [] });
   }
 
   const reasons: string[] = requiredEvaluatorReasons(args.evalRuns, merge?.requiredEvaluators);
+
+  // The base branch could not be read, so whether this project has required
+  // CI steps is unknown. Same rule as `checkMergeProtection`: for a project
+  // that has ever run first-party CI, unknown must not mean none. Without it
+  // a manual resolution could be pushed, during a read outage, with content
+  // no step was ever run against.
+  if (policy.ciUnverified === true) {
+    const ran = await projectHasCiRuns(db, logger, {
+      id: args.originatingChange?.id ?? "",
+      ...(args.projectId !== undefined ? { projectId: args.projectId } : {}),
+    });
+    if (!ran.success) return err(new AppError(ran.error.message, "DATABASE_ERROR", 500));
+    if (ran.data) reasons.push(CI_UNVERIFIED_REASON);
+  }
 
   // Required checks cannot be met here, and that is the answer rather than a
   // gap (#414). A check run is bound to an evaluated revision of a change; a

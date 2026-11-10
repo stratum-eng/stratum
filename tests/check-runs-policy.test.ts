@@ -364,6 +364,37 @@ describe("the gate against stored checks", () => {
     expect(again.success && again.data).toBe(0);
   });
 
+  it("refuses a manual resolution when the base could not be read and the project runs first-party CI", async () => {
+    // The step list is unknown. For a project that has run first-party CI,
+    // unknown must not mean none, on this path as on an ordinary merge.
+    const { db, raw } = makeSqliteD1();
+    const unverified = { evaluators: [], ciUnverified: true } as unknown as typeof policy;
+    const resolve = () =>
+      checkResolutionMergeProtection(
+        db,
+        logger,
+        { diff: "diff --git a/x b/x\n+resolved\n", evalRuns: [], projectId: "proj_ci" },
+        unverified,
+      );
+
+    // A project that has never run first-party CI is unaffected.
+    const before = await resolve();
+    expect(before.success && before.data.allowed).toBe(true);
+
+    raw
+      .prepare(
+        `INSERT INTO checks (id, change_id, project_id, revision, name, attempt, status,
+                             secret_ref, created_at, updated_at, deadline_at, ci_config_digest)
+         VALUES ('chk_1', 'chg_1', 'proj_ci', 'a', 'test', 1, 'passed', 'X',
+                 '2026-11-09T00:00:00.000Z', '2026-11-09T00:00:00.000Z',
+                 '2026-11-09T01:00:00.000Z', 'digest')`,
+      )
+      .run();
+    const after = await resolve();
+    expect(after.success && after.data.allowed).toBe(false);
+    expect(after.success && after.data.reasons.join(" ")).toMatch(/could not be read|unverified/i);
+  });
+
   it("refuses a manual conflict resolution when checks are required", async () => {
     const { db } = makeSqliteD1();
     const verdict = await checkResolutionMergeProtection(

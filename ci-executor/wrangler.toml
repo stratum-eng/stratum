@@ -5,7 +5,7 @@
 # two Durable Object classes and one bucket for logs. No D1, no KV, no
 # Artifacts, no service binding back to Stratum.
 #
-# Deploying it is described step by step in docs/developer/ci-executor.md.
+# Deploying it is described step by step in docs/user-guide/ci.md.
 "$schema" = "./node_modules/wrangler/config-schema.json"
 name = "stratum-ci-executor"
 main = "src/index.ts"

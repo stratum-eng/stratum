@@ -796,7 +796,7 @@ app.post("/projects/conflicts/:id/resolve", async (c) => {
     const protectionResult = await checkResolutionMergeProtection(
       c.env.DB,
       logger,
-      { diff, evalRuns, originatingChange },
+      { diff, evalRuns, originatingChange, projectId: project.id },
       policy,
     );
     if (!protectionResult.success) {

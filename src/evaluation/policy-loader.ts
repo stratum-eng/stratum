@@ -185,6 +185,12 @@ export async function loadPolicy(
         parsed.status === "ok"
           ? parsed.policy
           : malformedPolicy("stratum.config.json", parsed.reason, logger);
+    } else if (jsonFile.status === "failed") {
+      // Same treatment, and the same single trace, as a failed YAML read below.
+      logger.warn("Policy load failed; treating as absent", {
+        path: "stratum.config.json",
+        error: jsonFile.reason,
+      });
     }
   }
   // A failed policy read is still treated as "no policy file", as it always

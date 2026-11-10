@@ -110,12 +110,34 @@ async function submitJob(request: Request, env: Env): Promise<Response> {
   // Stored before it is admitted, so a job the coordinator promotes out of the
   // queue always has something to run.
   await runner.accept(jobId, job);
-  const decision = await coordinator.submit(jobId, { timeoutMs, startBy });
+  let decision: Awaited<ReturnType<Coordinator["submit"]>>;
+  try {
+    decision = await coordinator.submit(jobId, { timeoutMs, startBy });
+  } catch (error) {
+    // The coordinator did not answer. The job was stored with its repository
+    // token and now has no owner and no alarm, so nothing would ever delete
+    // it. Discard it here; Stratum sees the failure and can dispatch again.
+    console.error("executor: admission failed", String(error));
+    await runner.discard().catch(() => {});
+    return refuse(503, "The executor could not admit the job; try again", "ADMISSION_FAILED");
+  }
   if (decision.decision === "refused") {
     await runner.discard();
     return refuse(429, decision.reason, "AT_CAPACITY");
   }
-  if (decision.decision === "start") await runner.begin();
+  if (decision.decision === "start") {
+    try {
+      await runner.begin();
+    } catch (error) {
+      // Admitted but never started. Give the slot back and drop the stored
+      // job, or the slot stays taken until its timeout while Stratum's retry
+      // queues behind a job that does not exist.
+      console.error("executor: could not start an admitted job", String(error));
+      await coordinator.release(jobId).catch(() => {});
+      await runner.discard().catch(() => {});
+      return refuse(503, "The executor could not start the job; try again", "START_FAILED");
+    }
+  }
   return Response.json(
     { jobId, state: decision.decision === "start" ? "running" : "queued" },
     {

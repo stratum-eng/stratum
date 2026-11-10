@@ -2748,7 +2748,10 @@ paths:
         Check runs are per-job CI results a project's runner reports back
         asynchronously. Returns the newest run of each check on the change's
         evaluated revision, which is the set `merge.requiredChecks` is checked
-        against. Needs read access to the project.
+        against. Steps of first-party CI (`.stratum/ci.yaml`) are listed here
+        under their step names; each is a required check without being named in
+        `merge.requiredChecks`, unless the step is marked `optional`. Needs
+        read access to the project.
       parameters:
         - name: all
           in: query
@@ -2905,7 +2908,11 @@ paths:
         Called by a project's check runner, not by an API client. The request
         carries no bearer token and no session; it is authenticated by the
         `X-Stratum-Signature` header, the HMAC-SHA256 of the raw request body
-        under the project secret named by the policy's `checks` entry.
+        under the project secret named by the policy's `checks` entry. A run
+        that is a step of first-party CI (`.stratum/ci.yaml`) is verified
+        against the instance's executor secret instead, and only that: which
+        key applies is decided by the run's own record, so neither key can
+        report the other kind of run.
 
         A report can only move an existing run's status forward. It cannot
         create a check or change a run's name, change or revision. Terminal

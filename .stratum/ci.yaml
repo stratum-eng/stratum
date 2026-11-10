@@ -36,7 +36,7 @@ steps:
   - name: cli
     run: |
       cd cli
-      npm install
+      npm ci
       npm run typecheck
       npm test
       npm run build
@@ -45,7 +45,7 @@ steps:
   - name: agent
     run: |
       cd agent
-      npm install
+      npm ci
       npm run typecheck
       npm test
       npm run build
