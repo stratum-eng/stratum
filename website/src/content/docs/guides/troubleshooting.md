@@ -224,6 +224,13 @@ It lists what failed. While it is open no second issue is filed, and it is
 closed automatically when the check passes again. Left unset, which is the
 default, the result is written to the Worker's logs only.
 
+To be emailed as well, set the `OPS_ALERT_EMAIL` secret to an address
+(`wrangler secret put OPS_ALERT_EMAIL`). The instance then sends one message
+when the issue is opened and one when it is closed. This needs the instance's
+email sending to be configured (`EMAIL` binding and `EMAIL_FROM_ADDRESS`).
+With no `OPS_ALERT_PROJECT`, there is no issue to mark the alert as already
+raised, so a failing check sends a message every day until it passes.
+
 ### `... allowance is used up` or an evaluation rate limit
 
 Only reachable on an instance whose operator has configured a billing service

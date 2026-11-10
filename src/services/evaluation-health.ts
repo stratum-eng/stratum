@@ -24,7 +24,12 @@ import { WorkersAiProvider } from "../evaluation/llm-provider";
 import type { EvalPolicy } from "../evaluation/types";
 import type { Env } from "../types";
 import type { Logger } from "../utils/logger";
-import { type OpsAlertOutcome, raiseOpsAlert, resolveOpsAlert } from "./ops-alerts";
+import {
+  type OpsAlertEnv,
+  type OpsAlertOutcome,
+  raiseOpsAlert,
+  resolveOpsAlert,
+} from "./ops-alerts";
 
 export const EVALUATION_HEALTH_ALERT_TITLE = "Evaluation health check is failing";
 
@@ -250,7 +255,7 @@ function alertBody(findings: string[], model: string): string {
  * down with it, but it also must not look like a finding.
  */
 export async function runEvaluationHealthCheck(
-  env: Pick<Env, "AI" | "DB" | "STATE" | "OPS_ALERT_PROJECT">,
+  env: Pick<Env, "AI"> & OpsAlertEnv,
   logger: Logger,
   now: Date = new Date(),
 ): Promise<{ findings: string[]; canarySkipped: boolean; alert: OpsAlertOutcome }> {

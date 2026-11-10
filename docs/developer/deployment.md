@@ -667,6 +667,11 @@ instance files an issue when one of its own health checks fails
 and nothing else happens. The hosted instance sets it to `@stratum/stratum` in
 `[env.production.vars]`; staging leaves it unset.
 
+`OPS_ALERT_EMAIL` (a secret) adds an email when such an alert is first raised
+and when it clears. It is deliberately not `ADMIN_EMAIL`: that secret also makes
+the matching account an instance administrator (`src/utils/admin.ts`), so it
+must not be set just to receive mail.
+
 `TELEMETRY_CONSENT_AT_SIGNUP` makes telemetry opt-in for **new** accounts. Only
 the literal `"true"` turns it on. With it on, every signup form (magic link, the
 username step after GitHub or Google, and the approval page of an

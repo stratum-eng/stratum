@@ -159,6 +159,87 @@ describe("ops alerts", () => {
     expect(logger.error).toHaveBeenCalledWith("Operational alert", undefined, alert);
   });
 
+  describe("email", () => {
+    const mailEnv = (overrides: Partial<Env> = {}) => {
+      const send = vi.fn(async () => ({ messageId: "m1" }));
+      const made = makeEnv({
+        EMAIL: { send },
+        EMAIL_FROM_ADDRESS: "noreply@example.test",
+        OPS_ALERT_EMAIL: "ops@example.test",
+        ...overrides,
+      } as Partial<Env>);
+      return { ...made, send };
+    };
+
+    it("mails once when the alert opens and once when it clears, not on repeats", async () => {
+      const { env, send } = mailEnv();
+      await raiseOpsAlert(env, logger, alert);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          to: "ops@example.test",
+          from: { email: "noreply@example.test", name: "Stratum Alerts" },
+          subject: "[Stratum] Something is failing",
+          text: expect.stringContaining("Issue #1 was opened in @acme/ops."),
+        }),
+      );
+
+      await raiseOpsAlert(env, logger, alert);
+      expect(send).toHaveBeenCalledTimes(1);
+
+      await resolveOpsAlert(env, logger, alert.title);
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(send).toHaveBeenLastCalledWith(
+        expect.objectContaining({ subject: "[Stratum] Resolved: Something is failing" }),
+      );
+
+      // Nothing open any more: recovery is not announced twice.
+      await resolveOpsAlert(env, logger, alert.title);
+      expect(send).toHaveBeenCalledTimes(2);
+    });
+
+    it("mails on every raise when there is no project to file in", async () => {
+      const { env, send } = mailEnv({ OPS_ALERT_PROJECT: undefined } as Partial<Env>);
+      await raiseOpsAlert(env, logger, alert);
+      await raiseOpsAlert(env, logger, alert);
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(send).toHaveBeenLastCalledWith(
+        expect.objectContaining({ text: expect.stringContaining("No issue was opened.") }),
+      );
+    });
+
+    it("escapes the alert text in the HTML part", async () => {
+      const { env, send } = mailEnv();
+      await raiseOpsAlert(env, logger, { title: "T", body: "<script>x</script> & more" });
+      const [message] = send.mock.calls[0] as unknown as [{ html: string }];
+      expect(message.html).toContain("&lt;script&gt;x&lt;/script&gt; &amp; more");
+      expect(message.html).not.toContain("<script>");
+    });
+
+    it("sends nothing without a recipient, a sender, or a binding", async () => {
+      for (const missing of ["OPS_ALERT_EMAIL", "EMAIL_FROM_ADDRESS"] as const) {
+        const { env, send } = mailEnv({ [missing]: undefined } as Partial<Env>);
+        expect((await raiseOpsAlert(env, logger, alert)).status).toBe("opened");
+        expect(send).not.toHaveBeenCalled();
+      }
+      const { env } = mailEnv({ EMAIL: undefined } as Partial<Env>);
+      expect((await raiseOpsAlert(env, logger, alert)).status).toBe("opened");
+    });
+
+    it("still reports the issue when the send fails", async () => {
+      const send = vi.fn(async () => {
+        throw new Error("mail is down");
+      });
+      const { env } = mailEnv({ EMAIL: { send } } as Partial<Env>);
+      expect(await raiseOpsAlert(env, logger, alert)).toEqual({ status: "opened", number: 1 });
+      expect(logger.error).toHaveBeenCalledWith(
+        "Failed to send operational alert email",
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+  });
+
   it("reports a database failure instead of throwing", async () => {
     const { env } = makeEnv({ DB: makeThrowingD1() } as Partial<Env>);
     expect((await raiseOpsAlert(env, logger, alert)).status).toBe("failed");

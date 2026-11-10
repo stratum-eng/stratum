@@ -438,6 +438,11 @@ ENTITLEMENTS_ENFORCE = "0"
 # Today that is the daily evaluation health check. Unset, the default, a
 # failure is only logged. Per-env, like every var here.
 # OPS_ALERT_PROJECT = "@your-org/ops"
+# To be emailed as well, when an alert is first raised and when it clears, set
+# the address as a secret (it is someone's inbox, so not a var in this file):
+#   wrangler secret put OPS_ALERT_EMAIL
+# Needs the EMAIL binding and EMAIL_FROM_ADDRESS. It is not ADMIN_EMAIL, which
+# also decides who is an instance administrator.
 
 # Secrets — set via: wrangler secret put <NAME>
 # POSTHOG_API_KEY =  # telemetry sends route patterns only, never concrete paths

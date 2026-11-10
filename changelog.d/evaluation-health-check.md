@@ -8,3 +8,6 @@
   (`"@namespace/slug"`) and a failed health check opens an issue there, and
   closes it when the check passes again. Unset, the default, the result is only
   logged, so a self-hosted instance behaves as before unless it turns this on.
+- **`OPS_ALERT_EMAIL`.** Set this secret to an address to be emailed when a
+  health check first fails and when it passes again. It needs the instance's
+  email sending to be configured.

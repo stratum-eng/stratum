@@ -211,6 +211,12 @@ export interface Env {
    */
   OPS_ALERT_PROJECT?: string;
   /**
+   * Where to email an operational alert, when it is first raised and when it
+   * clears. Needs the `EMAIL` binding and `EMAIL_FROM_ADDRESS`. Separate from
+   * `ADMIN_EMAIL`, which also grants instance administration.
+   */
+  OPS_ALERT_EMAIL?: string;
+  /**
    * Which deployment this is ("production", "staging", a self-hoster's own
    * label). Attached to every analytics event. Without it a staging deploy's
    * traffic is indistinguishable from production's in the same PostHog
