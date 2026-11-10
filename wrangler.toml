@@ -433,6 +433,11 @@ ENTITLEMENTS_ENFORCE = "0"
 # per-env: the hosted instance sets it in [env.production.vars] and
 # [env.staging.vars] below.
 # TELEMETRY_CONSENT_AT_SIGNUP = "true"
+# Where the instance reports its own health-check failures: a Stratum project,
+# as "@namespace/slug", in which it opens an issue (and closes it on recovery).
+# Today that is the daily evaluation health check. Unset, the default, a
+# failure is only logged. Per-env, like every var here.
+# OPS_ALERT_PROJECT = "@your-org/ops"
 
 # Secrets — set via: wrangler secret put <NAME>
 # POSTHOG_API_KEY =  # telemetry sends route patterns only, never concrete paths
@@ -620,6 +625,9 @@ STRATUM_ENVIRONMENT = "production"
 # Telemetry is opt-in for new accounts on the hosted instance (#257): signup
 # asks, and an unticked box means opted out. See the top-level [vars] comment.
 TELEMETRY_CONSENT_AT_SIGNUP = "true"
+# Health-check failures on the hosted instance are filed as issues on Stratum's
+# own project. See the top-level [vars] comment.
+OPS_ALERT_PROJECT = "@stratum/stratum"
 # The /dev-login session backdoor is local-only. Declare it "false" explicitly
 # here (named envs don't inherit the top-level "true") so the route is provably
 # inert in production — and so wrangler stops warning about the missing override.

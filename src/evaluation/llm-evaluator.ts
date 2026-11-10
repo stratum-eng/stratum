@@ -103,6 +103,9 @@ const SYSTEM_PROMPT = [
 ].join(" ");
 
 export class LLMEvaluator implements Evaluator {
+  /** The model used when a policy's `llm` entry names none. */
+  static readonly DEFAULT_MODEL = DEFAULT_MODEL;
+
   /**
    * @param provider Who runs the model. Workers AI by default; an operator-
    *   configured HTTP provider on the project's own credential under BYOK.

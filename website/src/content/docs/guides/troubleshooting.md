@@ -195,6 +195,35 @@ wrong, so none of these fall back to the operator's model.
 - **Two `llm` entries** — a policy declaring the evaluator twice is refused
   outright rather than one being picked. Keep one.
 
+### The `llm` gate fails every change with `LLM error`
+
+A reason that starts `LLM error:` means the model could not be reached at all,
+and one that says `no verdict within ...ms` means it did not answer in time.
+Neither says anything about the change. The usual cause is a retired model:
+Workers AI withdraws models on published dates, and after that every request
+for one fails with error `5028`.
+
+- **Your policy names a `model`.** Check it against the
+  [Workers AI model catalog](https://developers.cloudflare.com/workers-ai/models/)
+  and replace it if it is marked deprecated. A model that reasons before it
+  answers may also need a `timeoutMs` above the 30-second default.
+- **Your policy names no `model`.** The instance's default is the one that
+  failed, which is the operator's to fix by upgrading Stratum.
+
+#### The instance checks this itself (self-hosting)
+
+Once a day an instance with a Workers AI binding runs its default `llm` model
+on two fixed diffs, one that should pass and one that should not, and counts
+the real evaluations of the last 24 hours that ended with no verdict. The two
+diffs are built into Stratum; no project's code is sent.
+
+Set `OPS_ALERT_PROJECT` in the environment's `[vars]` to a project on the
+instance, as `"@namespace/slug"`, and a failed check opens an issue there
+titled *Evaluation health check is failing*, authored by *Stratum (automated)*.
+It lists what failed. While it is open no second issue is filed, and it is
+closed automatically when the check passes again. Left unset, which is the
+default, the result is written to the Worker's logs only.
+
 ### `... allowance is used up` or an evaluation rate limit
 
 Only reachable on an instance whose operator has configured a billing service

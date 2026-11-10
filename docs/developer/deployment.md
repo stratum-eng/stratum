@@ -659,6 +659,14 @@ secrets are set.
 > project. An instance that leaves it unset reports `environment: "unknown"` —
 > harmless, but every funnel built across both deployments is then wrong.
 
+`OPS_ALERT_PROJECT` names the Stratum project, as `"@namespace/slug"`, where the
+instance files an issue when one of its own health checks fails
+(`src/services/ops-alerts.ts`). Today the only such check is the daily
+`evaluation-health` job on the `0 6 * * *` cron
+(`src/services/evaluation-health.ts`). Unset, a failure is logged at error level
+and nothing else happens. The hosted instance sets it to `@stratum/stratum` in
+`[env.production.vars]`; staging leaves it unset.
+
 `TELEMETRY_CONSENT_AT_SIGNUP` makes telemetry opt-in for **new** accounts. Only
 the literal `"true"` turns it on. With it on, every signup form (magic link, the
 username step after GitHub or Google, and the approval page of an

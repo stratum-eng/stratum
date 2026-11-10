@@ -1,6 +1,6 @@
 import type { FC } from "hono/jsx";
 import type { IssueComment } from "../../storage/issue-comments";
-import type { Issue } from "../../storage/issues";
+import { type Issue, SYSTEM_AUTHOR_ID } from "../../storage/issues";
 import { ProjectHeader } from "../components/project-header";
 import { Layout } from "../layout";
 
@@ -88,7 +88,9 @@ const authorLabel = (
 ) =>
   item.externalAuthor !== undefined
     ? `${item.externalAuthor} (GitHub)`
-    : (authors[item.authorId] ?? item.authorType);
+    : item.authorId === SYSTEM_AUTHOR_ID
+      ? "Stratum (automated)"
+      : (authors[item.authorId] ?? item.authorType);
 
 /** Link back to the GitHub original of an imported issue or comment. */
 const GitHubBackLink: FC<{ href: string; label: string }> = ({ href, label }) => (
