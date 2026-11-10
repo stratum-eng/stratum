@@ -25,8 +25,8 @@ project's GitHub mirror that are waiting for a maintainer to
 Only `workspace` is required. `title` is one line of up to 200 characters, and
 `description` is up to 20,000 characters of markdown. Give both: the title heads
 the change page and the changes list, and both carry over to the pull request
-when the change is promoted to GitHub. A change opened without a title is headed
-by the subject of its first commit.
+when the change is promoted to GitHub. A change that has no title at the moment
+is headed by the subject of its first commit.
 
 Evaluation runs **off the request** where the instance has an evaluation queue
 (the hosted instance does): the response is `202` with the change in status

@@ -13,9 +13,10 @@ through the API.
 The change page is built to answer two questions before you give a verdict:
 what is this change, and what did the gates look at.
 
-- **The heading** is the change's title, and its description follows. Both come
-  from whoever opened the change. A change opened without a title is headed by
-  the subject of its first commit instead. The change id, who opened it and the
+- **The heading** is the change's title, and its description follows. Whoever
+  opened the change sets them, and anyone who can write to the project can edit
+  them afterwards. A change that has no title at the moment is headed by the
+  subject of its first commit instead. The change id, who opened it and the
   agent that wrote it are on the line beneath.
 - **Files changed** gives the totals, lists the commits the workspace adds, and
   shows the diff. The diff is what the workspace changed since it forked from

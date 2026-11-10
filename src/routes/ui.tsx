@@ -1846,6 +1846,7 @@ app.get("/:namespace/:slug/changes", async (c) => {
     id: change.id,
     project: change.project,
     workspace: change.workspace,
+    ...(change.title !== undefined ? { title: change.title } : {}),
     status: change.status,
     ...(change.evalScore !== undefined ? { evalScore: change.evalScore } : {}),
     ...(change.evalPassed !== undefined ? { evalPassed: change.evalPassed } : {}),
