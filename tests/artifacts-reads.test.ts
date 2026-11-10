@@ -4,6 +4,7 @@ import {
   TREE_LISTING_MAX_BYTES,
   TREE_TOO_LARGE,
   getCommitLogPreferNative,
+  kvTagDetailCache,
   kvTreeListingCache,
   listFilesInRepoPreferNative,
   loadRepoViewPreferNative,
@@ -386,6 +387,90 @@ describe("kvTreeListingCache", () => {
     const brokenCache = kvTreeListingCache(broken, "proj_1", logger);
     expect(await brokenCache.get(ROOT)).toBeNull();
     await expect(brokenCache.put(ROOT, ["a"])).resolves.toBeUndefined();
+  });
+});
+
+describe("kvTagDetailCache", () => {
+  const OID = "d".repeat(40);
+  const TARGET = "e".repeat(40);
+
+  it("returns what it stored, and nothing for another project", async () => {
+    const { kv } = memoryKV();
+    const details = {
+      annotated: true,
+      targetSha: TARGET,
+      message: "release one",
+      tagger: "t <t@x.com>",
+      timestamp: 7,
+    };
+    await kvTagDetailCache(kv, "proj_1", logger).put(OID, details);
+
+    expect(await kvTagDetailCache(kv, "proj_1", logger).get(OID)).toEqual(details);
+    expect(await kvTagDetailCache(kv, "proj_2", logger).get(OID)).toBeNull();
+  });
+
+  it("stores a lightweight tag, which has no message or tagger", async () => {
+    const { kv } = memoryKV();
+    const cache = kvTagDetailCache(kv, "proj_1", logger);
+    await cache.put(OID, { annotated: false, targetSha: OID });
+    expect(await cache.get(OID)).toEqual({ annotated: false, targetSha: OID });
+  });
+
+  it("treats a malformed entry as a miss", async () => {
+    const { kv, store } = memoryKV();
+    const cache = kvTagDetailCache(kv, "proj_1", logger);
+    await cache.put(OID, { annotated: false, targetSha: OID });
+    const [key] = [...store.keys()] as [string];
+    const valid = { annotated: true, targetSha: TARGET };
+
+    for (const bad of [
+      "not json",
+      "[]",
+      "null",
+      JSON.stringify({ targetSha: TARGET }),
+      JSON.stringify({ annotated: true }),
+      JSON.stringify({ ...valid, message: 1 }),
+      JSON.stringify({ ...valid, tagger: 1 }),
+      JSON.stringify({ ...valid, timestamp: "x" }),
+    ]) {
+      store.set(key, bad);
+      expect(await cache.get(OID)).toBeNull();
+    }
+  });
+
+  it("does not store an oversized message", async () => {
+    const { kv, store } = memoryKV();
+    await kvTagDetailCache(kv, "proj_1", logger).put(OID, {
+      annotated: true,
+      targetSha: TARGET,
+      message: "x".repeat(70_000),
+    });
+    expect(store.size).toBe(0);
+  });
+
+  it("measures the size limit in bytes, not characters", async () => {
+    const { kv, store } = memoryKV();
+    // 30,000 characters, 90,000 bytes of UTF-8.
+    await kvTagDetailCache(kv, "proj_1", logger).put(OID, {
+      annotated: true,
+      targetSha: TARGET,
+      message: "\u6f22".repeat(30_000),
+    });
+    expect(store.size).toBe(0);
+  });
+
+  it("survives a KV that throws on read and on write", async () => {
+    const kv = {
+      get: async () => {
+        throw new Error("kv down");
+      },
+      put: async () => {
+        throw new Error("kv down");
+      },
+    } as unknown as KVNamespace;
+    const cache = kvTagDetailCache(kv, "proj_1", logger);
+    expect(await cache.get(OID)).toBeNull();
+    await expect(cache.put(OID, { annotated: false, targetSha: OID })).resolves.toBeUndefined();
   });
 });
 

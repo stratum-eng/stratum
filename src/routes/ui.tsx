@@ -25,7 +25,11 @@ import {
   listApiTokens,
   revokeApiToken,
 } from "../storage/api-tokens";
-import { kvTreeListingCache, loadRepoViewPreferNative } from "../storage/artifacts-reads";
+import {
+  kvTagDetailCache,
+  kvTreeListingCache,
+  loadRepoViewPreferNative,
+} from "../storage/artifacts-reads";
 import { recordAudit } from "../storage/audit";
 import { listComments, listReviews } from "../storage/change-reviews";
 import { getChange, listChanges } from "../storage/changes";
@@ -1841,7 +1845,13 @@ app.get("/:namespace/:slug/tags", async (c) => {
     logger.error("Failed to mint read token for tags page", readToken.error);
     return c.html(errorPage(500, "Error loading tags. Please try again.", userResult), 500);
   }
-  const tagsResult = await listRepoTags(project.remote, readToken.data, logger);
+  const tagsResult = await listRepoTags(
+    project.remote,
+    readToken.data,
+    logger,
+    undefined,
+    project.id ? { detailCache: kvTagDetailCache(c.env.STATE, project.id, logger) } : {},
+  );
   if (!tagsResult.success) {
     logger.error("Failed to list tags", tagsResult.error);
     return c.html(errorPage(500, "Error loading tags. Please try again.", userResult), 500);

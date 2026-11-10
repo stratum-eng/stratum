@@ -96,6 +96,35 @@ the same branch, since each path segment is decoded individually.
 **Writers only.** The default branch cannot be deleted —
 `409 DEFAULT_BRANCH_PROTECTED`.
 
+### List Tags
+
+`GET /api/projects/{namespace}/{slug}/tags`
+
+Returns `{ tags, truncated, totalTagCount }`, with tags in ascending name order.
+Each tag is:
+
+| Field | Meaning |
+|-------|---------|
+| `name` | Tag name, without `refs/tags/`. |
+| `oid` | What the ref points at: the tag object for an annotated tag, the target itself for a lightweight one. |
+| `targetSha` | The commit the tag resolves to, or `null` when it could not be determined. |
+| `annotated` | `true` for an annotated tag. |
+| `message`, `tagger`, `timestamp` | Annotated tags only: the tag's message, its tagger as `Name <email>`, and the tagger time in epoch seconds. |
+| `unresolvable` | `true` when the tag's object or target could not be read. The tag is still listed. |
+
+Tag names come from the remote's ref advertisement, so a listing normally does
+not clone the repository. The exception is a tag whose details are not stored
+yet. The repository is cloned to read it, and the details are then remembered.
+The first request after a new tag is pushed is therefore slower. A tag that could
+not be resolved, or whose details come to more than 64 KB once stored (in
+practice, a very long message), is not remembered. Every
+request that lists such a tag clones the repository again, and `unresolvable`
+can be `true` on any of those requests.
+
+Capped at 200, keeping the highest-sorting names; `truncated` says so explicitly
+and `totalTagCount` is the number the repository actually has. Readable by anyone
+who can read the project.
+
 ### Browsing a branch
 
 `GET .../files`, `.../content`, and `.../log` accept `?ref=<branch>`, defaulting

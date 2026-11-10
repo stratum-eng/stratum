@@ -4,6 +4,9 @@ import { snapshotRepo, walkRepoObjects } from "../src/backup/repo-snapshot";
 import {
   MAX_TAGS,
   type NodeFS,
+  TAG_DETAIL_READ_TIMEOUT_MS,
+  TAG_DETAIL_STORE_TIMEOUT_MS,
+  type TagDetails,
   cloneRepo,
   collectRepoTags,
   listRepoTags,
@@ -587,7 +590,7 @@ describe("cloneRepo includeTags", () => {
 });
 
 describe("listRepoTags", () => {
-  it("clones with tags and returns the collected entries", async () => {
+  it("clones when a tag has not been listed before", async () => {
     mockClone.mockImplementation(async ({ fs, dir }: { fs: NodeFS; dir: string }) => {
       const { shas } = await buildRepo(dir, [{ "a.txt": "one" }], fs);
       await git.tag({ fs, dir, ref: "v1.0.0", object: shas[0] });
@@ -601,13 +604,18 @@ describe("listRepoTags", () => {
       });
     });
     mockGetRemoteInfo.mockResolvedValue(
-      remoteInfoWithTags({ "v1.0.0": "a".repeat(40), "v2.0.0": "b".repeat(40) }),
+      remoteInfoWithTags({
+        "v1.0.0": "a".repeat(40),
+        "v2.0.0": "b".repeat(40),
+        "v2.0.0^{}": "a".repeat(40),
+      }),
     );
     mockFetch.mockResolvedValue({});
 
     const result = await listRepoTags("https://r.example/repo.git", "tok", logger);
     expect(result.success).toBe(true);
     if (!result.success) return;
+    expect(mockClone).toHaveBeenCalledTimes(1);
     expect(result.data.tags.map((t) => t.name)).toEqual(["v1.0.0", "v2.0.0"]);
     expect(result.data.tags[1]?.annotated).toBe(true);
     expect(result.data.tags[1]?.message).toBe("second");
@@ -615,8 +623,285 @@ describe("listRepoTags", () => {
     expect(result.data.totalTagCount).toBe(2);
   });
 
+  it("lists no tags without cloning when the remote advertises none", async () => {
+    const result = await listRepoTags("https://r.example/repo.git", "tok", logger);
+    expect(result).toEqual({
+      success: true,
+      data: { tags: [], truncated: false, totalTagCount: 0 },
+    });
+    expect(mockClone).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("lists from the advertisement and the cache without cloning", async () => {
+    const tagObject = "b".repeat(40);
+    const commit = "a".repeat(40);
+    mockGetRemoteInfo.mockResolvedValue(
+      remoteInfoWithTags({ ann: tagObject, "release/2.0": commit }),
+    );
+    const cached: Record<string, TagDetails> = {
+      [tagObject]: {
+        annotated: true,
+        targetSha: commit,
+        message: "release one",
+        tagger: "t <t@x.com>",
+        timestamp: 7,
+      },
+      [commit]: { annotated: false, targetSha: commit },
+    };
+    const detailCache = {
+      get: vi.fn(async (oid: string) => cached[oid] ?? null),
+      put: vi.fn(async () => {}),
+    };
+
+    const result = await listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+      detailCache,
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(mockClone).not.toHaveBeenCalled();
+    expect(result.data.tags).toEqual([
+      {
+        name: "ann",
+        oid: tagObject,
+        targetSha: commit,
+        annotated: true,
+        message: "release one",
+        tagger: "t <t@x.com>",
+        timestamp: 7,
+        unresolvable: false,
+      },
+      {
+        name: "release/2.0",
+        oid: commit,
+        targetSha: commit,
+        annotated: false,
+        unresolvable: false,
+      },
+    ]);
+  });
+
+  it("does not take a tag for lightweight because the remote advertised no peeled entry", async () => {
+    // An annotated tag, advertised without its `ann^{}` line. Nothing cached
+    // says what it is, so it is read by cloning, not guessed.
+    let tagOid = "";
+    mockClone.mockImplementation(async ({ fs, dir }: { fs: NodeFS; dir: string }) => {
+      const { shas } = await buildRepo(dir, [{ "a.txt": "one" }], fs);
+      await git.annotatedTag({ fs, dir, ref: "ann", object: shas[0], message: "m\n", tagger });
+      tagOid = await git.resolveRef({ fs, dir, ref: "refs/tags/ann" });
+    });
+    mockFetch.mockResolvedValue({});
+    await mockClone({ fs: new MemoryFS().toNodeFS() as unknown as NodeFS, dir: "/repo" });
+    mockClone.mockClear();
+    mockGetRemoteInfo.mockResolvedValue(remoteInfoWithTags({ ann: tagOid }));
+    const detailCache = { get: async () => null, put: async () => {} };
+
+    const result = await listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+      detailCache,
+    });
+    expect(mockClone).toHaveBeenCalledTimes(1);
+    expect(result.success && result.data.tags[0]).toMatchObject({ annotated: true, message: "m" });
+  });
+
+  it("clones when there are tags and no cache to describe them", async () => {
+    mockGetRemoteInfo.mockResolvedValue(remoteInfoWithTags({ "v1.0.0": "a".repeat(40) }));
+    mockClone.mockRejectedValue(new Error("clone reached"));
+    const result = await listRepoTags("https://r.example/repo.git", "tok", logger);
+    expect(result.success).toBe(false);
+    expect(mockClone).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops reading cached details at the first batch with a miss", async () => {
+    const advertisedTags: Record<string, string> = {};
+    for (let i = 0; i < 60; i++) {
+      const name = `t${String(i).padStart(3, "0")}`;
+      advertisedTags[name] = i.toString(16).padStart(40, "0");
+      advertisedTags[`${name}^{}`] = "a".repeat(40);
+    }
+    mockGetRemoteInfo.mockResolvedValue(remoteInfoWithTags(advertisedTags));
+    mockClone.mockRejectedValue(new Error("clone reached"));
+    const detailCache = { get: vi.fn(async () => null), put: vi.fn(async () => {}) };
+
+    const result = await listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+      detailCache,
+    });
+    // The miss sent the listing to the clone, without reading all 60 first.
+    expect(result.success).toBe(false);
+    expect(mockClone).toHaveBeenCalledTimes(1);
+    expect(detailCache.get.mock.calls.length).toBeLessThan(60);
+    expect(detailCache.get.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("stores what a clone read, so the next listing does not clone", async () => {
+    let tagOid = "";
+    let commitOid = "";
+    mockClone.mockImplementation(async ({ fs, dir }: { fs: NodeFS; dir: string }) => {
+      const { shas } = await buildRepo(dir, [{ "a.txt": "one" }], fs);
+      commitOid = shas[0] as string;
+      await git.annotatedTag({
+        fs,
+        dir,
+        ref: "ann",
+        object: commitOid,
+        message: "first\n",
+        tagger,
+      });
+      tagOid = await git.resolveRef({ fs, dir, ref: "refs/tags/ann" });
+    });
+    mockFetch.mockResolvedValue({});
+    // The advertisement has to name the oids the clone will hold, so build the
+    // same repository once to learn them.
+    await mockClone({ fs: new MemoryFS().toNodeFS() as unknown as NodeFS, dir: "/repo" });
+    mockClone.mockClear();
+    mockGetRemoteInfo.mockResolvedValue(remoteInfoWithTags({ ann: tagOid, "ann^{}": commitOid }));
+
+    const stored = new Map<string, TagDetails>();
+    const detailCache = {
+      get: async (oid: string) => stored.get(oid) ?? null,
+      put: async (oid: string, details: TagDetails) => {
+        stored.set(oid, details);
+      },
+    };
+
+    const first = await listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+      detailCache,
+    });
+    expect(mockClone).toHaveBeenCalledTimes(1);
+    expect(stored.get(tagOid)).toEqual({
+      annotated: true,
+      targetSha: commitOid,
+      message: "first",
+      tagger: "tagger <tag@x.com>",
+      timestamp: tagger.timestamp,
+    });
+
+    const second = await listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+      detailCache,
+    });
+    expect(mockClone).toHaveBeenCalledTimes(1);
+    // Both paths describe the tag identically.
+    expect(second).toEqual(first);
+  });
+
+  it("clones when the cache does not answer in time", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      mockGetRemoteInfo.mockResolvedValue(remoteInfoWithTags({ "v1.0.0": "a".repeat(40) }));
+      mockClone.mockRejectedValue(new Error("clone reached"));
+      let readReached = (): void => {};
+      const reached = new Promise<void>((resolve) => {
+        readReached = resolve;
+      });
+      const detailCache = {
+        get: () => {
+          readReached();
+          return new Promise<null>(() => {});
+        },
+        put: async () => {},
+      };
+
+      const pending = listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+        detailCache,
+      });
+      await reached;
+      await vi.advanceTimersByTimeAsync(TAG_DETAIL_READ_TIMEOUT_MS + 1);
+      const result = await pending;
+
+      expect(result.success).toBe(false);
+      expect(mockClone).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not store a tag that did not resolve", async () => {
+    const missing = "f".repeat(40);
+    mockClone.mockImplementation(async ({ fs, dir }: { fs: NodeFS; dir: string }) => {
+      const { shas } = await buildRepo(dir, [{ "a.txt": "one" }], fs);
+      await git.tag({ fs, dir, ref: "good", object: shas[0] });
+      await git.writeRef({ fs, dir, ref: "refs/tags/dangling", value: missing, force: true });
+    });
+    mockFetch.mockResolvedValue({});
+    mockGetRemoteInfo.mockResolvedValue(
+      remoteInfoWithTags({ good: "a".repeat(40), dangling: missing }),
+    );
+    const detailCache = {
+      get: async () => null,
+      put: vi.fn(async (_oid: string, _details: TagDetails) => {}),
+    };
+
+    const result = await listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+      detailCache,
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.tags.find((t) => t.name === "dangling")?.unresolvable).toBe(true);
+    // Only `good` is stored; `dangling` is read again by the next listing.
+    expect(detailCache.put).toHaveBeenCalledTimes(1);
+    expect(detailCache.put.mock.calls[0]?.[1]).toMatchObject({ annotated: false });
+  });
+
+  it("answers without waiting for a cache store that never finishes", async () => {
+    // Only the timeout clock is faked: the in-memory git work still needs real
+    // turns of the event loop to run.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let tagOid = "";
+      let commitOid = "";
+      mockClone.mockImplementation(async ({ fs, dir }: { fs: NodeFS; dir: string }) => {
+        const { shas } = await buildRepo(dir, [{ "a.txt": "one" }], fs);
+        commitOid = shas[0] as string;
+        await git.annotatedTag({ fs, dir, ref: "ann", object: commitOid, message: "m\n", tagger });
+        tagOid = await git.resolveRef({ fs, dir, ref: "refs/tags/ann" });
+      });
+      mockFetch.mockResolvedValue({});
+      await mockClone({ fs: new MemoryFS().toNodeFS() as unknown as NodeFS, dir: "/repo" });
+      mockGetRemoteInfo.mockResolvedValue(remoteInfoWithTags({ ann: tagOid, "ann^{}": commitOid }));
+      let storeReached = (): void => {};
+      const reached = new Promise<void>((resolve) => {
+        storeReached = resolve;
+      });
+      const detailCache = {
+        get: async () => null,
+        put: () => {
+          storeReached();
+          return new Promise<void>(() => {});
+        },
+      };
+
+      const pending = listRepoTags("https://r.example/repo.git", "tok", logger, undefined, {
+        detailCache,
+      });
+      // Let the clone finish in real time first. Advancing the fake clock any
+      // earlier would also run down the clone's own timeout.
+      await reached;
+      await vi.advanceTimersByTimeAsync(TAG_DETAIL_STORE_TIMEOUT_MS + 1);
+      const result = await pending;
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+      expect(result.data.tags.map((t) => t.name)).toEqual(["ann"]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "Tag details were not all stored",
+        expect.objectContaining({ remote: "https://r.example/repo.git" }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("propagates a failure to read the advertisement", async () => {
+    mockGetRemoteInfo.mockRejectedValue(new Error("unreachable"));
+    const result = await listRepoTags("https://r.example/repo.git", "tok", logger);
+    expect(result.success).toBe(false);
+    expect(mockClone).not.toHaveBeenCalled();
+  });
+
   it("propagates a clone failure", async () => {
     mockClone.mockRejectedValue(new Error("no such repo"));
+    mockGetRemoteInfo.mockResolvedValue(
+      remoteInfoWithTags({ ann: "b".repeat(40), "ann^{}": "a".repeat(40) }),
+    );
     const result = await listRepoTags("https://r.example/repo.git", "tok", logger);
     expect(result.success).toBe(false);
   });
@@ -629,6 +914,9 @@ describe("listRepoTags", () => {
     listTagsOverride.fn = async () => {
       throw new Error("refs are corrupt");
     };
+    mockGetRemoteInfo.mockResolvedValue(
+      remoteInfoWithTags({ ann: "b".repeat(40), "ann^{}": "a".repeat(40) }),
+    );
     const result = await listRepoTags("https://r.example/repo.git", "tok", logger);
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.message).toContain("Failed to list tags");

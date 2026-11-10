@@ -4368,20 +4368,109 @@ export interface ListRepoTagsResult {
   totalTagCount: number;
 }
 
+/** What a tag listing shows for one tag, beyond its name and the oid its ref holds. */
+export interface TagDetails {
+  annotated: boolean;
+  /** The object the tag resolves to, after peeling any tag objects. */
+  targetSha: string;
+  /** Annotated tags only. */
+  message?: string;
+  tagger?: string;
+  timestamp?: number;
+}
+
 /**
- * Lists the tags in a repository, including entries whose targets cannot be
- * resolved from the cloned history.
+ * Tag details keyed by the oid the tag's REF holds: the tag object for an
+ * annotated tag, the target for a lightweight one.
  *
- * The clone is shallow but fetches tag refs, so a tag whose target lies outside
- * the shallow window is reported with `unresolvable: true` rather than raising:
- * a tag pointing into unfetched history is expected here, not a failure, and
- * erroring would make the whole listing unavailable because of one old tag.
- * See `collectRepoTags`.
+ * Everything in {@link TagDetails} follows from that one object, and an oid is
+ * a hash of its object, so an entry is correct for as long as it is kept:
+ * moving or re-creating a tag gives it a new oid and so a new key.
+ */
+export type TagDetailCache = {
+  /** The details stored for `oid`, or null on a miss or any failure. */
+  get(oid: string): Promise<TagDetails | null>;
+  /** Best-effort store; never throws. */
+  put(oid: string, details: TagDetails): Promise<void>;
+};
+
+/** Longest a listing waits for its tag details to be stored before answering. */
+export const TAG_DETAIL_STORE_TIMEOUT_MS = 2_000;
+
+/** Longest a listing waits on one batch of tag-detail cache reads before cloning instead. */
+export const TAG_DETAIL_READ_TIMEOUT_MS = 2_000;
+
+/** Tag-detail cache reads kept in flight at once while building a listing. */
+const TAG_DETAIL_READ_BATCH = 20;
+
+/**
+ * Builds a tag listing from advertised refs and cached details, or returns
+ * null when any tag's details are not in `cache`.
  *
- * The underlying fetch is tags-only (per-tag `singleBranch` fetches, never a
- * whole-branches pull) and capped at {@link MAX_TAGS}; a remote with more tags
- * than that comes back with `truncated: true` rather than silently dropping
- * the excess. See the `cloneRepo` `includeTags` option.
+ * The advertisement is trusted for names and ref oids only. Whether a tag is
+ * annotated, and what it peels to, come from the cache — that is, from a clone
+ * that read the object — and not from the remote's `<name>^{}` entries: a
+ * remote that left those out would otherwise turn every annotated tag into a
+ * lightweight one pointing at its tag object, with nothing to show for it.
+ */
+async function tagsFromAdvertisement(
+  names: string[],
+  advertised: AdvertisedRefs,
+  cache: TagDetailCache | undefined,
+): Promise<RepoTagEntry[] | null> {
+  if (names.length === 0) return [];
+  if (!cache) return null;
+  // In batches, stopping at the first miss: one uncached tag sends the whole
+  // listing to the clone, so reads past it are paid for and thrown away.
+  const entries: RepoTagEntry[] = [];
+  for (let start = 0; start < names.length; start += TAG_DETAIL_READ_BATCH) {
+    // Bounded like the store below: a cache that stalls must not hold the
+    // listing. A batch that does not answer in time counts as a miss, and the
+    // clone can still produce the listing.
+    const read = await fromPromise(
+      withTimeout(
+        Promise.all(
+          names
+            .slice(start, start + TAG_DETAIL_READ_BATCH)
+            .map(async (name): Promise<RepoTagEntry | null> => {
+              const oid = advertised.tags[name] as string;
+              const details = await cache.get(oid);
+              return details === null ? null : { name, oid, ...details, unresolvable: false };
+            }),
+        ),
+        TAG_DETAIL_READ_TIMEOUT_MS,
+        "listRepoTags: reading tag details",
+      ),
+    );
+    if (!read.success) return null;
+    const batch = read.data;
+    for (const entry of batch) {
+      if (entry === null) return null;
+      entries.push(entry);
+    }
+  }
+  return entries;
+}
+
+/**
+ * Lists the tags in a repository.
+ *
+ * Tag names and ref oids come from the ref advertisement — one handshake, no
+ * object data — and the rest of each entry from `opts.detailCache`. A
+ * repository with no tags, or whose tags have all been listed before, is not
+ * cloned. Cloning to list tags cost seconds on every request, including for a
+ * repository with no tags at all.
+ *
+ * A tag that has not been listed before needs its object read, and that takes
+ * the clone below: shallow, followed by a tags-only fetch (per-tag
+ * `singleBranch` fetches, never a whole-branches pull). A tag whose target
+ * lies outside the shallow window is then reported with `unresolvable: true`
+ * rather than raising; see `collectRepoTags`. What the clone resolves is
+ * stored in the cache, so the next listing does not repeat it.
+ *
+ * Either way the listing is capped at {@link MAX_TAGS}, keeping the
+ * highest-sorting names; a remote with more comes back with `truncated: true`
+ * rather than silently dropping the excess.
  *
  * @param remote - The repository's remote URL
  * @param token - The authentication token for the remote
@@ -4392,8 +4481,36 @@ export async function listRepoTags(
   token: string,
   logger: Logger,
   httpClient: HttpClient = http,
+  opts: { detailCache?: TagDetailCache } = {},
 ): Promise<Result<ListRepoTagsResult, AppError>> {
   logger.debug("Listing repo tags", { remote });
+
+  const advertised = await readAdvertisedRefs(remote, token, logger, httpClient);
+  if (!advertised.success) return err(advertised.error);
+
+  // Same order and same truncation rule as the `includeTags` clone, so the two
+  // paths list the same tags.
+  const allNames = Object.keys(advertised.data.tags).sort();
+  const advertisedTotal = allNames.length;
+  const names = advertisedTotal > MAX_TAGS ? allNames.slice(-MAX_TAGS) : allNames;
+  const fromAdvertisement = await tagsFromAdvertisement(names, advertised.data, opts.detailCache);
+  if (fromAdvertisement !== null) {
+    const capped = advertisedTotal > MAX_TAGS;
+    if (capped) {
+      logger.warn("Tag listing truncated at MAX_TAGS", {
+        remote,
+        totalTagCount: advertisedTotal,
+        returnedTagCount: fromAdvertisement.length,
+      });
+    }
+    logger.info("Successfully listed repo tags", {
+      remote,
+      tagCount: fromAdvertisement.length,
+      truncated: capped,
+      source: "advertisement",
+    });
+    return ok({ tags: fromAdvertisement, truncated: capped, totalTagCount: advertisedTotal });
+  }
 
   const cloneResult = await cloneRepo(remote, token, logger, { includeTags: true }, httpClient);
   if (!cloneResult.success) return err(cloneResult.error);
@@ -4404,6 +4521,40 @@ export async function listRepoTags(
   if (!collected.success) {
     logger.error("Failed to collect repo tags", collected.error, { remote });
     return err(new ExternalServiceError("Git", "Failed to list tags", collected.error));
+  }
+
+  const detailCache = opts.detailCache;
+  if (detailCache) {
+    // Bounded: the listing is already in hand, and a store that hangs must not
+    // hold the response. Whatever is not stored in time is read again by the
+    // next listing. A tag that did not resolve is not stored at all, so a later
+    // listing gets another chance at it.
+    const resolved = collected.data.flatMap((tag) =>
+      tag.unresolvable || tag.targetSha === null ? [] : [{ ...tag, targetSha: tag.targetSha }],
+    );
+    const stored = await fromPromise(
+      withTimeout(
+        Promise.all(
+          resolved.map((tag) =>
+            detailCache.put(tag.oid, {
+              annotated: tag.annotated,
+              targetSha: tag.targetSha,
+              ...(tag.message !== undefined ? { message: tag.message } : {}),
+              ...(tag.tagger !== undefined ? { tagger: tag.tagger } : {}),
+              ...(tag.timestamp !== undefined ? { timestamp: tag.timestamp } : {}),
+            }),
+          ),
+        ),
+        TAG_DETAIL_STORE_TIMEOUT_MS,
+        "listRepoTags: storing tag details",
+      ),
+    );
+    if (!stored.success) {
+      logger.warn("Tag details were not all stored", {
+        remote,
+        error: stored.error instanceof Error ? stored.error.message : String(stored.error),
+      });
+    }
   }
 
   const truncated = cloneResult.data.tagsTruncated ?? false;
@@ -4420,6 +4571,7 @@ export async function listRepoTags(
     remote,
     tagCount: collected.data.length,
     truncated,
+    source: "clone",
   });
   return ok({ tags: collected.data, truncated, totalTagCount });
 }
