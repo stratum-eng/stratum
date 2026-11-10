@@ -4175,6 +4175,18 @@ describe("PATCH /api/changes/:id", () => {
     expect(vi.mocked(updateChangeText)).not.toHaveBeenCalled();
   });
 
+  it("answers 404 when the change is deleted between the lookup and the write", async () => {
+    vi.mocked(updateChangeText).mockResolvedValueOnce({
+      success: false,
+      error: new NotFoundError("Change", "chg_abc123"),
+    });
+    const res = await app.fetch(
+      request("PATCH", "/api/changes/chg_abc123", { title: "x" }, USER_AUTH),
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+
   it("requires authentication", async () => {
     const res = await app.fetch(request("PATCH", "/api/changes/chg_abc123", { title: "x" }), env);
     expect(res.status).toBe(401);

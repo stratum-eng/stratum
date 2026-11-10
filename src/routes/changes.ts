@@ -1843,6 +1843,8 @@ app.patch("/changes/:id", async (c) => {
 
   const updated = await updateChangeText(c.env.DB, logger, id, text.data);
   if (!updated.success) {
+    // The change can be deleted between the lookup above and the write.
+    if (updated.error.code === "NOT_FOUND") return notFound("Change", id);
     logger.error("Failed to update change text", updated.error);
     return internalError(updated.error.message);
   }
