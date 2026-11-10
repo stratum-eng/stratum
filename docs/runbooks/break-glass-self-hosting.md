@@ -63,8 +63,26 @@ step 5 is refused until someone reconciles them by hand.
 Set the names this runbook uses. Every command below reads them, so set them
 in the shell you will keep for the whole incident:
 
+First the instance. Run ONE of these two blocks, not both. There is no
+default: a rehearsal that inherited the production URL would resync
+production.
+
+For a rehearsal:
+
 ```bash
-STRATUM_URL=https://app.usestratum.dev   # the instance; staging for a rehearsal
+STRATUM_URL=https://staging.app.usestratum.dev
+```
+
+For a production incident:
+
+```bash
+STRATUM_URL=https://app.usestratum.dev
+```
+
+Then the rest:
+
+```bash
+: "${STRATUM_URL:?set STRATUM_URL first}" && echo "Instance: $STRATUM_URL"
 PROJECT=@stratum/stratum                 # the affected project, as @namespace/slug
 ORG=stratum                              # the organization that owns it
 # STRATUM_TOKEN: a project admin's personal read_write token. Read it without
@@ -155,41 +173,55 @@ Deploy the commit you pushed, from the same clone, with the offline token.
 These are the commands the `Deploy Production` workflow runs. Set the
 environment first; everything below reads it.
 
-First choose the environment. Run exactly ONE of these two lines. There is no
-default, on purpose: a block that selected production unless edited would
-select production in a rehearsal.
+First choose the environment. Run ONE of these two blocks, not both. They are
+separate on purpose: pasted together, the second would win.
+
+For a rehearsal, with a token scoped to staging only:
 
 ```bash
-DEPLOY_ENV=staging;    D1_NAME=stratum-staging   # a rehearsal; staging-only token
-DEPLOY_ENV=production; D1_NAME=stratum           # a production incident
+DEPLOY_ENV=staging; D1_NAME=stratum-staging
 ```
 
-Then deploy. The first line stops if no environment was chosen:
+For a production incident:
 
 ```bash
-: "${DEPLOY_ENV:?choose an environment first}" "${D1_NAME:?choose an environment first}"
-echo "Deploying to: $DEPLOY_ENV"     # read it before going on
-
-git status                           # clean, on the fix commit
-
-# Read the token without putting it on a command line. Typing it after
-# `export NAME=` would save it in the shell's history file, where `unset`
-# does not reach.
-read -rs CLOUDFLARE_API_TOKEN && export CLOUDFLARE_API_TOKEN
-export CLOUDFLARE_ACCOUNT_ID=...     # an identifier, not a secret
-
-# Only if the fix adds a migration:
-npx wrangler d1 migrations apply "$D1_NAME" --remote --env="$DEPLOY_ENV"
-
-npx wrangler deploy --env="$DEPLOY_ENV"
-curl -sfS "$STRATUM_URL/api/health"
-
-unset CLOUDFLARE_API_TOKEN
+DEPLOY_ENV=production; D1_NAME=stratum
 ```
 
-For a rehearsal, every command must name staging. A staging-scoped token
-cannot deploy production, which is the point: do not rehearse with a token
-that could.
+Set the account, which is an identifier and not a secret:
+
+```bash
+CLOUDFLARE_ACCOUNT_ID=<your account id>
+```
+
+Then deploy. Paste this as ONE block. It runs in a subshell with `set -e`, so
+a missing value or any failed command stops everything after it. Checks typed
+as separate lines would not: in an interactive shell a failed check reports
+and the next pasted line runs anyway. The token is read inside the subshell,
+without appearing on a command line or in the shell's history, and is gone
+when the block ends.
+
+```bash
+(
+  set -eu
+  : "${DEPLOY_ENV:?choose an environment first}" "${D1_NAME:?choose an environment first}"
+  : "${CLOUDFLARE_ACCOUNT_ID:?set the account id first}" "${STRATUM_URL:?set STRATUM_URL first}"
+  echo "Deploying to: $DEPLOY_ENV  ($STRATUM_URL)"
+  test -z "$(git status --porcelain)" || { echo "STOP: the working tree is not clean"; exit 1; }
+  printf 'Cloudflare API token: ' && read -rs CLOUDFLARE_API_TOKEN && echo
+  export CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
+
+  # Only if the fix adds a migration, remove the leading "# " from the next line:
+  # npx wrangler d1 migrations apply "$D1_NAME" --remote --env="$DEPLOY_ENV"
+
+  npx wrangler deploy --env="$DEPLOY_ENV"
+  curl -sfS "$STRATUM_URL/api/health"
+)
+```
+
+For a rehearsal, the environment, the token and `STRATUM_URL` must all be
+staging's. A staging-scoped token cannot deploy production, which is the
+point: do not rehearse with a token that could.
 
 Notes:
 
@@ -200,7 +232,9 @@ Notes:
   missing queues first (`node scripts/wrangler-queues.mjs "$DEPLOY_ENV"`). On an
   instance that has deployed before, they exist.
 - If the deploy makes things worse, roll back:
-  `npx wrangler rollback --env="$DEPLOY_ENV" --message "<reason>"`.
+  `npx wrangler rollback --env="$DEPLOY_ENV" --message "<reason>"`. The token
+  is gone once the deploy block ends, so run this inside a block of the same
+  shape, in place of the deploy and health-check lines.
 - If GitHub Actions on the mirror still deploys from `main` and is healthy, the
   push in step 3 may already have deployed the fix. Check the running version
   before you deploy by hand.

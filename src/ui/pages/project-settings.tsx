@@ -182,7 +182,8 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
           <h3 style={{ marginTop: 0 }}>GitHub mirror</h3>
           <p class="settings-help" role="alert">
             The mirror's settings could not be read just now, so they are not shown and cannot be
-            changed from this page. Nothing has been changed. Reload the page to try again.
+            changed from this page, and the resync control is not shown either. Nothing has been
+            changed. Reload the page to try again.
           </p>
         </div>
       )}
