@@ -24,6 +24,10 @@ interface ChangeDetailProps {
     mergedAt?: string;
     githubPrUrl?: string;
     githubPrNumber?: number;
+    /** `"open"` while the pull request can still be acted on. */
+    githubPrState?: string;
+    /** Whether the pull request is a draft; absent when not known. */
+    githubPrDraft?: boolean;
     /** The workspace commit the verdict is for. */
     evaluatedSha?: string;
     /** Username of the person the change belongs to. */
@@ -386,6 +390,15 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   const deletions = (diff ?? []).reduce((sum, file) => sum + file.deletions, 0);
 
   const hasGithubPr = change.githubPrUrl !== undefined;
+  // Offered while the pull request is a draft, and also when that is not known
+  // (promoted before the flag was recorded): the action finds nothing to do on
+  // one that is already ready.
+  const canMarkReady =
+    hasGithubPr &&
+    canReview &&
+    change.status === "promoted" &&
+    change.githubPrState !== "closed" &&
+    change.githubPrDraft !== false;
   const canMerge = !hasGithubPr && canReview && MERGEABLE_STATUSES.includes(change.status);
   const canReject = !TERMINAL_STATUSES.includes(change.status);
   const hasActions = hasGithubPr || canMerge || canReject;
@@ -460,19 +473,36 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
           <h2>Actions</h2>
           {hasGithubPr && (
             <p class="text-muted">
-              This change was promoted to GitHub
-              {change.githubPrNumber !== undefined && (
-                <> as pull request #{change.githubPrNumber}</>
-              )}
-              . Review and merging happen there, and Stratum reports this evaluation on the pull
-              request.
+              This change was promoted to GitHub as{" "}
+              <a href={change.githubPrUrl} target="_blank" rel="noreferrer">
+                pull request
+                {change.githubPrNumber !== undefined && <> #{change.githubPrNumber}</>}
+              </a>
+              {change.githubPrDraft === true && ", still as a draft"}. Review and merging happen
+              there, and Stratum reports this evaluation on the pull request.
             </p>
           )}
           <div class="action-row">
             {hasGithubPr ? (
-              <a class="btn btn-primary" href={change.githubPrUrl} target="_blank" rel="noreferrer">
-                Open GitHub PR
-              </a>
+              // One button, for the next thing to do with the pull request:
+              // take it out of draft while it is one, and open it after that.
+              // The sentence above links to it either way.
+              canMarkReady ? (
+                <form method="post" action={`/api/changes/${change.id}/github-pr/ready`}>
+                  <button type="submit" class="btn btn-primary">
+                    Mark ready for review
+                  </button>
+                </form>
+              ) : (
+                <a
+                  class="btn btn-primary"
+                  href={change.githubPrUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open GitHub PR
+                </a>
+              )
             ) : (
               <>
                 {canMerge && (

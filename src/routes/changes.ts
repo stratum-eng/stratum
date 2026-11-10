@@ -2220,6 +2220,7 @@ interface GithubPr {
   number: number;
   html_url: string;
   state: string;
+  draft?: boolean;
 }
 
 /**
@@ -2295,6 +2296,121 @@ function isUsableGithubUrl(raw: string, target: GithubRepoTarget, prNumber: numb
     url.pathname.toLowerCase() === `/${target.owner}/${target.repo}/pull/${prNumber}`.toLowerCase()
   );
 }
+
+// POST /changes/:id/github-pr/ready — take the change's pull request out of draft.
+//
+// Promotion opens a draft, so that publishing a change and asking people to
+// review it stay two decisions. This is the second one, and like promotion it
+// is a person's: agent credentials are refused.
+app.post("/changes/:id/github-pr/ready", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const userId = c.get("userId");
+  if (!userId) return unauthorized("Authentication required");
+
+  const { id } = c.req.param();
+  const changeResult = await getChange(c.env.DB, logger, id);
+  if (!changeResult.success) {
+    if (changeResult.error.code === "NOT_FOUND") return notFound("Change", id);
+    logger.error("Failed to get change", changeResult.error);
+    return internalError(changeResult.error.message);
+  }
+  const change = changeResult.data;
+
+  const projectResult = await getProject(c.env.STATE, change.project, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") return notFound("Project", change.project);
+    logger.error("Failed to get project", projectResult.error);
+    return internalError(projectResult.error.message);
+  }
+  const project = projectResult.data;
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
+    return refuseProjectAccess(credentialBindingFrom(c), project, () => notFound("Change", id));
+
+  // The pull request this change was promoted to, as recorded then. Not the
+  // project's current source URL: that can be repointed, and this must act on
+  // the pull request the change actually has.
+  const { githubOwner: owner, githubRepo: repo, githubPrNumber: prNumber } = change;
+  if (change.status !== "promoted" || !owner || !repo || prNumber === undefined) {
+    return c.json(
+      { error: "This change has no open GitHub pull request", code: "NOT_PROMOTED" },
+      409,
+    );
+  }
+
+  const tokenResult = await resolveGitHubToken(
+    c.env,
+    { owner, repo, principal: projectPrincipal(project), project },
+    logger,
+  );
+  if (!tokenResult.success) {
+    const { statusCode, message, code } = tokenResult.error;
+    return c.json(
+      { error: message, code },
+      statusCode === 403 || statusCode === 409 ? statusCode : 400,
+    );
+  }
+
+  const marked = await new GitHubClient(tokenResult.data.token, logger).markPRReady(
+    owner,
+    repo,
+    prNumber,
+  );
+  if (!marked.success && marked.closed) {
+    // Not GitHub failing: the pull request was closed or merged there and this
+    // change never heard (a missed webhook). Record it, so the page stops
+    // offering the button instead of failing the same way on every click.
+    const noted = await recordGithubPrLink(c.env.DB, logger, id, { githubPrState: "closed" });
+    if (!noted.success) {
+      logger.error("Could not record that the pull request is closed", noted.error, {
+        changeId: id,
+      });
+    }
+    return c.json(
+      { error: "The pull request is closed on GitHub", code: "PULL_REQUEST_CLOSED" },
+      409,
+    );
+  }
+  if (!marked.success) {
+    logger.error("Failed to mark the pull request ready", undefined, {
+      changeId: id,
+      prNumber,
+      reason: marked.error,
+    });
+    return c.json(
+      {
+        error: `GitHub did not mark the pull request ready: ${marked.error}`,
+        code: "GITHUB_ERROR",
+      },
+      502,
+    );
+  }
+
+  const recorded = await recordGithubPrLink(c.env.DB, logger, id, { githubPrDraft: false });
+  if (!recorded.success) {
+    // The pull request is ready on GitHub either way; the page will offer the
+    // button again and the next click finds nothing to do.
+    logger.error("Marked the pull request ready but did not record it", recorded.error, {
+      changeId: id,
+    });
+  }
+  logger.info("Pull request marked ready for review", {
+    changeId: id,
+    prNumber,
+    alreadyReady: marked.alreadyReady,
+  });
+  return okOrFormRedirect(c, id, {
+    ready: true,
+    changeId: id,
+    alreadyReady: marked.alreadyReady,
+    github: { owner, repo, prNumber, ...(change.githubPrUrl ? { url: change.githubPrUrl } : {}) },
+  });
+});
 
 app.post("/changes/:id/github-pr", async (c) => {
   const logger = createLogger({
@@ -2725,6 +2841,9 @@ app.post("/changes/:id/github-pr", async (c) => {
     githubPrNumber: pr.number,
     githubPrUrl: pr.html_url,
     githubPrState: pr.state,
+    // As GitHub reports it. A reused pull request keeps whatever it was, and
+    // one whose response omits the field was opened as this request asked.
+    githubPrDraft: pr.draft ?? body.draft ?? true,
     // The revision actually force-pushed as this PR's head — only known
     // precisely when the evaluatedSha gate above ran (legacy changes with no
     // evaluatedSha have no pinned revision to record here).

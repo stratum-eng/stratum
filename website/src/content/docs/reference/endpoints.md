@@ -702,6 +702,28 @@ If a re-evaluation begins while the branch is being pushed, the response is
 the body), but the change is not marked `promoted`. Promote again once the
 evaluation finishes; that re-pushes to the same PR.
 
+#### Mark the PR ready for review
+`POST /api/changes/{id}/github-pr/ready`
+
+Takes the change's pull request out of draft, so promoting a change and asking
+for its review stay two separate decisions. Users only, with write access to the
+project; no body. It acts on the pull request the change was promoted to, with
+the same credential rules as promotion.
+
+```json
+{ "ready": true, "changeId": "chg_…", "alreadyReady": false,
+  "github": { "owner": "acme", "repo": "api", "prNumber": 42 } }
+```
+
+A pull request that is already ready succeeds with `alreadyReady: true`. A
+change that was not promoted gets `409 NOT_PROMOTED`. A pull request that turns
+out to be closed on GitHub gets `409 PULL_REQUEST_CLOSED`, and the change's
+`githubPrState` is corrected to `closed`. If GitHub refuses, the answer is `502 GITHUB_ERROR` with
+GitHub's message.
+
+A change carries `githubPrDraft` once this is known. Marking the pull request
+ready or converting it back to a draft on GitHub updates it too.
+
 Once a change has a linked PR, each evaluation posts the verdict to the PR as a
 comment (edited in place on re-evaluation) and as a `stratum/evaluation` commit
 status.

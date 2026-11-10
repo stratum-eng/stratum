@@ -37,6 +37,12 @@ links to it: review and merging then happen on GitHub (see
 [Reviewing in GitHub instead](#reviewing-in-github-instead)). The diff stays
 visible here so the page still says what the change is.
 
+Promotion opens the pull request as a draft. While it is one, the page's button
+is **Mark ready for review**, which takes it out of draft on GitHub without
+leaving Stratum. Once the pull request is ready, whichever side that happened
+on, the button becomes **Open GitHub PR**. The text above it links to the pull
+request in both states.
+
 ## Comment threads
 
 A comment is either **floating** — attached to the change as a whole — or
