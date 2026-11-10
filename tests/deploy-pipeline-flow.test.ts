@@ -462,6 +462,79 @@ describe("promotion", () => {
     expect((await row("production", SHA_B)).status).toBe("pending_approval");
   });
 
+  // The hole this closes: a production deployment that was superseded while it
+  // waited was never approved, so it carries no `approvedBy` — and a retry of
+  // it starts `queued`. The gate must hold on the environment's own
+  // configuration, not on the history of the row that was retried.
+  it("a queued deployment nobody approved does not run in an environment that requires approval", async () => {
+    await run(merge(SHA_A, "chg_a", 15));
+    await report(await row("staging", SHA_A), "succeeded");
+    await pump();
+    const waiting = await row("production", SHA_A);
+    raw.prepare("UPDATE deployments SET status = 'superseded' WHERE id = ?").run(waiting.id);
+
+    // What an agent's retry of that superseded row inserts.
+    const retry = await insertDeployment(db, logger, {
+      projectId: PROJECT_ID,
+      project: PROJECT.name,
+      changeId: "chg_a",
+      commitSha: SHA_A,
+      name: "production",
+      target: "pipeline",
+      attempt: 2,
+      status: "queued",
+      requestedByType: "agent",
+      requestedById: "agt_bot",
+    });
+    if (!retry.success || !retry.data.inserted) throw new Error("fixture");
+    const retryId = retry.data.deployment.id;
+    await run({ kind: "deployment", projectId: PROJECT_ID, deploymentId: retryId });
+
+    // Not dispatched: it is put back to wait for a person.
+    expect(dispatched.map((entry) => entry.body.environment)).toEqual(["staging"]);
+    const held = (await rows("production")).find((entry) => entry.id === retryId);
+    expect(held?.status).toBe("pending_approval");
+
+    // Redelivery changes nothing, and it runs once a user approves it.
+    await run({ kind: "deployment", projectId: PROJECT_ID, deploymentId: retryId });
+    expect(dispatched).toHaveLength(1);
+    const approved = await approveDeployment(db, logger, {
+      projectId: PROJECT_ID,
+      deploymentId: retryId,
+      approvedBy: "usr_alice",
+    });
+    if (!approved.success || !approved.data.approved) throw new Error("approval failed");
+    await run({ kind: "deployment", projectId: PROJECT_ID, deploymentId: retryId });
+    expect(dispatched.map((entry) => entry.body.environment)).toEqual(["staging", "production"]);
+  });
+
+  it("an unapproved queued deployment still runs in an environment that asks for no approval", async () => {
+    await run(merge(SHA_A, "chg_a", 15));
+    await report(await row("staging", SHA_A), "failed", { summary: "Step 'deploy' failed." });
+    await pump();
+
+    const retry = await insertDeployment(db, logger, {
+      projectId: PROJECT_ID,
+      project: PROJECT.name,
+      changeId: "chg_a",
+      commitSha: SHA_A,
+      name: "staging",
+      target: "pipeline",
+      attempt: 2,
+      status: "queued",
+      requestedByType: "agent",
+      requestedById: "agt_bot",
+    });
+    if (!retry.success || !retry.data.inserted) throw new Error("fixture");
+    await run({
+      kind: "deployment",
+      projectId: PROJECT_ID,
+      deploymentId: retry.data.deployment.id,
+    });
+
+    expect(dispatched.map((entry) => entry.body.environment)).toEqual(["staging", "staging"]);
+  });
+
   it("goes straight on when the next environment asks for no approval", async () => {
     trees.set(SHA_A, treeOf(UNGATED));
     await run(merge(SHA_A, "chg_a", 15));

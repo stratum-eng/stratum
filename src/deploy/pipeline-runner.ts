@@ -20,6 +20,11 @@
  *   environment's row is created when — and only when — the one before it
  *   succeeded, so a failed step leaves nothing behind that could be promoted,
  *   approved or retried into the next environment.
+ * - **An approval gate checked at the last moment.** Whether an environment
+ *   needs a person is declared in the pipeline, so it is checked here, against
+ *   the pipeline at the deployment's own commit, immediately before the claim:
+ *   a `queued` row with no `approvedBy` for such an environment is put back to
+ *   `pending_approval`, however it came to be queued.
  * - **A lease the consumer cannot renew.** The row stays `running` until the
  *   executor reports; if it never does, the cron sweep fails the row
  *   (`services/deploy-reports.ts`). It is never re-run on a guess.
@@ -47,6 +52,7 @@ import {
   findNewerSucceededDeployment,
   findNextQueuedDeployment,
   getDeployment,
+  holdDeploymentForApproval,
   supersedeOlder,
 } from "../storage/deployments";
 import { extractTokenSecret, freshRepoToken } from "../storage/git-ops";
@@ -290,6 +296,27 @@ export async function runPipelineDeployment(
       deployment,
       `Environment '${deployment.name}' is not declared in ${PIPELINE_FILE} at ${shortSha(deployment.commitSha)}`,
     );
+  }
+
+  // The approval gate, enforced where it cannot be walked around. A row is
+  // normally created `pending_approval` for an environment that asks for a
+  // person, and only an approval moves it on — but a row can also arrive here
+  // `queued` by another road (a retry of a deployment that was superseded
+  // while it waited has nobody's approval on it). Whatever the road, an
+  // environment that requires approval runs nothing that no user approved:
+  // the row is parked, to be approved like any other.
+  if (environment.requiresApproval && deployment.approvedBy === undefined) {
+    const held = await holdDeploymentForApproval(env.DB, logger, {
+      projectId: project.id,
+      deploymentId: deployment.id,
+    });
+    if (!held.success) {
+      return await host.failWithoutRunning(
+        deployment,
+        `Environment '${deployment.name}' requires approval and this deployment has none; it could not be held for approval, so it was not run.`,
+      );
+    }
+    return record(deployment, held.data ? "pending_approval" : deployment.status);
   }
 
   let rollback: { version?: string } | undefined;

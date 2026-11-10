@@ -720,13 +720,24 @@ deploymentApp.post("/:id/retry", async (c) => {
     );
   }
 
-  // A pipeline environment that waited for a person the first time waits for
-  // one again. A retry row starts `queued`, so without this an agent could
-  // re-run an approved production deployment — of any earlier commit — with
-  // nobody approving it. A user who may approve is that approval; an agent's
-  // retry goes back to `pending_approval`. (Static targets keep the behaviour
-  // they have always had.)
-  const gated = deployment.target === PIPELINE_TARGET && deployment.approvedBy !== undefined;
+  // A retry of a pipeline deployment must not be a way round its approval
+  // gate. Whether the environment needs approval is declared in the pipeline,
+  // which this route does not read; the runner does, and it parks any `queued`
+  // pipeline row that has no `approvedBy` for an environment that requires
+  // one (`runPipelineDeployment`). So the rule here is only about who is
+  // asking:
+  //
+  // - a user who may write may also approve, so their retry carries their
+  //   approval and runs;
+  // - an agent's retry carries none. Where the source row shows the
+  //   environment was gated it is created `pending_approval` straight away;
+  //   otherwise it is queued, and the runner holds it if the environment turns
+  //   out to need approval after all — a deployment superseded while it waited
+  //   has no `approvedBy` to go by.
+  //
+  // Static targets keep the behaviour they have always had.
+  const isPipeline = deployment.target === PIPELINE_TARGET;
+  const gated = isPipeline && deployment.approvedBy !== undefined;
   const retryStatus: DeploymentStatus = gated && !userId ? "pending_approval" : "queued";
 
   const inserted = await insertDeployment(c.env.DB, logger, {
@@ -744,7 +755,7 @@ deploymentApp.post("/:id/retry", async (c) => {
     status: retryStatus,
     requestedByType: agentId ? "agent" : "user",
     requestedById: agentId ?? userId ?? null,
-    approvedBy: gated && userId ? userId : null,
+    approvedBy: isPipeline && userId ? userId : null,
     // Retrying a rollback is still a rollback, to the same deployment.
     rollbackOf: deployment.rollbackOf ?? null,
   });

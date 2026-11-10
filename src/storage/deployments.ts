@@ -1199,6 +1199,54 @@ export async function claimPipelineDeployment(
 }
 
 /**
+ * Put a `queued` deployment back to `pending_approval`.
+ *
+ * The runner's half of the approval gate for a pipeline environment. A row can
+ * reach `queued` without anyone having approved it — a retry of a deployment
+ * that was superseded while it waited, for one — and whether its environment
+ * needs approval is only known once the pipeline at its commit has been read.
+ * When it does, and the row has no `approvedBy`, it is parked here to wait for
+ * a person, exactly as if it had been created that way.
+ *
+ * Conditional on `queued`, so it cannot pull back a deployment that is
+ * running or finished.
+ *
+ * @returns `true` when the row was moved.
+ */
+export async function holdDeploymentForApproval(
+  db: D1Database,
+  logger: Logger,
+  opts: { projectId: string; deploymentId: string },
+): Promise<Result<boolean, AppError>> {
+  try {
+    const updated = await db
+      .prepare(
+        "UPDATE deployments SET status = 'pending_approval' " +
+          "WHERE id = ? AND project_id = ? AND status = 'queued' AND approved_by IS NULL",
+      )
+      .bind(opts.deploymentId, opts.projectId)
+      .run();
+    const held = updated.meta.changes > 0;
+    if (held) {
+      logger.info("Deployment held for approval", {
+        deploymentId: opts.deploymentId,
+        projectId: opts.projectId,
+      });
+    }
+    return ok(held);
+  } catch (error) {
+    const appError = toAppError(error, "holdDeploymentForApproval", {
+      deploymentId: opts.deploymentId,
+      projectId: opts.projectId,
+    });
+    logger.error("Failed to hold deployment for approval", appError, {
+      deploymentId: opts.deploymentId,
+    });
+    return err(appError);
+  }
+}
+
+/**
  * The deployment of an environment that should run next: the NEWEST `queued`
  * row of `(projectId, name)`, by merge time.
  *

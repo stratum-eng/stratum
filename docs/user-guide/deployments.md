@@ -781,11 +781,21 @@ kept, so the history shows both.
   commit it re-runs is old — an operator re-running an earlier commit is
   asserting that they want it live.
 
-For a **pipeline** environment that was approved, a retry needs approval
-again: a user's retry counts as that approval, and an agent's retry is created
-at `pending_approval` and waits for a user. Without this, an agent could
-re-run an approved production deployment of any earlier commit. Static
-targets keep the behaviour described above.
+A retry is not a way round a **pipeline** environment's approval gate. A
+user's retry carries that user's approval and runs. An agent's retry carries
+none: for an environment with `requiresApproval: true` it waits at
+`pending_approval` for a user, whether the deployment being retried was
+approved, or failed, or was superseded while it was still waiting. The check
+is made when the deployment is about to run, against the pipeline at the
+commit being deployed, so it does not depend on how the retry came about.
+Static targets keep the behaviour described above.
+
+One limit to know: the gate that applies to a retry is the one declared **at
+the commit being retried**. If production had no `requiresApproval` when an
+old commit merged, an agent can retry that old commit's production deployment
+without approval even though the pipeline has since gained the gate. Projects
+that add a gate later and let agents retry should treat old ungated
+deployments accordingly.
 
 To put an earlier deployment back, use [Rollback](#rollback), which is explicit
 about what it is doing and is restricted to people who may approve.
@@ -964,7 +974,7 @@ production consumer.
 | `GET /api/projects/{namespace}/{slug}/deployments` | Anyone who can read the project. `logTail` is included only for writers. Filters: `name`, `status`, `limit` (default 50, max 200), `offset`. |
 | `GET /api/deployments/{id}` | Anyone who can read the deployment's project; unknown or unreadable ids answer 404 alike. |
 | `POST /api/deployments/{id}/approve` | Project writer, **user identity required**. |
-| `POST /api/deployments/{id}/retry` | Project writer; agents allowed. A retry of an approved pipeline deployment by an agent waits for approval. |
+| `POST /api/deployments/{id}/retry` | Project writer; agents allowed. An agent's retry of a pipeline deployment whose environment requires approval waits for approval. |
 | `POST /api/deployments/{id}/rollback` | Project writer, **user identity required**. Creates a new deployment that puts this one back. |
 | `GET /api/deployments/{id}/log` | Project writer. A pipeline deployment's full step log, as plain text. |
 | `POST /api/deploy-reports/{id}` | The CI executor only. Authenticated by an HMAC signature made with `CI_EXECUTOR_SECRET`; no Stratum credential is accepted or needed. |

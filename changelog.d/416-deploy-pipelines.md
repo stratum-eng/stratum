@@ -23,6 +23,8 @@
   version; it does not undo a database migration** — migrations are
   forward-only. Rollback works for the existing static `deploys:` targets too,
   where it publishes the earlier commit again.
+- Retrying a pipeline deployment does not bypass its approval gate: an agent's
+  retry for an environment that requires approval waits for a user.
 - A pipeline deployment's full step log is available to project writers from
   its page and at `GET /api/deployments/:id/log`.
 - Deployments gain two fields in the API: `version` and `rollbackOf`, and a new

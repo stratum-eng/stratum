@@ -163,11 +163,15 @@ a repeat call would only collide with the unique index on
 The originating change id is carried onto the retry, so the "was this change
 reverted?" check still applies to it. Audited as `deployment.retried`.
 
-**A retry of an approved pipeline deployment needs approval again.** For a
-deployment with `target: pipeline` that has an `approvedBy`, a user's retry is
-created `queued` with that user as `approvedBy`; an agent's retry is created at
-`pending_approval` and is **not** enqueued — it answers `201` with a row that
-waits for a user to approve it. Static targets are unchanged.
+**A retry is not a way round a pipeline environment's approval gate.** For a
+deployment with `target: pipeline`, a user's retry is created `queued` with
+that user as `approvedBy`. An agent's retry carries no approval: where the
+retried deployment was itself approved, the retry is created at
+`pending_approval` and is not enqueued; otherwise it is created `queued`, and
+is moved to `pending_approval` when it is about to run if its environment has
+`requiresApproval: true`. Either way it answers `201`, and the row waits for a
+user to approve it. The environment's setting is read from the pipeline at the
+commit being retried. Static targets are unchanged.
 
 ### Roll back to a deployment
 `POST /api/deployments/{id}/rollback`

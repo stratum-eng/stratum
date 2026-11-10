@@ -2045,10 +2045,13 @@ paths:
         change id is carried over, so the "was this change reverted?" check
         still applies. Audited as `deployment.retried`.
 
-        A retry of a **pipeline** deployment that went through approval needs
-        approval again: a user's retry is that approval, and an agent's retry
-        is created at `pending_approval` and is not enqueued until a user
-        approves it.
+        A retry is not a way round a **pipeline** environment's approval
+        gate: a user's retry carries that user's approval, and an agent's
+        retry carries none. If the environment has `requiresApproval: true`
+        (read from the pipeline at the commit being retried), an agent's retry
+        waits at `pending_approval` until a user approves it — created there
+        directly when the retried deployment was itself approved, and
+        otherwise moved there when it is about to run.
       responses:
         "201":
           description: Retry attempt created and enqueued

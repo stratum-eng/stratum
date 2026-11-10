@@ -1083,6 +1083,42 @@ describe("retry of a pipeline deployment that went through approval", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  // A deployment superseded while it waited for approval was never approved,
+  // so the source row cannot say the environment is gated. The route must not
+  // stamp an approval nobody gave: an agent's retry carries none, and the
+  // runner holds it if the environment requires one.
+  it("an agent's retry of a pipeline deployment nobody approved carries no approval", async () => {
+    vi.mocked(findDeploymentById).mockResolvedValue({
+      success: true,
+      data: deployment({ target: "pipeline", status: "superseded" }),
+    });
+    await call("/api/deployments/dep_1/retry", {
+      method: "POST",
+      headers: { ...asAgent, "content-type": "application/json" },
+    });
+    expect(insertDeployment).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({ approvedBy: null, requestedByType: "agent" }),
+    );
+  });
+
+  it("a user's retry of a pipeline deployment nobody approved carries that user's approval", async () => {
+    vi.mocked(findDeploymentById).mockResolvedValue({
+      success: true,
+      data: deployment({ target: "pipeline", status: "superseded" }),
+    });
+    await call("/api/deployments/dep_1/retry", {
+      method: "POST",
+      headers: { ...asOwner, "content-type": "application/json" },
+    });
+    expect(insertDeployment).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({ status: "queued", approvedBy: "usr_owner" }),
+    );
+  });
+
   it("an ungated environment's retry is queued for an agent, as it always was", async () => {
     vi.mocked(findDeploymentById).mockResolvedValue({
       success: true,
