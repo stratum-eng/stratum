@@ -749,11 +749,15 @@ export class GitHubClient {
     owner: string,
     repo: string,
     pullNumber: number,
-  ): Promise<{ success: true; alreadyReady: boolean } | { success: false; error: string }> {
+  ): Promise<
+    | { success: true; alreadyReady: boolean }
+    /** `closed`: GitHub answered, and the pull request is no longer open. */
+    | { success: false; error: string; closed?: true }
+  > {
     const found = await this.getPR(owner, repo, pullNumber);
     if (!found.success) return found;
     if (found.pr.state !== "open") {
-      return { success: false, error: "The pull request is closed" };
+      return { success: false, error: "The pull request is closed", closed: true };
     }
     if (found.pr.draft === false) return { success: true, alreadyReady: true };
     if (!found.pr.node_id) {

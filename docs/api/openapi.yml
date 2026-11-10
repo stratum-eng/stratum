@@ -3496,7 +3496,9 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: The change has no open pull request (`NOT_PROMOTED`)
+          description: >-
+            The change has no pull request (`NOT_PROMOTED`), or its pull request
+            is closed on GitHub (`PULL_REQUEST_CLOSED`)
         "502":
           description: GitHub refused or could not be reached (`GITHUB_ERROR`)
 

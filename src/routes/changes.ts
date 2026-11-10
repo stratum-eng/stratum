@@ -2361,6 +2361,21 @@ app.post("/changes/:id/github-pr/ready", async (c) => {
     repo,
     prNumber,
   );
+  if (!marked.success && marked.closed) {
+    // Not GitHub failing: the pull request was closed or merged there and this
+    // change never heard (a missed webhook). Record it, so the page stops
+    // offering the button instead of failing the same way on every click.
+    const noted = await recordGithubPrLink(c.env.DB, logger, id, { githubPrState: "closed" });
+    if (!noted.success) {
+      logger.error("Could not record that the pull request is closed", noted.error, {
+        changeId: id,
+      });
+    }
+    return c.json(
+      { error: "The pull request is closed on GitHub", code: "PULL_REQUEST_CLOSED" },
+      409,
+    );
+  }
   if (!marked.success) {
     logger.error("Failed to mark the pull request ready", undefined, {
       changeId: id,
