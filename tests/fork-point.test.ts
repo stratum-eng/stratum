@@ -104,6 +104,21 @@ async function search(
 
 const tipOf = (commits: Commit[]) => [(commits[commits.length - 1] as Commit).oid];
 
+/** Write commits into a repository as they stand, whatever order they come in. */
+async function revealInto(fs: Fs, commits: Commit[]): Promise<void> {
+  for (const commit of commits) await write(fs, commit);
+}
+
+/** Two lines taken a commit at a time from each, as equal distance from a merge reaches them. */
+function interleave(a: Commit[], b: Commit[]): Commit[] {
+  const out: Commit[] = [];
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if (a[i]) out.push(a[i] as Commit);
+    if (b[i]) out.push(b[i] as Commit);
+  }
+  return out;
+}
+
 describe("findForkPoint", () => {
   it("finds the project's tip under an up-to-date workspace without fetching more", async () => {
     const main = await line("main", 30);
@@ -192,6 +207,66 @@ describe("findForkPoint", () => {
     expect(await search(workspace, base, { workspace: 16, base: 16 })).toEqual(
       ok({ kind: "found", oid: tipOf(newer)[0] }),
     );
+  });
+
+  it("fetches more before accepting an old commit a merge in the workspace reaches first", async () => {
+    // The workspace is up to date: twenty commits on the project's tip. Its
+    // newest commit also merges an old project commit, which the first window
+    // reaches in one step while the tip sits twenty-one steps back.
+    const shared = await line("shared", 30);
+    const newer = await line("newer", 3, tipOf(shared));
+    const work = await line("work", 20, tipOf(newer));
+    const merged = await mergeCommit("merge an old branch", [...tipOf(work), ...tipOf(shared)]);
+    const workspace = await shallow([...shared, ...newer, ...work, merged], 0);
+    // Reveal by distance from the merge, as a fetch would: the merge, then both lines.
+    const byDistance = [merged, ...interleave([...work].reverse(), [...shared].reverse())];
+    await revealInto(workspace.fs, byDistance.slice(0, 16));
+    workspace.deepen.mockImplementation(async () => {
+      await revealInto(workspace.fs, [...byDistance, ...[...newer].reverse()]);
+      return ok(undefined);
+    });
+    const base = await shallow([...shared, ...newer], 16);
+
+    const found = await search(workspace, base, { workspace: 16, base: 16 });
+
+    // The project's tip, not the old commit the first window offered.
+    expect(found).toEqual(ok({ kind: "found", oid: base.tip }));
+    expect(workspace.deepen).toHaveBeenCalled();
+  });
+
+  it("does not fetch more for a workspace whose own commits are a single line", async () => {
+    const shared = await line("shared", 30);
+    const newer = await line("newer", 5, tipOf(shared));
+    const work = await line("work", 2, tipOf(shared));
+    const workspace = await shallow([...shared, ...work], 16);
+    const base = await shallow([...shared, ...newer], 16);
+
+    const found = await search(workspace, base, { workspace: 16, base: 16 });
+
+    expect(found).toEqual(ok({ kind: "found", oid: tipOf(shared)[0] }));
+    expect(workspace.deepen).not.toHaveBeenCalled();
+    expect(base.deepen).not.toHaveBeenCalled();
+  });
+
+  it("settles for the shared commit it has when the cap is reached with a merge unresolved", async () => {
+    const shared = await line("shared", 10);
+    const newer = await line("newer", 3, tipOf(shared));
+    const work = await line("work", 100, tipOf(newer));
+    const merged = await mergeCommit("merge an old branch", [...tipOf(work), ...tipOf(shared)]);
+    const workspace = await shallow([...shared, ...newer, ...work, merged], 0);
+    const byDistance = [merged, ...interleave([...work].reverse(), [...shared].reverse())];
+    await revealInto(workspace.fs, byDistance.slice(0, 16));
+    // However far it deepens within the cap, the project's tip stays out of reach.
+    workspace.deepen.mockImplementation(async () => {
+      await revealInto(workspace.fs, byDistance.slice(0, 64));
+      return ok(undefined);
+    });
+    const base = await shallow([...shared, ...newer], 16);
+
+    const found = await search(workspace, base, { workspace: 16, base: 16 });
+
+    // Older than the true fork point, which only repeats what the project has.
+    expect(found).toEqual(ok({ kind: "found", oid: tipOf(shared)[0] }));
   });
 
   it("passes on a failed fetch instead of reporting no fork point", async () => {

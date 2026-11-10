@@ -883,6 +883,9 @@ export async function createChangeWithEvaluation(
     evalReason: evalResult.reason,
     evaluatedSha,
     evaluatedTreeOid,
+    // As stored just above, so the response is the change as it now stands.
+    baseSha: baseOid,
+    forkPointSha: mergeBaseOid,
     ...(workspaceHeadSha ? { workspaceHeadSha } : {}),
   };
 

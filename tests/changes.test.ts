@@ -458,10 +458,16 @@ describe("POST /api/projects/:name/changes", () => {
   });
 
   it("pins the base and the fork point from the same diff when evaluating inline", async () => {
-    await app.fetch(
+    const res = await app.fetch(
       request("POST", "/api/projects/my-project/changes", { workspace: "fix-bug" }, USER_AUTH),
       env,
     );
+    // And answers with what it stored, not the base read before the diff.
+    const body = (await res.json()) as { change: Change };
+    expect(body.change).toMatchObject({
+      baseSha: "base_sha_from_diff_clone",
+      forkPointSha: "base_sha_from_diff_clone",
+    });
     // Equal for an up-to-date workspace, so it is not taken for one that is behind.
     expect(updateChangeStatus).toHaveBeenCalledWith(
       env.DB,

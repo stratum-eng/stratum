@@ -4354,9 +4354,9 @@ async function readKnownHistory(fs: NodeFS, tip: string): Promise<KnownHistory> 
  * nearest the project's tip, which leaves the smallest diff.
  *
  * Within shallow history this can name an older commit than the true fork
- * point when a merge commit reaches an old commit by a shorter path than the
- * newer one. The diff then repeats changes the project already has. It never
- * leaves any of the workspace's own changes out.
+ * point when a merge commit in the workspace reaches an old project commit by a
+ * shorter path than a newer one. {@link findForkPoint} fetches more history
+ * before accepting such an answer; see {@link forkPointIsSettled}.
  */
 function pickForkPoint(workspace: KnownHistory, base: KnownHistory): string | null {
   const common = [...workspace.distance.keys()].filter((oid) => base.distance.has(oid));
@@ -4382,6 +4382,34 @@ function countCommitsSince(history: KnownHistory, oid: string): number {
     frontier = next;
   }
   return history.distance.size - reached.size;
+}
+
+/**
+ * Whether `oid` can be accepted as the fork point on what is known so far, or
+ * more history could still turn up a newer one.
+ *
+ * Settled when it is the project's tip, since nothing is newer. Settled too
+ * when the workspace's own commits (those the fork point does not reach) form
+ * a single line: a line enters the project's history at one commit, and every
+ * other shared commit lies behind it. A merge among them is what makes a second
+ * way in possible, at a depth not fetched yet, so that case is not settled.
+ */
+function forkPointIsSettled(workspace: KnownHistory, baseTip: string, oid: string): boolean {
+  if (oid === baseTip) return true;
+  const behind = new Set<string>();
+  for (let frontier = [oid]; frontier.length > 0; ) {
+    const next: string[] = [];
+    for (const commit of frontier) {
+      if (behind.has(commit)) continue;
+      behind.add(commit);
+      next.push(...(workspace.parents.get(commit) ?? []));
+    }
+    frontier = next;
+  }
+  for (const [commit, parents] of workspace.parents) {
+    if (!behind.has(commit) && parents.length > 1) return false;
+  }
+  return true;
 }
 
 /** Where a workspace's history meets its project's. */
@@ -4421,8 +4449,13 @@ export async function findForkPoint(args: {
       readKnownHistory(baseFs, baseTip),
     ]);
     const oid = pickForkPoint(workspace, base);
-    if (oid !== null) return ok({ kind: "found", oid });
-    if (!workspace.truncated && !base.truncated) return ok({ kind: "unrelated" });
+    if (oid !== null && forkPointIsSettled(workspace, baseTip, oid)) {
+      return ok({ kind: "found", oid });
+    }
+    if (!workspace.truncated && !base.truncated) {
+      // Everything there is has been read: the answer in hand is the answer.
+      return ok(oid !== null ? { kind: "found", oid } : { kind: "unrelated" });
+    }
 
     // Bring the shallower side level first, then grow both.
     const deepest = Math.max(depth.workspace, depth.base);
@@ -4438,6 +4471,13 @@ export async function findForkPoint(args: {
         grew = true;
       }
       if (grew) break;
+    }
+    if (!grew && oid !== null) {
+      // Nothing more can be fetched within the cap. The commit in hand is
+      // shared, and at worst older than the true fork point: the diff then
+      // repeats changes the project already has, and leaves none of the
+      // workspace's own out.
+      return ok({ kind: "found", oid });
     }
     if (!grew) {
       return err(
