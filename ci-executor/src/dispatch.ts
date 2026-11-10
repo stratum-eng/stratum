@@ -9,6 +9,8 @@
  */
 import {
   DEFAULT_ALLOWED_HOSTS,
+  type DeployCredential,
+  type DeployTargetsResult,
   type ExecutorConfig,
   GIT_HOST,
   INSTANCE_TYPES,
@@ -25,17 +27,35 @@ export interface JobStep {
 }
 
 /**
- * Everything that differs between kinds of job. Only `ci` exists; deploy and
- * publish jobs (#416, #422) are other profiles — another image, another
- * allowlist, credentials injected by intercept — which is why these are
- * fields of a job and not constants of the executor.
+ * Everything that differs between kinds of job: `ci` for a change nobody has
+ * reviewed, `deploy` for a merge that has passed its gates (#416). Publish
+ * jobs (#422) will be a third. Another image, another allowlist, credentials
+ * injected by intercept — which is why these are fields of a job and not
+ * constants of the executor.
  */
 export interface JobProfile {
-  name: "ci";
+  name: "ci" | "deploy";
   /** Key into `ctx.container.images`. */
   image: string;
-  /** Every hostname the container may reach, besides its repository. */
+  /** Every hostname the container may reach without a credential, besides its repository. */
   allowedHosts: string[];
+  /**
+   * `deploy` only: hosts whose requests leave with a credential attached by
+   * the intercept. Holds the NAME of each secret; the value is read by the
+   * intercept handler per request and is never part of a job.
+   */
+  credentials?: DeployCredential[];
+}
+
+/** What a deploy job is, beyond what every job is. */
+export interface DeployJob {
+  deploymentId: string;
+  projectId: string;
+  environment: string;
+  /** Plain variables the operator configured for this target. No secrets. */
+  env: Record<string, string>;
+  /** Present when the job rolls back rather than deploys. */
+  rollback?: { version?: string };
 }
 
 /**
@@ -58,14 +78,30 @@ export function profileAllowedForOrigin(profile: unknown, origin: JobOrigin): bo
   return origin !== "external" || profile === "ci";
 }
 
+/**
+ * The origin a `job` names, or null when it names one this executor does not
+ * know. Absent means a Stratum from before the field existed, which had no
+ * external changes to send.
+ */
+function parseOriginOfJob(spec: Record<string, unknown>): JobOrigin | null {
+  if (spec.origin === undefined) return "project";
+  return spec.origin === "project" || spec.origin === "external" ? spec.origin : null;
+}
+
 export interface Job {
+  /** The change under test; for a deploy job, the deployment id. */
   changeId: string;
   project: string;
   origin: JobOrigin;
+  /** The commit the job checks out: a change's base, or the merge being deployed. */
   baseSha: string;
   headSha: string;
+  /** Tree id the checkout must reproduce. Empty for a deploy job, which applies no diff. */
   headTreeSha: string;
+  /** Empty for a deploy job: it runs a commit, not a commit plus a change. */
   diff: string;
+  /** Present exactly when `profile.name` is `deploy`. */
+  deploy?: DeployJob;
   callbackUrl: string;
   /** Epoch ms after which Stratum gives the checks up. */
   deadline: number;
@@ -133,49 +169,26 @@ function hostMatchesSuffix(hostname: string, suffix: string): boolean {
   return suffix.startsWith(".") ? hostname.endsWith(suffix) : hostname === suffix;
 }
 
-/** Parse and validate a dispatch body that has already passed signature verification. */
-export function parseDispatch(raw: string, config: ExecutorConfig): DispatchResult {
-  const refuse = (reason: string): DispatchResult => ({ ok: false, reason });
-  let body: unknown;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return refuse("the body is not JSON");
-  }
-  if (!isRecord(body)) return refuse("the body is not an object");
-  if (body.event !== "checks.requested") return refuse("unsupported event");
+type Refusal = { ok: false; reason: string };
 
-  const changeId = text(body.changeId, 200);
-  const project = text(body.project, 400);
-  if (changeId === null || project === null) return refuse("changeId and project are required");
-  for (const field of ["baseSha", "headSha", "headTreeSha"] as const) {
-    if (typeof body[field] !== "string" || !OID.test(body[field])) {
-      return refuse(`${field} must be a full git object id`);
-    }
-  }
-  if (typeof body.diff !== "string") return refuse("diff must be a string");
-  const deadline = instant(body.deadline);
-  if (deadline === null) return refuse("deadline must be an ISO 8601 instant");
+/** What the two kinds of dispatch validate the same way. */
+interface CommonSpec {
+  timeoutSeconds: number;
+  instance: string;
+  /** Hostnames the dispatch asked for beyond the defaults, already checked. */
+  extraHosts: string[];
+  repository: Job["repository"];
+}
 
-  // Reports carry no credential, but they do carry a signature made with the
-  // shared secret; they go to the one Stratum this executor serves.
-  const callbackOrigin = parseOrigin(typeof body.callbackUrl === "string" ? body.callbackUrl : "");
-  if (callbackOrigin === null || callbackOrigin !== config.stratumOrigin) {
-    return refuse("callbackUrl is not on this executor's STRATUM_ORIGIN");
-  }
-  const callbackUrl = (body.callbackUrl as string).replace(/\/+$/, "");
-
-  if (!isRecord(body.checkRunIds)) return refuse("checkRunIds must be an object");
-  const spec = body.job;
-  if (!isRecord(spec)) return refuse("job is required");
-  // Absent means a Stratum from before the field existed, which had no
-  // external changes to send.
-  const origin = spec.origin === undefined ? "project" : spec.origin;
-  if (origin !== "project" && origin !== "external") return refuse("unsupported job origin");
-  if (!profileAllowedForOrigin(spec.profile, origin)) {
-    return refuse("a job for an external change can only run under the ci profile");
-  }
-  if (spec.profile !== "ci") return refuse("unsupported job profile");
+/**
+ * Validate the parts of a `job` every profile has: its time limit, container
+ * size, the hostnames it asks to reach and the repository it reads.
+ */
+function parseCommonSpec(
+  spec: Record<string, unknown>,
+  config: ExecutorConfig,
+): { ok: true; common: CommonSpec } | Refusal {
+  const refuse = (reason: string): Refusal => ({ ok: false, reason });
 
   const timeoutSeconds = seconds(spec.timeoutSeconds, config.maxJobSeconds);
   if (timeoutSeconds === null) {
@@ -200,44 +213,18 @@ export function parseDispatch(raw: string, config: ExecutorConfig): DispatchResu
   if (!Array.isArray(spec.allowHosts) || spec.allowHosts.length > MAX_PROJECT_HOSTS) {
     return refuse(`allowHosts must be a list of at most ${MAX_PROJECT_HOSTS} hostnames`);
   }
-  const allowedHosts = [...DEFAULT_ALLOWED_HOSTS];
+  const extraHosts: string[] = [];
   for (const host of spec.allowHosts as unknown[]) {
     if (typeof host !== "string" || !HOSTNAME.test(host) || host === GIT_HOST) {
       return refuse("allowHosts entries must be exact lowercase public hostnames");
     }
-    if (allowedHosts.includes(host)) continue;
+    if (DEFAULT_ALLOWED_HOSTS.includes(host) || extraHosts.includes(host)) continue;
     if (!config.allowProjectHosts) {
       return refuse(
         `this executor does not let a project extend the network allowlist ('${host}' is not on it)`,
       );
     }
-    allowedHosts.push(host);
-  }
-
-  if (!isRecord(spec.logUrls)) return refuse("logUrls must be an object");
-  if (!Array.isArray(spec.steps) || spec.steps.length === 0 || spec.steps.length > MAX_STEPS) {
-    return refuse(`steps must list from 1 to ${MAX_STEPS} steps`);
-  }
-  const steps: JobStep[] = [];
-  for (const rawStep of spec.steps as unknown[]) {
-    if (!isRecord(rawStep)) return refuse("a step is not an object");
-    const name = rawStep.name;
-    if (typeof name !== "string" || !CHECK_NAME.test(name))
-      return refuse("a step has no valid name");
-    if (steps.some((step) => step.name === name)) return refuse(`step '${name}' is listed twice`);
-    const run = text(rawStep.run, MAX_RUN_LENGTH);
-    if (run === null || run.includes("\0")) return refuse(`step '${name}' has no usable command`);
-    const stepTimeout = seconds(rawStep.timeoutSeconds, config.maxJobSeconds);
-    if (stepTimeout === null) return refuse(`step '${name}' has no usable time limit`);
-    const checkRunId = body.checkRunIds[name];
-    if (typeof checkRunId !== "string" || !CHECK_RUN_ID.test(checkRunId)) {
-      return refuse(`step '${name}' has no check run id`);
-    }
-    const logUrl = httpsUrl(spec.logUrls[name]) ?? localUrl(spec.logUrls[name], config);
-    if (logUrl === null || logUrl.origin !== config.stratumOrigin) {
-      return refuse(`step '${name}' has no log URL on this executor's STRATUM_ORIGIN`);
-    }
-    steps.push({ name, run, timeoutSeconds: stepTimeout, checkRunId, logUrl: logUrl.toString() });
+    extraHosts.push(host);
   }
 
   const repository = spec.repository;
@@ -267,6 +254,147 @@ export function parseDispatch(raw: string, config: ExecutorConfig): DispatchResu
 
   return {
     ok: true,
+    common: {
+      timeoutSeconds,
+      instance,
+      extraHosts,
+      repository: {
+        url: repositoryUrl.toString().replace(/\/+$/, ""),
+        authorization: `Basic ${btoa(`${username}:${password}`)}`,
+        expiresAt,
+      },
+    },
+  };
+}
+
+/**
+ * Validate a step's name, command and time limit. The id and log URL it
+ * reports under differ by profile and are supplied by the caller.
+ */
+function parseStepBasics(
+  rawStep: unknown,
+  seen: JobStep[],
+  config: ExecutorConfig,
+): { ok: true; name: string; run: string; timeoutSeconds: number } | Refusal {
+  const refuse = (reason: string): Refusal => ({ ok: false, reason });
+  if (!isRecord(rawStep)) return refuse("a step is not an object");
+  const name = rawStep.name;
+  if (typeof name !== "string" || !CHECK_NAME.test(name)) return refuse("a step has no valid name");
+  if (seen.some((step) => step.name === name)) return refuse(`step '${name}' is listed twice`);
+  const run = text(rawStep.run, MAX_RUN_LENGTH);
+  if (run === null || run.includes("\0")) return refuse(`step '${name}' has no usable command`);
+  const timeoutSeconds = seconds(rawStep.timeoutSeconds, config.maxJobSeconds);
+  if (timeoutSeconds === null) return refuse(`step '${name}' has no usable time limit`);
+  return { ok: true, name, run, timeoutSeconds };
+}
+
+/** What a deploy dispatch is checked against: the executor's own targets and secrets. */
+export interface DeployContext {
+  targets: DeployTargetsResult;
+  /** Whether the named deploy secret is set on this Worker. Never returns the value. */
+  hasSecret(name: string): boolean;
+}
+
+/**
+ * Parse and validate a dispatch body that has already passed signature
+ * verification.
+ *
+ * The event chooses the profile, and the two never mix: `checks.requested` can
+ * only ever produce a `ci` job, which has no credentials field at all, and
+ * `deploy.requested` only a `deploy` job. Without a {@link DeployContext} a
+ * deploy dispatch is refused.
+ */
+export function parseDispatch(
+  raw: string,
+  config: ExecutorConfig,
+  deploy?: DeployContext,
+): DispatchResult {
+  const refuse = (reason: string): DispatchResult => ({ ok: false, reason });
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return refuse("the body is not JSON");
+  }
+  if (!isRecord(body)) return refuse("the body is not an object");
+  if (body.event === "checks.requested") return parseCiDispatch(body, config);
+  if (body.event === "deploy.requested") {
+    if (deploy === undefined) return refuse("this executor does not run deploy jobs");
+    return parseDeployDispatch(body, config, deploy);
+  }
+  return refuse("unsupported event");
+}
+
+/** The callback URL, if it is on the one Stratum this executor serves. */
+function parseCallbackUrl(body: Record<string, unknown>, config: ExecutorConfig): string | null {
+  // Reports carry no credential, but they do carry a signature made with the
+  // shared secret; they go to the one Stratum this executor serves.
+  const callbackOrigin = parseOrigin(typeof body.callbackUrl === "string" ? body.callbackUrl : "");
+  if (callbackOrigin === null || callbackOrigin !== config.stratumOrigin) return null;
+  return (body.callbackUrl as string).replace(/\/+$/, "");
+}
+
+/** A `checks.requested` dispatch: the steps of a change nobody has reviewed. */
+function parseCiDispatch(body: Record<string, unknown>, config: ExecutorConfig): DispatchResult {
+  const refuse = (reason: string): DispatchResult => ({ ok: false, reason });
+
+  const changeId = text(body.changeId, 200);
+  const project = text(body.project, 400);
+  if (changeId === null || project === null) return refuse("changeId and project are required");
+  for (const field of ["baseSha", "headSha", "headTreeSha"] as const) {
+    if (typeof body[field] !== "string" || !OID.test(body[field])) {
+      return refuse(`${field} must be a full git object id`);
+    }
+  }
+  if (typeof body.diff !== "string") return refuse("diff must be a string");
+  const deadline = instant(body.deadline);
+  if (deadline === null) return refuse("deadline must be an ISO 8601 instant");
+
+  const callbackUrl = parseCallbackUrl(body, config);
+  if (callbackUrl === null) return refuse("callbackUrl is not on this executor's STRATUM_ORIGIN");
+
+  if (!isRecord(body.checkRunIds)) return refuse("checkRunIds must be an object");
+  const spec = body.job;
+  if (!isRecord(spec)) return refuse("job is required");
+  const origin = parseOriginOfJob(spec);
+  if (origin === null) return refuse("unsupported job origin");
+  if (!profileAllowedForOrigin(spec.profile, origin)) {
+    return refuse("a job for an external change can only run under the ci profile");
+  }
+  if (spec.profile !== "ci") return refuse("unsupported job profile");
+
+  const parsed = parseCommonSpec(spec, config);
+  if (!parsed.ok) return parsed;
+  const { common } = parsed;
+
+  if (!isRecord(spec.logUrls)) return refuse("logUrls must be an object");
+  if (!Array.isArray(spec.steps) || spec.steps.length === 0 || spec.steps.length > MAX_STEPS) {
+    return refuse(`steps must list from 1 to ${MAX_STEPS} steps`);
+  }
+  const steps: JobStep[] = [];
+  for (const rawStep of spec.steps as unknown[]) {
+    const basics = parseStepBasics(rawStep, steps, config);
+    if (!basics.ok) return basics;
+    const { name } = basics;
+    const checkRunId = body.checkRunIds[name];
+    if (typeof checkRunId !== "string" || !CHECK_RUN_ID.test(checkRunId)) {
+      return refuse(`step '${name}' has no check run id`);
+    }
+    const logUrl = httpsUrl(spec.logUrls[name]) ?? localUrl(spec.logUrls[name], config);
+    if (logUrl === null || logUrl.origin !== config.stratumOrigin) {
+      return refuse(`step '${name}' has no log URL on this executor's STRATUM_ORIGIN`);
+    }
+    steps.push({
+      name,
+      run: basics.run,
+      timeoutSeconds: basics.timeoutSeconds,
+      checkRunId,
+      logUrl: logUrl.toString(),
+    });
+  }
+
+  return {
+    ok: true,
     job: {
       changeId,
       project,
@@ -277,15 +405,170 @@ export function parseDispatch(raw: string, config: ExecutorConfig): DispatchResu
       diff: body.diff,
       callbackUrl,
       deadline,
-      profile: { name: "ci", image: "ci", allowedHosts },
-      steps,
-      timeoutSeconds,
-      instance,
-      repository: {
-        url: repositoryUrl.toString().replace(/\/+$/, ""),
-        authorization: `Basic ${btoa(`${username}:${password}`)}`,
-        expiresAt,
+      // Built here, from constants: nothing in a CI dispatch can name a
+      // credential, because a CI job's profile has no field to put one in.
+      profile: {
+        name: "ci",
+        image: "ci",
+        allowedHosts: [...DEFAULT_ALLOWED_HOSTS, ...common.extraHosts],
       },
+      steps,
+      timeoutSeconds: common.timeoutSeconds,
+      instance: common.instance,
+      repository: common.repository,
+    },
+  };
+}
+
+/** What a deploy job's id starts with, so the coordinator can find its Durable Object class. */
+export const DEPLOY_JOB_ID_PREFIX = "deploy-";
+
+/** Deployment ids are also log keys and callback path segments. */
+const DEPLOYMENT_ID = /^[A-Za-z0-9_-]{1,80}$/;
+const PROJECT_ID = /^[A-Za-z0-9_-]{1,100}$/;
+const ENVIRONMENT = /^[a-z][a-z0-9-]{0,31}$/;
+/** A recorded version: a Worker version id, a tag, a commit. A label, never a path or a script. */
+export const DEPLOY_VERSION = /^[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,127}$/;
+
+/** The log key of one step of a deployment: `<deploymentId>-<index>`. */
+export function deployStepLogId(deploymentId: string, index: number): string {
+  return `${deploymentId}-${index}`;
+}
+
+/**
+ * A `deploy.requested` dispatch: "deploy this merged commit to this
+ * environment". Stratum sends no credential for the target. Which credentials
+ * the job's requests leave with is decided here, from THIS Worker's
+ * `DEPLOY_TARGETS`, by the project id and environment in the signed body — a
+ * pair with no target is refused, and so is one whose secret is not set.
+ */
+function parseDeployDispatch(
+  body: Record<string, unknown>,
+  config: ExecutorConfig,
+  context: DeployContext,
+): DispatchResult {
+  const refuse = (reason: string): DispatchResult => ({ ok: false, reason });
+
+  const deploymentId = body.deploymentId;
+  if (typeof deploymentId !== "string" || !DEPLOYMENT_ID.test(deploymentId)) {
+    return refuse("deploymentId is required");
+  }
+  const projectId = body.projectId;
+  if (typeof projectId !== "string" || !PROJECT_ID.test(projectId)) {
+    return refuse("projectId is required");
+  }
+  const project = text(body.project, 400);
+  if (project === null) return refuse("project is required");
+  const environment = body.environment;
+  if (typeof environment !== "string" || !ENVIRONMENT.test(environment)) {
+    return refuse("environment must be a lowercase environment name");
+  }
+  if (typeof body.commitSha !== "string" || !OID.test(body.commitSha)) {
+    return refuse("commitSha must be a full git object id");
+  }
+  const deadline = instant(body.deadline);
+  if (deadline === null) return refuse("deadline must be an ISO 8601 instant");
+  const callbackUrl = parseCallbackUrl(body, config);
+  if (callbackUrl === null) return refuse("callbackUrl is not on this executor's STRATUM_ORIGIN");
+
+  let rollback: DeployJob["rollback"];
+  if (body.rollback !== undefined) {
+    if (!isRecord(body.rollback)) return refuse("rollback must be an object");
+    const version = body.rollback.version;
+    if (version !== undefined && (typeof version !== "string" || !DEPLOY_VERSION.test(version))) {
+      return refuse("rollback.version is not a usable version label");
+    }
+    rollback = typeof version === "string" ? { version } : {};
+  }
+
+  if (!context.targets.ok) {
+    return refuse(`this executor's deploy targets are misconfigured: ${context.targets.reason}`);
+  }
+  const target = context.targets.targets[projectId]?.[environment];
+  if (target === undefined) {
+    return refuse(
+      `this executor has no deploy target for project ${projectId}, environment '${environment}'; its operator adds one to DEPLOY_TARGETS`,
+    );
+  }
+  for (const credential of target.credentials) {
+    if (!context.hasSecret(credential.secret)) {
+      return refuse(`deploy secret ${credential.secret} is not set on this executor`);
+    }
+  }
+
+  const spec = body.job;
+  if (!isRecord(spec)) return refuse("job is required");
+  // Asked here too, and before the profile is accepted: this is the profile
+  // that carries credentials, and the rule exists so that no dispatch naming
+  // an external change can reach it.
+  const origin = parseOriginOfJob(spec);
+  if (origin === null) return refuse("unsupported job origin");
+  if (!profileAllowedForOrigin(spec.profile, origin)) {
+    return refuse("a job for an external change can only run under the ci profile");
+  }
+  if (spec.profile !== "deploy") return refuse("unsupported job profile");
+  const parsed = parseCommonSpec(spec, config);
+  if (!parsed.ok) return parsed;
+  const { common } = parsed;
+
+  const logUrl = httpsUrl(spec.logUrl) ?? localUrl(spec.logUrl, config);
+  if (logUrl === null || logUrl.origin !== config.stratumOrigin) {
+    return refuse("logUrl is not on this executor's STRATUM_ORIGIN");
+  }
+  if (!Array.isArray(spec.steps) || spec.steps.length === 0 || spec.steps.length > MAX_STEPS) {
+    return refuse(`steps must list from 1 to ${MAX_STEPS} steps`);
+  }
+  const steps: JobStep[] = [];
+  for (const rawStep of spec.steps as unknown[]) {
+    const basics = parseStepBasics(rawStep, steps, config);
+    if (!basics.ok) return basics;
+    steps.push({
+      name: basics.name,
+      run: basics.run,
+      timeoutSeconds: basics.timeoutSeconds,
+      // Not a check run: the id each step's log is stored under.
+      checkRunId: deployStepLogId(deploymentId, steps.length),
+      logUrl: logUrl.toString(),
+    });
+  }
+
+  // A host with a credential is reached through the credential intercept and
+  // no other: it is taken off the plain allowlist so one hostname never has
+  // two handlers to choose between.
+  const credentialed = new Set(target.credentials.map((credential) => credential.host));
+  const allowedHosts = [
+    ...new Set([...DEFAULT_ALLOWED_HOSTS, ...target.allowHosts, ...common.extraHosts]),
+  ].filter((host) => !credentialed.has(host));
+
+  return {
+    ok: true,
+    job: {
+      changeId: deploymentId,
+      project,
+      origin,
+      baseSha: body.commitSha,
+      headSha: body.commitSha,
+      headTreeSha: "",
+      diff: "",
+      deploy: {
+        deploymentId,
+        projectId,
+        environment,
+        env: { ...target.env },
+        ...(rollback !== undefined ? { rollback } : {}),
+      },
+      callbackUrl,
+      deadline,
+      profile: {
+        name: "deploy",
+        image: "deploy",
+        allowedHosts,
+        credentials: target.credentials.map((credential) => ({ ...credential })),
+      },
+      steps,
+      timeoutSeconds: common.timeoutSeconds,
+      instance: common.instance,
+      repository: common.repository,
     },
   };
 }

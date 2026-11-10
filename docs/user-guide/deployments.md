@@ -1,18 +1,32 @@
 # Deployments
 
-Stratum can publish the merged tree to a hosting provider after a change lands.
-You declare deploys in the same `.stratum/policy.yaml` that gates your merges,
-store the provider credential once as a project secret, and every subsequent
-merge that survives the post-merge check publishes automatically.
+Stratum deploys a commit after it merges. There are two ways to say how, and a
+project can use either or both:
 
-This is deliberately small. It is **not a CI system**: there is no build step,
-no preview environment, and no rollback. Read
+| | Static targets (`deploys:`) | Deploy pipelines (`deploy:`) |
+|---|---|---|
+| Declared in | `.stratum/policy.yaml` | `.stratum/ci.yaml` |
+| What runs | Stratum uploads the tree **as committed** to a provider | Your own commands, in a container, on the instance's [CI executor](ci.md) |
+| Build step, database migrations, smoke tests | No | Yes: they are steps |
+| Ordered environments (staging, then production) | No: entries are independent | Yes |
+| Where the provider credential lives | Stratum's database, encrypted, as a project secret | The executor's own secret store. **Not in Stratum at all** |
+| Needs | `DEPLOY_SECRET_KEY`, the deploy queue | The deploy queue, plus the CI executor with a deploy target for the project |
+
+Static targets are the small option: a static site, a Worker with no build.
+Nothing about them has changed, and the first half of this page is about them.
+A project that needs `npm ci`, a bundler, `wrangler d1 migrations apply`, or a
+staging environment that must pass before production uses a
+[deploy pipeline](#deploy-pipelines).
+
+Both kinds share one history, one approval gate, one retry and one rollback
+action. Neither gives you a preview environment for an unmerged change. Read
 [Limitations](#limitations-read-this-before-you-rely-on-it) before you point
-production at it.
+production at either.
 
 ## Quickstart
 
-Zero to a live deploy. Step 1 is once per instance, steps 2–4 once per project;
+Zero to a live deploy with a **static target**. (For a pipeline, start at
+[Setting it up](#setting-it-up).) Step 1 is once per instance, steps 2–4 once per project;
 after that merging is the whole workflow. Each step links to its reference
 section for the detail this skips.
 
@@ -116,8 +130,9 @@ deploys:
     secrets: [VERCEL_TOKEN, VERCEL_PROJECT_ID]
 ```
 
-Remember there is **no build step**: Cloudflare targets publish the tree as
-committed, so commit your built output. `vercel` is the exception — it uploads
+Remember a static target has **no build step**: Cloudflare targets publish the
+tree as committed, so commit your built output (or use a
+[deploy pipeline](#deploy-pipelines)). `vercel` is the exception — it uploads
 the source and Vercel builds it.
 
 ### 5. Merge a change, then watch it
@@ -136,7 +151,7 @@ you actually see.
 |---|---|---|
 | **No deployment row at all** | The merge never enqueued: the post-merge check reverted or failed the merge, or the instance has no `DEPLOY_QUEUE` binding | Check the post-merge check passed (or is not configured); then step 1 |
 | **No deployment row, but the merge looks fine** | A bound `DEPLOY_QUEUE` can still fail on `send`. The request is then written to the event outbox, which a five-minute cron sweeps and forwards, so the row appears late rather than never | Wait out one sweep. If the outbox write failed too the request is genuinely gone, and the log says so: `Post-merge deploy request could not be made durable and is lost`. There is no row to retry, so merge again or deploy out of band |
-| **No deployment row, and the merge went through `merge-batch`** | Expected. `merge-batch` (`src/routes/changes.ts:898`) never calls `enqueueMergeDeploy` — it runs no post-merge check and enqueues no deploy, by design: the batch path merges many changes in one push | **No post-merge recovery exists.** Approve and Retry both act on an existing row (`notFound("Deployment", id)` otherwise), and the deployments API has no route that creates one. Merge through the single-change path when you want a deploy |
+| **One deployment for several changes merged through `merge-batch`** | Expected. A batch is one push, so it gets one deploy: of the batch's final commit, recorded against the last change that landed. See [Batch merges](#batch-merges) | Nothing to fix. The changes that landed earlier in the batch have no deployment of their own, and their commits are included in the one that ran |
 | Status `skipped` | There was nothing configured to deploy at that commit — no policy file, or a policy with no `deploys:` entries | Check `.stratum/policy.yaml` is committed on the **default branch** and declares `deploys:`. `skipped` never means an error |
 | `Missing project secret: X — add it in project settings` | The policy names a secret the store doesn't have | Add it (step 3); names are case-sensitive |
 | `DEPLOY_SECRET_KEY is not configured on this instance…` | Instance prerequisite missing | Step 1 |
@@ -196,13 +211,13 @@ to the other one.
    from the same commit: a policy change that lands after your merge cannot
    retroactively change how your merge deploys.
 5. One `deployments` row is created per `deploys:` entry, and each entry is run
-   in turn.
+   in turn. If the commit's `.stratum/ci.yaml` has a `deploy:` section, one row
+   is created for its **first** environment as well — see
+   [Deploy pipelines](#deploy-pipelines).
 
 Things that do **not** trigger a deploy:
 
 - A merge that the post-merge check reverted.
-- `POST /api/projects/{name}/changes/merge-batch` — batch merges run neither the
-  post-merge check nor a deploy.
 - A push straight to the project's default branch (deploys hang off the change
   merge path).
 - An instance with no `DEPLOY_QUEUE` binding configured.
@@ -210,6 +225,307 @@ Things that do **not** trigger a deploy:
 Before it runs, the deploy re-reads the change's status and the project's
 deletion state. A change that was reverted between the merge and the deploy is
 refused, and so is a project that is being deleted.
+
+### Batch merges
+
+`POST /api/projects/{name}/changes/merge-batch` merges many changes in one push,
+and triggers **one** deploy: of the commit the push left the default branch at.
+That commit contains every change in the batch that landed, so deploying each
+change's own commit in turn would publish a series of intermediate trees to
+arrive at the same place.
+
+- The deployment is recorded against the **last change that landed** (its
+  `changeId`). The other changes in the batch have no deployment row.
+- It runs after the changes are recorded as merged, like any other deploy.
+- A batch runs no post-merge check, so there is no auto-revert that could stop
+  it.
+- A batch in which nothing landed (every change conflicted or was skipped)
+  deploys nothing.
+- This applies to static targets and pipelines alike. Before this, a batch
+  merge deployed nothing at all.
+
+## Deploy pipelines
+
+A pipeline is a list of environments, in order, each with the steps that deploy
+a commit to it. It lives in the `deploy:` section of `.stratum/ci.yaml`, beside
+the [CI steps](ci.md) that gate the merge.
+
+```yaml
+# .stratum/ci.yaml
+steps:
+  - name: test
+    run: npm test
+
+deploy:
+  environments:
+    - name: staging
+      steps:
+        - name: install
+          run: npm ci
+        - name: migrate
+          run: npx wrangler d1 migrations apply my-app-staging --remote --env staging
+        - name: deploy
+          run: |
+            export WRANGLER_OUTPUT_FILE_PATH=/tmp/deploy.ndjson
+            npx wrangler deploy --env staging
+            # Record the Worker version id, so this deployment can be rolled back to.
+            jq -r 'select(.type == "deploy") | .version_id' "$WRANGLER_OUTPUT_FILE_PATH" \
+              > "$STRATUM_DEPLOY_VERSION_FILE"
+        - name: smoke
+          run: curl -sfS --retry 5 https://my-app-staging.example.workers.dev/health
+
+    - name: production
+      requiresApproval: true
+      steps:
+        - name: install
+          run: npm ci
+        - name: migrate
+          run: npx wrangler d1 migrations apply my-app --remote --env production
+        - name: deploy
+          run: npx wrangler deploy --env production
+      rollback:
+        - name: install
+          run: npm ci
+        - name: rollback
+          run: npx wrangler rollback "$STRATUM_ROLLBACK_VERSION" --env production --message "rollback"
+```
+
+What happens when a change merges:
+
+1. Stratum reads `.stratum/ci.yaml` **from the merged commit** and creates one
+   deployment, for the first environment (`staging`). Nothing exists yet for
+   `production`.
+2. The deployment is handed to the CI executor, which checks out that commit in
+   a fresh container and runs the environment's steps in order.
+3. If every step passes, the deployment is `succeeded`, and Stratum creates the
+   deployment for the next environment. Because `production` says
+   `requiresApproval: true`, it is created at `pending_approval` and waits.
+4. Someone [approves](#the-approval-gate) it. It runs the same way.
+
+### Why the file is read from the merged commit
+
+The CI half of `.stratum/ci.yaml` is read from the **base** branch, because a
+change must not be able to choose the gate it is judged by. The deploy half is
+read from the **merged commit**, for a different reason with the same effect:
+by the time a deploy runs, that commit has passed every gate the project has.
+`.stratum/ci.yaml` is [protected configuration](ci.md#what-reading-from-the-base-protects),
+so a change that edits the pipeline needs an independent approval before it
+merges. The pipeline that deploys a commit is the one a second person approved,
+and it is always the pipeline that commit itself carries — configuration and
+code are one commit, as with static targets.
+
+A deploy job is never started for an unreviewed change. Deploy jobs run only
+for a commit on the default branch, in a different container class from CI
+jobs, and CI jobs have no way to obtain a deploy credential.
+
+### The `deploy:` reference
+
+| Field | Required | Rules |
+|---|---|---|
+| `environments` | yes | 1 to 8 environments, in promotion order. |
+| `environments[].name` | yes | `^[a-z][a-z0-9-]{0,31}$`, unique. This is the deployment's `name`: what history, supersession and serialization group by. It must not be the name of a `deploys:` entry in the policy file at the same commit. |
+| `environments[].requiresApproval` | no | Boolean, default `false`. A quoted `"false"` is rejected, not coerced. `true` creates the deployment at `pending_approval`. |
+| `environments[].steps` | yes | 1 to 16 steps. Each has `name` (the [check-name rule](checks.md)), `run` (a bash script, run with `set -eo pipefail` at the repository root, at most 4000 characters) and optional `timeoutMinutes` (default 10, at most 120). |
+| `environments[].rollback` | no | Steps a [rollback](#rollback) runs instead of `steps`, when the deployment being rolled back to has a recorded version. Same shape as `steps`. |
+| `timeoutMinutes` | no | Wall-clock limit for one environment's job, default 30, at most 120, and never more than the executor's `CI_MAX_JOB_MINUTES`. |
+| `instance` | no | Container size, as for [CI](ci.md). |
+| `network.allow` | no | Up to 16 exact hostnames the job may reach, e.g. the deployed site for a smoke test. The executor's operator can turn this off (`CI_ALLOW_PROJECT_HOSTS`) and list hosts per target instead. |
+
+**Unknown fields are rejected, not ignored**, at every level. `requireApproval`
+(missing the "s") fails the whole section rather than being dropped, which
+would have turned a gated production deploy into an ungated one.
+
+**A broken `deploy:` section deploys nothing, and does not block merges.** It
+is recorded as one `failed` deployment named `(pipeline)` with the reason, at
+the commit that carries it. This is the same rule a bad `deploys:` entry
+follows: deploys run after a merge, and are reported where you will see them
+rather than turned into a second merge gate. A project whose `.stratum/ci.yaml`
+has a `deploy:` section and no `steps` at all is a project with no CI steps;
+its merges are not gated on first-party checks.
+
+### What a step can see and do
+
+Every step runs in one checkout of the merged commit, in one container, so a
+file written by one step is there for the next. Environment variables are not
+carried from step to step.
+
+| Variable | Meaning |
+|---|---|
+| `STRATUM_ENVIRONMENT` | The environment's name. |
+| `STRATUM_COMMIT_SHA` | The commit being deployed. |
+| `STRATUM_DEPLOYMENT_ID` | The deployment's id in Stratum. |
+| `STRATUM_DEPLOY_VERSION_FILE` | Write the deployed version here (one line). It is stored on the deployment and is what a rollback is given. |
+| `STRATUM_DEPLOY_URL_FILE` | Write the deployed URL here (one `https://` line) to have it shown on the deployment. |
+| `STRATUM_ROLLBACK`, `STRATUM_ROLLBACK_VERSION` | Set only during a rollback. |
+| Anything the executor's operator put in the target's `env` | Plain configuration such as `CLOUDFLARE_ACCOUNT_ID`. Never a secret. |
+| `CLOUDFLARE_API_TOKEN` | **A fixed placeholder, not a token**, set when the target has a credential for `api.cloudflare.com`. Wrangler refuses to run non-interactively without the variable; see below. |
+
+**The job holds no credential.** A request the job makes to a host the executor
+has a credential for — the Cloudflare API, typically — leaves the container
+without one. The executor attaches its own credential to it outside the
+container, after checking that the request is HTTPS and for exactly that host,
+and it never follows a redirect with the credential attached. Whatever
+`Authorization` header the job sent is replaced. So `npx wrangler deploy`,
+`curl -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" https://api.cloudflare.com/...`
+and anything else that talks to that host simply work, and nothing the job
+runs — a dependency's install script included — can read the token, because it
+is not there.
+
+The network is denied by default, as for CI: the package registries, the
+target's credentialed hosts, the target's `allowHosts`, and the pipeline's
+`network.allow`.
+
+### One deployment per environment at a time
+
+Deployments of one environment never run at the same time. If a second merge
+lands while the first is still deploying to `staging`, the second waits at
+`queued`; it is not handed to the executor until the first has finished,
+successfully or not. Two pipelines interleaved against one environment could
+leave the newer schema under the older code.
+
+A later merge is never overtaken by an earlier one:
+
+- When the running deployment finishes, the **newest** waiting one runs next,
+  and any older ones still waiting become `superseded`. The environment goes
+  straight to the latest commit.
+- A deployment that arrives after a newer commit has already succeeded in the
+  same environment is `superseded`, not run.
+
+Different environments are independent: `staging` of a new merge can run while
+`production` of an earlier one is running.
+
+### When a step fails
+
+The pipeline stops at the failing step. The steps after it do not run, the
+deployment is `failed`, and **nothing is promoted**: the next environment's
+deployment is never created, so there is nothing for anyone to approve by
+mistake. The deployment records which step failed and why, how each step
+ended, and the end of the failing step's output; the full log of every step is
+on the deployment page (*Full log*) and at
+`GET /api/deployments/{id}/log`, for project writers.
+
+A failed step is not rolled back. A pipeline whose `migrate` step passed and
+whose `deploy` step failed has migrated the database and not deployed the
+code. That is the state the environment is left in, and the reason migrations
+have to be compatible with the version already running (see
+[Rollback](#rollback)).
+
+**Retry** re-runs the environment's steps from the first one, at the same
+commit, as a new attempt. Promotion continues from a retry that succeeds —
+unless the next environment already has a deployment for that commit, in which
+case that one is left as it is, for you to retry or approve.
+
+If the executor never reports back — it was redeployed mid-job, or lost — the
+deployment is failed when its time runs out (the job's limit, plus the wait
+for a slot, plus two minutes), with a reason saying that its steps may have
+run in part or in full. Stratum does not re-run it on its own: check the
+environment, then retry.
+
+### Capacity
+
+Deploy jobs count against the executor's one concurrency cap
+(`CI_MAX_CONCURRENT_JOBS`); there is no slot reserved for them. A deploy job
+that has to wait takes the next slot that frees **ahead of waiting CI jobs**,
+and waits in its own short queue (`DEPLOY_MAX_QUEUED_JOBS`, default 4), so a
+burst of CI jobs can neither refuse a deploy nor stand in front of a rollback.
+The longest a deploy waits is the time left on the shortest job already
+running.
+
+### Setting it up
+
+Three things, the first two once per instance.
+
+**1. The instance has the CI executor.** A pipeline runs on it; without it a
+pipeline deployment fails with a reason saying so. See
+[Self-hosting: deploy the executor](ci.md#self-hosting-deploy-the-executor).
+The main Worker also needs `APP_URL` set to its public origin (the executor
+reports back to it) and the deploy queue from
+[Operating a Stratum instance](#operating-a-stratum-instance-with-deploys-enabled).
+`DEPLOY_SECRET_KEY` is **not** needed for pipelines: Stratum stores no
+credential for them.
+
+**2. The executor has a deploy target for the project and environment.** This
+is done by whoever operates the executor, on the **executor's** Worker, not in
+Stratum. In the executor's `wrangler.toml`:
+
+```toml
+[vars]
+DEPLOY_TARGETS = '''
+{
+  "prj_0123456789abcdef": {
+    "staging": {
+      "credentials": [{ "host": "api.cloudflare.com", "secret": "DEPLOY_CRED_MYAPP_STAGING" }],
+      "env": { "CLOUDFLARE_ACCOUNT_ID": "0123456789abcdef0123456789abcdef" },
+      "allowHosts": ["my-app-staging.example.workers.dev"]
+    },
+    "production": {
+      "credentials": [{ "host": "api.cloudflare.com", "secret": "DEPLOY_CRED_MYAPP_PRODUCTION" }],
+      "env": { "CLOUDFLARE_ACCOUNT_ID": "0123456789abcdef0123456789abcdef" },
+      "allowHosts": ["my-app.example.workers.dev"]
+    }
+  }
+}
+'''
+```
+
+and then, once per secret named there, in the `ci-executor/` directory:
+
+```bash
+npx wrangler secret put DEPLOY_CRED_MYAPP_STAGING
+npx wrangler secret put DEPLOY_CRED_MYAPP_PRODUCTION
+npx wrangler deploy
+```
+
+| Field | Meaning |
+|---|---|
+| top-level key | The project's **id** (`prj_…`), from `GET /api/projects/{namespace}/{slug}`. An id, not a name: a name can be reused by a different project. |
+| second-level key | The environment name, exactly as in the pipeline. |
+| `credentials[].host` | One exact hostname. The credential is sent there and nowhere else. |
+| `credentials[].secret` | The **name** of a Wrangler secret on the executor. It must start with `DEPLOY_CRED_`. The value is sent as `Authorization: Bearer <value>`. |
+| `env` | Plain variables for the steps. Not for secrets: they are passed into the container. `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_API_BASE_URL`, `STRATUM_*` and a few others cannot be set here. |
+| `allowHosts` | Hostnames the job may reach without a credential. |
+
+How the credential is scoped:
+
+- **To the executor.** It is a Wrangler secret on the executor Worker. It is
+  never sent to Stratum, never stored in Stratum's database, and never part of
+  the request Stratum sends, which says only "deploy this commit to this
+  environment".
+- **To deploy jobs.** Only the deploy profile's own job class can register the
+  handler that attaches it. A CI job — code from a change nobody has reviewed —
+  runs in a different class that is built without it.
+- **To one project and one environment.** A deploy job for a project or
+  environment with no entry is refused. A staging job cannot use the
+  production secret: use a separate token per environment, and scope each
+  token at the provider as narrowly as it allows.
+- **To one host.** And to requests that are HTTPS, on the default port, with no
+  redirect followed.
+
+For a Cloudflare Worker with D1, the token needs to be able to deploy Workers
+and edit D1 for the account in question (the *Edit Cloudflare Workers* template
+plus **D1 ▸ Edit** is a reasonable start; scope it to the one account), plus
+whatever else your steps do — creating queues, for example.
+
+A deploy job dispatched to an executor with no matching target, or whose
+secret is not set, is refused, and the deployment is `failed` with a reason
+naming what is missing (never a value). `GET /health` on the executor reports a
+malformed `DEPLOY_TARGETS` without taking CI down with it.
+
+**3. The project commits a `deploy:` section**, as above.
+
+### Recording the version
+
+A deployment that succeeds records a **version** if a step wrote one to
+`$STRATUM_DEPLOY_VERSION_FILE`: a short label (letters, digits and `._:@/+-`,
+at most 128 characters; anything else is ignored). For a Cloudflare Worker,
+record the **Worker version id**. `wrangler deploy` prints it as
+`Current Version ID`, and writes it to the file named by
+`WRANGLER_OUTPUT_FILE_PATH` as the `version_id` of the `deploy` record, which
+is the reliable way to read it in a script (see the example above). That id is
+what `wrangler rollback <version-id>` takes.
+
+A static target records the commit as its version, since the tree as committed
+is what it published.
 
 ## The `deploys:` configuration reference
 
@@ -414,10 +730,18 @@ with. Deleting the project deletes its secrets and its deployment history.
 
 ## The approval gate
 
-With `requiresApproval: true`, the merge creates the deployment at
-`pending_approval` and nothing is uploaded. Someone then presses **Approve** on
-the deployment page, or calls `POST /api/deployments/{id}/approve`; the row
-moves to `queued`, is enqueued, and runs.
+With `requiresApproval: true` — on a `deploys:` entry or on a pipeline
+environment — the deployment is created at `pending_approval` and nothing
+runs. Someone then presses **Approve** on the deployment page, or calls
+`POST /api/deployments/{id}/approve`; the row moves to `queued`, is enqueued,
+and runs.
+
+For a pipeline, the gate sits **between** environments: a `production`
+environment with `requiresApproval: true` gets its `pending_approval`
+deployment only after `staging` has succeeded for that commit. What you are
+approving has already been deployed and smoke-tested one environment earlier.
+If a newer commit reaches the same gate first, approving it supersedes the
+older one still waiting.
 
 Approving requires project **write** access and a **user** identity. An agent
 token (`stratum_agent_…`) sets no user id and is refused.
@@ -457,18 +781,94 @@ kept, so the history shows both.
   commit it re-runs is old — an operator re-running an earlier commit is
   asserting that they want it live.
 
-Retry is also the closest thing to a rollback — see
-[Limitations](#limitations-read-this-before-you-rely-on-it).
+A retry is not a way round a **pipeline** environment's approval gate. A
+user's retry carries that user's approval and runs. An agent's retry carries
+none: for an environment with `requiresApproval: true` it waits at
+`pending_approval` for a user, whether the deployment being retried was
+approved, or failed, or was superseded while it was still waiting. The check
+is made when the deployment is about to run, against the pipeline at the
+commit being deployed, so it does not depend on how the retry came about.
+Static targets keep the behaviour described above.
+
+One limit to know: the gate that applies to a retry is the one declared **at
+the commit being retried**. If production had no `requiresApproval` when an
+old commit merged, an agent can retry that old commit's production deployment
+without approval even though the pipeline has since gained the gate. Projects
+that add a gate later and let agents retry should treat old ungated
+deployments accordingly.
+
+To put an earlier deployment back, use [Rollback](#rollback), which is explicit
+about what it is doing and is restricted to people who may approve.
+
+## Rollback
+
+**Roll back to this deploy**, on the page of any `succeeded` deployment, starts
+a new deployment of the same environment that puts back what that one
+deployed. Over the API it is `POST /api/deployments/{id}/rollback`.
+
+> **A rollback redeploys an earlier version. It does not undo a database
+> migration.** Migrations are forward-only. After a rollback, the earlier code
+> runs against the schema as it is **now**, including every migration applied
+> since. If a later migration dropped or changed something the earlier code
+> relies on, rolling back will not bring it back, and the rolled-back version
+> may fail. Stratum does not run, generate or reverse "down" migrations.
+>
+> The practical rule: make every migration compatible with the version that is
+> already deployed (add before you use, stop using before you remove), so that
+> the previous version always runs against the new schema. Then a rollback is
+> safe by construction.
+
+What a rollback runs:
+
+| The deployment being rolled back to | What runs |
+|---|---|
+| Pipeline environment with `rollback:` steps, and a recorded version | The `rollback:` steps, with `STRATUM_ROLLBACK_VERSION` set to that version. For a Worker, `wrangler rollback "$STRATUM_ROLLBACK_VERSION"` |
+| Pipeline environment without `rollback:` steps, or with no recorded version | The environment's ordinary `steps`, at the **earlier commit**. This re-runs its `migrate` step too, which applies nothing if the migrations of that commit are already applied |
+| Static target | The tree at the earlier commit is published again |
+
+Either way the pipeline definition comes from the **earlier commit**, the one
+being put back.
+
+For a Cloudflare Worker, `wrangler rollback` creates a new deployment of the
+chosen Worker version and makes it live at once. Cloudflare's own limits apply
+and are worth knowing before you need them: only the 100 most recent versions
+can be rolled back to; a rollback is refused if a Durable Object class
+migration happened between the two versions, or if the earlier version is
+bound to a queue, KV namespace or R2 bucket that no longer exists; and, in
+Cloudflare's words, resources connected to the Worker are not changed by a
+rollback — which is the same statement about D1 as the one above.
+
+A rollback follows the same rules as any deployment:
+
+- **Who:** exactly the people who may approve a deployment — a project writer
+  with a user identity. An agent token is refused. The rollback is its own
+  approval, so it does not then wait at `pending_approval`.
+- **Confirmation:** the button opens a page that says what will be put back and
+  repeats the migration caveat; the rollback happens when that page's form is
+  submitted. It works with JavaScript disabled.
+- **Ordering:** it waits its turn for the environment like any deployment, and
+  takes an executor slot like any deploy job. It is the newest intent for the
+  environment, so deployments of it that are still `queued` or
+  `pending_approval` become `superseded`. It rolls back one environment and
+  never promotes to a later one.
+- **Audit:** recorded as `deployment.rolled_back`, with who, the environment,
+  the commit and the version.
+- **Record:** the new deployment carries `rollbackOf`, the id of the
+  deployment it put back, and on success the version that is now live.
+
+The next merge deploys on top as usual. If the commit you rolled back from is
+still on the default branch, the next deploy includes it again: roll back, then
+fix or revert.
 
 ## Deployment statuses
 
 | Status | Meaning |
 |---|---|
 | `pending_approval` | `requiresApproval: true` and nobody has approved it yet. Nothing has been uploaded. |
-| `queued` | Waiting for the deploy consumer to pick it up. |
-| `running` | A consumer holds a lease on the row and is uploading. |
+| `queued` | Waiting for the deploy consumer to pick it up — or, for a pipeline, for the environment: another deployment of it is still running. |
+| `running` | A consumer holds a lease on the row and is uploading. For a pipeline: the CI executor has the job, and the row stays here until it reports. |
 | `succeeded` | The provider accepted the deployment. For `vercel`, this means **accepted for build**, not "live" — see above. |
-| `failed` | Anything that went wrong, with a reason: a rejected `deploys:` entry, an unreadable tree, a missing or undecryptable secret, `DEPLOY_SECRET_KEY` unset, a limit exceeded, a provider 4xx/5xx, an unreachable provider. |
+| `failed` | Anything that went wrong, with a reason: a rejected `deploys:` entry, an unreadable tree, a missing or undecryptable secret, `DEPLOY_SECRET_KEY` unset, a limit exceeded, a provider 4xx/5xx, an unreachable provider. For a pipeline: a step that failed or timed out, an invalid `deploy:` section, no executor or no deploy target for the project, or an executor that never reported. |
 | `superseded` | A newer merge of the same deploy `name` took over. Either this row had not started when the newer one ran, or the newer one had already succeeded by the time this one reached the front of the queue — in which case this deployment is refused rather than published, so an out-of-order delivery cannot put the older commit back into production. |
 | `skipped` | **Only one thing:** there was nothing configured to deploy — no policy file at that commit, or a policy with no `deploys:` entries. Every operator error is `failed`, never `skipped`. |
 
@@ -480,6 +880,11 @@ Redaction always runs on the full text before truncation, so a secret cannot
 survive by straddling the cut. The log tail is served **only to project
 writers** — never on the public read path, and never in a list response for a
 reader who cannot write.
+
+A pipeline deployment's log tail holds one line per step saying how it ended,
+then the end of the last step's output. Its full log, step after step, is at
+`GET /api/deployments/{id}/log` for project writers, while the job runs and
+afterwards.
 
 Deployments also emit events you can subscribe to with a project webhook:
 `deployment.requested`, `deployment.succeeded`, `deployment.failed`.
@@ -569,7 +974,13 @@ production consumer.
 | `GET /api/projects/{namespace}/{slug}/deployments` | Anyone who can read the project. `logTail` is included only for writers. Filters: `name`, `status`, `limit` (default 50, max 200), `offset`. |
 | `GET /api/deployments/{id}` | Anyone who can read the deployment's project; unknown or unreadable ids answer 404 alike. |
 | `POST /api/deployments/{id}/approve` | Project writer, **user identity required**. |
-| `POST /api/deployments/{id}/retry` | Project writer; agents allowed. |
+| `POST /api/deployments/{id}/retry` | Project writer; agents allowed. An agent's retry of a pipeline deployment whose environment requires approval waits for approval. |
+| `POST /api/deployments/{id}/rollback` | Project writer, **user identity required**. Creates a new deployment that puts this one back. |
+| `GET /api/deployments/{id}/log` | Project writer. A pipeline deployment's full step log, as plain text. |
+| `POST /api/deploy-reports/{id}` | The CI executor only. Authenticated by an HMAC signature made with `CI_EXECUTOR_SECRET`; no Stratum credential is accepted or needed. |
+
+A deployment carries two fields beyond the ones above: `version` (what it put
+live, when recorded) and `rollbackOf` (the deployment a rollback put back).
 
 In the UI, deployments live at `/{namespace}/{slug}/deployments`, and secrets
 under *Settings*.
@@ -580,19 +991,36 @@ Full request and response schemas are in the
 
 ## Limitations (read this before you rely on it)
 
-These are design boundaries of v1, not bugs:
+These are design boundaries, not bugs:
 
-- **No build step.** Stratum deploys the tree **exactly as committed**. There
-  is no `npm install`, no bundler, no framework build. If your site needs a
-  build, commit the built output (and point `dir:` at it) or use a provider
-  that builds for you — `vercel` builds the uploaded source remotely, the two
-  Cloudflare targets do not.
+- **Static targets have no build step.** A `deploys:` entry publishes the tree
+  **exactly as committed**: no `npm install`, no bundler, no framework build.
+  If your site needs a build, use a [deploy pipeline](#deploy-pipelines), commit
+  the built output (and point `dir:` at it), or use a provider that builds for
+  you — `vercel` builds the uploaded source remotely, the two Cloudflare
+  targets do not.
 - **No preview deploys.** Only merged commits deploy. There is no way to
   publish an unmerged change for review.
-- **No rollback.** There is no "revert to the previous deployment" button. The
-  recovery path is to **retry an earlier successful deployment** of the same
-  commit, or to merge a revert change and let that deploy. Neither is
-  instantaneous.
+- **A rollback does not undo a migration.** It redeploys an earlier version
+  against the schema as it is now. Migrations are forward-only. See
+  [Rollback](#rollback).
+- **A failed pipeline is not undone.** A step that failed leaves the
+  environment as the steps before it left it — migrated but not deployed, for
+  example. Nothing is rolled back automatically.
+- **A pipeline's steps run with the deploy target's authority.** Whatever a
+  step does to a credentialed host, it does with the executor's credential.
+  The control is that the pipeline and the code it runs have merged: gate the
+  default branch accordingly (`requiredApprovals`, protected configuration).
+- **One pipeline per project, and every environment in it is deployed in
+  order.** There is no way to deploy only some paths, to skip an environment,
+  or to run two environments in parallel.
+- **Pipelines need the CI executor.** An instance without one cannot run
+  them. Its capacity is shared with CI.
+- **Pipeline credentials are Bearer tokens for exact hostnames.** Other
+  authentication schemes, and cloud SDKs that sign requests rather than send a
+  token, are not supported.
+- **A batch merge deploys once**, for the batch's final commit, not once per
+  change. See [Batch merges](#batch-merges).
 - **Netlify is not supported.** The three targets above are the whole list.
 - **The approval gate refuses agent identities, not automation.** It accepts a
   user's scoped API token and MCP OAuth grants. See
@@ -611,6 +1039,8 @@ These are design boundaries of v1, not bugs:
 
 ## See also
 
+- [First-party CI](ci.md) — the executor that runs deploy pipelines, and the
+  CI half of `.stratum/ci.yaml`
 - [CI Integration (Bring Your Own CI)](ci-integration.md) — what Stratum does
   and does not execute
 - [Getting Started](getting-started.md) — the policy file and the merge gate

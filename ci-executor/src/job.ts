@@ -1,5 +1,5 @@
 /**
- * One CI job, from accepted dispatch to released slot (#415, ADR 012).
+ * One job, from accepted dispatch to released slot (#415, #416, ADR 012).
  *
  * A job is a state machine advanced by `tick()`, which the owning Durable
  * Object calls from its alarm. Nothing here waits on a running process: a step
@@ -15,13 +15,22 @@
  * the repository credential (it lives in the intercept handler's props), the
  * signing secret, or anything else this Worker holds.
  *
+ * A `deploy` job (#416) is the same machine with four differences, each
+ * marked where it happens: it checks out a merged commit instead of rebuilding
+ * a change; the hosts in its profile's `credentials` are reached through an
+ * intercept that attaches the executor's own credential; its first failing
+ * step stops it; and it reports once, at the end, about the deployment as a
+ * whole. The credential itself is not one of the things this file ever holds:
+ * the profile carries the NAME of a secret, and the intercept handler reads
+ * the value per request.
+ *
  * Everything the class touches comes in through {@link JobDeps}, so the whole
  * machine runs in tests against a fake container written from the documented
  * `ctx.container` API.
  */
 import { GIT_HOST } from "./config";
-import type { Job } from "./dispatch";
-import type { AllowlistProps, GitProxyProps } from "./egress";
+import { DEPLOY_VERSION, type Job } from "./dispatch";
+import type { AllowlistProps, CredentialProxyProps, GitProxyProps } from "./egress";
 
 /** The part of the Durable Object Container API a job uses. */
 export interface JobContainer {
@@ -59,12 +68,30 @@ export interface JobStorage {
 
 export type ReportStatus = "running" | "passed" | "failed" | "errored";
 
+/** How one step of a deploy job ended, for the deployment's single report. */
+export interface DeployStepOutcome {
+  name: string;
+  status: "passed" | "failed" | "errored" | "skipped";
+  summary?: string;
+}
+
 export interface OutgoingReport {
+  /** The check run reported on; for a deploy job, the deployment id. */
   checkRunId: string;
   status: ReportStatus;
   sequence: number;
   summary?: string;
   detailsUrl: string;
+  /** Present on a deploy job's one report, and on no other. */
+  deploy?: {
+    steps: DeployStepOutcome[];
+    /** What a step wrote to `$STRATUM_DEPLOY_VERSION_FILE`, if it is a usable label. */
+    version?: string;
+    /** What a step wrote to `$STRATUM_DEPLOY_URL_FILE`, if it is an https URL. */
+    url?: string;
+    /** The end of the last step's output. */
+    logTail?: string;
+  };
 }
 
 /**
@@ -85,6 +112,12 @@ export interface JobDeps {
   egress: {
     git(props: GitProxyProps): Fetcher;
     allowlist(props: AllowlistProps): Fetcher;
+    /**
+     * A handler that attaches one of the executor's deploy credentials.
+     * Supplied only by the deploy profile's Durable Object class: a CI job's
+     * machine is built without it, so there is nothing for it to call.
+     */
+    credential?(props: CredentialProxyProps): Fetcher;
   };
   send(job: JobRecord, report: OutgoingReport): Promise<SendOutcome>;
   putLog(checkRunId: string, body: Uint8Array): Promise<void>;
@@ -126,6 +159,14 @@ export interface JobState {
   pollFailures: number;
   finishAttempts: number;
   log: LogCursor;
+  /** Deploy jobs only: each step's summary, kept for the one report at the end. */
+  summaries?: Record<number, string>;
+  /** Deploy jobs only: the end of the most recently finished step's output. */
+  deployTail?: string;
+  deployVersion?: string;
+  deployUrl?: string;
+  /** Deploy jobs only: the final report has been built and queued. */
+  sealed?: boolean;
 }
 
 const STATE_KEY = "state";
@@ -153,6 +194,19 @@ const MAX_FINISH_ATTEMPTS = 5;
 const ABANDONED_GRACE_MS = 60_000;
 const MAX_INACTIVITY_MS = 6 * 60 * 60_000;
 const MAX_SUMMARY_LENGTH = 3000;
+/** Where a deploy step leaves the version and URL it deployed, for the row. */
+const DEPLOY_OUTPUT_DIR = "/job/out";
+const DEPLOY_VERSION_FILE = `${DEPLOY_OUTPUT_DIR}/version`;
+const DEPLOY_URL_FILE = `${DEPLOY_OUTPUT_DIR}/url`;
+/** How much of the last step's output rides on the report, for the row's log tail. */
+const DEPLOY_TAIL_BYTES = 12 * 1024;
+const MAX_DEPLOY_URL_LENGTH = 2048;
+/**
+ * Wrangler refuses to run non-interactively without a token in its
+ * environment. This is not one: it is a fixed, public string, and the
+ * intercept replaces whatever `Authorization` header it produces.
+ */
+export const PLACEHOLDER_API_TOKEN = "attached-by-the-stratum-executor";
 
 /**
  * The whole environment of a step. `exec()` passes nothing on but `PATH`, so
@@ -174,6 +228,43 @@ const STEP_ENV: Record<string, string> = {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+/** Whether this job runs under the deploy profile. */
+function isDeploy(job: JobRecord): boolean {
+  return job.profile.name === "deploy";
+}
+
+/**
+ * The environment of a deploy job's steps: the CI environment, the operator's
+ * plain variables for this target, and what identifies the deployment. No
+ * credential — the job has none to give.
+ */
+function deployEnv(job: JobRecord): Record<string, string> {
+  const deploy = job.deploy;
+  if (deploy === undefined) return STEP_ENV;
+  const env: Record<string, string> = {
+    ...STEP_ENV,
+    ...deploy.env,
+    STRATUM_DEPLOY: "true",
+    STRATUM_ENVIRONMENT: deploy.environment,
+    STRATUM_DEPLOYMENT_ID: deploy.deploymentId,
+    STRATUM_COMMIT_SHA: job.headSha,
+    STRATUM_DEPLOY_VERSION_FILE: DEPLOY_VERSION_FILE,
+    STRATUM_DEPLOY_URL_FILE: DEPLOY_URL_FILE,
+    WRANGLER_SEND_METRICS: "false",
+    WRANGLER_SEND_ERROR_REPORTS: "false",
+  };
+  if (job.profile.credentials?.some((credential) => credential.host === "api.cloudflare.com")) {
+    env.CLOUDFLARE_API_TOKEN = PLACEHOLDER_API_TOKEN;
+  }
+  if (deploy.rollback !== undefined) {
+    env.STRATUM_ROLLBACK = "true";
+    if (deploy.rollback.version !== undefined) {
+      env.STRATUM_ROLLBACK_VERSION = deploy.rollback.version;
+    }
+  }
+  return env;
+}
 
 function minutes(seconds: number): string {
   const whole = Math.round(seconds / 60);
@@ -294,7 +385,9 @@ export class JobMachine {
     this.failRemaining(
       state,
       "errored",
-      "Not run: the job waited for a free slot on the CI executor until it could no longer finish before the deadline. Re-run the check when the executor is less busy.",
+      isDeploy(state.job)
+        ? "Not run: the job waited for a free slot on the CI executor until it could no longer finish before the deadline. Nothing was deployed; retry the deployment when the executor is less busy."
+        : "Not run: the job waited for a free slot on the CI executor until it could no longer finish before the deadline. Re-run the check when the executor is less busy.",
     );
     state.phase = "finishing";
     await this.save(state);
@@ -332,6 +425,7 @@ export class JobMachine {
       await this.pollStep(state);
     }
 
+    if (state.phase === "finishing") this.seal(state);
     await this.flushOutbox(state);
     if (state.phase === "finishing") return this.finish(state);
     await this.save(state);
@@ -369,6 +463,14 @@ export class JobMachine {
     const step = state.job.steps[index];
     if (step === undefined) return;
     state.results[index] = status;
+    if (isDeploy(state.job)) {
+      // A deployment is one row in Stratum, not a check per step: the steps'
+      // outcomes are kept and reported together by `seal`.
+      if (summary !== undefined) {
+        state.summaries = { ...state.summaries, [index]: summary.slice(0, MAX_SUMMARY_LENGTH) };
+      }
+      return;
+    }
     state.outbox.push({
       checkRunId: step.checkRunId,
       status,
@@ -382,6 +484,50 @@ export class JobMachine {
   private failRemaining(state: JobState, status: "failed" | "errored", summary: string): void {
     state.results.forEach((result, index) => {
       if (result === "pending" || result === "running") this.enqueue(state, index, status, summary);
+    });
+  }
+
+  /**
+   * Build a deploy job's one report, once, when the job has nothing left to
+   * run. `passed` only if every step passed; a step that failed makes the
+   * deployment `failed`; anything else that stopped it is `errored`.
+   */
+  private seal(state: JobState): void {
+    const { job } = state;
+    if (!isDeploy(job) || state.sealed === true) return;
+    state.sealed = true;
+    const steps: DeployStepOutcome[] = job.steps.map((step, index) => {
+      const result = state.results[index];
+      const summary = state.summaries?.[index];
+      const status: DeployStepOutcome["status"] =
+        result === "passed" || result === "failed" || result === "errored" ? result : "skipped";
+      return { name: step.name, status, ...(summary !== undefined ? { summary } : {}) };
+    });
+    const failed = steps.find((step) => step.status === "failed");
+    const stopped = steps.find((step) => step.status !== "passed");
+    const status: ReportStatus =
+      stopped === undefined ? "passed" : failed !== undefined ? "failed" : "errored";
+    const summary =
+      stopped === undefined
+        ? `All ${steps.length} step${steps.length === 1 ? "" : "s"} passed.`
+        : failed !== undefined
+          ? `Step '${failed.name}' failed. ${failed.summary ?? ""}`.trim()
+          : (stopped.summary ?? "The job did not run.");
+    state.outbox.push({
+      checkRunId: job.changeId,
+      status,
+      sequence: ++state.sequence,
+      summary: summary.slice(0, MAX_SUMMARY_LENGTH),
+      detailsUrl: job.steps[0]?.logUrl ?? "",
+      deploy: {
+        steps,
+        // Only a deployment that finished has a version worth recording.
+        ...(status === "passed" && state.deployVersion !== undefined
+          ? { version: state.deployVersion }
+          : {}),
+        ...(status === "passed" && state.deployUrl !== undefined ? { url: state.deployUrl } : {}),
+        ...(state.deployTail !== undefined ? { logTail: state.deployTail } : {}),
+      },
     });
   }
 
@@ -478,6 +624,20 @@ export class JobMachine {
       state.phase = "finishing";
       return;
     }
+    const credentials = job.profile.credentials ?? [];
+    const attach = this.deps.egress.credential;
+    if (credentials.length > 0 && (!isDeploy(job) || attach === undefined)) {
+      // Checked here as well as at the dispatch: a credential is attached for
+      // a deploy job, by the deploy profile's own object, or the job does not
+      // start. A CI job that somehow carried one must not run at all.
+      this.failRemaining(
+        state,
+        "errored",
+        "Not run: this job asked for a deploy credential outside the deploy profile.",
+      );
+      state.phase = "finishing";
+      return;
+    }
     // Recorded before anything else, so an attempt that dies half-way counts.
     await this.save(state);
 
@@ -498,6 +658,17 @@ export class JobMachine {
       for (const host of job.profile.allowedHosts) {
         await container.interceptOutboundHttps(host, allowlist);
       }
+      // Deploy profile only (see the check above). The props name a secret;
+      // its value stays in the Worker's secret store until the handler sends
+      // one request with it.
+      if (attach !== undefined) {
+        for (const credential of credentials) {
+          await container.interceptOutboundHttps(
+            credential.host,
+            attach({ host: credential.host, secret: credential.secret }),
+          );
+        }
+      }
 
       container.start({
         image,
@@ -513,16 +684,24 @@ export class JobMachine {
 
       const storage = this.deps.storage;
       const chunks = state.diffChunks;
-      await this.agent(["write", "/job/change.diff"], {
-        stdin: this.textStream(async function* () {
-          for (let i = 0; i < chunks; i++) yield (await storage.get<string>(`diff:${i}`)) ?? "";
-        }),
-      });
+      if (isDeploy(job)) {
+        // No diff: a deploy runs a merged commit as it is. The write creates
+        // the directory a step leaves its version and URL in.
+        await this.agent(["write", `${DEPLOY_OUTPUT_DIR}/.keep`]);
+      } else {
+        await this.agent(["write", "/job/change.diff"], {
+          stdin: this.textStream(async function* () {
+            for (let i = 0; i < chunks; i++) yield (await storage.get<string>(`diff:${i}`)) ?? "";
+          }),
+        });
+      }
       await this.agent(["start", "prepare", String(PREPARE_TIMEOUT_SECONDS), "/"], {
         stdin: this.textStream(async function* () {
           yield "exec /opt/stratum/prepare.sh\n";
         }),
-        env: { ...STEP_ENV, BASE_SHA: job.baseSha, HEAD_TREE_SHA: job.headTreeSha },
+        env: isDeploy(job)
+          ? { ...STEP_ENV, BASE_SHA: job.baseSha, STRATUM_JOB_PROFILE: "deploy" }
+          : { ...STEP_ENV, BASE_SHA: job.baseSha, HEAD_TREE_SHA: job.headTreeSha },
       });
     } catch (error) {
       console.error("job: container start failed", String(error));
@@ -578,7 +757,7 @@ export class JobMachine {
         this.deps.now() > startedAt + PREPARE_TIMEOUT_SECONDS * 1000 + STEP_STOP_GRACE_MS;
       if (!overdue) return;
       failure = `Not run: fetching the base commit and applying the change took longer than ${minutes(PREPARE_TIMEOUT_SECONDS)}.`;
-    } else if (result.exit?.exitCode === 3) {
+    } else if (result.exit?.exitCode === 3 && !isDeploy(job)) {
       // The one failure that is about the change rather than the executor.
       failure = `Not run: the base commit ${job.baseSha} plus this change's diff did not reproduce the evaluated tree ${job.headTreeSha}, so the steps would have tested something other than what was evaluated. A change that adds or modifies a binary (non-UTF-8) file cannot be rebuilt from its diff; otherwise re-evaluate the change.`;
     } else if (result.exit?.exitCode !== 0) {
@@ -588,7 +767,12 @@ export class JobMachine {
     if (failure !== undefined) {
       await this.destroyContainer("prepare failed");
       const log = encoder.encode(`${output}\n[stratum] ${failure}\n`);
-      for (const step of job.steps) await this.writeLog(step.checkRunId, log);
+      // Every check gets the log; a deployment's steps are read as one log, so
+      // there it is written once.
+      for (const step of isDeploy(job) ? job.steps.slice(0, 1) : job.steps) {
+        await this.writeLog(step.checkRunId, log);
+      }
+      if (isDeploy(job)) state.deployTail = decoder.decode(log.slice(-DEPLOY_TAIL_BYTES));
       const tail = output.trim().split("\n").slice(-5).join("\n").slice(-600);
       this.failRemaining(state, "errored", tail === "" ? failure : `${failure}\n\n${tail}`);
       state.phase = "finishing";
@@ -642,7 +826,7 @@ export class JobMachine {
         stdin: this.textStream(async function* () {
           yield step.run.endsWith("\n") ? step.run : `${step.run}\n`;
         }),
-        env: STEP_ENV,
+        env: isDeploy(state.job) ? deployEnv(state.job) : STEP_ENV,
       });
     } catch (error) {
       console.error("job: could not start a step", String(error));
@@ -679,12 +863,23 @@ export class JobMachine {
           : exitCode === null
             ? `Failed: the step was killed by ${signal ?? "a signal"} after ${duration(durationMs)}.`
             : `Failed with exit code ${exitCode} after ${duration(durationMs)}.`;
-      await this.flushLog(state, summary, result.size ?? state.log.offset);
+      this.keepTail(state, await this.flushLog(state, summary, result.size ?? state.log.offset));
       this.enqueue(state, index, passed ? "passed" : "failed", summary);
-      // Later steps run whatever this one did: each is its own check, and a
-      // failing lint is no reason to withhold the test results.
+      if (isDeploy(state.job) && !passed) {
+        // A pipeline stops where it breaks: running `deploy` after `migrate`
+        // failed, or `smoke` after `deploy` did, is how a bad release gets
+        // further than it should. The steps after this one are reported as
+        // not run.
+        state.phase = "finishing";
+        return;
+      }
+      // In a CI job later steps run whatever this one did: each is its own
+      // check, and a failing lint is no reason to withhold the test results.
       if (index + 1 < state.job.steps.length) await this.startStep(state, index + 1);
-      else state.phase = "finishing";
+      else {
+        if (isDeploy(state.job)) await this.readDeployOutputs(state);
+        state.phase = "finishing";
+      }
       return;
     }
 
@@ -693,7 +888,7 @@ export class JobMachine {
       // not — it runs beside the code it supervises and can be killed by it —
       // so the limit is enforced the only way that cannot be dodged.
       const summary = `Timed out: the step did not stop at its limit of ${minutes(step.timeoutSeconds)}, so the job's container was destroyed.`;
-      await this.flushLog(state, summary, result.size ?? state.log.offset);
+      this.keepTail(state, await this.flushLog(state, summary, result.size ?? state.log.offset));
       await this.destroyContainer("step timeout");
       this.enqueue(state, index, "failed", summary);
       this.failRemaining(
@@ -715,7 +910,7 @@ export class JobMachine {
     const running = state.results.indexOf("running");
     if (running >= 0) {
       const summary = `The job exceeded its time limit of ${limit} while this step was running, and was stopped. The step's result is unknown.`;
-      await this.flushLog(state, summary, state.log.offset);
+      this.keepTail(state, await this.flushLog(state, summary, state.log.offset));
       this.enqueue(state, running, "errored", summary);
     }
     // Destroyed from out here, by the Durable Object's clock: nothing the
@@ -749,9 +944,13 @@ export class JobMachine {
    * final write: a truncated log gets the end of the output appended, since
    * the end is where a failure says what went wrong.
    */
-  private async flushLog(state: JobState, footer: string | undefined, size: number): Promise<void> {
+  private async flushLog(
+    state: JobState,
+    footer: string | undefined,
+    size: number,
+  ): Promise<Uint8Array> {
     const step = state.job.steps[state.stepIndex];
-    if (step === undefined) return;
+    if (step === undefined) return new Uint8Array(0);
     const { log } = state;
     const parts: Uint8Array[] = [];
     for (let i = 0; i < log.chunks; i++) {
@@ -783,9 +982,54 @@ export class JobMachine {
       parts.push(encoder.encode(`\n[stratum] ${footer}\n`));
       for (let i = 0; i < log.chunks; i++) await this.deps.storage.delete(`log:${i}`);
     }
-    await this.writeLog(step.checkRunId, concat(parts));
+    const body = concat(parts);
+    await this.writeLog(step.checkRunId, body);
     log.dirty = false;
     log.flushedAt = this.deps.now();
+    return body;
+  }
+
+  /** Deploy jobs: remember the end of a finished step's log for the report. */
+  private keepTail(state: JobState, log: Uint8Array): void {
+    if (!isDeploy(state.job)) return;
+    state.deployTail = decoder.decode(log.slice(-DEPLOY_TAIL_BYTES));
+  }
+
+  /**
+   * Read what the steps left in the output files: the version that was
+   * deployed, and its URL. Both are written by code in the container, so both
+   * are checked as data before they are reported — a version is a short label,
+   * a URL is an https URL — and an unusable one is dropped, not passed on.
+   * Neither is required: a pipeline that records no version still deploys.
+   */
+  private async readDeployOutputs(state: JobState): Promise<void> {
+    const read = async (path: string, max: number): Promise<string | undefined> => {
+      try {
+        const result = await this.agent<{ exists: boolean; content?: string }>([
+          "read",
+          path,
+          String(max),
+        ]);
+        if (!result.exists || typeof result.content !== "string") return undefined;
+        return decoder.decode(fromBase64(result.content)).trim();
+      } catch (error) {
+        console.error("job: could not read a deploy output", String(error));
+        return undefined;
+      }
+    };
+    const version = await read(DEPLOY_VERSION_FILE, 256);
+    if (version !== undefined && DEPLOY_VERSION.test(version)) state.deployVersion = version;
+    const url = await read(DEPLOY_URL_FILE, MAX_DEPLOY_URL_LENGTH);
+    if (url !== undefined && url.length <= MAX_DEPLOY_URL_LENGTH) {
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol === "https:" && parsed.username === "" && parsed.password === "") {
+          state.deployUrl = parsed.toString();
+        }
+      } catch {
+        // Not a URL: nothing is recorded.
+      }
+    }
   }
 
   private async writeLog(checkRunId: string, body: Uint8Array): Promise<void> {

@@ -1,8 +1,9 @@
 # Deployments and Deploy Secrets API
 
 Post-merge deployments and the encrypted per-project secret store that feeds
-them. See the [Deployments user guide](../../user-guide/deployments.md) for the
-concepts — the `deploys:` policy block, the three targets, limits, and what each
+the static targets. See the [Deployments user guide](../../user-guide/deployments.md)
+for the concepts — the `deploys:` policy block and its three targets, deploy
+pipelines (the `deploy:` section of `.stratum/ci.yaml`), limits, and what each
 status means — and the [OpenAPI specification](../openapi.yml) for exact schemas.
 
 Two authorization rules here are stricter than the usual project read/write
@@ -93,12 +94,16 @@ project). Newest first.
 
 | Parameter | Meaning |
 |---|---|
-| `name` | Only deployments for this `deploys:` entry name |
+| `name` | Only deployments for this `deploys:` entry or pipeline environment name |
 | `status` | One of `pending_approval`, `queued`, `running`, `succeeded`, `failed`, `superseded`, `skipped` |
 | `limit` | Default 50, max 200 |
 | `offset` | Rows to skip |
 
 `logTail` is present only when the caller can write to the project.
+
+Each deployment carries `target` — a static target's name, or `pipeline` for
+one run by the CI executor — and, when set, `version` (what it put live) and
+`rollbackOf` (the deployment a rollback put back).
 
 ### Get a deployment
 `GET /api/deployments/{id}`
@@ -157,6 +162,94 @@ a repeat call would only collide with the unique index on
 
 The originating change id is carried onto the retry, so the "was this change
 reverted?" check still applies to it. Audited as `deployment.retried`.
+
+**A retry is not a way round a pipeline environment's approval gate.** For a
+deployment with `target: pipeline`, a user's retry is created `queued` with
+that user as `approvedBy`. An agent's retry carries no approval: where the
+retried deployment was itself approved, the retry is created at
+`pending_approval` and is not enqueued; otherwise it is created `queued`, and
+is moved to `pending_approval` when it is about to run if its environment has
+`requiresApproval: true`. Either way it answers `201`, and the row waits for a
+user to approve it. The environment's setting is read from the pipeline at the
+commit being retried. Static targets are unchanged.
+
+### Roll back to a deployment
+`POST /api/deployments/{id}/rollback`
+
+Creates a **new** deployment of the same name and commit as `{id}`, with
+`rollbackOf` set, and enqueues it. Answers `201` with the new row. `{id}` must
+be `succeeded`.
+
+> A rollback redeploys an earlier version. **It does not undo a database
+> migration**: migrations are forward-only, and the earlier version runs
+> against the schema as it is now.
+
+Requires project **write** access and a **user** identity, exactly as approve
+does; the caller becomes the new row's `approvedBy`, so it does not then wait
+for approval.
+
+- `401` — no `userId` on the request (anonymous, or an agent token).
+- `403` — a user who cannot write to the deployment's project.
+- `409 DEPLOYMENT_NOT_ROLLBACKABLE` — `{id}` is not `succeeded`.
+- `409 DEPLOYMENT_RETRY_EXISTS` — another retry or rollback took the attempt
+  number at the same moment. Try again.
+- `503 DEPLOY_QUEUE_UNAVAILABLE` — as above.
+
+The rollback is an ordinary deployment from there on: it waits for the
+environment, supersedes deployments of it that are still `queued` or
+`pending_approval`, and never promotes to a later environment. Audited as
+`deployment.rolled_back`, with the environment, commit, `rollbackOf` and
+version.
+
+A form-encoded caller must send `confirm=yes`. Without it the answer is a `302`
+to the confirmation page (`/{namespace}/{slug}/deployments/{id}/rollback`) and
+nothing happens; with it, a `302` to the new deployment. JSON callers send no
+confirmation.
+
+### Read a pipeline deployment's log
+`GET /api/deployments/{id}/log`
+
+The full output of every step the deployment has run, in order, as
+`text/plain`. Project **writers** only. Available while the job runs and
+afterwards.
+
+- `404 LOG_NOT_AVAILABLE` — not a pipeline deployment (a static target has only
+  `logTail`).
+- `404 LOG_NOT_FOUND` — nothing has been stored yet.
+- `503 CI_EXECUTOR_UNAVAILABLE` — the instance has no CI executor, or it could
+  not be reached.
+
+### Report a deployment (CI executor callback)
+`POST /api/deploy-reports/{id}`
+
+Called by the instance's CI executor when a pipeline deployment's job ends, not
+by API clients. There is no bearer token: the request is authenticated by
+`X-Stratum-Signature`, `sha256=` followed by the hex HMAC-SHA256 of the raw
+body under `CI_EXECUTOR_SECRET`.
+
+```json
+{
+  "deploymentId": "dep_…",
+  "commitSha": "…",
+  "environment": "staging",
+  "status": "succeeded",
+  "steps": [{ "name": "migrate", "status": "passed" }, { "name": "deploy", "status": "passed" }],
+  "version": "0f1e2d3c-…",
+  "url": "https://my-app-staging.example.workers.dev",
+  "logTail": "…"
+}
+```
+
+- `401 INVALID_SIGNATURE` — missing or wrong signature. Checked before the
+  deployment is looked up, so it does not reveal which ids exist.
+- `400 INVALID_REPORT` — signed, but malformed, or `deploymentId` is not the id
+  in the URL.
+- `409 DEPLOYMENT_NOT_RUNNING` — no running pipeline deployment with this id
+  for this commit: it already finished, was given up on, or was never
+  dispatched. Not retryable.
+
+`version` is stored only for a `succeeded` deployment and only if it is a short
+label; `url` only if it is an `https` URL.
 
 ## Events
 

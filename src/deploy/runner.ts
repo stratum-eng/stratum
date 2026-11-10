@@ -41,6 +41,7 @@ import {
   type Deployment,
   type DeploymentStatus,
   type DeploymentTarget,
+  PIPELINE_TARGET,
   SUPERSEDED_REASON,
   type TerminalDeploymentStatus,
   UNRESOLVED_TARGET,
@@ -61,11 +62,17 @@ import type { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 import { DEPLOY_ATTEMPT_DEADLINE_MS } from "./limits";
+import {
+  type PipelineHost,
+  advancePipeline,
+  runPipelineDeployment,
+  startPipelineForMerge,
+} from "./pipeline-runner";
 import { redactAndTruncate } from "./redact";
 import { type DeployFetch, getDeployTarget } from "./targets/index";
 
 /**
- * What the `stratum-deploys` queue carries. Two shapes, discriminated on `kind`.
+ * What the `stratum-deploys` queue carries. Three shapes, discriminated on `kind`.
  *
  * - `merge` fans out: the runner reads the tree at `commitSha`, parses the
  *   policy from it, creates one row per declared deploy, and runs the ones that
@@ -73,6 +80,10 @@ import { type DeployFetch, getDeployTarget } from "./targets/index";
  * - `deployment` runs one row that already exists. This is what the approve and
  *   retry routes enqueue — they have already decided *which* deployment, and
  *   re-deriving it from the policy could pick a different set.
+ * - `advance` follows a pipeline deployment that just reached a terminal
+ *   status (#416): promote a success to the next environment, and start
+ *   whatever was waiting for the environment it held. Sent by the executor's
+ *   report and by the sweep that gives up on a silent executor.
  *
  * `projectId` is on both because it is the only tenant scope this runner
  * accepts; see the fail-closed check in {@link runDeployMessage}.
@@ -96,7 +107,8 @@ export type DeployQueueMessage =
        */
       mergedAt?: string;
     }
-  | { kind: "deployment"; projectId: string; deploymentId: string };
+  | { kind: "deployment"; projectId: string; deploymentId: string }
+  | { kind: "advance"; projectId: string; deploymentId: string };
 
 /**
  * Reads a repo tree into path → raw bytes at a pinned commit. Injectable so a
@@ -268,9 +280,45 @@ export async function runDeployMessage(
     deadlineMs: deps.deadlineMs ?? DEPLOY_ATTEMPT_DEADLINE_MS,
   };
 
-  return message.kind === "merge"
-    ? runMergeMessage(ctx, message)
-    : runDeploymentMessage(ctx, message);
+  if (message.kind === "merge") return runMergeMessage(ctx, message);
+  if (message.kind === "advance") return runAdvanceMessage(ctx, message);
+  return runDeploymentMessage(ctx, message);
+}
+
+/**
+ * The runner's helpers, as the pipeline module needs them. Built here so the
+ * pipeline's rows go through the same row-level rules as every other
+ * deployment's, without the two modules importing each other.
+ */
+function pipelineHost(ctx: RunContext): PipelineHost {
+  return {
+    env: ctx.env,
+    logger: ctx.logger,
+    project: ctx.project,
+    now: ctx.now,
+    iso: ctx.iso,
+    readTree: (commitSha, changeId) => readTree(ctx, commitSha, changeId),
+    createDeployment: (opts) => createDeployment(ctx, opts),
+    failWithoutRunning: (deployment, reason) => failWithoutRunning(ctx, deployment, reason),
+    supersedeWithoutRunning: (deployment, reason) =>
+      supersedeWithoutRunning(ctx, deployment, reason),
+    emit: (deployment, type, extra) => emitDeploymentEvent(ctx, deployment, type, extra),
+    changeGuard: (changeId) => changeStillDeployable(ctx, changeId),
+    checkVolume: (deployment) => checkDeployVolume(ctx, deployment),
+  };
+}
+
+/** A pipeline deployment ended: promote it, and release its environment. */
+async function runAdvanceMessage(
+  ctx: RunContext,
+  message: Extract<DeployQueueMessage, { kind: "advance" }>,
+): Promise<Result<DeployRunSummary, AppError>> {
+  if (await isTargetDeleting(ctx.env, ctx.project, ctx.logger)) {
+    return ok({ deployments: [], aborted: DELETING_REASON });
+  }
+  const advanced = await advancePipeline(pipelineHost(ctx), message.deploymentId);
+  if (!advanced.success) return err(advanced.error);
+  return ok({ deployments: advanced.data });
 }
 
 /**
@@ -389,11 +437,25 @@ async function runMergeMessage(
     }
   }
 
+  // The other place a deploy can be declared: the `deploy:` pipeline in
+  // `.stratum/ci.yaml` (#416), run by the CI executor. It starts at its first
+  // environment only; later ones exist once the one before them succeeded.
+  // The two kinds coexist in one project — the pipeline may not reuse a name a
+  // `deploys:` entry (accepted or rejected) already has at this commit.
+  const pipeline = await startPipelineForMerge(pipelineHost(ctx), files, {
+    commitSha: message.commitSha,
+    changeId: message.changeId,
+    createdAt,
+    claimedNames: new Set(claimedNames),
+  });
+  if (!pipeline.success) return err(pipeline.error);
+  for (const entry of pipeline.data.records) records.set(entry.deploymentId, entry);
+
   if (policy.deploys.length === 0) {
     // `skipped` only when there is genuinely nothing configured. If entries were
     // rejected, those failures are the story and a calm grey row alongside them
     // would misreport it.
-    if (policy.rejections.length === 0) {
+    if (policy.rejections.length === 0 && !pipeline.data.declared) {
       const created = await createDeployment(ctx, {
         name: UNRESOLVED_DEPLOY_NAME,
         target: UNRESOLVED_TARGET,
@@ -486,6 +548,15 @@ async function runDeploymentMessage(
   if (!treeResult.success) {
     const reason = `Could not read the tree at ${shortSha(deployment.commitSha)}: ${treeResult.error.message}`;
     return ok({ deployments: [await failWithoutRunning(ctx, deployment, reason)] });
+  }
+
+  // A pipeline environment's row: handed to the CI executor, not published
+  // from here. The change guard above has already run; the pipeline runner
+  // runs it again itself because it is also entered from other paths.
+  if (deployment.target === PIPELINE_TARGET) {
+    return ok({
+      deployments: [await runPipelineDeployment(pipelineHost(ctx), deployment, treeResult.data)],
+    });
   }
 
   // Config comes from the pinned commit here too, so an approval granted days
@@ -685,6 +756,9 @@ async function runOneDeployment(
       url: terminal.url ?? null,
       logTail,
       durationMs: Math.max(0, ctx.now() - startedAt),
+      // A static target publishes the tree as committed, so the commit IS the
+      // version: it is what a rollback to this row deploys again.
+      version: deployment.commitSha,
       completedAt: ctx.iso(),
     });
     if (!completed.success) {

@@ -1,5 +1,5 @@
-import type { ExecutorConfig } from "../../src/config";
-import type { Job } from "../../src/dispatch";
+import type { DeployTargets, ExecutorConfig } from "../../src/config";
+import type { DeployContext, Job } from "../../src/dispatch";
 
 export const SECRET = "executor-shared-secret-0123456789abcdef";
 export const STRATUM = "https://stratum.example.com";
@@ -15,6 +15,7 @@ export const CONFIG: ExecutorConfig = {
   stratumOrigin: STRATUM,
   maxConcurrentJobs: 2,
   maxQueuedJobs: 2,
+  maxQueuedDeployJobs: 2,
   defaultInstance: "standard-1",
   maxInstance: "standard-2",
   maxJobSeconds: 3600,
@@ -93,6 +94,121 @@ export function makeJob(now: number, overrides: Partial<Job> = {}): Job {
         checkRunId: "chk_test",
         logUrl: `${STRATUM}/api/changes/chg_1/checks/chk_test/log`,
       },
+    ],
+    timeoutSeconds: 1800,
+    instance: "standard-1",
+    repository: {
+      url: REPO_URL,
+      authorization: `Basic ${btoa(`x:${REPO_PASSWORD}`)}`,
+      expiresAt: now + 60 * 60_000,
+    },
+    ...overrides,
+  };
+}
+
+// ------------------------------------------------------------------ deploys
+
+/** The VALUE of the deploy credential. Tests assert this string goes nowhere but upstream. */
+export const DEPLOY_TOKEN = "cf-deploy-token-VERYSECRET-0123456789";
+export const DEPLOY_SECRET = "DEPLOY_CRED_STAGING";
+export const DEPLOY_PROJECT_ID = "prj_app";
+export const DEPLOY_ID = "dep_0123456789abcdef";
+export const COMMIT_SHA = "d".repeat(40);
+
+export const DEPLOY_TARGETS: DeployTargets = {
+  [DEPLOY_PROJECT_ID]: {
+    staging: {
+      credentials: [{ host: "api.cloudflare.com", secret: DEPLOY_SECRET }],
+      env: { CLOUDFLARE_ACCOUNT_ID: "acct123" },
+      allowHosts: ["app-staging.example.workers.dev"],
+    },
+  },
+};
+
+/** The executor's own deploy configuration, with every named secret set. */
+export const DEPLOY_CONTEXT: DeployContext = {
+  targets: { ok: true, targets: DEPLOY_TARGETS },
+  hasSecret: (name) => name === DEPLOY_SECRET,
+};
+
+/** A deploy dispatch body as Stratum sends it. Note what is absent: any credential for the target. */
+export function deployDispatchBody(now: number, overrides: Record<string, unknown> = {}) {
+  const job = {
+    profile: "deploy",
+    steps: [
+      {
+        name: "migrate",
+        run: "npx wrangler d1 migrations apply app --remote",
+        timeoutSeconds: 600,
+      },
+      { name: "deploy", run: "npx wrangler deploy", timeoutSeconds: 600 },
+      {
+        name: "smoke",
+        run: "curl -sf https://app-staging.example.workers.dev/health",
+        timeoutSeconds: 120,
+      },
+    ],
+    timeoutSeconds: 1800,
+    allowHosts: [],
+    repository: {
+      url: REPO_URL,
+      username: "x",
+      password: REPO_PASSWORD,
+      expiresAt: new Date(now + 60 * 60_000).toISOString(),
+    },
+    logUrl: `${STRATUM}/@owner/app/deployments/${DEPLOY_ID}`,
+    ...((overrides.job as Record<string, unknown> | undefined) ?? {}),
+  };
+  return {
+    event: "deploy.requested",
+    deploymentId: DEPLOY_ID,
+    project: "@owner/app",
+    projectId: DEPLOY_PROJECT_ID,
+    environment: "staging",
+    commitSha: COMMIT_SHA,
+    callbackUrl: `${STRATUM}/api/deploy-reports`,
+    deadline: new Date(now + 47 * 60_000).toISOString(),
+    ...overrides,
+    job,
+  };
+}
+
+/** A validated deploy job, as `parseDispatch` would produce it. */
+export function makeDeployJob(now: number, overrides: Partial<Job> = {}): Job {
+  const logUrl = `${STRATUM}/@owner/app/deployments/${DEPLOY_ID}`;
+  const step = (name: string, run: string, index: number) => ({
+    name,
+    run,
+    timeoutSeconds: 600,
+    checkRunId: `${DEPLOY_ID}-${index}`,
+    logUrl,
+  });
+  return {
+    changeId: DEPLOY_ID,
+    project: "@owner/app",
+    origin: "project",
+    baseSha: COMMIT_SHA,
+    headSha: COMMIT_SHA,
+    headTreeSha: "",
+    diff: "",
+    deploy: {
+      deploymentId: DEPLOY_ID,
+      projectId: DEPLOY_PROJECT_ID,
+      environment: "staging",
+      env: { CLOUDFLARE_ACCOUNT_ID: "acct123" },
+    },
+    callbackUrl: `${STRATUM}/api/deploy-reports`,
+    deadline: now + 47 * 60_000,
+    profile: {
+      name: "deploy",
+      image: "deploy",
+      allowedHosts: ["registry.npmjs.org", "app-staging.example.workers.dev"],
+      credentials: [{ host: "api.cloudflare.com", secret: DEPLOY_SECRET }],
+    },
+    steps: [
+      step("migrate", "npx wrangler d1 migrations apply app --remote", 0),
+      step("deploy", "npx wrangler deploy", 1),
+      step("smoke", "curl -sf https://app-staging.example.workers.dev/health", 2),
     ],
     timeoutSeconds: 1800,
     instance: "standard-1",

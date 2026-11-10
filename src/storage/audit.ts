@@ -66,6 +66,7 @@ export type AuditAction =
   | "secret.deleted"
   | "deployment.approved"
   | "deployment.retried"
+  | "deployment.rolled_back"
   // Enterprise SSO (OIDC) + SCIM (#253).
   | "user.disabled"
   | "user.enabled"

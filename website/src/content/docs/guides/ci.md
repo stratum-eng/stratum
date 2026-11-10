@@ -72,6 +72,8 @@ steps:
       npm test
     timeoutMinutes: 20  # this step; default 10, max 120
     optional: false     # true = reported, but does not gate the merge (unless merge.requiredChecks names the step)
+deploy:                 # optional; what runs AFTER a merge. See Deployments.
+  environments: [...]
 ```
 
 | Field | Meaning |
@@ -84,12 +86,22 @@ steps:
 | `timeoutMinutes` | Wall-clock limit for the whole job, 1–120. Default 30. The executor's operator may set a lower maximum. |
 | `instance` | `lite`, `standard-1`, `standard-2`, `standard-3` or `standard-4`. Omit it for the executor's default. A size above the executor's configured maximum is refused. |
 | `network.allow` | Up to 16 exact hostnames added to the default network allowlist. No wildcards, ports, IP addresses or URLs. |
+| `deploy` | Not CI. It describes what runs **after** a merge, per environment, and has its own rules and its own page: [Deployments](/guides/deployments/#deploy-pipelines). Nothing in it affects whether a change may merge. |
 
-The file is validated strictly. An unknown field, a misspelled key
-(`optinal: true`), an out-of-range timeout or a duplicate name makes the whole
-file invalid, and **an invalid file blocks every merge** in the project until it
-is fixed — the reason is shown on the blocked merge. A gate that silently
-ignored the line it did not understand would be a gate nobody wrote.
+The CI part of the file, everything except `deploy`, is validated strictly. An
+unknown field, a misspelled key (`optinal: true`), an out-of-range timeout or a
+duplicate name makes it invalid, and **an invalid CI configuration blocks every
+merge** in the project until it is fixed — the reason is shown on the blocked
+merge. A gate that silently ignored the line it did not understand would be a
+gate nobody wrote.
+
+The `deploy` section is the exception, because it is not a gate. A mistake
+there **does not block merges**: the merge goes through, nothing is deployed,
+and the mistake is shown as a failed deployment on the project's deployments
+page. The two halves are also run differently. Steps run on an unreviewed
+change, before the merge, with no credentials. A deploy pipeline runs only for
+a commit that has already merged, in a separate class of job, and is the only
+kind that is given credentials.
 
 A project with no `.stratum/ci.yaml` is unaffected by any of this.
 
@@ -165,8 +177,15 @@ and closes that path as soon as the checkout is verified. The code under test
 cannot read the token, cannot push, and cannot call Stratum's API as anyone.
 
 There is deliberately no way to give a step a secret. Jobs run code from
-changes nobody has reviewed yet. Deployments, which do need credentials, are a
-separate feature: see [Deployments](/guides/deployments/).
+changes nobody has reviewed yet.
+
+Deployments do need credentials, and are a separate **profile** of the same
+executor: a [deploy pipeline](/guides/deployments/#deploy-pipelines) runs only for a
+commit that has already merged, in a different container class, and even there
+the job does not hold the credential — the executor attaches it to requests
+for specific hosts, outside the container. A CI job cannot obtain it: the class
+that runs CI jobs is built without the handler that holds one, and a CI
+dispatch has no field that could name one.
 
 ### Network
 
@@ -317,7 +336,8 @@ way.
   no other language toolchains unless a step installs one from an allowed host.
 - **No caching.** Every job installs dependencies from scratch.
 - **No secrets, no artifacts, no test-report parsing.** A step produces a
-  status, a summary and a log.
+  status, a summary and a log. (Deploying a merged commit, with credentials,
+  is the [`deploy:` section](/guides/deployments/#deploy-pipelines) of this file.)
 - **No matrix.** One job per revision; steps run one after another.
 - **No cancel button.** A job whose change is re-evaluated, or whose checks are
   re-run, stops when it next reports a step and learns it was replaced.
@@ -330,9 +350,15 @@ way.
 
 The executor is a separate Cloudflare Worker in [`ci-executor/`](https://github.com/stratum-eng/stratum/tree/main/ci-executor),
 deployed separately from Stratum **on purpose**: it runs unreviewed code, so it
-is bound to nothing worth stealing — no D1, no KV, no Artifacts, no deploy
-credential. It holds one shared secret, one R2 bucket for logs, and its own two
-Durable Object classes.
+is bound to nothing a CI job can reach — no D1, no KV, no Artifacts. It holds
+one shared secret, one R2 bucket for logs, and its own Durable Object classes.
+
+If you use [deploy pipelines](/guides/deployments/#deploy-pipelines) it also holds
+your deploy credentials, as Wrangler secrets named `DEPLOY_CRED_*`. Those are
+reachable only by deploy jobs — a separate class and container application —
+and only as a header the executor adds to a request outside the container. An
+executor with no `DEPLOY_TARGETS` holds none and runs no deploy job. Setting
+them up is step 10.
 
 You need: the Workers Paid plan (Cloudflare Containers), **Docker running
 locally** when you deploy (Wrangler builds the job image), and Wrangler logged
@@ -419,6 +445,8 @@ elsewhere, give it a route and set `CI_EXECUTOR_URL = "https://…"` in Stratum'
 
 `APP_URL` must also be set on Stratum, as for [check runs](/guides/checks/#self-hosting-notes):
 it is the callback origin, and it must equal the executor's `STRATUM_ORIGIN`.
+Deploy pipelines need it too: the executor reports a deployment's outcome to
+`<APP_URL>/api/deploy-reports/<id>`.
 
 **8. Apply the database migration and deploy Stratum** the way you normally do.
 The executor needs migration `077_checks_ci_config_digest.sql`:
@@ -432,6 +460,18 @@ npx wrangler deploy
 watch its checks go `queued` → `running` → `passed`. If they are `errored`
 instead, the check's summary names what is missing. `npx wrangler tail` in
 `ci-executor/` shows the executor's side.
+
+**10. (Optional) Deploy pipelines.** To let projects on this instance deploy
+through the executor, give it a **deploy target** for each project and
+environment — `DEPLOY_TARGETS` in the executor's `[vars]` — and store each
+credential it names as a Wrangler secret on the executor
+(`npx wrangler secret put DEPLOY_CRED_…`, in `ci-executor/`), then deploy the
+executor again. The format, what each field means and how the credential is
+scoped are in
+[Deployments: Setting it up](/guides/deployments/#setting-it-up). Stratum itself
+needs nothing new for this beyond migration `081_deployment_pipelines.sql`,
+the deploy queue it already uses for static targets, and `APP_URL`; it never
+holds the credential.
 
 ### Operating notes
 
@@ -455,5 +495,5 @@ instead, the check's summary names what is missing. `npx wrangler tail` in
 
 - [Check runs](/guides/checks/) — the statuses, the callback contract, deadlines and the merge gate this is built on
 - [CI Integration (Bring Your Own CI)](/guides/ci-integration/) — run evaluations on your own infrastructure instead
-- [Deployments](/guides/deployments/) — publishing the merged tree, with credentials
+- [Deployments](/guides/deployments/) — deploying a merged commit: static targets, and deploy pipelines run by this executor
 - [Changes API: check runs](/reference/endpoints/#check-runs)

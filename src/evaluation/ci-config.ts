@@ -73,6 +73,7 @@ export interface CiStep {
 
 /** A validated `.stratum/ci.yaml`. Always a fresh object, never the parsed YAML. */
 export interface CiConfig {
+  /** Empty only for a file that declares a `deploy:` section and no steps. */
   steps: CiStep[];
   /** Wall-clock limit for the whole job, enforced from outside the container. */
   timeoutSeconds: number;
@@ -93,7 +94,22 @@ export type CiConfigParse =
   | { status: "ok"; config: CiConfig }
   | { status: "malformed"; reason: string };
 
-const TOP_LEVEL_KEYS = new Set(["version", "steps", "timeoutMinutes", "instance", "network"]);
+/**
+ * `deploy` is the file's other half (#416, `src/deploy/pipeline.ts`): the
+ * pipeline run for a commit AFTER it merges. It is allowed here and otherwise
+ * left alone — not validated, not part of the digest. A CI result is about the
+ * steps a change was tested with, and editing how a merged commit is deployed
+ * must not invalidate it; and a mistake in the deploy half must not block the
+ * merge gate, which is the rule deploys have always followed.
+ */
+const TOP_LEVEL_KEYS = new Set([
+  "version",
+  "steps",
+  "timeoutMinutes",
+  "instance",
+  "network",
+  "deploy",
+]);
 const STEP_KEYS = new Set(["name", "run", "timeoutMinutes", "optional"]);
 const NETWORK_KEYS = new Set(["allow"]);
 
@@ -191,14 +207,20 @@ export async function parseCiConfig(content: string): Promise<CiConfigParse> {
     const stray = unknownKey(parsed, TOP_LEVEL_KEYS);
     if (stray !== undefined) {
       return malformed(
-        `unrecognized field '${stray.slice(0, 40)}' (allowed: version, steps, timeoutMinutes, instance, network)`,
+        `unrecognized field '${stray.slice(0, 40)}' (allowed: version, steps, timeoutMinutes, instance, network, deploy)`,
       );
     }
     if (parsed.version !== undefined && parsed.version !== 1) {
       return malformed("'version' must be 1");
     }
 
-    if (!Array.isArray(parsed.steps) || parsed.steps.length === 0) {
+    // A file with a `deploy:` section and no `steps` at all is a project that
+    // deploys through the executor without gating merges on it. It has no CI
+    // steps, which is different from declaring an empty list of them.
+    const deployOnly =
+      parsed.steps === undefined && parsed.deploy !== undefined && parsed.deploy !== null;
+    if (deployOnly) parsed.steps = [];
+    if (!Array.isArray(parsed.steps) || (parsed.steps.length === 0 && !deployOnly)) {
       return malformed("'steps' must be a non-empty list");
     }
     if (parsed.steps.length > MAX_CI_STEPS) {

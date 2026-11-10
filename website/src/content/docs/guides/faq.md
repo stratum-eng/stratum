@@ -41,24 +41,31 @@ invariants GitHub doesn't have:
 
 ## Does Stratum replace GitHub Actions?
 
-No. Stratum has no native CI runner — no workflows, hosted runners, matrix
-builds, artifacts, caching, scheduled jobs, deployment environments, or
-status-check aggregation (it does not collect external CI check results the way
-a GitHub PR's checks tab does). Its code execution is limited to the evaluation
-pipeline: the sandbox evaluator, the `webhook` evaluator (a synchronous call-out
-to CI *you* host, which must answer within the request timeout — default 10s),
-and the post-merge smoke command run in a sandbox.
+Not yet, and not all of it. Stratum has no hosted runners, matrix builds,
+artifacts, caching or scheduled jobs. What it does have:
 
-Of those, **only the webhook evaluator works out of the box.** Both sandbox
+- **Check runs.** A project can declare named checks that an external CI
+  system reports back, asynchronously, and require them before a merge. See
+  [Check runs](/guides/checks/).
+- **A first-party CI executor**, driven by `.stratum/ci.yaml`, which runs a
+  project's steps in a fresh container per job. It is a separate Worker that
+  an operator has to deploy; an instance without it has no runner. See
+  [First-party CI](/guides/ci/).
+- **Evaluators** that run during evaluation: the sandbox evaluator, the
+  `webhook` evaluator (a synchronous call-out to CI *you* host, which must
+  answer within the request timeout — default 10s), and the post-merge smoke
+  command run in a sandbox.
+
+Of the evaluators, **only the webhook evaluator works out of the box.** Both sandbox
 paths need the Cloudflare Sandboxes beta, and `[[sandboxes]]` is commented out
 in `wrangler.toml` — so the hosted instance and any fresh self-host have no
 `SANDBOX` binding. Without it the sandbox evaluator does not skip, it **fails
 closed** (score 0 / failed), and naming `sandbox` in `merge.requiredEvaluators`
 therefore blocks every merge in that project; `merge.postMergeCommand` is
-skipped with a warning instead. If you want tests gating merges today, bring
-your own CI and wire it in via the webhook evaluator, or use layer mode and keep
-running GitHub Actions on the promoted PRs. See
-[CI Integration](/guides/ci-integration/).
+skipped with a warning instead. If you want tests gating merges on an instance
+with no executor deployed, bring your own CI and report through check runs or
+the webhook evaluator, or use layer mode and keep running GitHub Actions on the
+promoted PRs. See [CI Integration](/guides/ci-integration/).
 
 Two things on that list have since arrived in a narrow form. Stratum now has an
 **encrypted per-project secret store**, read by the deploy runner, by the `llm`
@@ -68,10 +75,14 @@ nothing else reads it. The webhook evaluator's older literal `secret` field
 still works but is deprecated — a value written there sits in
 `.stratum/policy.yaml`, in git, and in every clone, so treat it as published to
 anyone who can read the repository and move it to `secretRef`. And it can
-**deploy the merged tree** to Cloudflare or Vercel from a `deploys:` block, with an optional approval gate
-and a retry. That is not deployment environments: there is no
-staging/production separation, no per-environment variables, no build step, no
-preview deploy, and no rollback. See [Deployments](/guides/deployments/).
+**deploy the merged commit**: either by publishing the tree as committed to
+Cloudflare or Vercel from a `deploys:` block, or by running a **deploy
+pipeline** — your own build, migration and deploy commands, per environment,
+staging before production — on the first-party CI executor. Both have an
+optional approval gate, retry, and rollback to an earlier deployment (which
+redeploys an earlier version and does **not** undo a database migration).
+There is no preview deploy of an unmerged change. See
+[Deployments](/guides/deployments/).
 
 ## Do I have to leave GitHub to use it?
 

@@ -141,11 +141,13 @@ Cloudflare (static assets or a Worker script) or Vercel — using credentials
 stored in the project's encrypted secret store. Stratum does not execute that
 code itself; the provider does, once it is published.
 
-There is **no build step**: the tree is deployed exactly as committed. Commit
-your built output, or use the `vercel` target, which builds the uploaded source
-remotely. A deploy can be gated behind an approval
-(`requiresApproval: true`), and a failed one can be retried, but there is no
-rollback and no preview environment. See
+A `deploys:` entry has **no build step**: the tree is deployed exactly as
+committed. A project that needs a build, database migrations or a staging
+environment before production declares a **deploy pipeline** instead — its own
+commands, run by the [first-party CI executor](/guides/ci/) after the merge. Either
+kind can be gated behind an approval (`requiresApproval: true`), retried, and
+rolled back to an earlier deployment; neither gives you a preview environment.
+See
 [Deployments](/guides/deployments/) for the full configuration reference, the
 per-target secrets, and the limits.
 
@@ -383,11 +385,13 @@ To set expectations, Stratum has none of the following today:
   webhook evaluator's `secretRef`, and the `checks` evaluator's `secretRef`
   (to sign its dispatch and verify the runner's reports). Nothing interpolates
   it into a policy file or into a receiver's environment.
-- Deployment *environments* — no staging/production separation, no
-  per-environment variables, no environment protection rules. What exists is a
-  flat list of named deploys, each optionally gated by a single approval
-  (`requiresApproval: true`), plus a retry. There is no rollback, no preview
-  deploy of an unmerged change, and no build step. See
+- Deployment *environment protection rules* beyond one approval. A
+  [deploy pipeline](/guides/deployments/#deploy-pipelines) gives you ordered
+  environments (staging, then production), each optionally gated by a single
+  approval (`requiresApproval: true`), with per-environment credentials and
+  plain variables held by the executor, plus retry and rollback. There are no
+  required-reviewer lists, wait timers or branch restrictions per environment,
+  and no preview deploy of an unmerged change. See
   [Deployments](/guides/deployments/).
 - Check annotations, log uploads and artifacts. [Check runs](/guides/checks/) collect
   a status, a summary and a link per named job, and can gate the merge — but

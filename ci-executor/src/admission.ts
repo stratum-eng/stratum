@@ -12,6 +12,17 @@
  * was allowed runs out. The second does not depend on the job: a job object
  * that died, hung or never reported back still gives its slot up, so a lost
  * release cannot shrink the executor's capacity for good.
+ *
+ * Deploy jobs (#416) go through the same cap and hold a slot on the same
+ * terms. They are not given a reserved slot: with the default cap of 2 a
+ * reservation would halve CI's capacity all day for an event that happens a
+ * few times a day. They are given PRIORITY instead. A waiting deploy job
+ * takes the next slot that frees ahead of every waiting CI job, and waits in
+ * its own short queue, so a queue full of CI jobs can neither refuse a deploy
+ * nor stand in front of a rollback. The longest a deploy waits is the time
+ * left on the shortest running job. Priority cannot starve CI in practice:
+ * deploys are serialized per environment by Stratum and started only by a
+ * merge or a person, so there are never many waiting.
  */
 
 /** Slack past a job's own limit before its slot is taken back regardless. */
@@ -20,6 +31,8 @@ export const RELEASE_GRACE_MS = 2 * 60_000;
 export interface AdmissionLimits {
   maxConcurrent: number;
   maxQueued: number;
+  /** Priority (deploy) jobs that may wait. Counted apart from `maxQueued`. */
+  maxQueuedPriority?: number;
 }
 
 export interface AdmissionRequest {
@@ -27,13 +40,15 @@ export interface AdmissionRequest {
   timeoutMs: number;
   /** Latest instant the job may START and still finish in time to matter. */
   startBy: number;
+  /** A deploy job: takes a freed slot ahead of waiting CI jobs. */
+  priority?: boolean;
 }
 
 export interface AdmissionState {
   /** Job id to the instant its slot is reclaimed whatever the job says. */
   running: Record<string, number>;
   /** Waiting jobs, oldest first. */
-  queue: Array<{ jobId: string; timeoutMs: number; startBy: number }>;
+  queue: Array<{ jobId: string; timeoutMs: number; startBy: number; priority?: boolean }>;
 }
 
 export type AdmissionDecision =
@@ -78,19 +93,29 @@ export class Admission {
         reason: "the job could not finish before its checks' deadline",
       };
     }
-    // Never jump the queue: a free slot with jobs waiting belongs to them.
-    if (this.state.queue.length === 0 && this.runningCount() < this.limits.maxConcurrent) {
+    const priority = request.priority === true;
+    // Never jump the queue of one's own kind: a free slot with jobs waiting
+    // belongs to them. A deploy job only has other deploy jobs ahead of it.
+    const ahead = this.state.queue.filter((entry) => !priority || entry.priority === true);
+    if (ahead.length === 0 && this.runningCount() < this.limits.maxConcurrent) {
       this.occupy(jobId, request.timeoutMs, now);
       return { decision: "start" };
     }
-    if (this.state.queue.length >= this.limits.maxQueued) {
+    const sameKind = this.state.queue.filter((entry) => (entry.priority === true) === priority);
+    const limit = priority ? (this.limits.maxQueuedPriority ?? 0) : this.limits.maxQueued;
+    if (sameKind.length >= limit) {
       return {
         decision: "refused",
-        reason: `${this.runningCount()} job(s) running and ${this.state.queue.length} queued, which is this executor's limit`,
+        reason: `${this.runningCount()} job(s) running and ${sameKind.length}${priority ? " deploy job(s)" : ""} queued, which is this executor's limit`,
       };
     }
-    this.state.queue.push({ jobId, timeoutMs: request.timeoutMs, startBy: request.startBy });
-    return { decision: "queued", position: this.state.queue.length };
+    this.state.queue.push({
+      jobId,
+      timeoutMs: request.timeoutMs,
+      startBy: request.startBy,
+      ...(priority ? { priority: true } : {}),
+    });
+    return { decision: "queued", position: ahead.length + 1 };
   }
 
   /** A job ended (or was dropped while queued). Returns the jobs to start now. */
@@ -115,7 +140,12 @@ export class Admission {
       else waiting.push(entry);
     }
     while (waiting.length > 0 && this.runningCount() < this.limits.maxConcurrent) {
-      const next = waiting.shift();
+      // Deploy jobs first, oldest first; then CI jobs, oldest first.
+      const at = Math.max(
+        0,
+        waiting.findIndex((entry) => entry.priority === true),
+      );
+      const [next] = waiting.splice(at, 1);
       if (next === undefined) break;
       this.occupy(next.jobId, next.timeoutMs, now);
       result.start.push(next.jobId);

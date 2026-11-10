@@ -1920,7 +1920,7 @@ paths:
         - name: name
           in: query
           schema: { type: string }
-          description: Only deployments for this `deploys:` entry name
+          description: Only deployments for this `deploys:` entry or pipeline environment name
         - name: status
           in: query
           schema:
@@ -2044,6 +2044,14 @@ paths:
         and unlike approve an agent identity is accepted. The originating
         change id is carried over, so the "was this change reverted?" check
         still applies. Audited as `deployment.retried`.
+
+        A retry is not a way round a **pipeline** environment's approval
+        gate: a user's retry carries that user's approval, and an agent's
+        retry carries none. If the environment has `requiresApproval: true`
+        (read from the pipeline at the commit being retried), an agent's retry
+        waits at `pending_approval` until a user approves it — created there
+        directly when the retried deployment was itself approved, and
+        otherwise moved there when it is about to run.
       responses:
         "201":
           description: Retry attempt created and enqueued
@@ -2073,6 +2081,184 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           description: Deployments are not enabled on this instance (`DEPLOY_QUEUE_UNAVAILABLE`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/deployments/{id}/rollback:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: The `succeeded` deployment to put back
+    post:
+      operationId: rollbackDeployment
+      tags: [deployments]
+      summary: Roll back to an earlier deployment
+      description: |
+        Creates a **new** deployment of the same name (environment) and commit
+        as `{id}`, with `rollbackOf` set, and enqueues it. It redeploys what
+        that deployment deployed: for a pipeline environment that declares
+        `rollback:` steps and has a recorded `version`, those steps run with
+        `STRATUM_ROLLBACK_VERSION`; otherwise the environment's steps (or the
+        static target) run again at that commit.
+
+        **It does not undo a database migration.** Migrations are forward-only;
+        the earlier version is deployed against the schema as it is now.
+
+        Requires project **write** access and a **user** identity, exactly like
+        approve — an agent token is refused — and the caller is recorded as
+        `approvedBy`, so the rollback does not then wait for approval. It is
+        serialized with every other deployment of the environment, supersedes
+        deployments of it still `queued` or `pending_approval`, and never
+        promotes to a later environment. Audited as `deployment.rolled_back`.
+
+        A form-encoded caller must send `confirm=yes`; without it the response
+        is a `302` to the confirmation page and nothing happens. JSON callers
+        need no confirmation field.
+      responses:
+        "201":
+          description: Rollback deployment created and enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployment: { $ref: "#/components/schemas/Deployment" }
+        "302":
+          description: >
+            Form-encoded caller: redirected to the new deployment, or — without
+            `confirm=yes` — to the confirmation page
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The deployment did not succeed, so there is nothing to put back
+            (`DEPLOYMENT_NOT_ROLLBACKABLE`), or another retry or rollback took
+            the attempt number at the same moment (`DEPLOYMENT_RETRY_EXISTS`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: Deployments are not enabled on this instance (`DEPLOY_QUEUE_UNAVAILABLE`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/deployments/{id}/log:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getDeploymentLog
+      tags: [deployments]
+      summary: Read a pipeline deployment's full step log
+      description: |
+        The output of every step the deployment has run so far, one step after
+        another, as the CI executor kept it. Only a pipeline deployment
+        (`target: pipeline`) has one. Requires project **write** access, like
+        `logTail`: a deploy log is whatever the project's deploy commands
+        printed.
+      responses:
+        "200":
+          description: The log
+          content:
+            text/plain:
+              schema: { type: string }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: >
+            No such deployment; the deployment is not a pipeline deployment
+            (`LOG_NOT_AVAILABLE`); or no log has been stored yet
+            (`LOG_NOT_FOUND`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: The instance has no CI executor, or it could not be reached (`CI_EXECUTOR_UNAVAILABLE`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/deploy-reports/{deploymentId}:
+    parameters:
+      - name: deploymentId
+        in: path
+        required: true
+        schema: { type: string }
+        description: The deployment id handed to the CI executor in its deploy dispatch
+    post:
+      operationId: reportDeployment
+      tags: [deployments]
+      summary: Report a pipeline deployment's outcome (CI executor callback)
+      description: |
+        Called by the instance's CI executor, not by an API client. The request
+        carries no bearer token and no session; it is authenticated by the
+        `X-Stratum-Signature` header, the HMAC-SHA256 of the raw request body
+        under the instance's `CI_EXECUTOR_SECRET`.
+
+        One report finishes one `running` pipeline deployment. It cannot create
+        a deployment, finish one that was never handed to the executor
+        (`queued`, `pending_approval`), or change one that has already
+        finished.
+      security: []
+      parameters:
+        - name: X-Stratum-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^sha256=[0-9a-f]{64}$"
+          description: "`sha256=` followed by the hex HMAC-SHA256 of the raw request body"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeploymentReport" }
+      responses:
+        "200":
+          description: The deployment was finished with the reported outcome
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [applied, status]
+                properties:
+                  applied: { type: boolean }
+                  status: { type: string, enum: [succeeded, failed] }
+        "400":
+          description: Signed, but not a valid report (code INVALID_REPORT)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: >
+            Missing or wrong signature (code INVALID_SIGNATURE). The signature
+            is checked before the deployment is looked up, so the endpoint does
+            not reveal which deployment ids exist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >
+            There is no running pipeline deployment with this id for the
+            reported commit (code DEPLOYMENT_NOT_RUNNING): it already finished,
+            was given up on, or was never dispatched. Not retryable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: The body is over 128 KB (code PAYLOAD_TOO_LARGE)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -7814,12 +8000,16 @@ components:
         name:
           type: string
           description: >
-            The `deploys:` entry name, or "(unresolved)" for a row that never
-            selected one — a rejected entry, an unreadable tree, or a merge with
-            nothing configured
+            The `deploys:` entry name or the pipeline environment name; or
+            "(unresolved)" for a row that never selected one — a rejected entry,
+            an unreadable tree, or a merge with nothing configured — and
+            "(pipeline)" for an invalid `deploy:` section
         target:
           type: string
-          enum: [cloudflare-pages, cloudflare-workers, vercel, unresolved]
+          enum: [cloudflare-pages, cloudflare-workers, vercel, pipeline, unresolved]
+          description: >
+            `pipeline` is a deployment run by the CI executor from the
+            `deploy:` section of `.stratum/ci.yaml`
         attempt:
           type: integer
           description: 1 for the original; incremented by each retry
@@ -7851,9 +8041,63 @@ components:
           enum: [user, agent, system]
         requestedById: { type: string }
         approvedBy: { type: string }
+        version:
+          type: string
+          description: >
+            What the deployment put live, set when it succeeded: whatever a
+            pipeline's steps recorded (a Worker version id, for a Worker), or
+            the commit for a static target. It is what a rollback to this
+            deployment is given
+        rollbackOf:
+          type: string
+          description: The id of the deployment this one rolled back to. Absent on an ordinary deploy
         createdAt: { type: string, format: date-time }
         startedAt: { type: string, format: date-time }
         completedAt: { type: string, format: date-time }
+
+    DeploymentReport:
+      type: object
+      description: The body the CI executor POSTs when a pipeline deployment's job ends
+      required: [deploymentId, commitSha, status]
+      properties:
+        deploymentId:
+          type: string
+          description: Must equal the id in the URL, so a signed body is bound to one deployment
+        commitSha:
+          type: string
+          description: Must equal the commit the deployment is for
+        environment: { type: string }
+        status:
+          type: string
+          enum: [succeeded, failed]
+        cause:
+          type: string
+          enum: [failed, errored]
+          description: >
+            For a failed deployment: `failed` when a step failed, `errored` when
+            the job could not run to the end (a timeout, a lost container)
+        summary: { type: string }
+        steps:
+          type: array
+          description: How each step of the environment ended, in order
+          items:
+            type: object
+            required: [name, status]
+            properties:
+              name: { type: string }
+              status: { type: string, enum: [passed, failed, errored, skipped] }
+              summary: { type: string }
+        version:
+          type: string
+          description: >
+            What a step recorded as the deployed version. Stored only for a
+            succeeded deployment, and only if it is a short label
+        url:
+          type: string
+          description: The deployed URL a step recorded. Stored only if it is an https URL
+        logTail:
+          type: string
+          description: The end of the last step's output
 
     WebhookDelivery:
       type: object

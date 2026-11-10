@@ -809,6 +809,11 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   "GET /api/changes/:id/comments",
   "GET /api/changes/:id/reviews",
   "GET /api/deployments/:id",
+  // #416: a pipeline deployment's step log. Loads the deployment, resolves its
+  // project, and authorizes through canWriteProject with the request's
+  // binding. The executor's report (`POST /api/deploy-reports/:id`) is NOT
+  // here: like the check callback it sits outside the bound prefixes.
+  "GET /api/deployments/:id/log",
   "GET /api/projects/:name/changes",
   "GET /api/projects/:namespace/:slug",
   "GET /api/projects/:namespace/:slug/activity",
@@ -849,6 +854,9 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   "POST /api/changes/:id/reviews",
   "POST /api/deployments/:id/approve",
   "POST /api/deployments/:id/retry",
+  // #416: same shape as approve — user identity required, then canWriteProject
+  // with the request's binding on the deployment's own project.
+  "POST /api/deployments/:id/rollback",
   "POST /api/projects/:name/changes",
   "POST /api/projects/:name/changes/merge-batch",
   "POST /api/projects/:namespace/:slug/branches",

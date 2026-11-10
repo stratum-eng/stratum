@@ -63,3 +63,147 @@ steps:
   # not compile is noise.
   - name: lint
     run: npm run lint
+
+# ---------------------------------------------------------------------------
+# Deploy pipeline (#416): what happens to a commit AFTER it merges.
+#
+# Mirrors the deploy jobs in .github/workflows/ci.yml (staging, then
+# production) and deploy-production.yml, which stay in place until Stratum
+# hosts its own development. Read from the MERGED commit, so the pipeline that
+# deploys a commit is the one that commit carries; this file is protected
+# configuration, so changing it needs an independent approval.
+#
+# Environments run in order. A commit reaches production only after staging
+# succeeded, and then waits for a person to approve it. A step that fails stops
+# the pipeline where it broke: nothing after it runs, and nothing is promoted.
+#
+# NO CREDENTIAL APPEARS HERE, OR ANYWHERE IN STRATUM. The steps below call the
+# Cloudflare API as if they had a token. They do not: the executor attaches its
+# own credential to requests for api.cloudflare.com from outside the job's
+# container, per environment (DEPLOY_TARGETS on the executor). The
+# CLOUDFLARE_API_TOKEN a step sees is a fixed placeholder. CLOUDFLARE_ACCOUNT_ID
+# and POSTHOG_PUBLIC_KEY are plain configuration the executor's operator sets
+# for each environment; neither is a secret.
+#
+# MIGRATIONS ARE FORWARD-ONLY. `rollback` puts an earlier Worker version back.
+# It does not undo a migration, and nothing here tries to: a migration that an
+# earlier version cannot run against must not be merged in the first place.
+#
+# Reference: docs/user-guide/deployments.md.
+deploy:
+  timeoutMinutes: 30
+  instance: standard-2
+  environments:
+    - name: staging
+      steps:
+        - name: install
+          run: npm ci
+
+        - name: migrate
+          run: npx wrangler d1 migrations apply stratum-staging --remote --env=staging
+
+        # A deploy fails outright on a bound queue that does not exist. The
+        # names come from wrangler.toml, as in the workflow this mirrors.
+        - name: queues
+          run: |
+            node scripts/wrangler-queues.mjs staging > /tmp/queues.txt
+            while read -r queue; do
+              [ -z "$queue" ] && continue
+              if out=$(npx wrangler queues create "$queue" 2>&1); then
+                echo "Created queue $queue"
+              elif echo "$out" | grep -qiE "already (exists|taken)|11009"; then
+                echo "Queue $queue already exists"
+              else
+                echo "$out"
+                exit 1
+              fi
+            done < /tmp/queues.txt
+
+        - name: deploy
+          run: |
+            export WRANGLER_OUTPUT_FILE_PATH=/tmp/wrangler-deploy.ndjson
+            npx wrangler deploy --env=staging --var POSTHOG_PUBLIC_KEY:"${POSTHOG_PUBLIC_KEY:-}"
+            # The Worker version id: what a rollback to this deployment asks for.
+            node scripts/record-deploy-version.mjs "$WRANGLER_OUTPUT_FILE_PATH"
+            SUBDOMAIN=$(curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+              | jq -er '.result.subdomain')
+            echo "https://stratum-staging.$SUBDOMAIN.workers.dev" > "$STRATUM_DEPLOY_URL_FILE"
+
+        - name: smoke
+          timeoutMinutes: 5
+          run: |
+            URL=$(cat "$STRATUM_DEPLOY_URL_FILE")
+            echo "Testing $URL/api/health"
+            curl -sfS --retry 5 --retry-delay 5 "$URL/api/health"
+
+      rollback:
+        - name: install
+          run: npm ci
+        - name: rollback
+          run: |
+            npx wrangler rollback "$STRATUM_ROLLBACK_VERSION" --env=staging \
+              --message "Stratum rollback $STRATUM_DEPLOYMENT_ID"
+        - name: smoke
+          timeoutMinutes: 5
+          run: |
+            SUBDOMAIN=$(curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+              | jq -er '.result.subdomain')
+            curl -sfS --retry 5 --retry-delay 5 "https://stratum-staging.$SUBDOMAIN.workers.dev/api/health"
+
+    - name: production
+      requiresApproval: true
+      steps:
+        - name: install
+          run: npm ci
+
+        - name: migrate
+          run: npx wrangler d1 migrations apply stratum --remote --env=production
+
+        - name: queues
+          run: |
+            node scripts/wrangler-queues.mjs production > /tmp/queues.txt
+            while read -r queue; do
+              [ -z "$queue" ] && continue
+              if out=$(npx wrangler queues create "$queue" 2>&1); then
+                echo "Created queue $queue"
+              elif echo "$out" | grep -qiE "already (exists|taken)|11009"; then
+                echo "Queue $queue already exists"
+              else
+                echo "$out"
+                exit 1
+              fi
+            done < /tmp/queues.txt
+
+        - name: deploy
+          run: |
+            export WRANGLER_OUTPUT_FILE_PATH=/tmp/wrangler-deploy.ndjson
+            npx wrangler deploy --env=production --var POSTHOG_PUBLIC_KEY:"${POSTHOG_PUBLIC_KEY:-}"
+            node scripts/record-deploy-version.mjs "$WRANGLER_OUTPUT_FILE_PATH"
+            SUBDOMAIN=$(curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+              | jq -er '.result.subdomain')
+            echo "https://stratum.$SUBDOMAIN.workers.dev" > "$STRATUM_DEPLOY_URL_FILE"
+
+        - name: smoke
+          timeoutMinutes: 5
+          run: |
+            URL=$(cat "$STRATUM_DEPLOY_URL_FILE")
+            echo "Testing $URL/api/health"
+            curl -sfS --retry 5 --retry-delay 5 "$URL/api/health"
+
+      rollback:
+        - name: install
+          run: npm ci
+        - name: rollback
+          run: |
+            npx wrangler rollback "$STRATUM_ROLLBACK_VERSION" --env=production \
+              --message "Stratum rollback $STRATUM_DEPLOYMENT_ID"
+        - name: smoke
+          timeoutMinutes: 5
+          run: |
+            SUBDOMAIN=$(curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+              | jq -er '.result.subdomain')
+            curl -sfS --retry 5 --retry-delay 5 "https://stratum.$SUBDOMAIN.workers.dev/api/health"

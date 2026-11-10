@@ -2,12 +2,19 @@
  * Stratum's first-party CI executor (#415, ADR 012).
  *
  * A separate Worker from Stratum on purpose: it runs code from changes nobody
- * has reviewed yet, so it is deployed with nothing worth stealing. No D1, no
- * session store, no Artifacts binding, no deploy credential — a job dispatch
- * brings the one short-lived, read-only repository token the job needs, and
- * that token is used here, in the Worker, never inside a container.
+ * has reviewed yet, so it is deployed with nothing a CI job can reach. No D1,
+ * no session store, no Artifacts binding — a job dispatch brings the one
+ * short-lived, read-only repository token the job needs, and that token is
+ * used here, in the Worker, never inside a container.
  *
- *   POST /jobs             a signed dispatch from Stratum; 202 running or queued
+ * It may also hold deploy credentials (#416), as Wrangler secrets named
+ * `DEPLOY_CRED_*`. Those are for deploy jobs only — a merged commit, in a
+ * different Durable Object class and container application — and are attached
+ * to requests for specific hosts by an intercept handler, outside the
+ * container. Stratum's database holds none of them.
+ *
+ *   POST /jobs             a signed dispatch from Stratum (a CI job, or a deploy
+ *                          job for a merged commit); 202 running or queued
  *   GET  /logs/:checkRunId a step's log, to Stratum only (signed request)
  *   GET  /health           whether this deployment is configured
  *
@@ -15,16 +22,22 @@
  * by name; workerd refuses to start a Worker whose entry module exports
  * anything else, so constants live in the modules beside it.
  */
-import { type Env, MAX_DISPATCH_BYTES, readConfig } from "./config";
+import {
+  type Env,
+  MAX_DISPATCH_BYTES,
+  readConfig,
+  readDeploySecret,
+  readDeployTargets,
+} from "./config";
 import type { Coordinator } from "./coordinator";
-import { parseDispatch } from "./dispatch";
-import type { JobRunner } from "./job-object";
+import { DEPLOY_JOB_ID_PREFIX, parseDispatch } from "./dispatch";
+import type { DeployRunner, JobRunner } from "./job-object";
 import { serveLog } from "./logs";
 import { verify } from "./signature";
 
 export { Coordinator } from "./coordinator";
-export { EgressAllowlist, GitProxy } from "./egress";
-export { JobRunner } from "./job-object";
+export { DeployCredentialProxy, EgressAllowlist, GitProxy } from "./egress";
+export { DeployRunner, JobRunner } from "./job-object";
 
 /** A job must be able to start this long before its repository token expires. */
 const TOKEN_MARGIN_MS = 5 * 60_000;
@@ -83,7 +96,11 @@ async function submitJob(request: Request, env: Env): Promise<Response> {
   if (!(await verify(config.secret, raw, request.headers.get("X-Stratum-Signature")))) {
     return refuse(401, "Invalid signature", "INVALID_SIGNATURE");
   }
-  const parsed = parseDispatch(raw, config);
+  const parsed = parseDispatch(raw, config, {
+    targets: readDeployTargets(env),
+    // Presence only. The value is read by the intercept handler, per request.
+    hasSecret: (name) => readDeploySecret(env, name) !== undefined,
+  });
   if (!parsed.ok) return refuse(400, parsed.reason, "INVALID_DISPATCH");
   const { job } = parsed;
 
@@ -101,18 +118,29 @@ async function submitJob(request: Request, env: Env): Promise<Response> {
     );
   }
 
-  const jobId = crypto.randomUUID();
-  const jobs = env.JOB as unknown as DurableObjectNamespace<JobRunner>;
+  // The profile picks the Durable Object class, and with it the container
+  // application and whether a credential can be attached at all.
+  const isDeploy = job.profile.name === "deploy";
+  const jobId = `${isDeploy ? DEPLOY_JOB_ID_PREFIX : ""}${crypto.randomUUID()}`;
+  const jobs = (isDeploy ? env.DEPLOY_JOB : env.JOB) as unknown as DurableObjectNamespace<
+    JobRunner | DeployRunner
+  >;
   const runner = jobs.get(jobs.idFromName(jobId));
   const coordinators = env.COORDINATOR as unknown as DurableObjectNamespace<Coordinator>;
   const coordinator = coordinators.get(coordinators.idFromName("coordinator"));
 
   // Stored before it is admitted, so a job the coordinator promotes out of the
   // queue always has something to run.
-  await runner.accept(jobId, job);
+  if (!(await runner.accept(jobId, job))) {
+    return refuse(500, "The job could not be stored", "JOB_NOT_ACCEPTED");
+  }
   let decision: Awaited<ReturnType<Coordinator["submit"]>>;
   try {
-    decision = await coordinator.submit(jobId, { timeoutMs, startBy });
+    decision = await coordinator.submit(jobId, {
+      timeoutMs,
+      startBy,
+      ...(isDeploy ? { priority: true } : {}),
+    });
   } catch (error) {
     // The coordinator did not answer. The job was stored with its repository
     // token and now has no owner and no alarm, so nothing would ever delete
@@ -176,8 +204,15 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") {
       const loaded = readConfig(env);
       // Says which setting is wrong, never what it is set to.
-      return Response.json(loaded.ok ? { ok: true } : { ok: false, reason: loaded.reason }, {
-        status: loaded.ok ? 200 : 503,
+      if (!loaded.ok) return Response.json({ ok: false, reason: loaded.reason }, { status: 503 });
+      // A broken DEPLOY_TARGETS refuses deploy jobs and leaves CI running, so
+      // it is reported without failing the health check.
+      const targets = readDeployTargets(env);
+      return Response.json({
+        ok: true,
+        deploy: targets.ok
+          ? { ok: true, projects: Object.keys(targets.targets).length }
+          : { ok: false, reason: targets.reason },
       });
     }
     return refuse(404, "Not found", "NOT_FOUND");

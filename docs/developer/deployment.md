@@ -301,6 +301,30 @@ Two rules when changing it:
 - Deploy the executor **before** a Stratum deploy that adds the `CI_EXECUTOR`
   service binding: Wrangler refuses a binding to a Worker that does not exist.
 
+### Deploy pipelines run there too (#416)
+
+A project's `deploy:` section in `.stratum/ci.yaml` is run by the same Worker
+under a separate profile: its own Durable Object class (`DeployRunner`), its
+own container application and image, started only for a merged commit. The
+executor holds the deploy credentials — Wrangler secrets named `DEPLOY_CRED_*`,
+mapped to projects and environments by `DEPLOY_TARGETS` — and attaches them to
+requests for specific hosts outside the container. Stratum's database holds
+none of them. Setup is in the public guide:
+[Deployments → Setting it up](../user-guide/deployments.md#setting-it-up).
+
+Rules when changing it, in addition to the two above:
+
+- `readDeploySecret` is the only function that returns a deploy credential's
+  value, and the credential intercept handler is its only caller. Do not read
+  `env.DEPLOY_CRED_*` anywhere a job, a container or Durable Object storage is
+  in reach.
+- The CI class's egress (`egressFor("ci")`) has no credential factory. That is
+  the property the tests in `ci-executor/tests/deploy-job.test.ts` hold; a
+  change that gives it one is a change to the trust model in ADR 012.
+- Stratum's own repository declares its pipeline in `.stratum/ci.yaml`. It
+  mirrors the deploy jobs in `.github/workflows/ci.yml`, which remain the path
+  that actually deploys until the pipeline has been run against staging.
+
 ## Secrets Management
 
 ### Setting Secrets

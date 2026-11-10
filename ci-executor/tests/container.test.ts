@@ -177,6 +177,31 @@ describe("agent.mjs", () => {
     expect(agent(jobDir, ["write", target], content).status).toBe(0);
     expect(readFileSync(target, "utf8")).toBe(content);
   });
+
+  it("reads back a small file a step left, and says when there is none", () => {
+    const jobDir = tempDir();
+    const target = join(jobDir, "out", "version");
+    agent(jobDir, ["write", target], "11111111-2222\n");
+
+    const found = JSON.parse(agent(jobDir, ["read", target, "256"]).stdout) as {
+      exists: boolean;
+      content?: string;
+    };
+    expect(found.exists).toBe(true);
+    expect(Buffer.from(found.content ?? "", "base64").toString("utf8")).toBe("11111111-2222\n");
+
+    // Capped at what was asked for, so a step cannot hand back a file of any size.
+    const capped = JSON.parse(agent(jobDir, ["read", target, "4"]).stdout) as { content: string };
+    expect(Buffer.from(capped.content, "base64").toString("utf8")).toBe("1111");
+
+    expect(JSON.parse(agent(jobDir, ["read", join(jobDir, "missing"), "256"]).stdout)).toEqual({
+      exists: false,
+    });
+    // A directory is "nothing recorded", not an error.
+    expect(JSON.parse(agent(jobDir, ["read", join(jobDir, "out"), "256"]).stdout)).toEqual({
+      exists: false,
+    });
+  });
 });
 
 /** Run git with no user or system configuration. */
@@ -224,25 +249,33 @@ function fixture() {
   return { remote, baseSha, diff, headTreeSha };
 }
 
-function prepare(options: { remote: string; baseSha: string; diff: string; headTreeSha: string }) {
+function prepare(options: {
+  remote: string;
+  baseSha: string;
+  diff: string;
+  headTreeSha: string;
+  /** Extra environment, and names to leave out, for the deploy profile's mode. */
+  env?: Record<string, string>;
+  omit?: string[];
+}) {
   const work = tempDir();
   const diffFile = join(work, "change.diff");
   writeFileSync(diffFile, options.diff);
   const workspace = join(work, "workspace");
-  const result = spawnSync("bash", [PREPARE], {
-    encoding: "utf8",
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: work,
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_CONFIG_NOSYSTEM: "1",
-      BASE_SHA: options.baseSha,
-      HEAD_TREE_SHA: options.headTreeSha,
-      STRATUM_GIT_REMOTE: options.remote,
-      STRATUM_WORKSPACE: workspace,
-      STRATUM_DIFF: diffFile,
-    },
-  });
+  const env: Record<string, string> = {
+    PATH: process.env.PATH ?? "",
+    HOME: work,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
+    BASE_SHA: options.baseSha,
+    HEAD_TREE_SHA: options.headTreeSha,
+    STRATUM_GIT_REMOTE: options.remote,
+    STRATUM_WORKSPACE: workspace,
+    STRATUM_DIFF: diffFile,
+    ...options.env,
+  };
+  for (const name of options.omit ?? []) delete env[name];
+  const result = spawnSync("bash", [PREPARE], { encoding: "utf8", env });
   return { status: result.status, output: `${result.stdout}${result.stderr}`, workspace };
 }
 
@@ -310,5 +343,41 @@ describe("prepare.sh", () => {
     const result = prepare(change);
     expect(result.status).toBe(0);
     expect(() => readFileSync(join(result.workspace, "later.txt"))).toThrow();
+  });
+
+  it("in deploy mode, checks out the merged commit as it is: no diff, no tree to reproduce", () => {
+    const change = fixture();
+    const result = prepare({
+      ...change,
+      // A deploy job has no diff and no tree id; a stray diff file must not be applied.
+      omit: ["HEAD_TREE_SHA"],
+      env: { STRATUM_JOB_PROFILE: "deploy" },
+    });
+
+    expect(result.output).toContain(`checkout ready at commit ${change.baseSha}`);
+    expect(result.status).toBe(0);
+    expect(git(result.workspace, ["rev-parse", "HEAD"])).toBe(change.baseSha);
+    expect(readFileSync(join(result.workspace, "src/index.js"), "utf8")).toBe(
+      "module.exports = 1;\n",
+    );
+    expect(git(result.workspace, ["status", "--porcelain"])).toBe("");
+  });
+
+  it("in deploy mode, fails when the commit is not in the repository", () => {
+    const change = fixture();
+    const result = prepare({
+      ...change,
+      baseSha: "1".repeat(40),
+      omit: ["HEAD_TREE_SHA"],
+      env: { STRATUM_JOB_PROFILE: "deploy" },
+    });
+    expect(result.status).not.toBe(0);
+  });
+
+  it("outside deploy mode, still refuses to run without a tree to verify against", () => {
+    const change = fixture();
+    const result = prepare({ ...change, omit: ["HEAD_TREE_SHA"] });
+    expect(result.status).not.toBe(0);
+    expect(result.output).not.toContain("checkout ready");
   });
 });

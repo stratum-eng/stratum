@@ -2,6 +2,7 @@ import type { FC } from "hono/jsx";
 import {
   type Deployment,
   type DeploymentStatus,
+  PIPELINE_TARGET,
   TERMINAL_DEPLOYMENT_STATUSES,
   UNRESOLVED_TARGET,
 } from "../../storage/deployments";
@@ -84,6 +85,32 @@ function shortSha(sha: string): string {
   return sha.slice(0, 7);
 }
 
+/**
+ * Whether a deployment can be rolled back to: it has to have been live. The
+ * route enforces this (and who may do it); the page only decides whether to
+ * offer the control.
+ */
+export function canRollBackTo(deployment: Deployment): boolean {
+  return deployment.status === "succeeded" && deployment.target !== UNRESOLVED_TARGET;
+}
+
+/** A recorded version, shortened for a table cell. The full value is in the title. */
+function shortVersion(version: string): string {
+  return version.length > 12 ? `${version.slice(0, 12)}…` : version;
+}
+
+const EXAMPLE_PIPELINE = `deploy:
+  environments:
+    - name: staging
+      steps:
+        - name: deploy
+          run: npx wrangler deploy --env staging
+    - name: production
+      requiresApproval: true
+      steps:
+        - name: deploy
+          run: npx wrangler deploy --env production`;
+
 const EXAMPLE_POLICY = `deploys:
   - name: production
     target: vercel
@@ -107,6 +134,12 @@ const EmptyState: FC = () => (
       Provider credentials are stored per project under Settings → Deploy secrets, and referenced by
       name from <code>secrets:</code>.
     </p>
+    <p class="empty-state-hint">
+      A project that needs a build, database migrations or staged environments declares a pipeline
+      in <code>.stratum/ci.yaml</code> instead. It runs on the instance's CI executor, which holds
+      the deploy credentials:
+    </p>
+    <pre class="cli-hint">{EXAMPLE_PIPELINE}</pre>
   </div>
 );
 
@@ -168,6 +201,7 @@ export const DeploymentsPage: FC<DeploymentsPageProps> = ({
                   <th>Name</th>
                   <th>Target</th>
                   <th>Commit</th>
+                  <th>Version</th>
                   <th>Duration</th>
                   <th>Created</th>
                   {canWrite && <th>Actions</th>}
@@ -188,12 +222,18 @@ export const DeploymentsPage: FC<DeploymentsPageProps> = ({
                       {deployment.attempt > 1 && (
                         <span class="deploy-attempt"> · attempt {deployment.attempt}</span>
                       )}
+                      {deployment.rollbackOf !== undefined && (
+                        <span class="deploy-attempt"> · rollback</span>
+                      )}
                     </td>
                     <td class={deployment.target === UNRESOLVED_TARGET ? "deploy-target-none" : ""}>
                       {deployment.target}
                     </td>
                     <td class="mono" title={deployment.commitSha}>
                       {shortSha(deployment.commitSha)}
+                    </td>
+                    <td class="mono" title={deployment.version}>
+                      {deployment.version !== undefined ? shortVersion(deployment.version) : "—"}
                     </td>
                     <td>{formatDuration(deployment.durationMs)}</td>
                     <td>{deployment.createdAt}</td>
@@ -243,6 +283,20 @@ export const DeploymentDetailPage: FC<DeploymentDetailPageProps> = ({
           <dd class="mono">{deployment.commitSha}</dd>
           <dt>Attempt</dt>
           <dd>{deployment.attempt}</dd>
+          {deployment.version !== undefined && (
+            <>
+              <dt>Version</dt>
+              <dd class="mono">{deployment.version}</dd>
+            </>
+          )}
+          {deployment.rollbackOf !== undefined && (
+            <>
+              <dt>Rollback to</dt>
+              <dd>
+                <a href={`${base}/${deployment.rollbackOf}`}>{deployment.rollbackOf}</a>
+              </dd>
+            </>
+          )}
           <dt>Requested by</dt>
           <dd>{deployment.requestedById ?? deployment.requestedByType}</dd>
           {deployment.approvedBy !== undefined && (
@@ -286,6 +340,22 @@ export const DeploymentDetailPage: FC<DeploymentDetailPageProps> = ({
         {canWrite && (
           <div class="action-row">
             <RowActions deployment={deployment} />
+            {/* A link to a confirmation page, not a button that acts: rolling
+                back replaces what is live, and the page says what it will and
+                will not do before anything happens. */}
+            {canRollBackTo(deployment) && (
+              <a class="btn btn-small" href={`${base}/${deployment.id}/rollback`}>
+                Roll back to this deploy
+              </a>
+            )}
+            {deployment.target === PIPELINE_TARGET && deployment.status !== "pending_approval" && (
+              <a
+                class="btn btn-small"
+                href={`/api/deployments/${encodeURIComponent(deployment.id)}/log`}
+              >
+                Full log
+              </a>
+            )}
           </div>
         )}
       </div>
@@ -296,11 +366,83 @@ export const DeploymentDetailPage: FC<DeploymentDetailPageProps> = ({
         <div class="card">
           <h3 style={{ marginTop: 0 }}>Log tail</h3>
           <p class="settings-help">
-            The last output from the provider, truncated and with known secret values redacted.
+            {deployment.target === PIPELINE_TARGET
+              ? "How each step ended, and the end of the last step's output."
+              : "The last output from the provider, truncated and with known secret values redacted."}
           </p>
           <pre class="deploy-log">{deployment.logTail}</pre>
         </div>
       )}
+    </Layout>
+  );
+};
+
+interface RollbackConfirmPageProps {
+  project: DeploymentsProject;
+  deployment: Deployment;
+  user?: PageUser;
+}
+
+/**
+ * The confirmation a rollback goes through. A plain page with a plain form:
+ * the only thing on it that acts is the submit button, which posts
+ * `confirm=yes` to the same route an API caller uses.
+ *
+ * It states the one thing people assume a rollback does and it does not.
+ */
+export const RollbackConfirmPage: FC<RollbackConfirmPageProps> = ({
+  project,
+  deployment,
+  user,
+}) => {
+  const base = `/${project.namespace}/${project.slug}/deployments`;
+  return (
+    <Layout title={`Roll back ${deployment.name} — ${project.name}`} user={user}>
+      <ProjectHeader project={project} active="deployments" canWrite={true} />
+      <div class="page-header">
+        <h1>Roll back {deployment.name}</h1>
+      </div>
+      <div class="card">
+        <p>
+          This starts a new deployment of <strong>{deployment.name}</strong> that puts back what
+          this one deployed:
+        </p>
+        <dl class="detail-list">
+          <dt>Commit</dt>
+          <dd class="mono">{deployment.commitSha}</dd>
+          {deployment.version !== undefined && (
+            <>
+              <dt>Version</dt>
+              <dd class="mono">{deployment.version}</dd>
+            </>
+          )}
+          <dt>Deployed</dt>
+          <dd>{deployment.completedAt ?? deployment.createdAt}</dd>
+        </dl>
+        <p class="deploy-reason">
+          <strong>Database migrations are not undone.</strong> Migrations are forward-only: the
+          earlier code is deployed against the schema as it is now. If a later migration removed or
+          changed something that code relies on, rolling back will not bring it back.
+        </p>
+        <p class="settings-help">
+          The rollback waits its turn like any deployment of this environment, replaces any
+          deployment of it that is still queued or waiting for approval, and does not promote to a
+          later environment. It is recorded in the audit log under your name.
+        </p>
+        <form
+          method="post"
+          action={`/api/deployments/${encodeURIComponent(deployment.id)}/rollback`}
+          class="action-row"
+        >
+          <input type="hidden" name="confirm" value="yes" />
+          <button type="submit" class="btn btn-danger">
+            Roll back {deployment.name} to this deploy
+          </button>
+          <a class="btn" href={`${base}/${deployment.id}`}>
+            Cancel
+          </a>
+        </form>
+      </div>
     </Layout>
   );
 };

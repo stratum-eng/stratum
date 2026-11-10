@@ -189,6 +189,34 @@ export async function forwardDeployRequest(
   });
 }
 
+/**
+ * Hand a deploy message to `DEPLOY_QUEUE`, falling back to the outbox when the
+ * send fails. For producers that have already changed a row in a way only a
+ * queue message can follow up on — the same position the approve and retry
+ * routes are in.
+ *
+ * @returns Whether the message is on the queue or durably recorded for it.
+ */
+export async function sendDeployMessage(
+  env: Env,
+  logger: Logger,
+  input: { message: DeployQueueMessage; project?: string },
+): Promise<boolean> {
+  if (env.DEPLOY_QUEUE) {
+    try {
+      await env.DEPLOY_QUEUE.send(input.message);
+      return true;
+    } catch (error) {
+      logger.error(
+        "Could not enqueue a deploy message; recording it for recovery",
+        error instanceof Error ? error : new Error(String(error)),
+        { kind: input.message.kind, projectId: input.message.projectId },
+      );
+    }
+  }
+  return recordDeployRequest(env, logger, input);
+}
+
 /** Narrows an untrusted queue body to a message the runner will accept. */
 function parseDeployMessage(body: unknown): DeployQueueMessage | null {
   if (typeof body !== "object" || body === null) return null;
@@ -214,9 +242,9 @@ function parseDeployMessage(body: unknown): DeployQueueMessage | null {
     };
   }
 
-  if (msg.kind === "deployment") {
+  if (msg.kind === "deployment" || msg.kind === "advance") {
     if (!nonEmpty(msg.deploymentId)) return null;
-    return { kind: "deployment", projectId: msg.projectId, deploymentId: msg.deploymentId };
+    return { kind: msg.kind, projectId: msg.projectId, deploymentId: msg.deploymentId };
   }
 
   return null;

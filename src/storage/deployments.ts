@@ -76,8 +76,17 @@ export type DeploymentRequesterType = "user" | "agent" | "system";
  */
 export const UNRESOLVED_TARGET = "unresolved";
 
-/** What `deployments.target` can hold: a real provider, or {@link UNRESOLVED_TARGET}. */
-export type DeploymentTarget = DeployTargetName | typeof UNRESOLVED_TARGET;
+/**
+ * `target` for a deployment run by the CI executor from the `deploy:` section
+ * of `.stratum/ci.yaml` (#416). The row's `name` is the environment.
+ *
+ * Like {@link UNRESOLVED_TARGET} it is not a `DeployTargetName`: nothing in the
+ * provider registry dispatches on it. Its rows are run by `pipeline-runner`.
+ */
+export const PIPELINE_TARGET = "pipeline";
+
+/** What `deployments.target` can hold: a real provider, a pipeline, or {@link UNRESOLVED_TARGET}. */
+export type DeploymentTarget = DeployTargetName | typeof PIPELINE_TARGET | typeof UNRESOLVED_TARGET;
 
 /**
  * How long a claim holds the row before another consumer may reclaim it.
@@ -170,6 +179,14 @@ export interface Deployment {
   requestedById?: string;
   approvedBy?: string;
   /**
+   * What this deployment put live, as something that can be asked for again:
+   * for a pipeline, whatever its steps recorded (a Worker version id, for a
+   * Worker); for a static target, the commit. Set only on `succeeded`.
+   */
+  version?: string;
+  /** The deployment this one rolls back to. Absent on every ordinary deploy. */
+  rollbackOf?: string;
+  /**
    * **The merge this deployment publishes, not the moment the row was written.**
    *
    * Cloudflare Queues promise no ordering and a retry reorders outright, so
@@ -223,6 +240,8 @@ interface DeploymentRow {
   requested_by_type: string;
   requested_by_id: string | null;
   approved_by: string | null;
+  version: string | null;
+  rollback_of: string | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
@@ -231,7 +250,7 @@ interface DeploymentRow {
 const DEPLOYMENT_SELECT =
   "SELECT id, project_id, project, change_id, commit_sha, name, target, attempt, status, " +
   "reason, url, log_tail, duration_ms, lease_expires_at, requested_by_type, requested_by_id, " +
-  "approved_by, created_at, started_at, completed_at FROM deployments";
+  "approved_by, version, rollback_of, created_at, started_at, completed_at FROM deployments";
 
 function rowToDeployment(row: DeploymentRow): Deployment {
   const deployment: Deployment = {
@@ -254,6 +273,8 @@ function rowToDeployment(row: DeploymentRow): Deployment {
   if (row.lease_expires_at !== null) deployment.leaseExpiresAt = row.lease_expires_at;
   if (row.requested_by_id !== null) deployment.requestedById = row.requested_by_id;
   if (row.approved_by !== null) deployment.approvedBy = row.approved_by;
+  if (row.version !== null) deployment.version = row.version;
+  if (row.rollback_of !== null) deployment.rollbackOf = row.rollback_of;
   if (row.started_at !== null) deployment.startedAt = row.started_at;
   if (row.completed_at !== null) deployment.completedAt = row.completed_at;
   return deployment;
@@ -382,6 +403,8 @@ export async function insertDeployment(
     requestedByType: DeploymentRequesterType;
     requestedById?: string | null;
     approvedBy?: string | null;
+    /** The deployment this row rolls back to, for a rollback. */
+    rollbackOf?: string | null;
     createdAt?: string;
     now?: string;
   },
@@ -403,8 +426,8 @@ export async function insertDeployment(
       .prepare(
         "INSERT INTO deployments (id, project_id, project, change_id, commit_sha, name, target, " +
           "attempt, status, reason, url, log_tail, duration_ms, requested_by_type, " +
-          "requested_by_id, approved_by, created_at, completed_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "requested_by_id, approved_by, rollback_of, created_at, completed_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         id,
@@ -423,6 +446,7 @@ export async function insertDeployment(
         opts.requestedByType,
         opts.requestedById ?? null,
         opts.approvedBy ?? null,
+        opts.rollbackOf ?? null,
         createdAt,
         completedAt,
       )
@@ -449,6 +473,7 @@ export async function insertDeployment(
     }
     if (opts.requestedById) deployment.requestedById = opts.requestedById;
     if (opts.approvedBy) deployment.approvedBy = opts.approvedBy;
+    if (opts.rollbackOf) deployment.rollbackOf = opts.rollbackOf;
     if (completedAt) deployment.completedAt = completedAt;
 
     logger.info("Deployment row created", {
@@ -640,9 +665,17 @@ export async function completeDeployment(
     url?: string | null;
     logTail?: string | null;
     durationMs?: number | null;
+    /** What was put live. Written only with `succeeded`; ignored otherwise. */
+    version?: string | null;
     completedAt?: string;
     /** Refuse a row another delivery has claimed and is running. */
     onlyIfUnclaimed?: boolean;
+    /**
+     * Write only a row that is `running`. For the executor's report on a
+     * pipeline deployment, which may only ever finish a deployment that was
+     * actually handed to it — never one still `queued` or awaiting approval.
+     */
+    onlyIfRunning?: boolean;
   },
 ): Promise<Result<boolean, AppError>> {
   const completedAtResult = resolveTimestamp(opts.completedAt, "completedAt");
@@ -651,11 +684,13 @@ export async function completeDeployment(
 
   const terminalList = TERMINAL_DEPLOYMENT_STATUSES.map(() => "?").join(", ");
   const unclaimed = opts.onlyIfUnclaimed ? " AND status != 'running'" : "";
+  const running = opts.onlyIfRunning ? " AND status = 'running'" : "";
+  const version = opts.status === "succeeded" ? (opts.version ?? null) : null;
 
   try {
     const result = await db
       .prepare(
-        `UPDATE deployments SET status = ?, reason = ?, url = ?, log_tail = ?, duration_ms = ?, completed_at = ?, lease_expires_at = NULL WHERE id = ? AND project_id = ? AND status NOT IN (${terminalList})${unclaimed}`,
+        `UPDATE deployments SET status = ?, reason = ?, url = ?, log_tail = ?, duration_ms = ?, version = ?, completed_at = ?, lease_expires_at = NULL WHERE id = ? AND project_id = ? AND status NOT IN (${terminalList})${unclaimed}${running}`,
       )
       .bind(
         opts.status,
@@ -663,6 +698,7 @@ export async function completeDeployment(
         opts.url ?? null,
         opts.logTail ?? null,
         opts.durationMs ?? null,
+        version,
         completedAt,
         opts.deploymentId,
         opts.projectId,
@@ -1044,6 +1080,264 @@ export async function findDeploymentById(
   } catch (error) {
     const appError = toAppError(error, "findDeploymentById", { deploymentId });
     logger.error("Failed to find deployment", appError, { deploymentId });
+    return err(appError);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline deployments (#416): run by the CI executor, finished by its report.
+// ---------------------------------------------------------------------------
+
+/** Outcome of {@link claimPipelineDeployment}. Only `claimed: true` may dispatch. */
+export type ClaimPipelineOutcome =
+  | { claimed: true; deployment: Deployment }
+  /**
+   * `environment_busy`: another deployment of the same environment is running.
+   * The row is left `queued`; whatever finishes the running one starts it.
+   */
+  | { claimed: false; reason: "not_found" | "not_claimable" | "environment_busy" };
+
+/**
+ * Claim a pipeline deployment for dispatch — and, in the same statement, the
+ * environment it deploys to.
+ *
+ * **This is what serializes a pipeline per environment.** A pipeline is
+ * several steps run over minutes by another Worker: apply migrations, deploy,
+ * smoke test. Two of them interleaved against one environment can leave the
+ * newer schema under the older code. So a row becomes `running` only while no
+ * OTHER row of the same `(project_id, name)` is running with a live lease, and
+ * that condition is part of the UPDATE's `WHERE`, not a query before it: two
+ * consumers racing two different merges cannot both pass, because SQLite runs
+ * the two statements one after the other and the second sees the first's row.
+ *
+ * Differences from {@link claimDeployment}, each deliberate:
+ *
+ * - Only a `queued` row is claimable. A `running` pipeline row whose lease
+ *   expired is NOT reclaimed and re-run: nobody knows how far its steps got,
+ *   and running migrations and a deploy a second time on a guess is not safe.
+ *   {@link listOverdueRunningDeployments} finds it and it is failed instead,
+ *   for a person to retry.
+ * - The lease covers the whole job, including its wait for a slot on the
+ *   executor, because the row stays `running` until the executor reports.
+ *
+ * @param opts.leaseMs - How long the executor has to report before the row is
+ *   given up on. Required: there is no sensible default for another system's job.
+ */
+export async function claimPipelineDeployment(
+  db: D1Database,
+  logger: Logger,
+  opts: { projectId: string; deploymentId: string; leaseMs: number; now?: string },
+): Promise<Result<ClaimPipelineOutcome, AppError>> {
+  const nowResult = resolveTimestamp(opts.now, "now");
+  if (!nowResult.success) return err(nowResult.error);
+  const now = nowResult.data;
+  if (!Number.isFinite(opts.leaseMs) || opts.leaseMs <= 0) {
+    return err(
+      new ValidationError("leaseMs must be a positive number of milliseconds", {
+        leaseMs: opts.leaseMs,
+      }),
+    );
+  }
+  const leaseExpiresAt = new Date(Date.parse(now) + opts.leaseMs).toISOString();
+
+  try {
+    const updated = await db
+      .prepare(
+        "UPDATE deployments SET status = 'running', started_at = COALESCE(started_at, ?), " +
+          "lease_expires_at = ? WHERE id = ? AND project_id = ? AND status = 'queued' " +
+          "AND NOT EXISTS (SELECT 1 FROM deployments AS other " +
+          "WHERE other.project_id = deployments.project_id AND other.name = deployments.name " +
+          "AND other.id != deployments.id AND other.status = 'running' " +
+          "AND other.lease_expires_at IS NOT NULL AND other.lease_expires_at > ?)",
+      )
+      .bind(now, leaseExpiresAt, opts.deploymentId, opts.projectId, now)
+      .run();
+
+    const row = await readDeployment(db, opts.projectId, opts.deploymentId);
+    if (updated.meta.changes > 0) {
+      if (!row) {
+        return err(
+          new AppError(
+            "Deployment disappeared immediately after being claimed",
+            "DATABASE_ERROR",
+            500,
+            {
+              operation: "claimPipelineDeployment",
+              deploymentId: opts.deploymentId,
+            },
+          ),
+        );
+      }
+      logger.info("Pipeline deployment claimed", {
+        deploymentId: opts.deploymentId,
+        projectId: opts.projectId,
+        name: row.name,
+        leaseExpiresAt,
+      });
+      return ok({ claimed: true, deployment: row });
+    }
+    if (!row) return ok({ claimed: false, reason: "not_found" });
+    // Still `queued` and not claimed: the environment was the reason.
+    const reason = row.status === "queued" ? "environment_busy" : "not_claimable";
+    logger.info("Pipeline deployment not claimed", {
+      deploymentId: opts.deploymentId,
+      projectId: opts.projectId,
+      status: row.status,
+      reason,
+    });
+    return ok({ claimed: false, reason });
+  } catch (error) {
+    const appError = toAppError(error, "claimPipelineDeployment", {
+      deploymentId: opts.deploymentId,
+      projectId: opts.projectId,
+    });
+    logger.error("Failed to claim pipeline deployment", appError, {
+      deploymentId: opts.deploymentId,
+    });
+    return err(appError);
+  }
+}
+
+/**
+ * Put a `queued` deployment back to `pending_approval`.
+ *
+ * The runner's half of the approval gate for a pipeline environment. A row can
+ * reach `queued` without anyone having approved it — a retry of a deployment
+ * that was superseded while it waited, for one — and whether its environment
+ * needs approval is only known once the pipeline at its commit has been read.
+ * When it does, and the row has no `approvedBy`, it is parked here to wait for
+ * a person, exactly as if it had been created that way.
+ *
+ * Conditional on `queued`, so it cannot pull back a deployment that is
+ * running or finished.
+ *
+ * @returns `true` when the row was moved.
+ */
+export async function holdDeploymentForApproval(
+  db: D1Database,
+  logger: Logger,
+  opts: { projectId: string; deploymentId: string },
+): Promise<Result<boolean, AppError>> {
+  try {
+    const updated = await db
+      .prepare(
+        "UPDATE deployments SET status = 'pending_approval' " +
+          "WHERE id = ? AND project_id = ? AND status = 'queued' AND approved_by IS NULL",
+      )
+      .bind(opts.deploymentId, opts.projectId)
+      .run();
+    const held = updated.meta.changes > 0;
+    if (held) {
+      logger.info("Deployment held for approval", {
+        deploymentId: opts.deploymentId,
+        projectId: opts.projectId,
+      });
+    }
+    return ok(held);
+  } catch (error) {
+    const appError = toAppError(error, "holdDeploymentForApproval", {
+      deploymentId: opts.deploymentId,
+      projectId: opts.projectId,
+    });
+    logger.error("Failed to hold deployment for approval", appError, {
+      deploymentId: opts.deploymentId,
+    });
+    return err(appError);
+  }
+}
+
+/**
+ * The deployment of an environment that should run next: the NEWEST `queued`
+ * row of `(projectId, name)`, by merge time.
+ *
+ * Newest, not oldest, on purpose. When two merges are waiting behind a running
+ * deployment, running the older one first would deploy a commit only to
+ * replace it; the newer one supersedes it on the way in (`supersedeOlder`), so
+ * the environment goes straight to the latest commit and is never left on an
+ * older one by a later-arriving message.
+ */
+export async function findNextQueuedDeployment(
+  db: D1Database,
+  logger: Logger,
+  opts: { projectId: string; name: string },
+): Promise<Result<Deployment | null, AppError>> {
+  try {
+    const row = await db
+      .prepare(
+        `${DEPLOYMENT_SELECT} WHERE project_id = ? AND name = ? AND status = 'queued' ORDER BY created_at DESC, id DESC LIMIT 1`,
+      )
+      .bind(opts.projectId, opts.name)
+      .first<DeploymentRow>();
+    return ok(row ? rowToDeployment(row) : null);
+  } catch (error) {
+    const appError = toAppError(error, "findNextQueuedDeployment", { projectId: opts.projectId });
+    logger.error("Failed to find the next queued deployment", appError, {
+      projectId: opts.projectId,
+      name: opts.name,
+    });
+    return err(appError);
+  }
+}
+
+/**
+ * Pipeline deployments still `running` after their lease ran out: the executor
+ * was handed the job and never reported. Across all projects, oldest first,
+ * for the cron sweep that fails them.
+ *
+ * Only {@link PIPELINE_TARGET} rows. A static target's expired `running` row
+ * is reclaimed by its own consumer ({@link claimDeployment}) and must not be
+ * touched from here.
+ */
+export async function listOverdueRunningDeployments(
+  db: D1Database,
+  logger: Logger,
+  opts: { now?: string; limit?: number } = {},
+): Promise<Result<Deployment[], AppError>> {
+  const nowResult = resolveTimestamp(opts.now, "now");
+  if (!nowResult.success) return err(nowResult.error);
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 50), 1), MAX_LIST_LIMIT);
+  try {
+    const result = await db
+      .prepare(
+        `${DEPLOYMENT_SELECT} WHERE status = 'running' AND target = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ? ORDER BY lease_expires_at ASC LIMIT ?`,
+      )
+      .bind(PIPELINE_TARGET, nowResult.data, limit)
+      .all<DeploymentRow>();
+    return ok(result.results.map(rowToDeployment));
+  } catch (error) {
+    const appError = toAppError(error, "listOverdueRunningDeployments", {});
+    logger.error("Failed to list overdue pipeline deployments", appError);
+    return err(appError);
+  }
+}
+
+/**
+ * The attempt number a new row for `(projectId, name, commitSha)` should take:
+ * one more than the highest that exists.
+ *
+ * For a rollback, which may target a deployment that has since been retried,
+ * so "the target's attempt plus one" can already be taken. Two callers racing
+ * get the same answer and the unique index still admits only one of them.
+ */
+export async function nextDeploymentAttempt(
+  db: D1Database,
+  logger: Logger,
+  opts: { projectId: string; name: string; commitSha: string },
+): Promise<Result<number, AppError>> {
+  try {
+    const row = await db
+      .prepare(
+        "SELECT MAX(attempt) AS attempt FROM deployments WHERE project_id = ? AND name = ? AND commit_sha = ?",
+      )
+      .bind(opts.projectId, opts.name, opts.commitSha)
+      .first<{ attempt: number | null }>();
+    return ok((row?.attempt ?? 0) + 1);
+  } catch (error) {
+    const appError = toAppError(error, "nextDeploymentAttempt", { projectId: opts.projectId });
+    logger.error("Failed to read the latest deployment attempt", appError, {
+      projectId: opts.projectId,
+      name: opts.name,
+    });
     return err(appError);
   }
 }

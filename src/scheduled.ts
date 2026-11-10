@@ -6,6 +6,7 @@ import { runImportSweep } from "./queue/import-sweep";
 import { runTtlSweep } from "./queue/ttl-sweep";
 import { syncAllProjects } from "./routes/sync";
 import { sweepOverdueChecks } from "./services/check-runs";
+import { sweepOverdueDeployments } from "./services/deploy-reports";
 import { sweepStuckEvaluations } from "./services/evaluation-run";
 import { purgeExpiredAgentSignups } from "./storage/agent-signups";
 import { cleanupOldImports } from "./storage/imports";
@@ -27,7 +28,8 @@ export type ScheduledJob =
   | "agent-signup-purge"
   | "evaluation-sweep"
   | "check-deadline-sweep"
-  | "mirror-sweep";
+  | "mirror-sweep"
+  | "deploy-report-sweep";
 
 /** How long a finished import job is kept before `import-cleanup` prunes it. */
 const IMPORT_RETENTION_DAYS = 30;
@@ -58,6 +60,10 @@ const IMPORT_RETENTION_DAYS = 30;
  * `mirror-sweep` (#417) re-sends push-mirror nudges the queue lost: one indexed
  * query and a bounded batch of queue sends. With no mirror queue bound it
  * pushes a few mirrors inline instead, which is the only way they move then.
+ *
+ * `deploy-report-sweep` (#416) is one indexed query and a conditional write per
+ * row it finds: a pipeline deployment the CI executor never reported on is
+ * failed, so it stops holding its environment.
  */
 export function jobsForCron(cron: string): ScheduledJob[] {
   switch (cron) {
@@ -70,6 +76,7 @@ export function jobsForCron(cron: string): ScheduledJob[] {
         "evaluation-sweep",
         "check-deadline-sweep",
         "mirror-sweep",
+        "deploy-report-sweep",
       ];
     case "0 4 * * *":
       return ["backup"];
@@ -102,6 +109,7 @@ const JOB_RUNNERS: JobRunners = {
   "evaluation-sweep": (env, logger) => sweepStuckEvaluations(env, logger),
   "check-deadline-sweep": (env, logger) => sweepOverdueChecks(env, logger),
   "mirror-sweep": (env, logger) => sweepPushMirrors(env, logger),
+  "deploy-report-sweep": (env, logger) => sweepOverdueDeployments(env, logger),
 };
 
 /**

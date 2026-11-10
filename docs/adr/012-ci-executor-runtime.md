@@ -456,3 +456,109 @@ runs under the CI profile and nothing else — is held in three places:
   policy file's own `merge:` rules are still lost to a total read failure, as
   before this change; closing that needs a way to tell an empty repository from
   an unreachable one, and is not attempted here.
+
+## The deploy profile, as built (#416)
+
+Added with deploy pipelines. It implements "Deploy credentials are a separate
+profile" above, and it changes one sentence of this ADR: the executor Worker
+**does** now hold deploy credentials, when its operator configures deploy
+targets. "It holds no … deploy credential" remains true of an executor with no
+`DEPLOY_TARGETS`, which is the default.
+
+### What was built
+
+- **A second Durable Object class and container application.** `DeployRunner`
+  beside `JobRunner`, each with its own `[[containers]]` entry and image
+  (`deploy` adds `curl` and `jq` to the CI image). The dispatch's event picks
+  the class: `checks.requested` can only produce a `ci` job and goes to
+  `JobRunner`; `deploy.requested` can only produce a `deploy` job and goes to
+  `DeployRunner`. Each class refuses a job of the other profile.
+- **Stratum sends "deploy commit X to environment Y" and the steps.** The
+  steps come from the `deploy:` section of `.stratum/ci.yaml` at the merged
+  commit. The body carries no credential for the deploy target; the only
+  credential in it is the read-only repository token a CI job also gets.
+- **The executor decides which credential applies.** `DEPLOY_TARGETS` maps a
+  project id and environment name to hosts and the NAMES of Wrangler secrets
+  (`DEPLOY_CRED_*`). A pair with no entry is refused. The prefix is enforced so
+  configuration cannot point at `CI_EXECUTOR_SECRET`.
+- **The credential is attached by a third intercept handler**,
+  `DeployCredentialProxy`, under the rules this ADR set for the repository
+  proxy: scheme and exact hostname checked on the request itself, the upstream
+  URL built from the configured host, any credential the container sent
+  dropped, redirects neither followed nor passed back. Its props hold the
+  secret's name; the value is read from the Worker's environment inside the
+  handler, per request. So the value is never in a job, in Durable Object
+  storage, in a dispatch, in a report or in a log.
+- **A deploy job stops at its first failing step and reports once.** A CI job
+  runs every step and reports each as a check. A deployment is one row in
+  Stratum, so its job sends one signed report to `/api/deploy-reports/<id>`
+  with each step's outcome, the recorded version and URL, and a log tail.
+- **A deploy job checks out a commit, not a base plus a diff.** `prepare.sh`
+  has a deploy mode that skips the diff and the tree comparison; git's own
+  object ids are the proof that the checkout is the commit asked for. The mode
+  is explicit, so a CI job without a tree id still refuses to run.
+
+### Admission: priority, not a reservation
+
+Deploy jobs go through the same coordinator, count against the same cap, and
+hold a slot until their container is confirmed gone. The question was whether a
+deploy may be queued behind CI jobs or needs its own slot. Neither:
+
+- **Queued behind CI is wrong for the case that matters.** A rollback during an
+  incident would wait behind every queued CI job, each up to the job limit.
+  And a full CI queue would refuse a deploy outright.
+- **A reserved slot is wrong for the common case.** The default cap is 2. A
+  slot held for deploys halves CI's capacity all day for something that
+  happens a few times a day, and raising the cap to compensate raises the
+  operator's worst-case bill.
+
+So a waiting deploy job takes the next slot that frees, ahead of waiting CI
+jobs, and waits in its own bounded queue (`DEPLOY_MAX_QUEUED_JOBS`). The cap is
+never exceeded and nothing is held idle. The cost is that a deploy can wait for
+a running job to finish: at most the time left on the shortest one. Priority
+cannot starve CI in practice, because Stratum serializes deploys per
+environment and only a merge or a person starts one. An operator for whom that
+wait is too long raises the cap by one, which is the reservation, chosen
+knowingly.
+
+### What separates a CI job from a deploy credential, and what does not
+
+Stated exactly, because "separate profile" could be read as more than it is.
+
+- **A CI job's container cannot reach a deploy credential.** No intercept
+  registered for a CI job is the credentialed one: the machine that runs a CI
+  job is built by `egressFor("ci")`, which has no factory for it, and the
+  machine additionally refuses any job that names a credential unless the job's
+  own profile is `deploy`. The tests assert both, against the job machine with
+  a fake container, not by reading the code.
+- **The two profiles are separate container applications and Durable Object
+  classes, in ONE Worker.** Wrangler secrets are the Worker's, not a class's:
+  `env.DEPLOY_CRED_*` is readable by any code in the executor Worker,
+  including the code that serves CI jobs. The separation between the CI path
+  and the credential is therefore the structure of this Worker's code, not a
+  platform boundary. That is the same kind of statement this ADR made about
+  the main Worker when it moved the executor out of it, and it is weaker than
+  a separate Worker. It was chosen for #416 because the credential's exposure
+  is to this Worker's own code, which no job can change, and not to anything a
+  job runs.
+- **The stronger form is a second deployment of this same Worker for
+  deploys**, with `DEPLOY_TARGETS` and the `DEPLOY_CRED_*` secrets, and none on
+  the one that runs CI. The executor needs no change for that. Stratum does: it
+  reaches one executor today (`CI_EXECUTOR`), and would need a second binding
+  for deploy dispatches. Not built; listed as a follow-up.
+- **A deploy job's own steps act with the credential's authority.** They
+  cannot read the token, but they can make any request to the credentialed
+  host and it will be authorized. What a pipeline does is controlled by what
+  merges, which is why the pipeline is read from the merged commit and
+  `.stratum/ci.yaml` is protected configuration.
+
+### Not verified
+
+Everything here was tested against a fake `ctx.container` and against requests
+built in tests. `wrangler deploy --dry-run` accepts the two-application
+configuration and builds both images. Not run: a deploy job on a deployed
+executor; HTTPS interception of a real Wrangler session against the Cloudflare
+API (which hosts Wrangler contacts during `deploy` and `d1 migrations apply`
+besides `api.cloudflare.com` is not documented in one place, and a host not on
+the allowlist will fail there first); `wrangler rollback` through the
+intercept.

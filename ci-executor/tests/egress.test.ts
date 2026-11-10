@@ -7,8 +7,8 @@
  * code in the container writes.
  */
 import { describe, expect, it, vi } from "vitest";
-import { handleAllowedEgress, handleGitProxy } from "../src/egress";
-import { REPO_PASSWORD, REPO_URL } from "./helpers/fixtures";
+import { handleAllowedEgress, handleCredentialedEgress, handleGitProxy } from "../src/egress";
+import { DEPLOY_SECRET, DEPLOY_TOKEN, REPO_PASSWORD, REPO_URL } from "./helpers/fixtures";
 
 const AUTHORIZATION = `Basic ${btoa(`x:${REPO_PASSWORD}`)}`;
 const PROPS = { upstream: REPO_URL, authorization: AUTHORIZATION };
@@ -268,5 +268,165 @@ describe("the allowlist", () => {
       fetchImpl,
     );
     expect(await new Response(fetchImpl.mock.calls[0]?.[1]?.body).text()).toBe('{"a":1}');
+  });
+});
+
+describe("the deploy credential intercept", () => {
+  const CREDENTIAL = { host: "api.cloudflare.com", secret: DEPLOY_SECRET };
+  const API = "https://api.cloudflare.com/client/v4/accounts/acct123/workers/scripts/app?x=1";
+
+  it("sends the request to its one host with the executor's credential attached", async () => {
+    const fetchImpl = upstream(new Response('{"success":true}', { status: 200 }));
+    const response = await handleCredentialedEgress(
+      new Request(API, { method: "PUT", body: "module", headers: { "content-type": "text/x" } }),
+      CREDENTIAL,
+      DEPLOY_TOKEN,
+      fetchImpl,
+    );
+
+    expect(response.status).toBe(200);
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(url).toBe(API);
+    expect(init?.method).toBe("PUT");
+    expect(init?.redirect).toBe("manual");
+    const headers = new Headers(init?.headers);
+    expect(headers.get("Authorization")).toBe(`Bearer ${DEPLOY_TOKEN}`);
+    expect(headers.get("content-type")).toBe("text/x");
+  });
+
+  it("refuses a wrong host, whatever intercept it arrived through, without contacting anything", async () => {
+    const fetchImpl = upstream();
+    for (const url of [
+      "https://evil.example.com/client/v4/user",
+      "https://api.cloudflare.com.evil.example.com/client/v4/user",
+      "https://xapi.cloudflare.com/client/v4/user",
+    ]) {
+      const response = await handleCredentialedEgress(
+        new Request(url),
+        CREDENTIAL,
+        DEPLOY_TOKEN,
+        fetchImpl,
+      );
+      expect(response.status).toBe(403);
+      expect(await response.text()).not.toContain(DEPLOY_TOKEN);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("refuses a request that is not https, or on a non-default port", async () => {
+    const fetchImpl = upstream();
+    for (const url of [
+      "http://api.cloudflare.com/client/v4/user",
+      "https://api.cloudflare.com:8443/client/v4/user",
+    ]) {
+      const response = await handleCredentialedEgress(
+        new Request(url),
+        CREDENTIAL,
+        DEPLOY_TOKEN,
+        fetchImpl,
+      );
+      expect(response.status).toBe(400);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not follow a redirect, and does not hand it to the container either", async () => {
+    const fetchImpl = upstream(
+      new Response(null, { status: 307, headers: { Location: "https://evil.example.com/steal" } }),
+    );
+    const response = await handleCredentialedEgress(
+      new Request(API),
+      CREDENTIAL,
+      DEPLOY_TOKEN,
+      fetchImpl,
+    );
+
+    expect(response.status).toBe(502);
+    expect(response.headers.get("Location")).toBeNull();
+    expect(await response.text()).toContain("redirect");
+    // Exactly one request left the Worker: the redirect target never got one.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[1]?.redirect).toBe("manual");
+  });
+
+  it("replaces whatever credential the container sent, in every header that carries one", async () => {
+    const fetchImpl = upstream();
+    await handleCredentialedEgress(
+      new Request(API, {
+        headers: {
+          Authorization: "Bearer attached-by-the-stratum-executor",
+          Cookie: "session=1",
+          "X-Auth-Key": "legacy-key",
+          "X-Auth-Email": "someone@example.com",
+          "X-Custom": "kept",
+        },
+      }),
+      CREDENTIAL,
+      DEPLOY_TOKEN,
+      fetchImpl,
+    );
+
+    const headers = new Headers(fetchImpl.mock.calls[0]?.[1]?.headers);
+    expect(headers.get("Authorization")).toBe(`Bearer ${DEPLOY_TOKEN}`);
+    expect(headers.get("Cookie")).toBeNull();
+    expect(headers.get("X-Auth-Key")).toBeNull();
+    expect(headers.get("X-Auth-Email")).toBeNull();
+    expect(headers.get("X-Custom")).toBe("kept");
+  });
+
+  it("builds the upstream URL from its own host: the container chooses only path and query", async () => {
+    const fetchImpl = upstream();
+    await handleCredentialedEgress(
+      new Request("https://api.cloudflare.com//evil.example.com/x?y=https://evil.example.com"),
+      CREDENTIAL,
+      DEPLOY_TOKEN,
+      fetchImpl,
+    );
+    const target = new URL(String(fetchImpl.mock.calls[0]?.[0]));
+    expect(target.hostname).toBe("api.cloudflare.com");
+    expect(target.protocol).toBe("https:");
+  });
+
+  it("answers 503, sending nothing, when the secret is not set", async () => {
+    const fetchImpl = upstream();
+    for (const token of [undefined, ""]) {
+      const response = await handleCredentialedEgress(
+        new Request(API),
+        CREDENTIAL,
+        token,
+        fetchImpl,
+      );
+      expect(response.status).toBe(503);
+      expect(await response.text()).toContain(DEPLOY_SECRET);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("never returns the credential, or a cookie, to the container", async () => {
+    const fetchImpl = upstream(
+      new Response("ok", { status: 200, headers: { "Set-Cookie": "a=b", "X-Request-Id": "r1" } }),
+    );
+    const response = await handleCredentialedEgress(
+      new Request(API),
+      CREDENTIAL,
+      DEPLOY_TOKEN,
+      fetchImpl,
+    );
+    expect(response.headers.get("Set-Cookie")).toBeNull();
+    expect(response.headers.get("X-Request-Id")).toBe("r1");
+    expect(JSON.stringify([...response.headers.entries()])).not.toContain(DEPLOY_TOKEN);
+  });
+
+  it("answers 502 without detail when the host cannot be reached", async () => {
+    const response = await handleCredentialedEgress(
+      new Request(API),
+      CREDENTIAL,
+      DEPLOY_TOKEN,
+      vi.fn(async () => {
+        throw new Error(`connect failed with ${DEPLOY_TOKEN}`);
+      }),
+    );
+    expect(response.status).toBe(502);
+    expect(await response.text()).not.toContain(DEPLOY_TOKEN);
   });
 });

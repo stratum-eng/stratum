@@ -211,7 +211,15 @@ codes are in the [OpenAPI specification](openapi.yml).
   A `queued`, `running` or `pending_approval` row still has a future, and
   retrying one would publish the same commit twice
 - `DEPLOYMENT_RETRY_EXISTS` — `409`; that attempt number already exists —
-  someone retried first, and their row is the live one
+  someone retried or rolled back first, and their row is the live one
+- `DEPLOYMENT_NOT_ROLLBACKABLE` — `409`; only a `succeeded` deployment can be
+  rolled back to. Nothing else was ever live
+- `DEPLOYMENT_NOT_RUNNING` — `409`, on the CI executor's report
+  (`POST /api/deploy-reports/{id}`); there is no running pipeline deployment
+  with that id for that commit, so the report changes nothing
+- `LOG_NOT_AVAILABLE` / `LOG_NOT_FOUND` — `404`, on
+  `GET /api/deployments/{id}/log`; the deployment is not a pipeline deployment,
+  or no step log has been stored for it yet
 
 ### Manual conflict resolution
 

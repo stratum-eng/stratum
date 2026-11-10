@@ -6,6 +6,8 @@ import type { ProjectSecretSummary } from "../src/storage/project-secrets";
 import {
   DeploymentDetailPage,
   DeploymentsPage,
+  RollbackConfirmPage,
+  canRollBackTo,
   deploymentStatusClass,
   formatDuration,
 } from "../src/ui/pages/deployments";
@@ -195,6 +197,107 @@ describe("DeploymentDetailPage", () => {
     expect(renderDetail(makeDeployment({ status: "pending_approval" }))).toContain(">Approve<");
     expect(renderDetail(makeDeployment({ status: "failed" }))).toContain(">Retry<");
     expect(renderDetail(makeDeployment({ status: "running" }))).not.toContain(">Retry<");
+  });
+});
+
+describe("deploy pipelines in the UI (#416)", () => {
+  const renderDetail = (deployment: Deployment, canWrite: boolean): string =>
+    renderToString(
+      <DeploymentDetailPage
+        project={project}
+        deployment={deployment}
+        canWrite={canWrite}
+        user={user}
+      />,
+    );
+
+  it("shows the recorded version in the list and on the detail page", () => {
+    const deployment = makeDeployment({
+      target: "pipeline",
+      version: "0f1e2d3c-aaaa-bbbb-cccc-000000000000",
+    });
+    expect(renderList([deployment], false)).toContain("0f1e2d3c-aaa");
+    expect(renderDetail(deployment, false)).toContain("0f1e2d3c-aaaa-bbbb-cccc-000000000000");
+  });
+
+  it("marks a rollback, and links it to the deployment it put back", () => {
+    const rollback = makeDeployment({ id: "dep_2", target: "pipeline", rollbackOf: "dep_1" });
+    expect(renderList([rollback], false)).toContain("rollback");
+    expect(renderDetail(rollback, false)).toContain('href="/@alice/my-repo/deployments/dep_1"');
+  });
+
+  it("offers a rollback only for a deployment that was live, and only to a writer", () => {
+    const link = 'href="/@alice/my-repo/deployments/dep_1/rollback"';
+    expect(renderDetail(makeDeployment({ status: "succeeded" }), true)).toContain(link);
+    expect(renderDetail(makeDeployment({ status: "succeeded" }), false)).not.toContain(link);
+    for (const status of ["failed", "running", "queued", "pending_approval", "superseded"]) {
+      const html = renderDetail(makeDeployment({ status: status as DeploymentStatus }), true);
+      expect(html, status).not.toContain(link);
+    }
+    expect(canRollBackTo(makeDeployment({ status: "succeeded", target: "unresolved" }))).toBe(
+      false,
+    );
+  });
+
+  it("the rollback control is a link to a confirmation page, not a button that acts", () => {
+    const html = renderDetail(makeDeployment({ status: "succeeded" }), true);
+    // Nothing on the detail page posts to the rollback route.
+    expect(html).not.toContain('action="/api/deployments/dep_1/rollback"');
+    expect(html).not.toContain("<script");
+  });
+
+  it("offers the full log for a pipeline deployment, to a writer", () => {
+    const pipeline = makeDeployment({ target: "pipeline", status: "failed" });
+    expect(renderDetail(pipeline, true)).toContain('href="/api/deployments/dep_1/log"');
+    expect(renderDetail(pipeline, false)).not.toContain("/api/deployments/dep_1/log");
+    expect(renderDetail(makeDeployment({ status: "failed" }), true)).not.toContain(
+      "/api/deployments/dep_1/log",
+    );
+  });
+
+  it("explains pipelines in the empty state", () => {
+    const html = renderList([], true);
+    expect(html).toContain(".stratum/ci.yaml");
+    expect(html).toContain("requiresApproval: true");
+  });
+
+  describe("the rollback confirmation page", () => {
+    const html = renderToString(
+      <RollbackConfirmPage
+        project={project}
+        deployment={makeDeployment({
+          target: "pipeline",
+          version: "ver-a",
+          completedAt: "2026-09-01T10:05:00.000Z",
+        })}
+        user={user}
+      />,
+    );
+
+    it("is a plain form that posts the confirmation to the rollback route: no JavaScript", () => {
+      expect(html).toContain('method="post"');
+      expect(html).toContain('action="/api/deployments/dep_1/rollback"');
+      expect(html).toContain('name="confirm"');
+      expect(html).toContain('value="yes"');
+      expect(html).toContain('type="submit"');
+      expect(html).not.toContain("<script");
+      expect(html).not.toContain("onclick");
+    });
+
+    it("says what will be put back", () => {
+      expect(html).toContain("abcdef1234567890abcdef1234567890abcdef12");
+      expect(html).toContain("ver-a");
+    });
+
+    it("says plainly that migrations are not undone", () => {
+      expect(html).toContain("Database migrations are not undone.");
+      expect(html).toContain("forward-only");
+    });
+
+    it("offers a way out that does nothing", () => {
+      expect(html).toContain('href="/@alice/my-repo/deployments/dep_1"');
+      expect(html).toContain("Cancel");
+    });
   });
 });
 
