@@ -258,6 +258,20 @@ describe("ops alerts", () => {
     expect(await openAlerts(env)).toHaveLength(0);
   });
 
+  it("does not fall back to the @ form when the bare entry is there but unreadable", async () => {
+    const { env } = makeEnv({ OPS_ALERT_PROJECT: "acme/ops" } as Partial<Env>);
+    (env.STATE as unknown as { store: Map<string, string> }).store.set(
+      "project:acme:ops",
+      "{not json",
+    );
+    expect(await raiseOpsAlert(env, logger, alert)).toEqual({
+      status: "logged-only",
+      why: "the OPS_ALERT_PROJECT project could not be read",
+    });
+    // Nothing was filed in @acme/ops.
+    expect(await openAlerts(env)).toHaveLength(0);
+  });
+
   it("only logs when the project cannot be read, instead of throwing", async () => {
     const { env } = makeEnv({
       STATE: {

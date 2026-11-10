@@ -68,6 +68,12 @@ async function resolveAlertProject(
     for (const namespace of candidates) {
       const found = await getProjectByPath(env.STATE, namespace, parsed.slug, logger);
       if (found.success) return { project: found.data };
+      // Only "no such project" moves on to the next spelling. An entry that is
+      // there but unreadable is the project that was named, and filing in a
+      // different one because of it would put the alert in the wrong place.
+      if (found.error.code !== "NOT_FOUND") {
+        return { why: "the OPS_ALERT_PROJECT project could not be read" };
+      }
     }
   } catch (error) {
     // A KV read that throws must not take the alert with it: the caller still
