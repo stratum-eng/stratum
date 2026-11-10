@@ -298,6 +298,32 @@ describe("Namespace Routes", () => {
     Object.keys(mockImportProgress).forEach((key) => delete mockImportProgress[key]);
   });
 
+  describe("GET /@namespace/:slug/changes", () => {
+    it("lists a change under its title, and one without a title under its workspace", async () => {
+      await createTestProject(env, "@testuser", "my-project", "user_test", "public");
+      const { listChanges } = await import("../src/storage/changes");
+      const change = {
+        project: "my-project",
+        status: "open",
+        createdAt: "2026-11-10T00:00:00.000Z",
+      };
+      vi.mocked(listChanges).mockResolvedValueOnce({
+        success: true,
+        data: [
+          { ...change, id: "chg_titled", workspace: "ws-one", title: "Retry the upload once" },
+          { ...change, id: "chg_untitled", workspace: "ws-two" },
+        ],
+      } as never);
+
+      const res = await app.fetch(request("GET", "/@testuser/my-project/changes"), env);
+
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("Retry the upload once");
+      expect(html).toContain("ws-two");
+    });
+  });
+
   describe("GET /@namespace/:slug - UI Repo View", () => {
     it("renders project page for valid namespace and slug", async () => {
       await createTestProject(env, "@testuser", "my-project", "user_test", "public");

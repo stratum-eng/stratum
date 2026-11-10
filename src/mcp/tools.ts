@@ -515,10 +515,14 @@ export function buildTools(client: StratumClient): ToolDef[] {
         change_id: changeIdArg,
         title: {
           type: "string",
-          description: 'PR title (default "Stratum: <change id>")',
+          description: 'PR title (default: the change\'s title, else "Stratum: <change id>")',
           optional: true,
         },
-        body: { type: "string", description: "PR description", optional: true },
+        body: {
+          type: "string",
+          description: "PR description (default: the change's description)",
+          optional: true,
+        },
         draft: {
           type: "boolean",
           description: "Open the PR as a draft (default true)",
