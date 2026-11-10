@@ -729,16 +729,18 @@ deploymentApp.post("/:id/retry", async (c) => {
   //
   // - a user who may write may also approve, so their retry carries their
   //   approval and runs;
-  // - an agent's retry carries none. Where the source row shows the
-  //   environment was gated it is created `pending_approval` straight away;
-  //   otherwise it is queued, and the runner holds it if the environment turns
-  //   out to need approval after all — a deployment superseded while it waited
-  //   has no `approvedBy` to go by.
+  // - an agent's retry carries none. It is queued, and the runner holds it at
+  //   `pending_approval` if the environment requires approval.
+  //
+  // The source row's `approvedBy` is deliberately not consulted to guess
+  // whether the environment is gated. It does not say: a user's retry stamps
+  // it in an ungated environment too, and so does every rollback. Guessing
+  // from it parked an agent's retry in an ungated environment at
+  // `pending_approval`, where the runner never sees it and nobody is asked.
   //
   // Static targets keep the behaviour they have always had.
   const isPipeline = deployment.target === PIPELINE_TARGET;
-  const gated = isPipeline && deployment.approvedBy !== undefined;
-  const retryStatus: DeploymentStatus = gated && !userId ? "pending_approval" : "queued";
+  const retryStatus: DeploymentStatus = "queued";
 
   const inserted = await insertDeployment(c.env.DB, logger, {
     projectId: project.id,

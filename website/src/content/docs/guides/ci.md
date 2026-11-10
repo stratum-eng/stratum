@@ -86,12 +86,22 @@ deploy:                 # optional; what runs AFTER a merge. See Deployments.
 | `timeoutMinutes` | Wall-clock limit for the whole job, 1–120. Default 30. The executor's operator may set a lower maximum. |
 | `instance` | `lite`, `standard-1`, `standard-2`, `standard-3` or `standard-4`. Omit it for the executor's default. A size above the executor's configured maximum is refused. |
 | `network.allow` | Up to 16 exact hostnames added to the default network allowlist. No wildcards, ports, IP addresses or URLs. |
+| `deploy` | Not CI. It describes what runs **after** a merge, per environment, and has its own rules and its own page: [Deployments](/guides/deployments/#deploy-pipelines). Nothing in it affects whether a change may merge. |
 
-The file is validated strictly. An unknown field, a misspelled key
-(`optinal: true`), an out-of-range timeout or a duplicate name makes the whole
-file invalid, and **an invalid file blocks every merge** in the project until it
-is fixed — the reason is shown on the blocked merge. A gate that silently
-ignored the line it did not understand would be a gate nobody wrote.
+The CI part of the file, everything except `deploy`, is validated strictly. An
+unknown field, a misspelled key (`optinal: true`), an out-of-range timeout or a
+duplicate name makes it invalid, and **an invalid CI configuration blocks every
+merge** in the project until it is fixed — the reason is shown on the blocked
+merge. A gate that silently ignored the line it did not understand would be a
+gate nobody wrote.
+
+The `deploy` section is the exception, because it is not a gate. A mistake
+there **does not block merges**: the merge goes through, nothing is deployed,
+and the mistake is shown as a failed deployment on the project's deployments
+page. The two halves are also run differently. Steps run on an unreviewed
+change, before the merge, with no credentials. A deploy pipeline runs only for
+a commit that has already merged, in a separate class of job, and is the only
+kind that is given credentials.
 
 A project with no `.stratum/ci.yaml` is unaffected by any of this.
 

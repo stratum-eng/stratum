@@ -508,6 +508,32 @@ describe("promotion", () => {
     expect(dispatched.map((entry) => entry.body.environment)).toEqual(["staging", "production"]);
   });
 
+  it("a deployment whose claim hits a storage error is failed, not left queued for ever", async () => {
+    // Make only the claim statement fail, once.
+    const prepare = db.prepare.bind(db);
+    let failed = false;
+    db.prepare = ((sql: string) => {
+      if (!failed && sql.startsWith("UPDATE deployments SET status = 'running'")) {
+        failed = true;
+        throw new Error("D1 is unwell");
+      }
+      return prepare(sql);
+    }) as typeof db.prepare;
+    try {
+      await run(merge(SHA_A, "chg_a", 15));
+    } finally {
+      db.prepare = prepare;
+    }
+
+    // A row left `queued` here could be started by nothing: the message is
+    // acked, no other deployment is running to hand the environment on, and
+    // neither retry nor approve accepts a queued row.
+    expect(failed).toBe(true);
+    expect(dispatched).toHaveLength(0);
+    const stranded = await row("staging", SHA_A);
+    expect(stranded.status).toBe("failed");
+  });
+
   it("an unapproved queued deployment still runs in an environment that asks for no approval", async () => {
     await run(merge(SHA_A, "chg_a", 15));
     await report(await row("staging", SHA_A), "failed", { summary: "Step 'deploy' failed." });

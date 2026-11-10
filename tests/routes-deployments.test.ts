@@ -1051,7 +1051,13 @@ describe("retry of a pipeline deployment that went through approval", () => {
     }));
   });
 
-  it("an agent's retry goes back to waiting for a person, and is not queued", async () => {
+  // The source row's `approvedBy` does not say whether the environment is
+  // gated: a user's retry and every rollback stamp it in ungated environments
+  // too. So the route does not guess. An agent's retry is queued with no
+  // approval, and the RUNNER holds it at `pending_approval` if the environment
+  // requires one (covered in tests/deploy-pipeline-flow.test.ts). Parking it here
+  // instead stranded an agent's retry in an ungated environment.
+  it("an agent's retry is queued with no approval, whatever the source row carries", async () => {
     const res = await call("/api/deployments/dep_1/retry", {
       method: "POST",
       headers: { ...asAgent, "content-type": "application/json" },
@@ -1061,11 +1067,10 @@ describe("retry of a pipeline deployment that went through approval", () => {
     expect(insertDeployment).toHaveBeenCalledWith(
       env.DB,
       expect.any(Object),
-      expect.objectContaining({ status: "pending_approval", approvedBy: null }),
+      expect.objectContaining({ status: "queued", approvedBy: null }),
     );
-    // Nothing starts it but an approval.
-    expect(send).not.toHaveBeenCalled();
-    expect(insertEvent).not.toHaveBeenCalled();
+    // It reaches the runner, which is where the environment's gate is read.
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("a user's retry is its own approval", async () => {

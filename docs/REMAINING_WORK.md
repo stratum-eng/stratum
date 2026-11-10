@@ -198,17 +198,21 @@ which is the same machinery an async check-reporting API would need.
 
 #### Rollback
 
-Not modelled. Retrying an earlier successful commit is the only recovery, and it
-re-runs the deploy rather than reverting to a known-good artifact. Both
-Cloudflare and Vercel can promote a previous deployment by id, so recording that
-id turns rollback into a single API call.
+Shipped for deploy pipelines (#416): each successful deployment records its
+version, and a rollback redeploys an earlier one. It does not undo a migration.
+Static `deploys:` targets still have no rollback: retrying an earlier
+successful commit re-runs the deploy. Both Cloudflare and Vercel can promote a
+previous deployment by id, so recording that id would give static targets the
+same.
 
 #### Environments and promotion
 
-`deploys:` is a flat list of names with no relationship between them. The model
-users expect is staging → production, where production is a **promotion** of an
-artifact that already passed staging rather than a fresh deploy of the same
-commit.
+Shipped for deploy pipelines (#416): ordered environments, each created only
+after the previous one succeeded, with an optional approval gate. What is still
+missing is **promotion of an artifact**: each environment runs its own steps
+against the same commit and does not reuse what staging built. Static
+`deploys:` targets remain a flat list of names with no relationship between
+them.
 
 This is the item most worth doing for reasons beyond parity. The approval gate,
 the deployment record, the audit trail, and the invariant that agent credentials

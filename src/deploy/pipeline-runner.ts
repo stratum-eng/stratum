@@ -390,10 +390,22 @@ export async function runPipelineDeployment(
     leaseMs: allowanceMs,
     now: host.iso(),
   });
-  if (!claim.success || !claim.data.claimed) {
+  if (!claim.success) {
+    // The claim itself failed, a storage error. Returning the row as `queued`
+    // would strand it: the queue message is acked, nothing else is running in
+    // this environment to start the next queued row, and neither retry nor
+    // approve accepts a row in that state. It is still unclaimed, so it can be
+    // written failed, which a person can see and retry.
+    await volume.release();
+    return await host.failWithoutRunning(
+      deployment,
+      "Not started: the deployment could not be claimed because of a storage error. Nothing was deployed; retry it.",
+    );
+  }
+  if (!claim.data.claimed) {
     // Not this attempt's deploy: the unit it reserved goes back.
     await volume.release();
-    if (claim.success && !claim.data.claimed && claim.data.reason === "environment_busy") {
+    if (claim.data.reason === "environment_busy") {
       logger.info("Environment is busy; the deployment waits its turn", {
         deploymentId: deployment.id,
         name: deployment.name,
