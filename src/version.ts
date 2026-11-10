@@ -8,7 +8,7 @@
  * release bump that forgets this line fails CI rather than shipping a stale
  * version to every MCP client's log and every analytics event.
  */
-export const STRATUM_VERSION = "0.3.0";
+export const STRATUM_VERSION = "0.4.0";
 
 /**
  * Where a visitor to this instance can obtain its source, offered in the page

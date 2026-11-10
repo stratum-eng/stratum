@@ -7,6 +7,339 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-10
+
+### Added
+- **Telemetry can be made opt-in for new accounts.** Setting
+  `TELEMETRY_CONSENT_AT_SIGNUP = "true"` adds an unticked *Send anonymous usage
+  analytics* box to every signup form (magic link, the username step after
+  GitHub or Google, and the approval page of an agent-requested signup). An
+  account is created opted out of both server-side and browser telemetry unless
+  the box was ticked, and accounts created with nobody to ask — SCIM
+  provisioning and SSO just-in-time — start opted out. The setting is off by
+  default, so a self-hosted instance behaves exactly as before unless it turns
+  this on, and existing accounts keep the setting they have. Anyone can still
+  change their choice later under **Settings → Privacy**.
+- **Check runs: asynchronous, per-job CI results reported back to a change (#414).**
+  A new `checks` evaluator in `.stratum/policy.yaml` sends each evaluated
+  revision to your CI runner and returns immediately; the runner reports each
+  named check as `running`, then `passed`, `failed` or `errored`, through a
+  signed callback (`POST /api/checks/:id`) — minutes later if it needs to.
+  Check names are declared in the policy on the default branch, the callback is
+  authenticated with a project secret named by `secretRef`, and a check that has
+  not finished by its deadline (30 minutes by default, `deadlineMs` to change
+  it) becomes `errored`. See the new *Check runs* guide for the runner contract.
+- **`merge.requiredChecks`** lists the checks that must have passed before a
+  change can merge. It reads the newest run of each check for the evaluated
+  revision and fails closed: a check that is missing, queued, running, failed or
+  errored blocks the merge, on both the single and the batch merge path. New
+  commits start the checks again.
+- Check runs appear on the change page with a **Re-run** button, in the API
+  (`GET /api/changes/:id/checks`, `POST /api/changes/:id/checks/:checkId/rerun`),
+  and over MCP as `stratum_list_checks` and `stratum_rerun_check`.
+- **First-party CI: Stratum runs your project's own checks (#415).** Commit a
+  `.stratum/ci.yaml` listing named steps — `npm run lint`, `npm test`, whatever
+  the project gates on — and Stratum's CI executor runs them for every
+  evaluated revision, each step reported as its own check run. A job runs in a
+  fresh container that is destroyed afterwards, with no internet beyond an
+  allowlist of package registries and **no credential of any kind**. It rebuilds
+  the change from its base commit and diff and refuses to run a single step
+  unless the result is exactly the tree that was evaluated. See the new
+  *First-party CI* guide.
+- **Every step in `.stratum/ci.yaml` is a required check**, without being listed
+  under `merge.requiredChecks`; mark a step `optional: true` to make it advisory.
+  The file is read from the default branch, never from the change, and joins the
+  protected configuration files: a change cannot edit the steps it is gated by,
+  and a change that touches the file needs an independent approval. If the file
+  on the default branch changes after a change's checks ran, the merge is
+  blocked until the change is re-evaluated.
+- Each step has a **log**, linked from the check and available at
+  `GET /api/changes/:id/checks/:checkId/log` to anyone who can read the project.
+- The check dispatch sent to a project's own runner gains **`headTreeSha`**, the
+  git tree id of the evaluated revision, so a runner that rebuilds a change from
+  `baseSha` and `diff` can verify it built the right thing before running
+  anything. Existing runners can ignore it.
+- Self-hosters: first-party CI needs the new **executor Worker** in
+  `ci-executor/`, deployed separately from Stratum, plus a shared
+  `CI_EXECUTOR_SECRET` and a `CI_EXECUTOR` service binding (or
+  `CI_EXECUTOR_URL`). The *First-party CI* guide lists every step. An instance
+  without the executor behaves exactly as before unless a project adds a
+  `.stratum/ci.yaml`, in which case its checks are `errored` with a summary
+  saying what is missing. The release adds migration
+  `077_checks_ci_config_digest.sql` (one nullable column and one index).
+- **Deploy pipelines: build, migrate, and deploy to staged environments (#416).**
+  A project can now declare a `deploy:` section in `.stratum/ci.yaml`: an
+  ordered list of environments, each with its own steps — install, apply
+  database migrations, deploy, smoke test. When a change merges, Stratum's CI
+  executor checks out the merged commit and runs the first environment's steps;
+  each later environment is deployed only after the one before it succeeded,
+  and an environment marked `requiresApproval: true` waits for a person first.
+  A step that fails stops the pipeline: nothing after it runs and nothing is
+  promoted. Deployments of one environment never run at the same time, and a
+  later merge is never overtaken by an earlier one. See the *Deployments* guide.
+- **Deploy credentials for a pipeline are never stored in Stratum.** They live
+  in the CI executor's own secret store, are scoped to one project, one
+  environment and one hostname, and are attached to a deploy job's requests
+  outside the job's container — the job, and Stratum's database, never hold
+  them. A CI job, which runs unreviewed code, cannot obtain them.
+- **Rollback.** Every successful deployment records the **version** it put
+  live (for a Cloudflare Worker, its version id), and its page has a *Roll back
+  to this deploy* action, also at `POST /api/deployments/:id/rollback`. It is
+  restricted to the people who may approve a deployment, asks for confirmation
+  on a page that works without JavaScript, is recorded in the audit log, and
+  waits its turn like any other deployment. **A rollback redeploys an earlier
+  version; it does not undo a database migration** — migrations are
+  forward-only. Rollback works for the existing static `deploys:` targets too,
+  where it publishes the earlier commit again.
+- Retrying a pipeline deployment does not bypass its approval gate: an agent's
+  retry for an environment that requires approval waits for a user.
+- A pipeline deployment's full step log is available to project writers from
+  its page and at `GET /api/deployments/:id/log`.
+- Deployments gain two fields in the API: `version` and `rollbackOf`, and a new
+  `target` value, `pipeline`.
+- Self-hosters: pipelines need the **CI executor** (`ci-executor/`) redeployed
+  from this release, with a `DEPLOY_TARGETS` variable naming each project and
+  environment it may deploy and a Wrangler secret per credential
+  (`DEPLOY_CRED_…`). The *Deployments* guide lists every step. Stratum itself
+  needs migration `081_deployment_pipelines.sql` (two nullable columns and one
+  index), `APP_URL`, and the deploy queue it already uses. An instance that
+  does none of this behaves as before; the existing static `deploys:` targets
+  are unchanged.
+- **Push mirror to GitHub.** A project can keep a read-only copy of its default
+  branch and tags on a GitHub repository. Stratum pushes after every merge, and
+  only ever fast-forwards: it never force-pushes and never deletes a ref. If the
+  GitHub repository has history the project does not, the mirror is marked
+  `diverged`, a `mirror.diverged` event and audit entry are written, and nothing
+  is pushed until a project admin resumes it. Failed pushes retry with backoff
+  and then leave a visible `failed` state; a merge is never blocked or failed by
+  its mirror. Configure it under **Settings → GitHub mirror** or with
+  `PUT /api/projects/{namespace}/{slug}/mirror` (project admins only). Status is
+  on the settings page, at `GET …/mirror`, and in the `mirror` field of
+  `GET …/sync/status`. Needs the GitHub App installed on the mirror repository
+  with **Contents: read and write** (and **Workflows: read and write** if the
+  project has workflow files). See the "Mirroring a project to GitHub" guide.
+- `mirror.diverged` and `mirror.failed` events, subscribable by project webhooks.
+- **Break-glass resync from GitHub.** A project admin can fast-forward a
+  project's default branch to the same branch on its push mirror (or, for a
+  project with no mirror, its linked GitHub repository), for the day a fix had to
+  land on GitHub because Stratum could not merge. It only ever fast-forwards: a
+  diverged branch is refused with `409 RESYNC_DIVERGED`, which names both
+  commits, and nothing is forced, rewritten or merged. **The commits it brings in
+  are not evaluated**. The `branch.resynced` audit entry and the new
+  `branch.resynced` event say so and list them; a `branch.resync_requested`
+  entry, written before anything runs, records who asked and from where, and
+  a `branch.resync_uncertain` entry records a resync that stopped without
+  knowing whether its push landed. Audit entries are best-effort: a failed
+  write is logged and does not stop the resync. It is
+  available as `POST /api/projects/{namespace}/{slug}/resync` and as a card in
+  project settings with a typed confirmation. OAuth grants and agents cannot run
+  it, there is no MCP tool for it, and the organization's second-factor policy
+  and IP allowlist apply. A mirror left `diverged` or `failed` by the incident is
+  resumed and returns to `ok` without a force push. See
+  `docs/user-guide/push-mirror.md`.
+- `branch.resynced` event, subscribable by project webhooks.
+- A break-glass runbook for an instance that hosts its own code,
+  `docs/runbooks/break-glass-self-hosting.md`. It has not been rehearsed yet.
+- **Pull requests on a GitHub mirror can be brought into Stratum as changes.**
+  When an admin turns it on for a project's push mirror, a pull request opened
+  against the mirror's default branch is recorded as a change in the new status
+  `external`. Nothing runs on it: no evaluation, no CI job, and it cannot be
+  merged, even by force. A maintainer imports it with one action (a button on
+  the change page that works without JavaScript, or
+  `POST /api/changes/{id}/import`), which brings the contributor's own commits
+  into a workspace and starts the usual evaluation. New commits on the pull
+  request send the change back to `external` and dismiss its approvals. After
+  the change merges and the mirror has pushed, Stratum comments on the pull
+  request with a link to the change, and closes it if GitHub has not marked it
+  merged by itself (a squash). See the new guide, "Pull requests on the
+  mirror".
+- **A contributor-agreement setting for mirrors.** With
+  `requireContributorAgreement`, a maintainer must confirm at import that the
+  pull request's author has agreed to the project's contributor agreement. The
+  confirmation is written to the audit log.
+- `GET /api/changes/{id}` returns `externalPullRequest` for such a change, and
+  `GET /api/projects/{name}/changes` accepts `?status=external`.
+- A squash merge of a change that came from a pull request names the pull
+  request's commit authors in `Co-authored-by` trailers.
+- **Admins can see what the second-factor policy will refuse before turning it on.** `GET /api/orgs/{slug}/security` now returns `secondFactorImpact` to admins and the owner: how many members, API tokens, agents, OAuth grants and legacy keys do not meet the policy.
+- **`DO_JURISDICTION`: restrict every Durable Object to a Cloudflare jurisdiction.**
+  Set it to `eu`, `us` or `fedramp` and all four Durable Object classes run and
+  store data only inside that jurisdiction. It is off unless set, and it is for a
+  **new** deployment: a restricted namespace addresses different objects, so
+  turning it on later leaves existing Durable Object state unreachable. A value
+  that is not a supported jurisdiction answers `503` to every request instead of
+  running unrestricted.
+- **A documented procedure for an EU-only self-hosted deployment**, in the Trust
+  page: creating D1, R2, KV, Artifacts and Queues with a jurisdiction, turning
+  off `workers.dev` and preview URLs, and configuring Regional Services, with a
+  commented sample for each setting in `wrangler.toml`.
+- **`forkPointSha` on a change**: the commit its workspace forked from, which
+  is where the evaluated diff starts. `baseSha` remains the project's tip at
+  evaluation.
+- **A daily check that evaluation still works.** Once a day an instance with a
+  Workers AI binding runs its default `llm` model on two built-in diffs, one
+  that should pass and one that should not, and counts the evaluations of the
+  last 24 hours that ended with no verdict. This would have caught the retired
+  default model on the day it was retired.
+- **`OPS_ALERT_PROJECT`.** Set it to a project on the instance
+  (`"@namespace/slug"`) and a failed health check opens an issue there, and
+  closes it when the check passes again. Unset, the default, the result is only
+  logged, so a self-hosted instance behaves as before unless it turns this on.
+- **`OPS_ALERT_EMAIL`.** Set this secret to an address to be emailed when a
+  health check first fails and when it passes again. It needs the instance's
+  email sending to be configured.
+- **The tags endpoint is documented** in the API reference and the OpenAPI
+  spec.
+
+### Changed
+- **The hosted instance now asks before collecting telemetry for a new
+  account.** It runs with `TELEMETRY_CONSENT_AT_SIGNUP = "true"`, so new signups
+  there are opted out unless they tick the box. Accounts created earlier are
+  unaffected.
+- Self-hosters who use check runs on an instance with the evaluation queue bound
+  must set `APP_URL` to the instance's public URL: it is the address a runner
+  reports to. Nothing changes for an instance that does not declare a `checks`
+  evaluator. The release adds migration `074_check_runs.sql` (one new table).
+- **`merge.requireFreshBase` now refuses a merge it cannot verify.** A change
+  with no recorded base is refused with `STALE_BASE`, and when the project's
+  current head cannot be read the merge is refused with `503 BASE_UNVERIFIABLE`
+  instead of proceeding unchecked. The batch merge skips such a change, and
+  answers `503 BASE_UNVERIFIABLE` itself when that leaves nothing to merge.
+  Retry, or re-evaluate the change.
+- `merge.requiredChecks` may name a step declared in `.stratum/ci.yaml`.
+- **A batch merge now deploys.** `POST /api/projects/:name/changes/merge-batch`
+  used to deploy nothing. It now triggers one deploy for the whole batch, of
+  the commit the batch left the default branch at, recorded against the last
+  change that landed. This applies to static `deploys:` targets as well as
+  pipelines; a project that batch-merges and has deploys configured will see
+  deployments it did not get before.
+- A `.stratum/ci.yaml` may contain a `deploy:` section. A file with a `deploy:`
+  section and no `steps` is accepted and declares no CI steps.
+- A project with a push mirror enabled no longer syncs from its source or
+  promotes changes to GitHub pull requests; both answer `409`
+  `PUSH_MIRROR_ENABLED`. Projects without a mirror are unaffected.
+- **Self-hosters:** `wrangler.toml` now binds a `stratum-mirrors` queue. Create
+  it before deploying (`wrangler queues create stratum-mirrors`), or remove the
+  `MIRROR_QUEUE` binding — mirrors are then pushed by the five-minute sweep.
+- **Using this needs two changes to the GitHub App**: the **Pull requests**
+  repository permission (read and write), accepted on the installation, and
+  the `pull_request` webhook event. A mirror that does not accept pull requests
+  needs neither and behaves as before.
+- The mirror API's responses carry two new fields, `acceptPullRequests` and
+  `requireContributorAgreement`, both `false` unless set.
+- A batch merge skips a change that came from a pull request, so that its
+  commits are kept, and a batch with nothing eligible now returns the skipped
+  changes and the reason for each.
+- A first-party CI dispatch carries `job.origin` (`project` or `external`). An
+  executor from before this release ignores it; a current executor refuses an
+  external job under any profile but `ci`.
+- **An organization's "require a second factor" policy now applies to tokens, agents and connections when they are used.** Until now the policy was checked for browser sessions, and when a credential was created. A credential created before the policy was turned on, or before its owner joined the organization, kept reaching the organization's projects. Each API token, legacy API key, agent token, OAuth grant (MCP and CLI) and workspace remote credential now records how the session that created it had signed in, and an organization with the policy refuses one that was not created with a second factor (or through that organization's own SSO) with `403 SECOND_FACTOR_REQUIRED`, over the API, MCP and `git`. **Every credential created before this release records nothing, so it stops reaching organizations that have the policy on.** Nothing else changes: personal projects and organizations without the policy are unaffected. To restore access, sign in with a passkey and create the credential again. Self-hosters: apply migration `072_credential_mint_factors.sql`.
+- **Operators must give Stratum the GitHub App's OAuth credentials before anyone can link an
+  installation.** Set `GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET` (the GitHub App's
+  own client ID and secret, not the sign-in OAuth app's), add `https://<host>/github/app/callback`
+  as the app's Callback URL, and tick "Request user authorization (OAuth) during installation".
+  Until both variables are set, linking is refused with `501 NOT_CONFIGURED` and the setup page
+  says why; there is no fallback to the old rule. See `docs/developer/deployment.md`.
+- **`POST /api/github/installations/{id}/link` starts a GitHub round trip instead of linking.**
+  A browser session gets `{ "ok": true, "authorizeUrl": "…" }` (a form post is redirected to
+  GitHub) and the outcome arrives as `?notice=` on `/github/app/setup`. An API token is refused
+  with `403 BROWSER_REQUIRED`, since a token cannot be walked through GitHub's authorization page.
+- **`GET /api/github/installations` no longer lists an installation for the person who installed
+  it.** It lists installations linked to you or an org you administer, plus, for a browser
+  session, the ones GitHub confirmed from the setup page's new "Find installations I can link"
+  button. The response gains `linkingConfigured`.
+- **The Trust page's data-residency section now says, per execution path, what
+  is covered and by which setting, and what Cloudflare gives no guarantee for.**
+  Queue consumers and cron handlers remain in the second group: nothing
+  constrains where they run, so an EU-only deployment keeps stored data, Durable
+  Objects and (with Regional Services) HTTP handling in the EU, but cannot
+  promise that all processing happens there.
+- **The change page now says what the change is.** Its heading is the subject
+  of the change's first commit instead of the change id, with who opened it and
+  which agent wrote it beneath. "Files changed" gives the totals, lists the
+  commits, and says when the workspace is behind the project and which commit
+  the diff starts from. A promoted change keeps its diff and says that review
+  and merging happen on the GitHub pull request.
+- **The change page shows the latest evaluation on its own.** A change
+  evaluated more than once listed every run in one table, so a failure that a
+  later run replaced sat beside the passing result. Earlier evaluations are now
+  folded away under the latest one, which is labelled with when it ran and the
+  revision it judged.
+- **A workspace more than 64 commits behind its project can no longer be
+  evaluated as it stands.** Evaluation fails with `FORK_POINT_NOT_FOUND` and
+  says to bring the workspace up to date. A merge already needed the fork point
+  within the project's last 50 commits.
+- **A squash merge of a workspace that is behind its project is refused** with
+  `409 WORKSPACE_BEHIND`. A squash replaces the project's files with the
+  workspace's, which would undo the project's newer commits. It used to go
+  through. Merge without squash, or bring the workspace up to date first. A
+  batch merge skips such a change for the same reason.
+- **The default model for the `llm` evaluator is now
+  `@cf/meta/llama-4-scout-17b-16e-instruct`.** A policy that names its own
+  `model` is unaffected. If you name a model that reasons before it answers,
+  it may need a `timeoutMs` above the 30-second default on a large diff.
+
+### Fixed
+- **The change diff now applies cleanly with `git apply`.** A new or deleted
+  file no longer carries a spurious extra line, a file with no final newline is
+  marked as such, an empty file is represented, and executable bits, symlinks
+  and mode-only changes are included. Anything that rebuilt a change from
+  `baseSha` and `diff` — a webhook or check runner — previously got a different
+  tree for these cases. Line counts shown for a new or deleted file drop by the
+  one phantom line.
+- The change page's diff lists a deleted file under its own name instead of
+  `/dev/null`, gives a file with no line changes (an empty new file, a change of
+  mode alone) its own section, and no longer shows a file's `new file mode` line
+  at the bottom of the file above it.
+- The change page had a second merge button at its foot, "Merge into Stratum
+  repo". It was shown to everyone, including signed-out visitors who could not
+  use it, and on a change with a GitHub pull request, where merging happens on
+  GitHub. It is gone: "Merge change" under Actions is the one merge button.
+- **A change in a workspace that was behind its project was evaluated on the
+  wrong diff.** The gates compared the workspace with the project's latest
+  commit, so everything the project had gained since the workspace forked
+  showed up as the change undoing it. A one-file change in a workspace three
+  commits behind was judged on a 174,000-character diff of 35 files, of which
+  the `llm` gate read the first 48,000 characters. The diff is now taken from
+  the commit the workspace forked from, so it holds only what the workspace
+  changed. The `baseSha` sent to webhook evaluators and check runners names
+  that commit. The diff on the change page is the same one.
+- **A change on a larger repository could stay in `evaluating` for twenty
+  minutes and then fail.** Evaluation cloned the project and the workspace in
+  memory with every file checked out, which ran the evaluation worker out of
+  memory on a repository of a few hundred files. The worker was stopped before
+  it could record a verdict, so the change waited for the stuck-run sweep.
+  Evaluation now fetches only each side's latest commit, without checking the
+  files out, and reads only the files that differ. On an 830-file repository
+  that halves both the peak memory and the time.
+- **The `llm` evaluator failed every change on a policy that did not name a
+  model.** Its default, `@cf/meta/llama-3.1-8b-instruct`, was retired by
+  Workers AI on 2026-05-30, so the review failed closed with
+  `LLM error: 5028`. Workers AI models that are current also answer in a
+  different format from the retired ones, which Stratum read as an empty
+  verdict; both formats are now read.
+- **The tags page and `GET /api/projects/:namespace/:slug/tags` took several
+  seconds on every request.** Listing tags cloned the repository each time, even
+  one with no tags. Tag names are now read from the repository's ref
+  advertisement. A tag is read by cloning once, the first time it is listed, and
+  remembered after that, so only the first request after a new tag is pushed is
+  slow.
+
+### Security
+- A `pull_request` webhook for a pull request whose head is in another
+  repository (a fork) is no longer matched to a layer-mode change by branch
+  name. Before this, a fork's pull request whose branch was named like a
+  promoted change's branch could re-point that change's pull request link, or
+  close the change by being closed.
+- Closed the gap that left credentials minted before an organization's second-factor policy outside that policy. The #428 release notes asked admins to review and revoke those credentials by hand; that is no longer needed.
+- **Linking a GitHub App installation now checks who controls it on GitHub today, not who
+  installed it.** Linking sends you through the GitHub App's authorization page and then asks
+  GitHub what you manage at that moment: a current owner of the GitHub organization the app is
+  installed on (or the personal account itself) can link it, whether or not they installed it,
+  and someone who installed it and has since left the organization or lost the owner role no
+  longer can. The GitHub user token is used for that one request, never stored or logged, and
+  revoked afterwards. Existing links are untouched. (#442)
+
 ## [0.3.0] - 2026-11-09
 
 ### Breaking
@@ -1531,7 +1864,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes, GitHub import/sync, server-rendered web UI, email and GitHub OAuth authentication,
   API tokens, agent identities, and provenance tracking.
 
-[Unreleased]: https://github.com/stratum-eng/stratum/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/stratum-eng/stratum/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/stratum-eng/stratum/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/stratum-eng/stratum/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/stratum-eng/stratum/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/stratum-eng/stratum/releases/tag/v0.1.0
