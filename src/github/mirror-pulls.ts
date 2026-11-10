@@ -161,6 +161,7 @@ export interface PullRequestEvent {
   changedFiles?: number;
 }
 
+/** A count from a webhook payload, if it is a usable one: a whole number that is not negative. */
 function count(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
