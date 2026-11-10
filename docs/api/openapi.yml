@@ -5784,10 +5784,11 @@ paths:
       tags: [github]
       summary: List GitHub App installations the caller can manage
       description: |
-        Installations the caller controls on GitHub (they installed the app, or
-        it is on their personal GitHub account), plus installations linked to
-        them or to an org they administer. Users only; unreachable with a
-        project- or org-bound token.
+        Installations linked to the caller or to an org they administer. A
+        browser session also sees the installations GitHub said it could link
+        the last time it asked from `/github/app/setup` (kept ten minutes); an
+        API token never does. Who installed the app is not a way onto this
+        list. Users only; unreachable with a project- or org-bound token.
       responses:
         "200":
           description: Installations
@@ -5799,6 +5800,12 @@ paths:
                   githubLinked:
                     type: boolean
                     description: Whether the caller's Stratum account has a GitHub account linked
+                  linkingConfigured:
+                    type: boolean
+                    description: |
+                      Whether the operator has set `GITHUB_APP_CLIENT_ID` and
+                      `GITHUB_APP_CLIENT_SECRET`. When `false`, every link
+                      attempt is refused with 501.
                   installations:
                     type: array
                     items:
@@ -5812,7 +5819,13 @@ paths:
                             type: { type: string, description: "`User` or `Organization`" }
                         suspended: { type: boolean }
                         linkedTo: { type: [string, "null"] }
-                        canLink: { type: boolean }
+                        canLink:
+                          type: boolean
+                          description: |
+                            Whether this caller may start a link. Always
+                            `false` for an API token. Control of the
+                            installation is confirmed with GitHub on every
+                            attempt, not by this flag.
                         canUnlink: { type: boolean }
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -5821,17 +5834,28 @@ paths:
     post:
       operationId: linkGitHubAppInstallation
       tags: [github]
-      summary: Link a GitHub App installation to a Stratum owner
+      summary: Start linking a GitHub App installation to a Stratum owner
       description: |
-        Lets projects owned by the target use the installation's token for
-        outbound GitHub calls on its repositories. Only the GitHub user who
-        installed the app (or, for a personal-account installation, that
-        account) may link it, proven by the caller's GitHub-verified identity;
-        anyone else gets 404. The target is the caller's personal account, or
-        an org they administer. An installation already linked elsewhere is a
-        403 (`LINKED_ELSEWHERE`) unless the caller is that owner or an admin
-        of its org. Accepts JSON or a form post (which redirects back to
-        `/github/app/setup`).
+        Starts the GitHub round trip that links an installation; it links
+        nothing by itself. Once linked, projects owned by the target use the
+        installation's token for outbound GitHub calls on its repositories.
+
+        Control is proven with GitHub at the moment of linking. The caller is
+        sent to the app's authorization page (`authorizeUrl`), and on return to
+        `/github/app/callback` Stratum asks GitHub what they manage right now:
+        the installation must be listed for them, and they must be an active
+        `admin` (owner) of the organization it is installed on, or be the
+        personal account it is installed on. Who installed the app decides
+        nothing. The GitHub user token is used for that one request, never
+        stored or logged, and revoked afterwards.
+
+        Requires a browser session: a token cannot be walked through GitHub's
+        authorization page and is refused with 403 (`BROWSER_REQUIRED`). The
+        target is the caller's personal account, or an org they administer.
+        The outcome arrives as `?notice=` on the redirect back to
+        `/github/app/setup` (`linked`, `not_found`, `not_authorized`,
+        `linked_elsewhere`, ...). Accepts JSON, or a form post, which is
+        redirected straight to GitHub.
       parameters:
         - name: installationId
           in: path
@@ -5848,29 +5872,43 @@ paths:
                   description: Org slug; omit or empty for the caller's personal account
       responses:
         "200":
-          description: Linked
+          description: The round trip was started; send the browser to `authorizeUrl`
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   ok: { type: boolean }
-                  installationId: { type: integer }
-                  owner:
-                    type: object
-                    properties:
-                      type: { type: string, enum: [user, org] }
-                      id: { type: string }
+                  authorizeUrl:
+                    type: string
+                    format: uri
+                    description: GitHub's authorization page, carrying a single-use `state` bound to this session
         "303":
-          description: Form submission; redirects to the setup page
+          description: |
+            Form submission; redirects to GitHub, or back to the setup page
+            with a `notice` when refused
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          description: |
+            `BROWSER_REQUIRED` (authenticated by a token),
+            `GITHUB_ACCOUNT_REQUIRED` (no GitHub account connected),
+            `SECOND_FACTOR_REQUIRED` or `IP_NOT_ALLOWED` (the target org's
+            policy is not met)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404":
           $ref: "#/components/responses/NotFound"
+        "501":
+          description: |
+            `NOT_CONFIGURED`: the operator has not set `GITHUB_APP_CLIENT_ID`
+            and `GITHUB_APP_CLIENT_SECRET`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/github/installations/{installationId}/unlink:
     post:
