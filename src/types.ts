@@ -907,6 +907,9 @@ export interface Change {
   githubPrNumber?: number;
   githubPrUrl?: string;
   githubPrState?: string;
+  /** Whether the pull request is still a draft. Absent when not known: a change
+   * promoted before this was recorded, or one with no pull request. */
+  githubPrDraft?: boolean;
   githubHeadSha?: string;
   githubCommentId?: number;
   promotedAt?: string;

@@ -1720,6 +1720,8 @@ app.get("/changes/:id", async (c) => {
         ...(change.mergedAt !== undefined ? { mergedAt: change.mergedAt } : {}),
         ...(change.githubPrUrl !== undefined ? { githubPrUrl: change.githubPrUrl } : {}),
         ...(change.githubPrNumber !== undefined ? { githubPrNumber: change.githubPrNumber } : {}),
+        ...(change.githubPrState !== undefined ? { githubPrState: change.githubPrState } : {}),
+        ...(change.githubPrDraft !== undefined ? { githubPrDraft: change.githubPrDraft } : {}),
         ...(change.evaluatedSha !== undefined ? { evaluatedSha: change.evaluatedSha } : {}),
         ...(change.title !== undefined ? { title: change.title } : {}),
         ...(change.description !== undefined ? { description: change.description } : {}),

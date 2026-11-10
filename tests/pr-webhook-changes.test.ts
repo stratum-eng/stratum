@@ -204,6 +204,25 @@ describe("handlePullRequest", () => {
     };
   }
 
+  it("records a pull request marked ready, or put back in draft, on GitHub", async () => {
+    vi.mocked(getChangeByGitHubBranch).mockResolvedValue(
+      CHANGE as Awaited<ReturnType<typeof getChangeByGitHubBranch>>,
+    );
+    const env = makeEnv();
+
+    await handlePullRequest(env, makePRPayload("ready_for_review", "ws-1234"), logger);
+    expect(recordGithubPrLink).toHaveBeenLastCalledWith(env.DB, logger, CHANGE.id, {
+      githubPrDraft: false,
+    });
+
+    await handlePullRequest(env, makePRPayload("converted_to_draft", "ws-1234"), logger);
+    expect(recordGithubPrLink).toHaveBeenLastCalledWith(env.DB, logger, CHANGE.id, {
+      githubPrDraft: true,
+    });
+    // Only the flag moves: the change's status is not touched.
+    expect(updateChangeStatus).not.toHaveBeenCalled();
+  });
+
   it("opened with matching workspace creates a Change", async () => {
     vi.mocked(getChangeByGitHubBranch).mockResolvedValue(null);
     vi.mocked(getWorkspace).mockResolvedValue({

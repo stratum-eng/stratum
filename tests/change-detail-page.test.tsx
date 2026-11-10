@@ -355,6 +355,43 @@ describe("ChangeDetailPage: what the change is", () => {
     expect(html).toContain("Review and merging happen there");
   });
 
+  describe("marking the pull request ready", () => {
+    const promoted = {
+      ...baseChange,
+      status: "promoted",
+      githubPrUrl: "https://github.com/acme/api/pull/42",
+      githubPrNumber: 42,
+      githubPrState: "open",
+    };
+    const readyAction = "/api/changes/chg_test123/github-pr/ready";
+
+    it("offers it while the pull request is a draft, and says it is one", () => {
+      const html = page({ change: { ...promoted, githubPrDraft: true }, canReview: true });
+      expect(html).toContain(readyAction);
+      expect(html).toContain("Mark ready for review");
+      expect(html).toContain("still as a draft");
+    });
+
+    it("offers it when the draft state was never recorded", () => {
+      expect(page({ change: promoted, canReview: true })).toContain(readyAction);
+    });
+
+    it("stops offering it once the pull request is ready or closed", () => {
+      expect(
+        page({ change: { ...promoted, githubPrDraft: false }, canReview: true }),
+      ).not.toContain(readyAction);
+      expect(
+        page({ change: { ...promoted, githubPrState: "closed" }, canReview: true }),
+      ).not.toContain(readyAction);
+    });
+
+    it("does not offer it to someone who cannot write to the project", () => {
+      expect(
+        page({ change: { ...promoted, githubPrDraft: true }, canReview: false }),
+      ).not.toContain(readyAction);
+    });
+  });
+
   it("offers one merge button, and only to someone who can merge", () => {
     expect(page({ canReview: false })).not.toContain("/merge");
     expect(page({ canReview: true }).split("/merge").length - 1).toBe(1);
