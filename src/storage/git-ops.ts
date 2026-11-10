@@ -4323,8 +4323,8 @@ export async function getDiffBetweenRepos(
   ]);
 
   const diff = buildUnifiedDiff(baseContent, workspaceContent, {
-    base: new Map(baseFiles.map(([path, , mode]) => [path, mode])),
-    workspace: new Map(workspaceFiles.map(([path, , mode]) => [path, mode])),
+    base: new Map(baseFilesResult.data.map(([path, , mode]) => [path, mode])),
+    workspace: new Map(workspaceFilesResult.data.map(([path, , mode]) => [path, mode])),
   });
   logger.info("Successfully generated diff between repos", { baseRemote, workspaceRemote });
   return ok({ diff, workspaceOid, workspaceTreeOid, workspaceSha, baseOid });
