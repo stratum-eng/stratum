@@ -10,6 +10,8 @@ interface ChangeRow {
   project: string;
   project_id: string | null;
   workspace: string;
+  title?: string | null;
+  description?: string | null;
   status: string;
   agent_id: string | null;
   eval_score: number | null;
@@ -55,6 +57,8 @@ function rowToChange(row: ChangeRow): Change {
   if (row.eval_score !== null) change.evalScore = row.eval_score;
   if (row.eval_passed !== null) change.evalPassed = row.eval_passed === 1;
   if (row.eval_reason !== null) change.evalReason = row.eval_reason;
+  if (typeof row.title === "string") change.title = row.title;
+  if (typeof row.description === "string") change.description = row.description;
   if (row.base_sha !== null) change.baseSha = row.base_sha;
   if (row.fork_point_sha !== null && row.fork_point_sha !== undefined) {
     change.forkPointSha = row.fork_point_sha;
@@ -93,6 +97,8 @@ export async function createChange(
     // cascade-delete treats as a name-based (pre-migration) row.
     projectId?: string;
     workspace: string;
+    title?: string;
+    description?: string;
     agentId?: string;
     baseSha?: string;
     agentModel?: string;
@@ -116,7 +122,7 @@ export async function createChange(
   try {
     await db
       .prepare(
-        "INSERT INTO changes (id, project, project_id, workspace, status, agent_id, base_sha, agent_model, agent_prompt_hash, created_by_user_id, created_at, eval_run_id, eval_requested_at, eval_requested_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO changes (id, project, project_id, workspace, status, agent_id, base_sha, agent_model, agent_prompt_hash, created_by_user_id, created_at, eval_run_id, eval_requested_at, eval_requested_by, title, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .bind(
         id,
@@ -133,6 +139,8 @@ export async function createChange(
         opts.evaluation?.runId ?? null,
         opts.evaluation ? createdAt : null,
         opts.evaluation?.requestedBy ?? null,
+        opts.title ?? null,
+        opts.description ?? null,
       )
       .run();
 
@@ -147,6 +155,8 @@ export async function createChange(
       change.evalRunId = opts.evaluation.runId;
       change.evalRequestedAt = createdAt;
     }
+    if (opts.title !== undefined) change.title = opts.title;
+    if (opts.description !== undefined) change.description = opts.description;
     if (opts.projectId !== undefined) change.projectId = opts.projectId;
     if (opts.agentId !== undefined) change.agentId = opts.agentId;
     if (opts.baseSha !== undefined) change.baseSha = opts.baseSha;
@@ -313,6 +323,46 @@ export async function getChangeByGitHubBranch(
     );
     return null;
   }
+}
+
+/**
+ * Set or clear a change's title and description. A field left out is not
+ * touched; `null` clears it. Returns the change as it now stands.
+ */
+export async function updateChangeText(
+  db: D1Database,
+  logger: Logger,
+  id: string,
+  text: { title?: string | null; description?: string | null },
+): Promise<Result<Change, NotFoundError | AppError>> {
+  const assignments: string[] = [];
+  const bindings: unknown[] = [];
+  if (text.title !== undefined) {
+    assignments.push("title = ?");
+    bindings.push(text.title);
+  }
+  if (text.description !== undefined) {
+    assignments.push("description = ?");
+    bindings.push(text.description);
+  }
+  try {
+    if (assignments.length > 0) {
+      await db
+        .prepare(`UPDATE changes SET ${assignments.join(", ")} WHERE id = ?`)
+        .bind(...bindings, id)
+        .run();
+    }
+  } catch (error) {
+    const appError = new AppError(
+      error instanceof Error ? error.message : "Failed to update change",
+      "DATABASE_ERROR",
+      500,
+      { operation: "updateChangeText", changeId: id },
+    );
+    logger.error("Failed to update change text", appError, { changeId: id });
+    return err(appError);
+  }
+  return getChange(db, logger, id);
 }
 
 export interface UpdateChangeStatusOpts {

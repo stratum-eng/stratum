@@ -379,29 +379,41 @@ change
   .description("Create a change (runs evaluation)")
   .requiredOption("--project <project>", "Project (namespace/slug or name)")
   .requiredOption("--workspace <name>", "Source workspace")
+  .option("--title <title>", "One line saying what the change does")
+  .option("--description <text>", "Why the change exists and what a reviewer should know")
   .option("--wait", "Wait for a queued evaluation to finish and print its verdict")
-  .action(async (opts: { project: string; workspace: string; wait?: boolean }) =>
-    withClient(async (client) => {
-      const result = await client.createChange(opts.project, opts.workspace);
-      print(`Created change ${result.change.id} (${result.change.status})`);
-      if (result.eval) {
+  .action(
+    async (opts: {
+      project: string;
+      workspace: string;
+      title?: string;
+      description?: string;
+      wait?: boolean;
+    }) =>
+      withClient(async (client) => {
+        const result = await client.createChange(opts.project, opts.workspace, {
+          ...(opts.title !== undefined ? { title: opts.title } : {}),
+          ...(opts.description !== undefined ? { description: opts.description } : {}),
+        });
+        print(`Created change ${result.change.id} (${result.change.status})`);
+        if (result.eval) {
+          print(
+            `Evaluation: score ${result.eval.score.toFixed(2)}, ${result.eval.passed ? "passed" : "failed"} — ${result.eval.reason}`,
+          );
+          return;
+        }
+        if (!opts.wait) {
+          print(
+            `Evaluation queued — check it with \`stratum change show ${result.change.id}\`, or pass --wait`,
+          );
+          return;
+        }
+        const { change: done } = await client.waitForEvaluation(result.change.id);
+        const score = done.evalScore !== undefined ? done.evalScore.toFixed(2) : "n/a";
         print(
-          `Evaluation: score ${result.eval.score.toFixed(2)}, ${result.eval.passed ? "passed" : "failed"} — ${result.eval.reason}`,
+          `Evaluation: score ${score}, ${done.evalPassed ? "passed" : "failed"} (${done.status})${done.evalReason ? ` — ${done.evalReason}` : ""}`,
         );
-        return;
-      }
-      if (!opts.wait) {
-        print(
-          `Evaluation queued — check it with \`stratum change show ${result.change.id}\`, or pass --wait`,
-        );
-        return;
-      }
-      const { change: done } = await client.waitForEvaluation(result.change.id);
-      const score = done.evalScore !== undefined ? done.evalScore.toFixed(2) : "n/a";
-      print(
-        `Evaluation: score ${score}, ${done.evalPassed ? "passed" : "failed"} (${done.status})${done.evalReason ? ` — ${done.evalReason}` : ""}`,
-      );
-    }),
+      }),
   );
 
 change

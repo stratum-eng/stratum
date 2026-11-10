@@ -63,6 +63,7 @@ returns an empty list for you.
 | `stratum_list_issues`, `stratum_create_issue`, `stratum_update_issue` | Track work |
 | `stratum_get_activity` | Read the project activity feed |
 | `stratum_list_branches` | List a project's branches |
+| `stratum_update_change` | Set or replace a change's title and description. Text only; the gates do not re-run |
 | `stratum_comment_change`, `stratum_list_change_comments` | Your feedback channel on a change — agent tokens may comment, even though they cannot review |
 | `stratum_evaluate_change` | Re-run a change's gates after pushing more commits; poll `stratum_get_change` while it is `evaluating`. User credentials only. |
 | `stratum_list_checks` | Read a change's check runs: per-job CI results the project's runner reports asynchronously. A required check blocks the merge until it is `passed`, so **poll this until every required check is terminal** before asking for a merge. Checks belong to one revision and start again after a re-evaluation. |
@@ -80,7 +81,7 @@ returns an empty list for you.
 2. `stratum_get_file` on `.stratum/policy.yaml` — know the gates before you write
 3. `stratum_create_workspace`
 4. `stratum_commit`
-5. `stratum_create_change` — read every verdict in the response
+5. `stratum_create_change` with a `title` and a `description` — read every verdict in the response
 6. If a gate failed, fix it and go back to step 4. Do not retry the merge.
 7. When green, hand it to a human for review. `stratum_review_change` will refuse
    an agent token, by design; leave your notes with `stratum_comment_change`.

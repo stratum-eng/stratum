@@ -13,6 +13,9 @@ interface ChangeDetailProps {
     id: string;
     project: string;
     workspace: string;
+    /** What the change is, in its opener's words. */
+    title?: string;
+    description?: string;
     status: string;
     evalScore?: number;
     evalPassed?: boolean;
@@ -130,17 +133,17 @@ export function splitEvalRounds(runs: EvalRunView[]): {
 }
 
 /**
- * A change has no title of its own, so its first commit speaks for it, as the
- * author wrote it. `commits` is newest first.
+ * What to head the page with: the change's own title, else the subject of its
+ * first commit (the nearest thing to a title its author wrote), else the
+ * workspace it came from. `commits` is newest first.
  */
 function headlineFor(
+  title: string | undefined,
   commits: Array<{ subject: string }> | undefined,
   workspace: string,
-): { text: string; fromCommit: boolean } {
-  const first = commits?.[commits.length - 1]?.subject.trim();
-  return first
-    ? { text: first, fromCommit: true }
-    : { text: `Change from workspace ${workspace}`, fromCommit: false };
+): string {
+  const firstCommit = commits?.[commits.length - 1]?.subject.trim();
+  return title ?? (firstCommit || `Change from workspace ${workspace}`);
 }
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -376,7 +379,7 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   const lineComments = comments.filter((comment) => comment.file !== undefined);
   const discussionComments = comments.filter((comment) => comment.file === undefined);
 
-  const headline = headlineFor(diffContext?.commits, change.workspace);
+  const headline = headlineFor(change.title, diffContext?.commits, change.workspace);
   const rounds = splitEvalRounds(evalRuns);
   const latestRanAt = rounds.latest[0]?.ranAt;
   const additions = (diff ?? []).reduce((sum, file) => sum + file.additions, 0);
@@ -408,7 +411,7 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
       {projectRef && <ProjectHeader project={projectRef} active="changes" canWrite={canReview} />}
       <div class="page-header">
         <h1>
-          {headline.text} <span class={statusBadgeClass(change.status)}>{change.status}</span>
+          {headline} <span class={statusBadgeClass(change.status)}>{change.status}</span>
         </h1>
         <p class="text-muted">
           <span class="mono">{change.id}</span>
@@ -433,6 +436,13 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
           </a>
         )}
       </div>
+
+      {change.description !== undefined && (
+        <div class="card">
+          <h2>Description</h2>
+          <pre class="comment-body">{change.description}</pre>
+        </div>
+      )}
 
       {externalPullRequest && (
         <ExternalPullRequestCard

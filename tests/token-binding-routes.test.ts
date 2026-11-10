@@ -838,6 +838,9 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   "GET /api/projects/:namespace/:slug/webhooks",
   "GET /api/projects/:namespace/:slug/webhooks/:id/deliveries",
   "GET /api/workspaces/:namespace/:slug/workspaces",
+  // Title and description of a change. Authorizes through canWriteProject with
+  // the request's binding, like the other change writes.
+  "PATCH /api/changes/:id",
   "PATCH /api/projects/:namespace/:slug/issues/:number",
   "POST /api/changes/:id/checks/:checkId/rerun",
   "POST /api/changes/:id/comments",

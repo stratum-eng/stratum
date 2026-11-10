@@ -36,6 +36,7 @@
     "stratum_list_changes",
     "stratum_get_change",
     "stratum_create_change",
+    "stratum_update_change",
     "stratum_review_change",
     "stratum_merge_change",
     "stratum_reject_change",

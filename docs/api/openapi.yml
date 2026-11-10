@@ -2614,6 +2614,14 @@ paths:
               required: [workspace]
               properties:
                 workspace: { type: string }
+                title:
+                  type: string
+                  maxLength: 200
+                  description: One line saying what the change does. No line breaks.
+                description:
+                  type: string
+                  maxLength: 20000
+                  description: Why the change exists and what a reviewer should know (markdown source).
       responses:
         "201":
           description: |
@@ -2798,6 +2806,46 @@ paths:
                     $ref: "#/components/schemas/ExternalPullRequest"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateChange
+      tags: [changes]
+      summary: Set or clear a change's title and description
+      description: >-
+        Changes only the text. It does not re-run evaluation or affect whether
+        the change may merge. Needs write access to the project; agent tokens
+        are accepted.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                title:
+                  type: [string, "null"]
+                  maxLength: 200
+                  description: One line. `null` or an empty string clears it.
+                description:
+                  type: [string, "null"]
+                  maxLength: 20000
+                  description: Markdown source. `null` or an empty string clears it.
+      responses:
+        "200":
+          description: The change as it now stands
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  change: { $ref: "#/components/schemas/Change" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
 
@@ -7451,6 +7499,12 @@ components:
           format: uuid
           description: Globally-unique project id; absent on legacy rows
         workspace: { type: string }
+        title:
+          type: string
+          description: One line saying what the change does, when its opener gave one
+        description:
+          type: string
+          description: Why the change exists, as markdown source, when its opener gave one
         status:
           type: string
           enum: [open, evaluating, external, needs_changes, accepted, approved, promoted, merged, rejected, reverted]

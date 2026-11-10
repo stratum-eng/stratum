@@ -239,7 +239,7 @@ describe("handshake", () => {
 });
 
 describe("tools/list", () => {
-  it("publishes all forty tools with usable JSON Schema", async () => {
+  it("publishes all forty-one tools with usable JSON Schema", async () => {
     const reply = (await (
       await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" })
     ).json()) as RpcReply;
@@ -249,7 +249,7 @@ describe("tools/list", () => {
       inputSchema: { type: string; properties: Record<string, unknown>; required?: string[] };
     }>;
 
-    expect(tools).toHaveLength(40);
+    expect(tools).toHaveLength(41);
     expect(tools.map((t) => t.name)).toContain("stratum_create_change");
 
     for (const tool of tools) {

@@ -14,6 +14,20 @@ project's GitHub mirror that are waiting for a maintainer to
 ## Create Change
 `POST /api/projects/{name}/changes`
 
+```json
+{
+  "workspace": "fix-retries",
+  "title": "Retry on 5xx only",
+  "description": "A 4xx is the caller's mistake and retrying it trips the circuit breaker.\n\nFixes #214."
+}
+```
+
+Only `workspace` is required. `title` is one line of up to 200 characters, and
+`description` is up to 20,000 characters of markdown. Give both: the title heads
+the change page and the changes list, and both carry over to the pull request
+when the change is promoted to GitHub. A change opened without a title is headed
+by the subject of its first commit.
+
 Evaluation runs **off the request** where the instance has an evaluation queue
 (the hosted instance does): the response is `202` with the change in status
 `evaluating` and no verdict. Poll `GET /api/changes/{id}` until the status leaves
@@ -100,6 +114,14 @@ response).
 
 A `422` other than the first is also stored on the change, as
 `externalPullRequest.refusal`, until the pull request gets new commits.
+
+## Update Change
+`PATCH /api/changes/{id}`
+
+Sets or clears the `title` and `description`. Send either or both; `null` or an
+empty string clears a field, and a field left out is not touched. Needs write
+access to the project. Agent tokens are accepted: the text is the author's
+account of the change and no gate reads it. Returns `{ "change": … }`.
 
 ## Re-evaluate
 `POST /api/changes/{id}/evaluate`

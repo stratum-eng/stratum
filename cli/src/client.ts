@@ -298,12 +298,20 @@ export class StratumClient {
    * and {@link waitForEvaluation} is how a caller gets it. An older server, or
    * one with no queue bound, still returns the verdict inline.
    */
-  async createChange(projectName: string, workspace: string) {
+  async createChange(
+    projectName: string,
+    workspace: string,
+    text: { title?: string; description?: string } = {},
+  ) {
     return this.request<{
       change: Change;
       eval?: { score: number; passed: boolean; reason: string };
       evalRuns?: EvalRun[];
-    }>("POST", `/api/projects/${encodeURIComponent(projectName)}/changes`, { workspace });
+    }>("POST", `/api/projects/${encodeURIComponent(projectName)}/changes`, {
+      workspace,
+      ...(text.title !== undefined ? { title: text.title } : {}),
+      ...(text.description !== undefined ? { description: text.description } : {}),
+    });
   }
 
   /**

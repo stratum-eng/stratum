@@ -823,6 +823,12 @@ export interface Change {
    *  project-identity unification (name -> id lives in KV, not backfillable in SQL). */
   projectId?: string;
   workspace: string;
+  /** One line saying what the change is, from whoever opened it. Optional:
+   * a change opened without one is headed by its first commit's subject. */
+  title?: string;
+  /** Why the change exists and anything a reviewer should know. Markdown source,
+   * shown as written. */
+  description?: string;
   status:
     | "open"
     /** An evaluation run is queued or running; no verdict yet (#412). Never

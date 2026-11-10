@@ -226,6 +226,26 @@ describe("ChangeDetailPage: what the change is", () => {
     expect(html).toContain("chg_test123");
   });
 
+  it("prefers the change's own title to the commit subject, and shows its description", () => {
+    const html = page({
+      change: {
+        ...baseChange,
+        status: "accepted",
+        title: "Keep a friction log",
+        description: "Why we are doing this.\n\n- one\n- two",
+      },
+      diff,
+      diffContext: { commits, behindBy: 0, forkPoint: "f".repeat(40), branch: "main" },
+    });
+    expect(html).toMatch(/<h1>Keep a friction log /);
+    expect(html).toContain("<h2>Description</h2>");
+    expect(html).toContain("Why we are doing this.");
+  });
+
+  it("has no description card for a change without one", () => {
+    expect(page()).not.toContain("<h2>Description</h2>");
+  });
+
   it("falls back to naming the workspace when the commits are not known", () => {
     expect(page()).toMatch(/<h1>Change from workspace fix-bug /);
   });

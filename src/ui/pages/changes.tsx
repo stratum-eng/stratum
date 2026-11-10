@@ -14,6 +14,8 @@ interface ChangesProps {
   changes: Array<{
     id: string;
     workspace: string;
+    /** The change's own title, when its opener gave one. */
+    title?: string;
     status: string;
     evalScore?: number;
     evalPassed?: boolean;
@@ -90,7 +92,10 @@ stratum change create --project ${project.namespace}/${project.slug} --workspace
               {changes.map((change) => (
                 <tr key={change.id}>
                   <td>
-                    <a href={`/changes/${change.id}`}>{change.workspace}</a>
+                    <a href={`/changes/${change.id}`}>{change.title ?? change.workspace}</a>
+                    {change.title !== undefined && (
+                      <span class="text-muted"> · {change.workspace}</span>
+                    )}
                   </td>
                   <td>
                     <span class={statusBadgeClass(change.status)}>{change.status}</span>

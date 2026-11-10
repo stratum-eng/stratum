@@ -281,6 +281,10 @@ stratum change create --project acme/billing --workspace fix-retries
 # Created change chg_abc123 (evaluating)
 # Evaluation queued — check it with `stratum change show chg_abc123`, or pass --wait
 
+# Say what the change is: the title heads its page and names the pull request
+stratum change create --project acme/billing --workspace fix-retries \
+  --title "Retry on 5xx only" --description "A 4xx is the caller's mistake."
+
 stratum change create --project acme/billing --workspace fix-retries --wait
 # Created change chg_abc123 (evaluating)
 # Evaluation: score 0.92, passed (accepted) — All evaluators passed.
