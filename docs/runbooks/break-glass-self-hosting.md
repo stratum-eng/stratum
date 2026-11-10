@@ -135,12 +135,22 @@ possible.
      unless **Do not allow bypassing the above settings** is on; turn that
      setting off for the incident and leave everything else as it is.
 
-   The lock may also require a pull request or status checks, and a direct
-   push is refused by those too. Exempt the maintainer from them for the
-   incident in the same way (classic protection: **Allow specified actors to
-   bypass required pull requests**; rulesets: the bypass above already covers
-   every rule in that ruleset). Write down each setting you change. Step 4
-   puts every one of them back.
+   Other rules can refuse the push as well, and each needs its own exception.
+   Before the maintainer pushes, read every rule that applies to the branch:
+
+   - **Classic protection, required pull requests:** add the maintainer to
+     **Allow specified actors to bypass required pull requests**.
+   - **Classic protection, required status checks:** these have no
+     per-person exception. Write down the list of required checks, turn
+     **Require status checks to pass before merging** off, and turn it back
+     on with the same list in step 4.
+   - **Rulesets:** a bypass covers only its own ruleset. Add the same team or
+     role to the bypass list of every other active ruleset that targets the
+     branch and requires a pull request or status checks.
+
+   The one rule that gets no exception is the block on force pushes. Write
+   down each setting you change and its value before the change. Step 4 puts
+   every one of them back.
 3. Note the time. The lock is restored in step 4.
 
 ### 3. Land the fix on the mirror
@@ -194,7 +204,10 @@ Rules for this step:
 
 Undo every change made in step 2: remove the maintainer, the team or the
 role from each list it was added to, and turn back on any setting that was
-turned off. Confirm that a push from that account is refused again. Do this now, before the deploy. The lock must not
+turned off. Compare each setting with the value you wrote down. Then confirm
+that a push from that account is refused again, if it was refused before the
+incident: the owner of a personal repository may have been able to push all
+along, and for them the written record is the check. Do this now, before the deploy. The lock must not
 stay open while attention is elsewhere.
 
 ### 5. Deploy the fix from the maintainer's machine
