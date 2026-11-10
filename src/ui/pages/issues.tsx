@@ -92,6 +92,19 @@ const authorLabel = (
       ? "Stratum (automated)"
       : (authors[item.authorId] ?? item.authorType);
 
+/**
+ * Why the instance itself closed an issue, when it did. Two things close an
+ * issue as the system: a merged change that links it, and a health check
+ * coming back clean on an alert the instance filed. The second has no change
+ * behind it, so it is told apart by who opened the issue.
+ */
+const systemCloseNote = (issue: Pick<Issue, "closedBy" | "authorId">) =>
+  issue.closedBy !== SYSTEM_AUTHOR_ID
+    ? ""
+    : issue.authorId === SYSTEM_AUTHOR_ID
+      ? " (closed automatically when the check passed again)"
+      : " (auto-closed by merged change)";
+
 /** Link back to the GitHub original of an imported issue or comment. */
 const GitHubBackLink: FC<{ href: string; label: string }> = ({ href, label }) => (
   <a href={href} target="_blank" rel="noopener noreferrer nofollow">
@@ -279,7 +292,7 @@ export const IssueDetailPage: FC<IssueDetailPageProps> = ({
           opened {new Date(issue.createdAt).toLocaleString()} by {authorLabel(issue, authors)}
           {issue.assignee ? ` · assigned to ${authors[issue.assignee] ?? issue.assignee}` : ""}
           {issue.closedAt ? ` · closed ${new Date(issue.closedAt).toLocaleString()}` : ""}
-          {issue.closedBy === "system" ? " (auto-closed by merged change)" : ""}
+          {systemCloseNote(issue)}
           {issue.externalUrl !== undefined && (
             <>
               {" · "}

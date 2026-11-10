@@ -58,9 +58,27 @@ async function resolveAlertProject(
   if (!env.OPS_ALERT_PROJECT?.trim()) return { why: "OPS_ALERT_PROJECT is not set" };
   const parsed = parseAlertProject(env.OPS_ALERT_PROJECT);
   if (!parsed) return { why: "OPS_ALERT_PROJECT is not a namespace/slug" };
-  const found = await getProjectByPath(env.STATE, parsed.namespace, parsed.slug, logger);
-  if (!found.success) return { why: "the OPS_ALERT_PROJECT project was not found" };
-  return { project: found.data };
+  // As written first, then with the `@` an org namespace is stored under, so
+  // `acme/ops` finds `@acme/ops` without shadowing a namespace that really is
+  // stored bare.
+  const candidates = parsed.namespace.startsWith("@")
+    ? [parsed.namespace]
+    : [parsed.namespace, `@${parsed.namespace}`];
+  try {
+    for (const namespace of candidates) {
+      const found = await getProjectByPath(env.STATE, namespace, parsed.slug, logger);
+      if (found.success) return { project: found.data };
+    }
+  } catch (error) {
+    // A KV read that throws must not take the alert with it: the caller still
+    // logs the finding and mails it.
+    logger.error(
+      "Could not read the OPS_ALERT_PROJECT project",
+      error instanceof Error ? error : undefined,
+    );
+    return { why: "the OPS_ALERT_PROJECT project could not be read" };
+  }
+  return { why: "the OPS_ALERT_PROJECT project was not found" };
 }
 
 async function findOpenAlert(

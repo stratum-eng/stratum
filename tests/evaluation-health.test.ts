@@ -240,6 +240,39 @@ describe("ops alerts", () => {
     });
   });
 
+  it("finds an org project named without its @", async () => {
+    const { env } = makeEnv({ OPS_ALERT_PROJECT: "acme/ops" } as Partial<Env>);
+    expect(await raiseOpsAlert(env, logger, alert)).toEqual({ status: "opened", number: 1 });
+  });
+
+  it("prefers a namespace stored bare over the @ form of the same name", async () => {
+    const { env } = makeEnv({ OPS_ALERT_PROJECT: "acme/ops" } as Partial<Env>);
+    const bare: ProjectEntry = { ...project, id: "proj_bare", namespace: "acme" };
+    (env.STATE as unknown as { store: Map<string, string> }).store.set(
+      "project:acme:ops",
+      JSON.stringify(bare),
+    );
+    await raiseOpsAlert(env, logger, alert);
+    const filed = await listIssues(env.DB, logger, bare.name, "open", { projectId: "proj_bare" });
+    expect(filed.success && filed.data).toHaveLength(1);
+    expect(await openAlerts(env)).toHaveLength(0);
+  });
+
+  it("only logs when the project cannot be read, instead of throwing", async () => {
+    const { env } = makeEnv({
+      STATE: {
+        get: async () => {
+          throw new Error("kv down");
+        },
+      },
+    } as unknown as Partial<Env>);
+    expect(await raiseOpsAlert(env, logger, alert)).toEqual({
+      status: "logged-only",
+      why: "the OPS_ALERT_PROJECT project could not be read",
+    });
+    expect((await resolveOpsAlert(env, logger, alert.title)).status).toBe("logged-only");
+  });
+
   it("reports a database failure instead of throwing", async () => {
     const { env } = makeEnv({ DB: makeThrowingD1() } as Partial<Env>);
     expect((await raiseOpsAlert(env, logger, alert)).status).toBe("failed");
