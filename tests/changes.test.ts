@@ -7,6 +7,14 @@ import type { Change, Env } from "../src/types";
 // Repo authorization has its own suites (tests/repo-authorization.test.ts);
 // here the route's caller is bound to the repo owner and the project is the
 // repo's canonical target unless a test says otherwise.
+// These suites run against a stub database with no `push_mirrors` table. The
+// layer-mode guards refuse when a project's mirror state cannot be read (#417),
+// so the lookup is answered here: none of these projects has a mirror.
+vi.mock("../src/storage/push-mirrors", async (importActual) => ({
+  ...(await importActual<typeof import("../src/storage/push-mirrors")>()),
+  pushMirrorMode: vi.fn(async () => "layer" as const),
+}));
+
 vi.mock("../src/github/repo-authorization", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/github/repo-authorization")>()),
   allowlistAdmits: vi.fn(async () => true),

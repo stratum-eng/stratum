@@ -143,6 +143,15 @@ scheduler does not read it, so it does not change the cadence. Trigger
 `POST …/sync` yourself for anything more frequent. Past runs are listed by
 `GET …/sync/history` (paginated with `limit`/`offset`).
 
+A project with a [push mirror](/guides/push-mirror/) enabled does not sync. Its
+GitHub repository is a copy that Stratum pushes to, not a source it follows.
+`POST …/sync` sent as JSON (`Content-Type: application/json`) answers
+`409 PUSH_MIRROR_ENABLED`; the same request sent as a form, which is what the
+project page's button does, is redirected back to the project page. If the
+mirror's state cannot be read, the answer is `503 PUSH_MIRROR_UNKNOWN` and
+nothing is synced. The daily auto-sync skips the project in both cases. `GET …/sync/status` then carries the mirror's state in its
+`mirror` field.
+
 ## Failure notifications
 
 If a **queued** import fails, Stratum emails the user who started it, plus one

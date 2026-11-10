@@ -32,6 +32,14 @@ import { AppError } from "../../src/utils/errors";
 const mockImportJobs = new Map<string, ImportProgress>();
 let mockJobIdCounter = 0;
 
+// These suites run against a stub database with no `push_mirrors` table. The
+// layer-mode guards refuse when a project's mirror state cannot be read (#417),
+// so the lookup is answered here: none of these projects has a mirror.
+vi.mock("../../src/storage/push-mirrors", async (importActual) => ({
+  ...(await importActual<typeof import("../../src/storage/push-mirrors")>()),
+  pushMirrorMode: vi.fn(async () => "layer" as const),
+}));
+
 vi.mock("../../src/storage/imports", () => ({
   createImportJob: vi.fn(async (_db, params, _logger) => {
     mockJobIdCounter++;

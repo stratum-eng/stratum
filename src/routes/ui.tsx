@@ -57,6 +57,7 @@ import { listOrgsForUser } from "../storage/orgs";
 import { ownerHasClaims, usernameNamespaceTaken } from "../storage/project-namespace";
 import { listSecretNames } from "../storage/project-secrets";
 import { getProvenance } from "../storage/provenance";
+import { getPushMirror } from "../storage/push-mirrors";
 import { readRepoSnapshot } from "../storage/repo-snapshot";
 import {
   type RepoViewCacheProject,
@@ -131,6 +132,7 @@ import { canManageSecrets, secretErrorMessage } from "./deployments";
 import { getCurrentUser, renderWebhooksPage } from "./form-pages";
 import { issueImportNotice } from "./issue-import";
 import { DEFAULT_COMMENTS_PAGE, DEFAULT_ISSUES_PAGE } from "./issues";
+import { type PushMirrorView, mirrorNotice, toPushMirrorView } from "./mirror";
 import { SUBSCRIBABLE_EVENTS } from "./webhooks";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -2754,6 +2756,26 @@ app.get("/:namespace/:slug/settings", async (c) => {
     };
   }
 
+  // The push mirror card (#417) is admin-only, like the routes behind its forms.
+  let mirror:
+    | { current: PushMirrorView | null; defaultBranch: string; notice?: string }
+    | undefined;
+  let mirrorUnavailable = false;
+  if (await isProjectAdmin(c.env.DB, project, credentialBindingFrom(c), userId)) {
+    const stored = await getPushMirror(c.env.DB, logger, project.id);
+    const notice = mirrorNotice(c.req.query("mirror"));
+    if (!stored.success) {
+      // Not rendered as "no mirror": see `mirrorUnavailable` on the page.
+      mirrorUnavailable = true;
+    } else {
+      mirror = {
+        current: stored.data ? toPushMirrorView(stored.data) : null,
+        defaultBranch: projectDefaultBranch(project),
+        ...(notice !== undefined ? { notice } : {}),
+      };
+    }
+  }
+
   return c.html(
     <ProjectSettingsPage
       project={{
@@ -2770,6 +2792,8 @@ app.get("/:namespace/:slug/settings", async (c) => {
         secretErrorCode === "name" || secretErrorCode === "value" ? secretErrorCode : undefined
       }
       {...(issueImport !== undefined ? { issueImport } : {})}
+      {...(mirror !== undefined ? { mirror } : {})}
+      {...(mirrorUnavailable ? { mirrorUnavailable: true } : {})}
       user={userResult}
     />,
   );

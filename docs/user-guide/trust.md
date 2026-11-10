@@ -36,7 +36,7 @@ request path. The bindings, as declared for production in `wrangler.toml`:
 | [Workers KV](https://developers.cloudflare.com/kv/) | `STATE` | one namespace | Project and workspace registry records, short-lived OAuth/consent state, rate-limit counters, and caches (policy, entitlements, repo views) |
 | [Durable Objects](https://developers.cloudflare.com/durable-objects/) | `MERGE_QUEUE`, `REPO_DO`, `MAGIC_LINK_LIMITER`, `USAGE_METER` | four classes | Merge serialization; per-repo ref authority (SQLite-backed; its fast path is off in production, `REPO_DO_ENABLED = "false"`); magic-link send counters keyed by a digest of the email or by source IP; usage counters |
 | [R2](https://developers.cloudflare.com/r2/) | `BACKUPS` | bucket `stratum-backups` | Daily backups — see [Backups and retention](#backups-and-retention) |
-| [Queues](https://developers.cloudflare.com/queues/) | `EVENTS_QUEUE`, `IMPORT_QUEUE`, `DEPLOY_QUEUE`, `EVALUATION_QUEUE` | `stratum-events`, `stratum-imports`, `stratum-deploys`, `stratum-evaluations` (+ DLQs) | Transient job messages: event delivery, imports and syncs, post-merge deploys, evaluation runs (a change id and a run id — never the diff) |
+| [Queues](https://developers.cloudflare.com/queues/) | `EVENTS_QUEUE`, `IMPORT_QUEUE`, `DEPLOY_QUEUE`, `EVALUATION_QUEUE`, `MIRROR_QUEUE` | `stratum-events`, `stratum-imports`, `stratum-deploys`, `stratum-evaluations` (+ DLQs), `stratum-mirrors` | Transient job messages: event delivery, imports and syncs, post-merge deploys, evaluation runs (a change id and a run id — never the diff), push-mirror nudges (a project id — never repository content) |
 | [Workers AI](https://developers.cloudflare.com/workers-ai/) | `AI` | — | Inference for the `llm` evaluator (default model `@cf/meta/llama-4-scout-17b-16e-instruct`) |
 | [Email Sending](https://developers.cloudflare.com/email-service/) | `EMAIL` | sender `noreply@app.usestratum.dev` | Outbound mail: magic links, import alerts, usage notices |
 | Workers Analytics Engine | `ANALYTICS` | dataset `stratum_requests` | Bound, but no code path currently writes to it |
@@ -92,6 +92,7 @@ receiving mail servers.
 | **Your webhook evaluator endpoint** | A `webhook` evaluator in `.stratum/policy.yaml` | The diff, the policy (signing secrets stripped), and `baseSha`. See [CI Integration](ci-integration.md#the-webhook-evaluator-contract) |
 | **Your outbound webhook URLs** | A project webhook subscription | Event payloads for that project |
 | **Cloudflare (your account) or Vercel** | A `deploys:` entry in the policy | The merged tree, uploaded with the project's own credentials. See [Deployments](deployments.md) |
+| **GitHub** | A [push mirror](push-mirror.md) an admin configured on a project | That project's default branch and tags — its full history — pushed to the one repository the admin named, with a GitHub App installation token limited to that repository |
 | **GitHub / GitLab / Bitbucket** | Importing or syncing a project | Anonymous clones of **public** repositories only — imports carry no provider token. GitHub sync and PR promotion use an instance-wide `GITHUB_TOKEN` when the operator sets one |
 
 ## What is encrypted, and by whom

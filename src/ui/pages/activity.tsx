@@ -81,6 +81,14 @@ export function describeEvent(event: EventRecord): string {
       const number = typeof payload.issueNumber === "number" ? payload.issueNumber : "?";
       return `Issue #${number} closed${changeId ? ` by ${changeId}` : ""}`;
     }
+    case "mirror.diverged": {
+      const repo = asString(payload.repo);
+      return `Push mirror${repo ? ` to ${repo}` : ""} diverged — pushing stopped`;
+    }
+    case "mirror.failed": {
+      const repo = asString(payload.repo);
+      return `Push mirror${repo ? ` to ${repo}` : ""} failed`;
+    }
     default:
       return event.type;
   }

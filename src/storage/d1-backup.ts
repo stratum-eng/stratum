@@ -111,6 +111,11 @@ export const BACKUP_TABLES: readonly string[] = [
   // 060). Re-derivable by re-claiming, but which project wins a repo after a
   // restore should not depend on the order events happen to arrive in.
   "github_repo_links",
+  // Push mirror configuration and status (migration 075). The configuration is
+  // an admin's decision about where a project is published; a restore that
+  // dropped it would silently stop every mirror. A row restored mid-`pushing`
+  // heals by itself: its lease has expired by the time anything reads it.
+  "push_mirrors",
 ];
 
 /**

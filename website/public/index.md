@@ -6,6 +6,7 @@
 
 - [Getting started](https://docs.usestratum.dev/guides/getting-started/)
 - [Importing from GitHub](https://docs.usestratum.dev/guides/importing/)
+- [Mirroring a project to GitHub](https://docs.usestratum.dev/guides/push-mirror/)
 - [Code review](https://docs.usestratum.dev/guides/code-review/)
 - [Issues](https://docs.usestratum.dev/guides/issues/)
 - [CI integration](https://docs.usestratum.dev/guides/ci-integration/)

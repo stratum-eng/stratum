@@ -95,6 +95,8 @@ tags:
     description: Importing repositories from GitHub/GitLab/Bitbucket
   - name: sync
     description: Keeping imported projects in sync with their source repository
+  - name: mirror
+    description: Push mirror — a read-only, fast-forward-only copy of a project on GitHub
   - name: workspaces
     description: Workspace (fork) lifecycle and commits
   - name: changes
@@ -947,6 +949,19 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: >-
+            The project has a push mirror enabled and does not sync from its source (`code` = `PUSH_MIRROR_ENABLED`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: >-
+            Whether the project has a push mirror could not be read, so nothing was synced (`code` =
+            `PUSH_MIRROR_UNKNOWN`). Retry. A failed read is never treated as "no mirror".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -969,6 +984,156 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /api/projects/{namespace}/{slug}/mirror:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+    get:
+      operationId: getPushMirror
+      tags: [mirror]
+      summary: Get the project's push mirror
+      description: Project admins only (user identity).
+      responses:
+        "200":
+          description: The mirror, or null when the project has none
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mirror]
+                properties:
+                  mirror:
+                    oneOf:
+                      - $ref: "#/components/schemas/PushMirror"
+                      - type: "null"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: configurePushMirror
+      tags: [mirror]
+      summary: Configure the project's push mirror
+      description: |
+        Project admins only (user identity). Sets the GitHub repository the
+        project's default branch and tags are pushed to after every merge. The
+        mirror is fast-forward only: it never force-pushes and never deletes a
+        ref on GitHub.
+
+        The target is checked before it is saved, enabled or not (only
+        disabling an existing mirror skips the check): the GitHub App must be
+        installed on the repository with the Contents (read and write)
+        permission, linked to the project's owner, and the repository must not
+        be connected to another project. Saving an enabled mirror queues a push.
+
+        While a mirror is enabled the project is in forge mode: syncing from
+        its source and promoting changes to GitHub pull requests are refused
+        with `409` `PUSH_MIRROR_ENABLED`.
+
+        `POST` to the same path is equivalent, and is what the settings form
+        uses; a form-encoded request is answered with a redirect to the project
+        settings page instead of JSON.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo]
+              properties:
+                repo:
+                  type: string
+                  description: The GitHub repository, as `owner/repository`
+                  example: acme/widgets
+                enabled:
+                  type: boolean
+                  default: true
+                  description: >
+                    A disabled mirror keeps its configuration and status and
+                    pushes nothing. Enabling it again queues a push.
+      responses:
+        "200":
+          description: Mirror saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mirror]
+                properties:
+                  mirror: { $ref: "#/components/schemas/PushMirror" }
+        "400":
+          description: "`repo` is not `owner/repository` (`code` = `invalid-repo`)"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Not an admin; the App installation is not linked to the project's owner (`not-authorized`); or the App lacks the Contents permission on the repository (`no-permission`)
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The App is not installed on the repository (`not-installed`), the repository is connected to another project (`taken`), or the project is being deleted (`deleting`)
+        "502":
+          description: GitHub could not be reached (`code` = `github`)
+        "503":
+          description: The GitHub App is not configured on this instance (`not-configured`), or the mirror could not be saved (`failed`)
+    delete:
+      operationId: deletePushMirror
+      tags: [mirror]
+      summary: Remove the project's push mirror
+      description: >
+        Project admins only (user identity). Deletes the configuration and
+        status. The GitHub repository is not changed.
+      responses:
+        "200":
+          description: Mirror removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/projects/{namespace}/{slug}/mirror/resume:
+    parameters:
+      - $ref: "#/components/parameters/Namespace"
+      - $ref: "#/components/parameters/Slug"
+    post:
+      operationId: resumePushMirror
+      tags: [mirror]
+      summary: Clear a failed or diverged mirror and push now
+      description: |
+        Project admins only (user identity). Clears a `failed` or `diverged`
+        state and queues a push. This is the only way out of `diverged`.
+
+        Resuming never forces a push: if the GitHub repository still holds
+        history the project does not, the next push marks the mirror `diverged`
+        again. On a healthy mirror this queues a push now.
+      responses:
+        "202":
+          description: Push queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mirror]
+                properties:
+                  mirror: { $ref: "#/components/schemas/PushMirror" }
+        "302":
+          description: Form post; redirect to the settings page
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/projects/{namespace}/{slug}/sync/settings:
     parameters:
@@ -1185,7 +1350,8 @@ paths:
                     change.reviewed, project.created, project.imported,
                     workspace.created, sync.completed, issue.opened,
                     issue.commented, issue.closed, deployment.requested,
-                    deployment.succeeded, deployment.failed
+                    deployment.succeeded, deployment.failed, mirror.diverged,
+                    mirror.failed
       responses:
         "201":
           description: Webhook created (includes the secret, shown once)
@@ -2714,6 +2880,8 @@ paths:
             evaluation finishes, which re-pushes to the same PR.
             Or `GITHUB_REPO_NOT_CANONICAL` — the repository is already connected
             to another Stratum project (no `github` field).
+            Or `PUSH_MIRROR_ENABLED` — the project mirrors to GitHub, so its
+            changes merge in Stratum and are not promoted (no `github` field).
           content:
             application/json:
               schema:
@@ -6942,6 +7110,46 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
+    PushMirror:
+      type: object
+      description: A project's push mirror to GitHub — its configuration and status.
+      required: [repo, url, enabled, state, pending, lastPushedSha, lastPushedAt, lastAttemptAt]
+      properties:
+        repo:
+          type: string
+          description: The GitHub repository, as `owner/repository`
+        url: { type: string, format: uri }
+        enabled: { type: boolean }
+        state:
+          type: string
+          enum: [idle, pushing, ok, retrying, failed, diverged]
+          description: |
+            `idle` — configured, nothing pushed yet. `pushing` — a push is
+            running. `ok` — the mirror matched the project when the last push
+            finished. `retrying` — the last attempt failed and another is
+            scheduled. `failed` — retries are exhausted, or the failure is one
+            no retry fixes; the next merge or a resume tries again. `diverged`
+            — the GitHub repository holds history the project does not;
+            nothing is pushed until an admin resumes the mirror.
+        pending:
+          type: boolean
+          description: A push has been requested and has not completed
+        lastPushedSha:
+          type: [string, "null"]
+          description: The default-branch commit the mirror was last brought to
+        lastPushedAt: { type: [string, "null"], format: date-time }
+        lastAttemptAt: { type: [string, "null"], format: date-time }
+        lastError:
+          type: [string, "null"]
+          description: Why the last attempt failed or diverged. Project writers only.
+        nextAttemptAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the next retry is due, while `retrying`. Project writers only.
+        attempts:
+          type: integer
+          description: Consecutive failed attempts. Project writers only.
+
     IssueImportRun:
       type: object
       required: [id, projectId, githubRepo, status, initiatedBy, nextPage, issuesCreated, issuesUpdated, commentsImported, pullsSkipped, createdAt, updatedAt]
@@ -7251,6 +7459,14 @@ components:
         commitsBehind: { type: integer }
         latestCommit: { type: string }
         lastCheckedAt: { type: string, format: date-time }
+        mirror:
+          description: >
+            The project's push mirror, or null when it has none. Readers
+            without write access do not receive `lastError`, `nextAttemptAt`
+            or `attempts`.
+          oneOf:
+            - $ref: "#/components/schemas/PushMirror"
+            - type: "null"
         importProgress:
           type: object
           description: Present when a sync/import is active

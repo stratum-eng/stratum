@@ -18,6 +18,7 @@ const noopRunners: JobRunners = {
   "oauth-code-sweep": () => Promise.resolve(),
   "evaluation-sweep": () => Promise.resolve(),
   "check-deadline-sweep": () => Promise.resolve(),
+  "mirror-sweep": () => Promise.resolve(),
 };
 
 describe("jobsForCron", () => {
@@ -39,7 +40,7 @@ describe("jobsForCron", () => {
     expect(jobs).not.toContain("backup");
   });
 
-  it("runs the event, deletion, import, evaluation and check-deadline sweeps on the */5 trigger", () => {
+  it("runs the event, deletion, import, evaluation, check-deadline and mirror sweeps on the */5 trigger", () => {
     expect(jobsForCron("*/5 * * * *")).toEqual([
       "event-sweep",
       "deletion-sweep",
@@ -47,6 +48,7 @@ describe("jobsForCron", () => {
       "oauth-code-sweep",
       "evaluation-sweep",
       "check-deadline-sweep",
+      "mirror-sweep",
     ]);
   });
 

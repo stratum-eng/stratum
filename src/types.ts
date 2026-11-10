@@ -1,6 +1,7 @@
 // Type-only: erased at compile time, so parameterizing DEPLOY_QUEUE with the
 // runner's message union cannot create a runtime import cycle.
 import type { DeployQueueMessage } from "./deploy/runner";
+import type { MirrorQueueMessage } from "./github/mirror";
 import type { MagicLinkRateLimiter } from "./queue/magic-link-limiter";
 import type { UsageMeter } from "./queue/usage-meter";
 import type { LoggerContext } from "./utils/logger";
@@ -393,6 +394,11 @@ export interface Env {
    * not stall webhook delivery on the shared events consumer. Optional: with
    * it unbound, evaluation runs inline on the request, as it did before. */
   EVALUATION_QUEUE?: Queue<EvaluationQueueMessage>;
+  /** Push-mirror nudges (#417). Its own queue because a push clones the
+   * repository into memory and can run for minutes — neither of which the
+   * shared events consumer is sized for. Optional: with it unbound, the
+   * five-minute sweep pushes pending mirrors inline instead. */
+  MIRROR_QUEUE?: Queue<MirrorQueueMessage>;
 }
 
 /** One evaluation run. Keyed to the change AND the run, never the change

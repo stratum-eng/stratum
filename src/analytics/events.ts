@@ -144,6 +144,8 @@ const DOMAIN_EVENTS = {
   "stratum.deployment.requested": true,
   "stratum.deployment.succeeded": true,
   "stratum.deployment.failed": true,
+  "stratum.mirror.diverged": true,
+  "stratum.mirror.failed": true,
 } as const satisfies Record<DomainEventName, true>;
 
 export const DOMAIN_EVENT_NAMES: readonly DomainEventName[] = Object.keys(

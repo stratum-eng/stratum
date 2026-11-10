@@ -865,6 +865,14 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   // request's binding, and the credential it mints is bound to that project.
   "POST /api/workspaces/:namespace/:slug/workspaces/:name/remote-credential",
   "PUT /api/projects/:namespace/:slug/secrets/:name",
+  // Push mirror (#417): every route authorizes through mirror.ts `requireAdmin`
+  // (isProjectAdmin with the request's binding).
+  "DELETE /api/projects/:namespace/:slug/mirror",
+  "GET /api/projects/:namespace/:slug/mirror",
+  "POST /api/projects/:namespace/:slug/mirror",
+  "POST /api/projects/:namespace/:slug/mirror/delete",
+  "POST /api/projects/:namespace/:slug/mirror/resume",
+  "PUT /api/projects/:namespace/:slug/mirror",
 ];
 
 describe("the route table", () => {

@@ -76,6 +76,15 @@ limitations recorded below.
   merge (`changes/merge-batch`) triggers neither the post-merge check nor a
   deploy. The deploy DLQ (`stratum-deploys-dlq`) has no consumer: dead-lettered
   messages sit there for manual inspection.
+- Push mirror to GitHub (#417): a per-project, admin-configured, fast-forward-only
+  copy of the default branch and tags, pushed from the `stratum-mirrors` queue
+  after each merge with a GitHub App installation token limited to the mirror
+  repository (`src/github/mirror.ts`, `src/github/remote.ts`). Never force-pushes
+  or deletes; a non-ancestor target is marked `diverged` and waits for an admin.
+  A mirrored project is in forge mode: inbound sync and PR promotion are refused.
+  **Tags are mirrored but there is still no way to create one on a project** —
+  the project remote refuses tag pushes (#182) — so only tags that arrived by
+  import or restore exist to mirror. See `user-guide/push-mirror.md`.
 - Human reviews (approve / request changes) move the change state machine and are
   human-only; agents cannot approve work.
 

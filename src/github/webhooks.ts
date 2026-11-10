@@ -19,6 +19,7 @@ import {
   upsertInstallation,
 } from "../storage/github-installations";
 import { createImportJob, getLatestImportDepth } from "../storage/imports";
+import { layerModeAllowed, pushMirrorMode } from "../storage/push-mirrors";
 import { getWorkspace } from "../storage/state";
 import { getSyncStatus, setSyncInProgress } from "../storage/sync";
 import { type Env, projectDefaultBranch } from "../types";
@@ -118,6 +119,21 @@ async function handlePush(
   }
 
   const project = projectResult.data;
+
+  // Forge mode (#417): a project that mirrors TO this repository does not sync
+  // FROM it. Its own mirror pushes arrive here as push events, and so would a
+  // commit someone made directly on GitHub — which is divergence for the
+  // mirror to report, not history for a webhook to pull in unreviewed.
+  const mode = await pushMirrorMode(env.DB, logger, project.id);
+  if (!layerModeAllowed(mode)) {
+    // `unknown` is skipped too: a sync started on a failed lookup could pull
+    // GitHub's commits into a project that mirrors there.
+    logger[mode === "unknown" ? "warn" : "debug"](
+      "Skipping webhook-triggered sync: the project mirrors to this repo, or that could not be read",
+      { projectId: project.id, mode },
+    );
+    return;
+  }
 
   // Resolve once, up front: the guard and the queued job must agree on which
   // branch is "default". Comparing against the raw sourceDefaultBranch while
@@ -251,6 +267,21 @@ export async function handlePullRequest(
 
   const project = projectResult.data;
 
+  // Forge mode (#417). These handlers belong to layer mode, where a change is
+  // promoted to a pull request and GitHub's verdict on it comes back here. A
+  // project that mirrors to this repository merges in Stratum: a pull request
+  // closed as merged on GitHub must not mark a Stratum change `merged` that
+  // never merged into the project. A PR promoted before the mirror was turned
+  // on is the case that reaches this.
+  const mode = await pushMirrorMode(env.DB, logger, project.id);
+  if (!layerModeAllowed(mode)) {
+    logger[mode === "unknown" ? "warn" : "debug"](
+      "Ignoring a pull request event: the project mirrors to this repo, or that could not be read",
+      { projectId: project.id, mode, prNumber, action },
+    );
+    return;
+  }
+
   if (action === "opened" || action === "synchronize") {
     const existing = await getChangeByGitHubBranch(env.DB, logger, project.id, pr.head.ref);
 
@@ -376,6 +407,16 @@ export async function handlePullRequestReview(
   }
 
   const project = projectResult.data;
+  // Same rule as `handlePullRequest`: a review on GitHub says nothing about a
+  // change in a project that merges in Stratum and mirrors there.
+  const mode = await pushMirrorMode(env.DB, logger, project.id);
+  if (!layerModeAllowed(mode)) {
+    logger[mode === "unknown" ? "warn" : "debug"](
+      "Ignoring a pull request review: the project mirrors to this repo, or that could not be read",
+      { projectId: project.id, mode, prNumber },
+    );
+    return;
+  }
   const existing = await getChangeByGitHubBranch(env.DB, logger, project.id, headRef);
   if (!existing) {
     logger.debug("No Change found for reviewed PR branch", { branch: headRef });

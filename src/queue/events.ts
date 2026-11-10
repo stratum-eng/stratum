@@ -62,7 +62,12 @@ export type StratumEvent =
       commit: string;
       /** Already redacted against the deployment's secret values by the runner. */
       reason: string;
-    };
+    }
+  // Push mirror (#417). Both mean the GitHub copy has stopped following the
+  // project and will not catch up by itself: `diverged` until an admin resumes
+  // the mirror, `failed` until the next merge or a resume.
+  | { type: "mirror.diverged"; project: string; repo: string; reason: string }
+  | { type: "mirror.failed"; project: string; repo: string; reason: string };
 
 export interface EventActor {
   type: EventActorType;
