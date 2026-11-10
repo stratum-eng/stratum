@@ -2551,7 +2551,18 @@ paths:
             `200`.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      skipped:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            changeId: { type: string }
+                            reason: { type: string }
 
   /api/changes/{id}:
     parameters:

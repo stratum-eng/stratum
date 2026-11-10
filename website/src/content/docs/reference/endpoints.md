@@ -421,11 +421,15 @@ project head with a **single push** (see
 request, and requires the RepoDO backend. `force` is deny-by-default and must be
 allowed by project policy (`merge.allowForce: true`).
 
-A change that cannot be merged is listed under `skipped` with a reason, and the
-rest are merged. When nothing is eligible the answer is `400`. One case is
-different: under `merge.requireFreshBase`, if the project head could not be
-read and that leaves nothing to merge, the answer is `503 BASE_UNVERIFIABLE`
-with the `skipped` list. That is a fault to retry, not an ineligible batch.
+The `200` response has three lists, and a client must read all of them:
+`merged` holds the ids that merged, `conflicted` the ids that hit a merge
+conflict, and `skipped` each change that was not attempted, with a `reason`.
+
+When nothing is eligible the answer is `400`. Its message gives the number
+skipped, not the reasons. One case is different: under
+`merge.requireFreshBase`, if the project head could not be read and that
+leaves nothing to merge, the answer is `503 BASE_UNVERIFIABLE` with the
+`skipped` list. That is a fault to retry, not an ineligible batch.
 
 ### Check runs
 
