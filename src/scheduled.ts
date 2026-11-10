@@ -7,6 +7,7 @@ import { runTtlSweep } from "./queue/ttl-sweep";
 import { syncAllProjects } from "./routes/sync";
 import { sweepOverdueChecks } from "./services/check-runs";
 import { sweepOverdueDeployments } from "./services/deploy-reports";
+import { runEvaluationHealthCheck } from "./services/evaluation-health";
 import { sweepStuckEvaluations } from "./services/evaluation-run";
 import { purgeExpiredAgentSignups } from "./storage/agent-signups";
 import { cleanupOldImports } from "./storage/imports";
@@ -29,7 +30,8 @@ export type ScheduledJob =
   | "evaluation-sweep"
   | "check-deadline-sweep"
   | "mirror-sweep"
-  | "deploy-report-sweep";
+  | "deploy-report-sweep"
+  | "evaluation-health";
 
 /** How long a finished import job is kept before `import-cleanup` prunes it. */
 const IMPORT_RETENTION_DAYS = 30;
@@ -49,6 +51,10 @@ const IMPORT_RETENTION_DAYS = 30;
  * SELECT plus a chunked DELETE, and its warning — authorization codes that
  * expired without being redeemed — is a signal about a connection someone is
  * trying to make right now.
+ *
+ * `evaluation-health` rides the 06:00 housekeeping: at most four model calls
+ * and two counting queries, once a day, which is as often as its alert is
+ * worth reading.
  *
  * `evaluation-sweep` (#412) is the same shape — one indexed query, a bounded
  * batch of conditional writes and queue sends — and the change it recovers is
@@ -87,6 +93,7 @@ export function jobsForCron(cron: string): ScheduledJob[] {
         "import-cleanup",
         "oidc-state-purge",
         "agent-signup-purge",
+        "evaluation-health",
       ];
     default:
       return [];
@@ -110,6 +117,7 @@ const JOB_RUNNERS: JobRunners = {
   "check-deadline-sweep": (env, logger) => sweepOverdueChecks(env, logger),
   "mirror-sweep": (env, logger) => sweepPushMirrors(env, logger),
   "deploy-report-sweep": (env, logger) => sweepOverdueDeployments(env, logger),
+  "evaluation-health": (env, logger) => runEvaluationHealthCheck(env, logger),
 };
 
 /**

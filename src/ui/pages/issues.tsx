@@ -1,6 +1,6 @@
 import type { FC } from "hono/jsx";
 import type { IssueComment } from "../../storage/issue-comments";
-import type { Issue } from "../../storage/issues";
+import { type Issue, SYSTEM_AUTHOR_ID } from "../../storage/issues";
 import { ProjectHeader } from "../components/project-header";
 import { Layout } from "../layout";
 
@@ -88,7 +88,22 @@ const authorLabel = (
 ) =>
   item.externalAuthor !== undefined
     ? `${item.externalAuthor} (GitHub)`
-    : (authors[item.authorId] ?? item.authorType);
+    : item.authorId === SYSTEM_AUTHOR_ID
+      ? "Stratum (automated)"
+      : (authors[item.authorId] ?? item.authorType);
+
+/**
+ * Why the instance itself closed an issue, when it did. Two things close an
+ * issue as the system: a merged change that links it, and a health check
+ * coming back clean on an alert the instance filed. The second has no change
+ * behind it, so it is told apart by who opened the issue.
+ */
+const systemCloseNote = (issue: Pick<Issue, "closedBy" | "authorId">) =>
+  issue.closedBy !== SYSTEM_AUTHOR_ID
+    ? ""
+    : issue.authorId === SYSTEM_AUTHOR_ID
+      ? " (closed automatically when the check passed again)"
+      : " (auto-closed by merged change)";
 
 /** Link back to the GitHub original of an imported issue or comment. */
 const GitHubBackLink: FC<{ href: string; label: string }> = ({ href, label }) => (
@@ -277,7 +292,7 @@ export const IssueDetailPage: FC<IssueDetailPageProps> = ({
           opened {new Date(issue.createdAt).toLocaleString()} by {authorLabel(issue, authors)}
           {issue.assignee ? ` · assigned to ${authors[issue.assignee] ?? issue.assignee}` : ""}
           {issue.closedAt ? ` · closed ${new Date(issue.closedAt).toLocaleString()}` : ""}
-          {issue.closedBy === "system" ? " (auto-closed by merged change)" : ""}
+          {systemCloseNote(issue)}
           {issue.externalUrl !== undefined && (
             <>
               {" · "}

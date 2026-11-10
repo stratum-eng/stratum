@@ -33,6 +33,13 @@ export interface Issue {
   updatedAt: string;
 }
 
+/**
+ * `authorId` of an issue the instance filed itself (see `services/ops-alerts`).
+ * Not a user or agent id, and shaped so it cannot be one: ids carry a
+ * `usr_`/`agt_` prefix.
+ */
+export const SYSTEM_AUTHOR_ID = "system";
+
 interface IssueRow {
   id: string;
   project: string;

@@ -659,6 +659,27 @@ secrets are set.
 > project. An instance that leaves it unset reports `environment: "unknown"` —
 > harmless, but every funnel built across both deployments is then wrong.
 
+`OPS_ALERT_PROJECT` names the Stratum project, as `"@namespace/slug"`, where the
+instance files an issue when one of its own health checks fails
+(`src/services/ops-alerts.ts`). Today the only such check is the daily
+`evaluation-health` job on the `0 6 * * *` cron
+(`src/services/evaluation-health.ts`). Unset, a failure is logged at error level
+and, unless `OPS_ALERT_EMAIL` is set, nothing else happens. The hosted instance
+sets it to `@stratum/stratum` in `[env.production.vars]`; staging leaves it
+unset.
+
+`OPS_ALERT_EMAIL` adds an email when the issue is opened and when it is closed.
+It is a secret, and a secret belongs to one deployment:
+`wrangler secret put OPS_ALERT_EMAIL` for a top-level deployment, with
+`--env <name>` (for example `--env production`) for a named environment. It
+does nothing on its own: the same deployment also needs the `EMAIL` binding and
+`EMAIL_FROM_ADDRESS`, and without either no message is sent. With no `OPS_ALERT_PROJECT`, or when the
+issue cannot be filed, there is no issue to mark the alert as already raised:
+the instance then mails on every failing run, and sends no message when the
+check recovers. It is deliberately not `ADMIN_EMAIL`: that secret also makes
+the matching account an instance administrator (`src/utils/admin.ts`), so it
+must not be set just to receive mail.
+
 `TELEMETRY_CONSENT_AT_SIGNUP` makes telemetry opt-in for **new** accounts. Only
 the literal `"true"` turns it on. With it on, every signup form (magic link, the
 username step after GitHub or Google, and the approval page of an

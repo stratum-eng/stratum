@@ -195,6 +195,56 @@ wrong, so none of these fall back to the operator's model.
 - **Two `llm` entries** — a policy declaring the evaluator twice is refused
   outright rather than one being picked. Keep one.
 
+### The `llm` gate fails every change with `LLM error`
+
+A reason that starts `LLM error:` means the model could not be reached at all,
+and one that says `no verdict within ...ms` means it did not answer in time.
+Neither says anything about the change. The usual cause is a retired model:
+Workers AI withdraws models on published dates, and after that every request
+for one fails with error `5028`.
+
+- **Your policy names a `model`.** Check it against the
+  [Workers AI model catalog](https://developers.cloudflare.com/workers-ai/models/)
+  and replace it if it is marked deprecated. A model that reasons before it
+  answers may also need a `timeoutMs` above the 30-second default.
+- **Your policy names no `model`.** The instance's default is the one that
+  failed, which is the operator's to fix by upgrading Stratum.
+
+#### The instance checks this itself (self-hosting)
+
+Once a day an instance checks its own evaluation in two ways:
+
+- **A trial run.** It runs its default `llm` model on two fixed diffs, one that
+  should pass and one that should not. The two diffs are built into Stratum; no
+  project's code is sent. An instance with no Workers AI binding skips this
+  part and still does the next.
+- **Counts over the last 24 hours**, from real evaluations. It reports when at
+  least five `llm` reviews, and at least half of them, ended with no verdict
+  from the model (a provider error or a timeout). It also reports when at least
+  three changes had an evaluation that never reported back at all, which
+  usually means the evaluation worker is being stopped mid-run by a memory or
+  time limit; look for `exceededMemory` or `exceededCpu` on the
+  `stratum-evaluations` queue consumer in the Worker's logs.
+
+Set `OPS_ALERT_PROJECT` in the environment's `[vars]` to a project on the
+instance, as `"@namespace/slug"`, and a failed check opens an issue there
+titled *Evaluation health check is failing*, authored by *Stratum (automated)*.
+It lists what failed. While it is open no second issue is filed, and it is
+closed automatically when the check passes again. Left unset, which is the
+default, the result is written to the Worker's logs only.
+
+To be emailed as well, set the `OPS_ALERT_EMAIL` secret to an address. A secret
+belongs to one deployment: for a top-level deployment run
+`wrangler secret put OPS_ALERT_EMAIL`, and for a named environment add
+`--env <name>`, for example `--env production`. The instance then sends one
+message when the issue is opened and one when it is closed. This needs the
+instance's email sending to be configured (`EMAIL` binding and
+`EMAIL_FROM_ADDRESS`). With no `OPS_ALERT_PROJECT`, with one that cannot be
+found, or when the issue could not be opened, there is no issue to mark the
+alert as already raised, so a failing check sends a message every day until it
+passes, and none when it does. Each of those messages says why no issue was
+opened.
+
 ### `... allowance is used up` or an evaluation rate limit
 
 Only reachable on an instance whose operator has configured a billing service

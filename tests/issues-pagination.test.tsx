@@ -131,6 +131,26 @@ describe("IssueDetailPage comment pagination", () => {
     );
   }
 
+  it("says who filed and what closed an issue the instance opened itself", () => {
+    const closedAt = "2026-01-02T00:00:00.000Z";
+    const alert = renderDetail({
+      issue: { ...issue(7), authorType: "agent", authorId: "system", closedAt, closedBy: "system" },
+    });
+    expect(alert).toContain("by Stratum (automated)");
+    expect(alert).toContain("(closed automatically when the check passed again)");
+    expect(alert).not.toContain("auto-closed by merged change");
+
+    // A person's issue closed by a merged change keeps its own note.
+    const merged = renderDetail({ issue: { ...issue(7), closedAt, closedBy: "system" } });
+    expect(merged).toContain("(auto-closed by merged change)");
+    expect(merged).not.toContain("check passed again");
+
+    // Closed by a person: no note at all.
+    const manual = renderDetail({ issue: { ...issue(7), closedAt, closedBy: "user_1" } });
+    expect(manual).not.toContain("auto-closed");
+    expect(manual).not.toContain("check passed again");
+  });
+
   it("renders no pager when every comment fits on one page", () => {
     const html = renderDetail();
     expect(html).not.toContain('class="page-nav"');
