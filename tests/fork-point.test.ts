@@ -161,6 +161,8 @@ describe("findForkPoint", () => {
     expect(found.error.code).toBe("FORK_POINT_NOT_FOUND");
     expect(found.error.message).toContain("within the last 64 commits");
     expect(found.error.message).toContain("Bring the workspace up to date with main");
+    // The other way to get here, which "up to date" would not fix.
+    expect(found.error.message).toContain("fork a new workspace");
     // The workspace's whole history was already held, so only the project grew.
     expect(base.deepen.mock.calls).toEqual([[15], [48]]);
     expect(workspace.deepen).not.toHaveBeenCalled();

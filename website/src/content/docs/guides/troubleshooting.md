@@ -183,6 +183,10 @@ Bring the workspace up to date, then evaluate again. From a checkout of the
 workspace, merge or rebase onto the project's default branch and push; or fork a
 new workspace and re-apply the change there.
 
+The same message appears when the project's history was replaced after the
+workspace forked (a break-glass resync, for example), because the two then share
+no commit at all. Merging will not help there; fork a new workspace.
+
 ### The `llm` gate fails with a reason about a provider
 
 These are all the same shape: the gate **ran and failed**, rather than being

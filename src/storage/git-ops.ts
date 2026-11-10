@@ -4369,6 +4369,21 @@ function pickForkPoint(workspace: KnownHistory, base: KnownHistory): string | nu
   return candidates.reduce((best, oid) => (rank(oid) < rank(best) ? oid : best));
 }
 
+/** How many commits in `history` are not `oid` or one of its ancestors. */
+function countCommitsSince(history: KnownHistory, oid: string): number {
+  const reached = new Set<string>();
+  for (let frontier = [oid]; frontier.length > 0; ) {
+    const next: string[] = [];
+    for (const commit of frontier) {
+      if (reached.has(commit) || !history.distance.has(commit)) continue;
+      reached.add(commit);
+      next.push(...(history.parents.get(commit) ?? []));
+    }
+    frontier = next;
+  }
+  return history.distance.size - reached.size;
+}
+
 /** Where a workspace's history meets its project's. */
 export type ForkPoint =
   | { kind: "found"; oid: string }
@@ -4427,7 +4442,7 @@ export async function findForkPoint(args: {
     if (!grew) {
       return err(
         new AppError(
-          `Could not find where this workspace forked from ${branch} within the last ${maxDepth} commits. Bring the workspace up to date with ${branch}, then evaluate again.`,
+          `Could not find where this workspace forked from ${branch} within the last ${maxDepth} commits. Bring the workspace up to date with ${branch}, then evaluate again. If the history of ${branch} was replaced after the workspace was forked, fork a new workspace and re-apply the change there.`,
           "FORK_POINT_NOT_FOUND",
           409,
         ),
@@ -4512,7 +4527,8 @@ export async function getDiffBetweenRepos(
        * exact tree the diff applies to (#274). */
       mergeBaseOid: string;
       /** Commits the project has gained since the workspace forked, as far as
-       * the fetched history shows; 0 when the workspace is up to date. */
+       * the fetched history shows; 0 when the workspace is up to date, and 0
+       * when the histories are unrelated and there is no fork to count from. */
       behindBy: number;
     },
     AppError
@@ -4611,9 +4627,9 @@ export async function getDiffBetweenRepos(
   // are unrelated, is only in the project's.
   const mergeBaseFs = mergeBaseOid === baseOid ? baseFs : workspaceFs;
   const behindBy =
-    mergeBaseOid === baseOid
-      ? 0
-      : ((await readKnownHistory(baseFs, baseOid)).distance.get(mergeBaseOid) ?? 0);
+    forkPoint.data.kind === "found"
+      ? countCommitsSince(await readKnownHistory(baseFs, baseOid), mergeBaseOid)
+      : 0;
 
   const [workspaceFilesResult, baseFilesResult] = await Promise.all([
     listFilesAtCommit(workspaceFs, workspaceOid, logger),
