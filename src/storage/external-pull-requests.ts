@@ -442,22 +442,37 @@ export async function updateExternalPullRequestHead(
  * Moving an `evaluating` change is deliberate too — its pending run then finds
  * the status changed and records nothing.
  *
+ * Every caller decides to do this from a head it read a moment earlier, and a
+ * maintainer may have imported the new head since. So the statement checks
+ * for itself that the pull request's head is still past the imported one: a
+ * change whose new head has been imported is left alone, with its approvals.
+ * `forRunId` narrows it further, for an evaluation run acting on its own
+ * behalf: it moves the change only while that run is still the current one.
+ *
  * @returns Whether the status moved, and whose approvals were dismissed
  */
 export async function supersedeImportedChange(
   db: D1Database,
   logger: Logger,
   changeId: string,
+  options: { forRunId?: string } = {},
 ): Promise<Result<{ superseded: boolean; dismissedReviewerIds: string[] }, AppError>> {
   try {
+    const runClause = options.forRunId !== undefined ? " AND eval_run_id = ?" : "";
+    const moveBinds = options.forRunId !== undefined ? [changeId, options.forRunId] : [changeId];
     const [moved, dismissed] = await db.batch<{ id?: string; reviewer_id?: string }>([
       db
         .prepare(
           `UPDATE changes SET status = 'external'
-            WHERE id = ? AND status NOT IN (${SETTLED_LIST}, 'external')
+            WHERE id = ? AND status NOT IN (${SETTLED_LIST}, 'external')${runClause}
+              AND EXISTS (
+                SELECT 1 FROM external_pull_requests e
+                 WHERE e.change_id = changes.id
+                   AND e.head_sha IS NOT e.imported_head_sha
+              )
         RETURNING id`,
         )
-        .bind(changeId),
+        .bind(...moveBinds),
       // Runs second, in the same transaction, so it sees the status the first
       // statement left. An `external` change has no approvals worth keeping
       // whichever statement made it so.

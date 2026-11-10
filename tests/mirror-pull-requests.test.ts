@@ -196,6 +196,7 @@ import worker from "../src/index";
 import { profileAllowedForOrigin } from "../src/services/ci-executor";
 import { runEvaluationJob } from "../src/services/evaluation-run";
 import { createAgent } from "../src/storage/agents";
+import { supersedeImportedChange } from "../src/storage/external-pull-requests";
 import {
   buildUnifiedDiff,
   scanForSubmoduleContent,
@@ -441,6 +442,8 @@ class FakeGitHub {
   pulls = new Map<number, FakePull>();
   /** Comments posted on pull requests: id, pull request, current body. */
   comments: Array<{ id: number; number: number; body: string }> = [];
+  /** When true, editing a comment is refused (a status the client does not retry). */
+  failCommentEdits = false;
   /** `METHOD path` of every REST and git request, in order. */
   requests: string[] = [];
   tokenRequests: unknown[] = [];
@@ -698,6 +701,7 @@ class FakeGitHub {
       }
       const editMatch = rest.match(/^\/issues\/comments\/(\d+)$/);
       if (editMatch && method === "PATCH") {
+        if (this.failCommentEdits) return Response.json({ message: "Forbidden" }, { status: 403 });
         const comment = this.comments.find((entry) => entry.id === Number(editMatch[1]));
         if (!comment) return Response.json({ message: "Not Found" }, { status: 404 });
         comment.body = (JSON.parse(await request.text()) as { body: string }).body;
@@ -1972,6 +1976,69 @@ describe("a change whose pull request moved on without it", () => {
     await drainMirror();
     expect(github.comments).toHaveLength(1);
     expect(github.comments[0]?.body).toContain(`Only the commits up to \`${head.slice(0, 12)}\``);
+  });
+
+  it("is not sent back by an old run once a maintainer has imported the new head", async () => {
+    await seedBase({
+      ".stratum/policy.yaml": "evaluators:\n  - type: diff\nmerge:\n  requiredApprovals: 1\n",
+    });
+    await configureMirror();
+    const { changeId, fork: contributorFork } = await openPullRequest(7);
+    expect((await importChange(changeId)).status).toBe(202);
+    const [first] = rows<{ eval_run_id: string | null }>(
+      "SELECT eval_run_id FROM changes WHERE id = ?",
+      changeId,
+    );
+    const oldRun = first?.eval_run_id ?? "run_old";
+
+    // New commits arrive, and the maintainer imports and approves them.
+    const next = await contributorFork.commit({ "more.txt": "more\n" }, "more", contributor);
+    await github.pushToPull(7, contributorFork, next);
+    await webhook(github.payload(7, "synchronize"));
+    expect((await importChange(changeId, cookies.writer, { headSha: next })).status).toBe(202);
+    await json(`/api/changes/${changeId}/reviews`, cookies.second, "POST", { verdict: "approve" });
+    const approved = (await getChange(changeId)).change.status;
+
+    // An old run that saw the mismatch before that import now gets to its
+    // write. It is neither the current run nor looking at a moved head.
+    const asOldRun = await supersedeImportedChange(env.DB, logger, changeId, { forRunId: oldRun });
+    expect(asOldRun).toMatchObject({ success: true, data: { superseded: false } });
+    // Nor does any other late caller move it: the heads agree.
+    const late = await supersedeImportedChange(env.DB, logger, changeId);
+    expect(late).toMatchObject({ success: true, data: { superseded: false } });
+
+    expect((await getChange(changeId)).change.status).toBe(approved);
+    expect(
+      rows("SELECT * FROM change_reviews WHERE change_id = ? AND verdict = 'approve'", changeId),
+    ).toHaveLength(1);
+  });
+
+  it("does not close the pull request until the warning about a late push is written", async () => {
+    await configureMirror();
+    const { changeId, head, fork: contributorFork } = await openPullRequest(7);
+    expect((await importChange(changeId)).status).toBe(202);
+    expect((await mergeChange(changeId, cookies.admin, "?strategy=squash")).status).toBe(200);
+    await drainMirror();
+    expect(github.comments).toHaveLength(1);
+    expect(github.comments[0]?.body).not.toContain("Only the commits up to");
+
+    // The push comes after the first comment, between two settlement passes.
+    const late = await contributorFork.commit({ "late.txt": "late\n" }, "late", contributor);
+    await github.pushToPull(7, contributorFork, late);
+
+    // GitHub will not take the comment edit: the pull request stays open and
+    // the step is retried, where it used to be closed with the warning lost.
+    github.failCommentEdits = true;
+    const after = Date.now() + CLOSURE_GRACE_MS + 1_000;
+    await settleMergedPullRequests(env, logger, PROJECT_ID, after);
+    expect(github.pulls.get(7)?.state).toBe("open");
+    expect((await getChange(changeId)).externalPullRequest?.closure.state).toBe("commented");
+
+    github.failCommentEdits = false;
+    await settleMergedPullRequests(env, logger, PROJECT_ID, after);
+    expect(github.pulls.get(7)?.state).toBe("closed");
+    expect(github.comments[0]?.body).toContain(`Only the commits up to \`${head.slice(0, 12)}\``);
+    expect((await getChange(changeId)).externalPullRequest?.closure.state).toBe("done");
   });
 
   it("says so on GitHub when a push arrived too late to be part of the merge", () => {

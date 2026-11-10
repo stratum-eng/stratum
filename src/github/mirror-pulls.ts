@@ -1318,6 +1318,41 @@ async function settleOne(
     });
     return;
   }
+  // A push that missed the merge has to be said before the pull request is
+  // closed, and has to have been said: closing first and updating the
+  // comment afterwards, best effort, could end with the warning never
+  // written. So when there is one to give, the comment is updated first and
+  // a failure is retried like any other step.
+  const warning = leftBehind(record, live.headSha);
+  const closingComment = mergedComment({
+    changeId: record.changeId,
+    branch,
+    ...(env.APP_URL !== undefined ? { appUrl: env.APP_URL } : {}),
+    ...warning,
+    closing: true,
+  });
+  let commentWritten = false;
+  if (warning.mergedThrough !== undefined) {
+    const written =
+      record.closureCommentId !== undefined
+        ? await client.updateComment({
+            owner: target.owner,
+            repo: target.repo,
+            comment_id: record.closureCommentId,
+            body: closingComment,
+          })
+        : await client.postComment({
+            owner: target.owner,
+            repo: target.repo,
+            issue_number: record.prNumber,
+            body: closingComment,
+          });
+    if (!written.success) {
+      await failClosure(env, logger, record, written.error, false);
+      return;
+    }
+    commentWritten = true;
+  }
   const closed = await client.updatePR({
     owner: target.owner,
     repo: target.repo,
@@ -1348,18 +1383,12 @@ async function settleOne(
   });
   // Best effort, and after the close so a failure here cannot leave the pull
   // request open: say why it reads "closed" and not "merged".
-  if (record.closureCommentId !== undefined) {
+  if (!commentWritten && record.closureCommentId !== undefined) {
     await client.updateComment({
       owner: target.owner,
       repo: target.repo,
       comment_id: record.closureCommentId,
-      body: mergedComment({
-        changeId: record.changeId,
-        branch,
-        ...(env.APP_URL !== undefined ? { appUrl: env.APP_URL } : {}),
-        ...leftBehind(record, live.headSha),
-        closing: true,
-      }),
+      body: closingComment,
     });
   }
 }

@@ -120,7 +120,9 @@ export async function runEvaluationJob(
   const origin = await getExternalPullRequestByChange(env.DB, log, changeId);
   if (!origin.success) return err(transient(origin.error));
   if (origin.data !== null && origin.data.headSha !== origin.data.importedHeadSha) {
-    const returned = await supersedeImportedChange(env.DB, log, changeId);
+    // Only as this run: by the time this write lands a maintainer may have
+    // imported the new head and started another.
+    const returned = await supersedeImportedChange(env.DB, log, changeId, { forRunId: runId });
     if (!returned.success) return err(transient(returned.error));
     log.info("Evaluation run dropped: the pull request has commits past the imported ones", {
       prNumber: origin.data.prNumber,
