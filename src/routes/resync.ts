@@ -43,6 +43,7 @@ import { recordAudit } from "../storage/audit";
 import { isTargetDeleting } from "../storage/deletion";
 import { type PushMirror, getPushMirror, resumePushMirror } from "../storage/push-mirrors";
 import { type Env, type ProjectEntry, projectDefaultBranch } from "../types";
+import { durableObjectNamespace } from "../utils/durable-objects";
 import type { Logger } from "../utils/logger";
 import { readJsonWithLimit } from "../utils/request-body";
 import { internalError, ok } from "../utils/response";
@@ -215,13 +216,18 @@ async function dispatchResync(
   logger: Logger,
 ): Promise<ResyncOutcome> {
   const pin = expectedSha !== undefined ? { expectedSha } : {};
-  const run =
-    env.REPO_DO_ENABLED === "true" && env.REPO_DO !== undefined
-      ? (env.REPO_DO.get(env.REPO_DO.idFromName(project.id)) as unknown as RepoDoResyncStub).resync(
-          { project, source, ...pin },
-        )
-      : runResync(env, project, source, pin, logger);
-  const result = await fromPromise(Promise.resolve(run));
+  // The namespace comes from the helper, never from `env.REPO_DO` directly, so
+  // a deployment with `DO_JURISDICTION` set reaches the restricted object
+  // (#453). The helper throws on an invalid jurisdiction, so it is resolved
+  // inside the promise this function already turns into an outcome.
+  const run = async (): Promise<ResyncOutcome> => {
+    const repoDo =
+      env.REPO_DO_ENABLED === "true" ? durableObjectNamespace(env, "REPO_DO") : undefined;
+    if (repoDo === undefined) return runResync(env, project, source, pin, logger);
+    const stub = repoDo.get(repoDo.idFromName(project.id)) as unknown as RepoDoResyncStub;
+    return stub.resync({ project, source, ...pin });
+  };
+  const result = await fromPromise(run());
   if (result.success) return result.data;
   logger.error("Resync run failed without reporting an outcome", result.error, {
     projectId: project.id,
