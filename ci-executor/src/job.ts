@@ -149,6 +149,8 @@ const MAX_START_ATTEMPTS = 2;
 const MAX_POLL_FAILURES = 5;
 const MAX_SEND_FAILURES = 30;
 const MAX_FINISH_ATTEMPTS = 5;
+/** Slack after the checks' deadline before a never-started job deletes itself. */
+const ABANDONED_GRACE_MS = 60_000;
 const MAX_INACTIVITY_MS = 6 * 60 * 60_000;
 const MAX_SUMMARY_LENGTH = 3000;
 
@@ -316,7 +318,8 @@ export class JobMachine {
   /** Advance the job. Returns the delay before the next tick, or null when done. */
   async tick(): Promise<number | null> {
     const state = await this.load();
-    if (state === undefined || state.phase === "queued") return null;
+    if (state === undefined) return null;
+    if (state.phase === "queued") return this.expireIfAbandoned(state);
 
     const active = state.phase !== "finishing";
     if (active && state.deadlineAt !== undefined && this.deps.now() >= state.deadlineAt) {
@@ -333,6 +336,31 @@ export class JobMachine {
     if (state.phase === "finishing") return this.finish(state);
     await this.save(state);
     return state.phase === "starting" ? RETRY_INTERVAL_MS : POLL_INTERVAL_MS;
+  }
+
+  /**
+   * A job still waiting to start, woken by the alarm set when it was stored.
+   *
+   * Normally the coordinator starts it or the dispatch handler discards it.
+   * This is what is left when neither happened: admission threw and the
+   * clean-up that followed failed too, or the coordinator lost the job. Past
+   * the checks' deadline Stratum has already written the job off, so it gives
+   * back whatever slot or queue place it may hold and deletes itself, with
+   * the repository token it was sent. Before then it only asks to be woken
+   * again.
+   */
+  private async expireIfAbandoned(state: JobState): Promise<number | null> {
+    const remaining = state.job.deadline - this.deps.now();
+    if (remaining > 0) return remaining + ABANDONED_GRACE_MS;
+    try {
+      await this.deps.release();
+    } catch (error) {
+      console.error("job: could not release an abandoned job's slot", String(error));
+      // The coordinator reclaims a running slot on its own clock, and drops a
+      // queued entry past its start-by time. Deleting the token must not wait.
+    }
+    await this.deps.storage.deleteAll();
+    return null;
   }
 
   // ---------------------------------------------------------------- reports

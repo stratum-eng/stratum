@@ -109,8 +109,9 @@ describe("POST /jobs", () => {
 
     expect(response.status).toBe(503);
     expect(response.body.code).toBe("ADMISSION_FAILED");
-    // Nothing owns the job, so nothing else would ever delete it.
-    expect(calls).toEqual(["accept", "submit", "discard"]);
+    // Admission may have saved its decision before it failed, so the slot or
+    // queue place is released as well as the stored job discarded.
+    expect(calls).toEqual(["accept", "submit", "release", "discard"]);
   });
 
   it("gives the slot back and discards the job when an admitted job cannot start", async () => {

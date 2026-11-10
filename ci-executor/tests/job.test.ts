@@ -172,6 +172,24 @@ describe("a job that runs to the end", () => {
     expect(h.control.released).toBe(1);
   });
 
+  it("deletes itself, and its token, when it was stored but never started or discarded", async () => {
+    // Admission threw and the clean-up after it failed too: nothing owns it.
+    const h = harness();
+    expect(await h.machine.accept(h.job)).toBe(true);
+
+    // Woken before the checks' deadline, it only asks to be woken again.
+    const again = await h.machine.tick();
+    expect(again).not.toBeNull();
+    expect(h.storage.data.size).toBeGreaterThan(0);
+
+    // Past the deadline it gives back any slot it holds and forgets everything.
+    h.clock.now = h.job.deadline + 1;
+    expect(await h.machine.tick()).toBeNull();
+    expect(h.control.released).toBe(1);
+    expect(h.storage.data.size).toBe(0);
+    expect(h.container.starts).toHaveLength(0);
+  });
+
   it("keeps its slot until the container is actually gone", async () => {
     const h = harness();
     await h.begin();
@@ -430,11 +448,15 @@ describe("time limits", () => {
     expect(h.storage.data.size).toBe(0);
   });
 
-  it("does nothing on a tick while it is still queued", async () => {
+  it("starts nothing on a tick while it is still queued", async () => {
     const h = harness();
     await h.machine.accept(h.job);
-    expect(await h.machine.tick()).toBeNull();
+    // It asks to be woken again (so an abandoned job can delete itself later),
+    // and does nothing else: no container, no report, no slot given back.
+    expect(await h.machine.tick()).toBeGreaterThan(0);
     expect(h.container.starts).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
+    expect(h.control.released).toBe(0);
   });
 });
 

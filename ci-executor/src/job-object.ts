@@ -78,7 +78,13 @@ export class JobRunner extends DurableObject<Env> {
   accept(jobId: string, job: Job): Promise<boolean> {
     return this.serialized(async () => {
       const accepted = await this.machine(jobId).accept(job);
-      if (accepted) await this.ctx.storage.put("jobId", jobId);
+      if (accepted) {
+        await this.ctx.storage.put("jobId", jobId);
+        // A stored job always has an alarm, so one that is never started and
+        // never discarded still deletes itself (and its repository token)
+        // once its checks' deadline has passed. `begin()` re-arms it sooner.
+        await this.ctx.storage.setAlarm(job.deadline + 60_000);
+      }
       return accepted;
     });
   }

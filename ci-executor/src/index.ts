@@ -118,7 +118,17 @@ async function submitJob(request: Request, env: Env): Promise<Response> {
     // token and now has no owner and no alarm, so nothing would ever delete
     // it. Discard it here; Stratum sees the failure and can dispatch again.
     console.error("executor: admission failed", String(error));
-    await runner.discard().catch(() => {});
+    // `submit` may have saved its decision before it failed, or its answer
+    // may have been lost, so the job can hold a slot or a queue place the
+    // caller never heard about. Releasing is harmless when it holds neither.
+    await coordinator.release(jobId).catch((cleanup: unknown) => {
+      console.error("executor: could not release after a failed admission", String(cleanup));
+    });
+    await runner.discard().catch((cleanup: unknown) => {
+      // Not lost for good: a stored job deletes itself once its checks'
+      // deadline has passed (`expireIfAbandoned`).
+      console.error("executor: could not discard after a failed admission", String(cleanup));
+    });
     return refuse(503, "The executor could not admit the job; try again", "ADMISSION_FAILED");
   }
   if (decision.decision === "refused") {
@@ -133,8 +143,13 @@ async function submitJob(request: Request, env: Env): Promise<Response> {
       // job, or the slot stays taken until its timeout while Stratum's retry
       // queues behind a job that does not exist.
       console.error("executor: could not start an admitted job", String(error));
-      await coordinator.release(jobId).catch(() => {});
-      await runner.discard().catch(() => {});
+      await coordinator.release(jobId).catch((cleanup: unknown) => {
+        // The coordinator takes the slot back on its own clock regardless.
+        console.error("executor: could not release after a failed start", String(cleanup));
+      });
+      await runner.discard().catch((cleanup: unknown) => {
+        console.error("executor: could not discard after a failed start", String(cleanup));
+      });
       return refuse(503, "The executor could not start the job; try again", "START_FAILED");
     }
   }
