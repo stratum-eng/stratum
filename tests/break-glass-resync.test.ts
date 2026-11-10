@@ -25,6 +25,7 @@ vi.mock("../src/evaluation/policy-loader", async (importActual) => ({
 }));
 
 import worker from "../src/index";
+import { dispatchApiRequest } from "../src/mcp/dispatch";
 import { RepoDO } from "../src/queue/repo-do";
 import { createApiToken } from "../src/storage/api-tokens";
 import { linkInstallation, upsertInstallation } from "../src/storage/github-installations";
@@ -628,6 +629,20 @@ describe("resyncing from the mirror", () => {
     expect(malformed.status).toBe(400);
     expect(await malformed.json()).toMatchObject({ code: "RESYNC_INVALID_SHA" });
 
+    // A body that is not valid JSON may have carried a pin the caller meant.
+    // It is refused, and never run as an unpinned resync.
+    for (const body of [`{"expectedSha": "${before}"`, "[]", '"x"']) {
+      const broken = await request(RESYNC, cookies.admin, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      expect(broken.status).toBe(400);
+      expect(await broken.json()).toMatchObject({ code: "RESYNC_INVALID_BODY" });
+    }
+    expect(await project.repo.tip()).toBe(before);
+    expect(project.pushCount()).toBe(0);
+
     // Upper case is the same commit.
     const pinned = await json(RESYNC, cookies.admin, "POST", {
       expectedSha: after.toUpperCase(),
@@ -771,8 +786,30 @@ describe("who may resync", () => {
   });
 
   it("is not reachable through MCP", async () => {
-    const dispatch = await import("../src/mcp/dispatch?raw");
-    expect((dispatch as { default: string }).default).not.toContain("resync");
+    // Asked of the dispatcher itself, not of its source text: a router it
+    // mounts could register the route without the word appearing there.
+    const direct = await createApiToken(env.DB, logger, {
+      userId: "usr_admin",
+      name: "via-mcp",
+      scope: "read_write",
+    });
+    if (!direct.success) throw direct.error;
+    const { before } = await landFixOnMirror();
+    const res = await dispatchApiRequest(
+      new Request(`${ORIGIN}${RESYNC}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${direct.data.plaintext}`,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      }),
+      env,
+      undefined,
+      "203.0.113.7",
+    );
+    expect(res.status).toBe(404);
+    expect(await project.repo.tip()).toBe(before);
   });
 
   it("applies the org's second-factor policy", async () => {

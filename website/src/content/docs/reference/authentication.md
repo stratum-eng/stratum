@@ -240,7 +240,9 @@ the user does not control:
   behind it is the instance administrator.
 - **No break-glass resync.** `POST /api/projects/{namespace}/{slug}/resync`
   returns the same `403 ADMIN_REQUIRES_DIRECT_CREDENTIAL`, even when the account
-  behind the grant administers the project.
+  behind the grant administers the project. A read-only grant is refused one
+  step earlier, with `403 TOKEN_SCOPE_INSUFFICIENT`, because the request is a
+  write.
 - **No legacy-key minting.** Like a scoped token, it is refused by
   `rotate-token` with `SESSION_REQUIRED`.
 - **No approvals.** Like a scoped token, it cannot submit an `approve` review

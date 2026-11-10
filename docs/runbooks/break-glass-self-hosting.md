@@ -91,12 +91,37 @@ On the maintainer's machine, in the clone of the mirror:
 ```bash
 git fetch origin
 git switch main
-git merge --ff-only origin/main     # main is exactly the mirror's main
-# make the fix, then:
-npm run typecheck && npm test && npm run lint
-git commit -am "Fix: <what broke>"
+git status --porcelain              # must print nothing: a clean checkout
+git merge --ff-only origin/main
+# Local main must be EXACTLY the mirror's main, not merely a descendant of it.
+# `--ff-only` also succeeds when local main is already ahead, and those extra
+# commits would then be pushed and resynced in without evaluation.
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || echo "STOP: local main differs"
+```
+
+If that last line prints `STOP`, do not continue from this clone. Take a fresh
+clone of the mirror.
+
+Make the fix. Then stage it, and run the gates and the commit as ONE command,
+so that a failed gate stops the commit:
+
+```bash
+git add -A                          # includes new files; `commit -a` would not
+git status                          # read it: only the fix's files are staged
+npm run typecheck && npm test && npm run lint \
+  && git commit -m "Fix: <what broke>"
+```
+
+If the commit was made, check what is in it before it leaves the machine. It
+must contain every file the fix needs, and nothing else:
+
+```bash
+git show --stat HEAD
 git push origin main                # a plain push, never --force
 ```
+
+If a gate failed, there is no commit and nothing to push. Fix it and run the
+command again.
 
 Rules for this step:
 
@@ -115,21 +140,35 @@ stay open while attention is elsewhere.
 ### 5. Deploy the fix from the maintainer's machine
 
 Deploy the commit you pushed, from the same clone, with the offline token.
-These are the commands the `Deploy Production` workflow runs:
+These are the commands the `Deploy Production` workflow runs. Set the
+environment first; everything below reads it.
 
 ```bash
+# Production incident:
+DEPLOY_ENV=production; D1_NAME=stratum
+# Rehearsal on staging (use a token scoped to staging only):
+# DEPLOY_ENV=staging;  D1_NAME=stratum-staging
+
 git status                           # clean, on the fix commit
-export CLOUDFLARE_API_TOKEN=...      # from offline storage; never write it to a file
-export CLOUDFLARE_ACCOUNT_ID=...
+
+# Read the token without putting it on a command line. Typing it after
+# `export NAME=` would save it in the shell's history file, where `unset`
+# does not reach.
+read -rs CLOUDFLARE_API_TOKEN && export CLOUDFLARE_API_TOKEN
+export CLOUDFLARE_ACCOUNT_ID=...     # an identifier, not a secret
 
 # Only if the fix adds a migration:
-npx wrangler d1 migrations apply stratum --remote --env=production
+npx wrangler d1 migrations apply "$D1_NAME" --remote --env="$DEPLOY_ENV"
 
-npx wrangler deploy --env=production
+npx wrangler deploy --env="$DEPLOY_ENV"
 curl -sfS "$STRATUM_URL/api/health"
 
 unset CLOUDFLARE_API_TOKEN
 ```
+
+For a rehearsal, every command must name staging. A staging-scoped token
+cannot deploy production, which is the point: do not rehearse with a token
+that could.
 
 Notes:
 
@@ -137,10 +176,10 @@ Notes:
   workflow does (`--var POSTHOG_PUBLIC_KEY:"$POSTHOG_PUBLIC_KEY"`), or browser
   analytics is off until the next normal deploy.
 - `wrangler deploy` fails if a bound queue does not exist. The workflow creates
-  missing queues first (`node scripts/wrangler-queues.mjs production`). On an
+  missing queues first (`node scripts/wrangler-queues.mjs "$DEPLOY_ENV"`). On an
   instance that has deployed before, they exist.
 - If the deploy makes things worse, roll back:
-  `npx wrangler rollback --env=production --message "<reason>"`.
+  `npx wrangler rollback --env="$DEPLOY_ENV" --message "<reason>"`.
 - If GitHub Actions on the mirror still deploys from `main` and is healthy, the
   push in step 3 may already have deployed the fix. Check the running version
   before you deploy by hand.
@@ -194,8 +233,14 @@ curl -s "$STRATUM_URL/api/projects/@stratum/stratum/mirror" \
 ```
 
 Within a minute or two, expect `"state": "ok"`, `"pending": false`, and
-`lastPushedSha` equal to the fix commit. If the queue is unavailable, a sweep
-does the same work within five minutes.
+`lastPushedSha` equal to the fix commit. A sweep re-sends a lost message every
+five minutes, but on an instance with the mirror queue bound it sends it to
+that same queue, so it does not get around a queue that is not delivering.
+(Only an instance with no mirror queue pushes from the sweep itself.) If the
+mirror is still `pending` after ten minutes, the queue is the problem: check
+the `stratum-mirrors` queue and its consumer in the Cloudflare dashboard, and
+use **Push now** on the mirror card in project settings once it is delivering
+again.
 
 If the state is `diverged` again, read `lastError`. A tag that was moved on
 GitHub is the usual cause. Fix it on GitHub, then choose **Resume mirror**.
@@ -206,18 +251,31 @@ Then tell everyone that merging is open again.
 
 Do this the same day:
 
-1. Check the audit log. It must show one `branch.resync_requested` and one
-   `branch.resynced` entry for the project, by the admin who ran step 6, with
-   the old and new commit:
+1. Check the audit log, with one query per action:
 
    ```bash
-   curl -s "$STRATUM_URL/api/orgs/stratum/audit?action=branch.resynced" \
-     -H "Authorization: Bearer $STRATUM_TOKEN"
+   for action in branch.resync_requested branch.resynced; do
+     curl -s "$STRATUM_URL/api/orgs/stratum/audit?action=$action" \
+       -H "Authorization: Bearer $STRATUM_TOKEN"
+   done
    ```
+
+   What to expect depends on how step 6 ended:
+
+   - **The branch moved** (`status: "resynced"`): one `branch.resync_requested`
+     and one `branch.resynced`, by the admin who ran it, with the old and new
+     commit.
+   - **`up-to-date`**: only `branch.resync_requested`. Nothing moved, so there
+     is no `branch.resynced` entry and none is missing.
+   - **The push timed out and then landed** (`RESYNC_PUSH_TIMEOUT`, and a retry
+     answered `up-to-date`): two `branch.resync_requested` entries and **no**
+     `branch.resynced`. The branch moved without the entry that normally
+     records it. Write the old and new commit into the incident issue by hand,
+     from the first request's time and the branch's current tip.
 
 2. Open an issue that records: what broke, when merging stopped and restarted,
    the fix commit, who lifted the branch lock and for how long, who used the
-   deploy token, and the two audit entries.
+   deploy token, and the audit entries found in step 1.
 3. Review the fix commits as you would have reviewed a change. They were never
    evaluated. If the review finds a problem, fix it through a normal change.
 4. Rotate the deploy token if it left offline storage for longer than the

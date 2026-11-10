@@ -1183,7 +1183,13 @@ paths:
                 confirm:
                   type: string
                   description: The source repository, `owner/repository`, typed out.
-                expected_sha: { type: string }
+                expected_sha:
+                  type: string
+                  pattern: "^[0-9a-fA-F]{40}$"
+                  description: >
+                    Optional pin, as `expectedSha` in the JSON body: the resync
+                    is refused unless GitHub's branch is at exactly this
+                    commit. Trimmed and lower-cased; empty means no pin.
       responses:
         "200":
           description: The branch was fast-forwarded, or was already up to date
@@ -1196,7 +1202,10 @@ paths:
         "302":
           description: Form post; redirect to the settings page
         "400":
-          description: "`RESYNC_INVALID_SHA`: `expectedSha` is not a full SHA"
+          description: >
+            `RESYNC_INVALID_SHA`: `expectedSha` is not a full SHA.
+            `RESYNC_INVALID_BODY`: the body is present but is not a JSON
+            object (an empty body is accepted)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ResyncRefusal" }
@@ -1204,8 +1213,9 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           description: |
-            Not a project admin, an OAuth grant
-            (`ADMIN_REQUIRES_DIRECT_CREDENTIAL`), or the GitHub App is not
+            Not a project admin, a write-scoped OAuth grant
+            (`ADMIN_REQUIRES_DIRECT_CREDENTIAL`), a read-only token or grant
+            (`TOKEN_SCOPE_INSUFFICIENT`), or the GitHub App is not
             authorized for the repository (`GITHUB_APP_NOT_AUTHORIZED`,
             `GITHUB_APP_PERMISSION_DENIED`)
           content:

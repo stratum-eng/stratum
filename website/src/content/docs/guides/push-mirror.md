@@ -274,8 +274,11 @@ A refused resync and an up-to-date resync write only the first entry.
 After a resync, the project contains everything on GitHub's branch. The mirror
 is brought back in step:
 
-- A healthy mirror gets a push queued. That push finds the two already equal,
-  sends nothing, and records `ok` at the new commit.
+- A healthy, enabled mirror gets a push queued **when the resync moved the
+  branch**. That push finds the two already equal, sends nothing, and records
+  `ok` at the new commit. An `up-to-date` resync moved nothing and queues
+  nothing for a healthy mirror, and a disabled mirror is never pushed to, so
+  a resync is not a way to refresh either.
 - A mirror that is `diverged` or `failed` is resumed, as **Resume mirror**
   does, and a `mirror.resumed` audit entry is written with `via: "resync"`. A
   mirror often diverges during an incident because a push ran while GitHub was
@@ -342,8 +345,10 @@ Neither changes the GitHub repository. It keeps whatever was last pushed.
 - **Resync size.** A resync loads the default branch into memory, like a push.
   It first loads the newest 50 commits of each side. If that cannot prove a
   fast-forward, it loads the full history of both. The push that moves the
-  branch has 25 seconds; a fix too large to push in that time is refused with
-  `504 RESYNC_PUSH_TIMEOUT`.
+  branch has 25 seconds. Past that the resync answers
+  `504 RESYNC_PUSH_TIMEOUT`, which means it stopped **waiting**, not that the
+  push was cancelled: the branch may still move. Check the default branch
+  before you run it again. If it did move, the retry answers `up-to-date`.
 
 ## Operating an instance with mirrors
 

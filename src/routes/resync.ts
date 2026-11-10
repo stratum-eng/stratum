@@ -45,8 +45,8 @@ import { type PushMirror, getPushMirror, resumePushMirror } from "../storage/pus
 import { type Env, type ProjectEntry, projectDefaultBranch } from "../types";
 import { durableObjectNamespace } from "../utils/durable-objects";
 import type { Logger } from "../utils/logger";
-import { readJsonWithLimit } from "../utils/request-body";
-import { internalError, ok } from "../utils/response";
+import { readTextWithLimit } from "../utils/request-body";
+import { internalError, ok, payloadTooLarge } from "../utils/response";
 import { fromPromise } from "../utils/result";
 import { type PushMirrorView, requireAdmin, routeLogger, toPushMirrorView } from "./mirror";
 
@@ -72,6 +72,8 @@ export const RESYNC_NOTICES = {
   confirm: "Type the GitHub repository's owner/name exactly to confirm. Nothing was changed.",
   "invalid-sha":
     "The expected commit must be a full 40-character SHA. Leave it empty to accept whatever GitHub has. Nothing was changed.",
+  "invalid-body":
+    "The request body was not a JSON object. Nothing was changed. Send an empty body, or a JSON object with an optional expectedSha.",
   "no-upstream":
     "This project has no push mirror and no linked GitHub repository, so there is nothing to resync from.",
   "no-branch": "The GitHub repository has no branch with the project's default branch name.",
@@ -351,13 +353,26 @@ app.post("/:namespace/:slug/resync", async (c) => {
     confirmation = body.confirm;
     expectedInput = body.expected_sha;
   } else {
-    const parsed = await readJsonWithLimit<{ expectedSha?: unknown }>(
-      c,
-      MAX_RESYNC_BODY_BYTES,
-      logger,
-    ).catch(() => ({}) as { expectedSha?: unknown });
-    if (parsed instanceof Response) return parsed;
-    expectedInput = parsed === null || typeof parsed !== "object" ? undefined : parsed.expectedSha;
+    // An empty body is a resync with no pin. A body that is present but is not
+    // valid JSON is refused: it may have carried an `expectedSha` the caller
+    // meant, and running without the pin could fast-forward the branch to a
+    // commit they did not intend.
+    const read = await readTextWithLimit(c, MAX_RESYNC_BODY_BYTES, logger);
+    if (read.tooLarge) {
+      return payloadTooLarge(`request body too large (max ${MAX_RESYNC_BODY_BYTES} bytes)`);
+    }
+    if (read.text.trim() !== "") {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(read.text);
+      } catch {
+        return refuse("invalid-body", "RESYNC_INVALID_BODY", 400);
+      }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return refuse("invalid-body", "RESYNC_INVALID_BODY", 400);
+      }
+      expectedInput = (parsed as { expectedSha?: unknown }).expectedSha;
+    }
   }
 
   let expectedSha: string | undefined;

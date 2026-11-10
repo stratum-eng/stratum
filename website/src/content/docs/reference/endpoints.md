@@ -213,9 +213,10 @@ GitHub while Stratum could not merge. **The commits it brings in are not
 evaluated.** Read [the guide](/guides/push-mirror/#break-glass-resync-from-github)
 before you use it.
 
-Project admins only, as above. In addition, an OAuth grant is refused with
-`403 ADMIN_REQUIRES_DIRECT_CREDENTIAL`: use a browser session or a personal API
-token with the `read_write` scope. The organization's second-factor policy and
+Project admins only, as above. In addition, an OAuth grant with write scope is
+refused with `403 ADMIN_REQUIRES_DIRECT_CREDENTIAL`: use a browser session or a
+personal API token with the `read_write` scope. A read-only token or grant is
+refused first, with `403 TOKEN_SCOPE_INSUFFICIENT`. The organization's second-factor policy and
 IP allowlist apply.
 
 The source is the project's push mirror repository, or, for a project with no
@@ -258,6 +259,7 @@ Nothing was changed, except where the table says the outcome is unknown.
 | Status | `code` | Meaning |
 |---|---|---|
 | `400` | `RESYNC_INVALID_SHA` | `expectedSha` is not a full 40-character SHA |
+| `400` | `RESYNC_INVALID_BODY` | The body is present but is not a JSON object. An empty body is accepted and means no pin |
 | `403` | `ADMIN_REQUIRES_DIRECT_CREDENTIAL` | An OAuth grant was used |
 | `403` | `GITHUB_APP_NOT_AUTHORIZED` | The App installation is not linked to the project's owner |
 | `403` | `GITHUB_APP_PERMISSION_DENIED` | The App lacks **Contents: read** on the repository |

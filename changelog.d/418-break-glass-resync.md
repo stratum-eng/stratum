@@ -5,8 +5,9 @@
   land on GitHub because Stratum could not merge. It only ever fast-forwards: a
   diverged branch is refused with `409 RESYNC_DIVERGED`, which names both
   commits, and nothing is forced, rewritten or merged. **The commits it brings in
-  are not evaluated**, and the `branch.resync_requested` and `branch.resynced`
-  audit entries and the new `branch.resynced` event say so and list them. It is
+  are not evaluated**. The `branch.resynced` audit entry and the new
+  `branch.resynced` event say so and list them; a `branch.resync_requested`
+  entry, written before anything runs, records who asked and from where. It is
   available as `POST /api/projects/{namespace}/{slug}/resync` and as a card in
   project settings with a typed confirmation. OAuth grants and agents cannot run
   it, there is no MCP tool for it, and the organization's second-factor policy
