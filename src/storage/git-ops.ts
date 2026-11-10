@@ -2872,13 +2872,39 @@ async function readFileAtCommit(
 }
 
 /**
- * Does this isomorphic-git error say the path holds no file: nothing is there
- * (`NotFoundError`), or what is there is a directory (`ObjectTypeError`)?
+ * Is `path` known not to be a file in the tree of commit `oid`?
+ *
+ * Walks the trees one path segment at a time, so that the only thing read as
+ * "absent" is a tree that was read and does not list the next segment (or
+ * lists something that is not what the path needs there). isomorphic-git's
+ * `NotFoundError` cannot be used for this: it is also what a missing ref or a
+ * missing object raises, and those leave the question open.
+ *
+ * @returns true when the path is absent; false when it could not be
+ *   established (a tree or the commit could not be read, or the file is there)
  */
-function isGitNotFound(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  const code = (error as { code?: unknown }).code;
-  return code === "NotFoundError" || code === "ObjectTypeError";
+async function fileIsAbsentAtCommit(
+  fs: NodeFS,
+  dir: string,
+  oid: string,
+  path: string,
+): Promise<boolean> {
+  const segments = path.split("/").filter((segment) => segment.length > 0);
+  if (segments.length === 0) return true;
+  let treeOid = oid;
+  for (const [index, segment] of segments.entries()) {
+    const tree = await fromPromise(git.readTree({ fs, dir, oid: treeOid }));
+    if (!tree.success) return false;
+    const entry = tree.data.tree.find((candidate) => candidate.path === segment);
+    if (entry === undefined) return true;
+    const last = index === segments.length - 1;
+    // A directory where the file should be, or a file where a directory
+    // should be: either way there is no file at this path.
+    if (last) return entry.type !== "blob";
+    if (entry.type !== "tree") return true;
+    treeOid = entry.oid;
+  }
+  return false;
 }
 
 /**
@@ -2923,11 +2949,12 @@ export async function readFileFromRepo(
         path,
       },
     );
-    // Only git's own "no such object" means the file is absent. Anything
-    // else (a corrupt pack, a storage fault) leaves that unknown, and a caller
-    // that reads config off the base branch must not take "unknown" for
-    // "not there": it would drop the gates that file declares.
-    if (!isGitNotFound(blob.error)) {
+    // The file is absent only if the trees say so. A ref that did not
+    // resolve, or an object that could not be read, leaves that unknown, and
+    // a caller that reads config off the base branch must not take "unknown"
+    // for "not there": it would drop the gates that file declares.
+    const absent = tip.success && (await fileIsAbsentAtCommit(fs, dir, tip.data, path));
+    if (!absent) {
       return err(new AppError(`Could not read ${path} from the repository`, "GIT_ERROR", 500));
     }
     return err(new AppError(`Failed to read file: ${path}`, "FS_ERROR", 500));

@@ -305,8 +305,11 @@ Things that follow from "evaluated revision":
   checks. A pass recorded for the previous revision does not count.
 - **Re-evaluating the same revision also starts over.** The new runs replace
   the old ones.
-- Checks that are declared but not required are shown on the change and never
-  block.
+- A check a `checks` entry declares but `merge.requiredChecks` does not name is
+  shown on the change and never blocks. An `optional` CI step is nearly the
+  same: its result never blocks, but it must still have run under the base's
+  current `.stratum/ci.yaml`, so a missing or out-of-date one blocks until the
+  change is re-evaluated.
 
 `merge.allowForce` behaves as it does for every other protection: a force
 merge skips `requiredChecks` only where the policy has explicitly enabled
