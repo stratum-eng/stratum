@@ -233,6 +233,59 @@ describe("squashMerge preserves file modes and symlinks", () => {
     expect(orphan.success).toBe(false);
   });
 
+  it("appends the trailers it is given to the squash commit's message", async () => {
+    const raw = new MemoryFS();
+    const fs = raw.toNodeFS() as unknown as NodeFS;
+    const gitfs = fs as unknown as Parameters<typeof git.init>[0]["fs"];
+    const dir = "/";
+    const gitdir = "/.git";
+    await git.init({ fs: gitfs, dir, defaultBranch: "main" });
+
+    const before = await blobObject(enc("before\n"));
+    const baseTree = await treeObject([{ mode: "100644", name: "a.txt", oid: before.oid }]);
+    const base = await commitObject({
+      tree: baseTree.oid,
+      parents: [],
+      message: "base",
+      timestamp: 1700000000,
+    });
+    const after = await blobObject(enc("after\n"));
+    const wsTree = await treeObject([{ mode: "100644", name: "a.txt", oid: after.oid }]);
+    const ws = await commitObject({
+      tree: wsTree.oid,
+      parents: [base.oid],
+      message: "workspace",
+      timestamp: 1700000001,
+    });
+    for (const o of [before, baseTree, base, after, wsTree, ws]) {
+      await placeLooseObject(fs as FsLike, gitdir, o.oid, o.bytes);
+    }
+    await git.writeRef({ fs: gitfs, dir, ref: "refs/heads/main", value: base.oid, force: true });
+    await git.checkout({ fs: gitfs, dir, ref: "main" });
+
+    stubReceivePackServer(base.oid);
+    const result = await squashMerge(
+      fs,
+      dir,
+      ws.oid,
+      "https://example.test/git/project.git",
+      "token",
+      author,
+      logger,
+      "main",
+      ["Co-authored-by: Casey Contributor <casey@example.com>"],
+    );
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    // A blank line, then the trailers: the shape git and GitHub read as
+    // trailers rather than as more subject.
+    const commit = await git.readCommit({ fs: gitfs, dir, oid: result.data });
+    expect(commit.commit.message.trimEnd()).toBe(
+      "Squash merge workspace (1 file changed)\n\nCo-authored-by: Casey Contributor <casey@example.com>",
+    );
+  });
+
   it("writes a file under a path whose old shape was a symlink, not through it", async () => {
     const raw = new MemoryFS();
     const fs = raw.toNodeFS() as unknown as NodeFS;

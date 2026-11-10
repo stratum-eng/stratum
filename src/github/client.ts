@@ -695,7 +695,9 @@ export class GitHubClient {
 
   async updatePR(
     opts: UpdatePROpts,
-  ): Promise<{ success: true; pr: GitHubPullRequest } | { success: false; error: string }> {
+  ): Promise<
+    { success: true; pr: GitHubPullRequest } | { success: false; error: string; status?: number }
+  > {
     const body: Record<string, string> = {};
     if (opts.title) body.title = opts.title;
     if (opts.body) body.body = opts.body;
@@ -708,8 +710,31 @@ export class GitHubClient {
         body: JSON.stringify(body),
       },
     );
-    if (!result.success) return { success: false, error: result.error };
+    if (!result.success) return { success: false, error: result.error, status: result.status };
     return { success: true, pr: result.data };
+  }
+
+  /**
+   * Reads a pull request and returns GitHub's answer unnarrowed (#420).
+   *
+   * {@link getPR} types the answer as fields this client has always trusted.
+   * A caller reading a pull request a stranger opened needs more of it —
+   * `merged`, the counts, the base repository — and must check each field
+   * itself, so this hands back `unknown` instead of a wider type that would
+   * only look checked. Bounded to one attempt's timeout per try.
+   */
+  async getPullRequest(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): Promise<{ success: true; data: unknown } | { success: false; error: string; status: number }> {
+    const result = await this.request<unknown>(
+      `/repos/${owner}/${repo}/pulls/${pullNumber}`,
+      {},
+      { timeoutMs: DEFAULT_TIMEOUT_MS },
+    );
+    if (!result.success) return { success: false, error: result.error, status: result.status };
+    return { success: true, data: result.data };
   }
 
   async getPR(
@@ -726,7 +751,7 @@ export class GitHubClient {
 
   async postComment(
     opts: PostCommentOpts,
-  ): Promise<{ success: true; id: number } | { success: false; error: string }> {
+  ): Promise<{ success: true; id: number } | { success: false; error: string; status?: number }> {
     const result = await this.request<{ id: number }>(
       `/repos/${opts.owner}/${opts.repo}/issues/${opts.issue_number}/comments`,
       {
@@ -735,7 +760,7 @@ export class GitHubClient {
         body: JSON.stringify({ body: opts.body }),
       },
     );
-    if (!result.success) return { success: false, error: result.error };
+    if (!result.success) return { success: false, error: result.error, status: result.status };
     return { success: true, id: result.data.id };
   }
 

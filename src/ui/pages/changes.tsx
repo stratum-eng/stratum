@@ -30,6 +30,8 @@ function statusBadgeClass(status: string): string {
       return "badge badge-open";
     case "evaluating":
       return "badge badge-warning";
+    case "external":
+      return "badge badge-queued";
     case "approved":
     case "accepted":
       return "badge badge-approved";

@@ -26,6 +26,7 @@ import { type Env, projectDefaultBranch } from "../types";
 import { type Logger, createLogger } from "../utils/logger";
 import { DEFAULT_CLONE_DEPTH } from "../utils/validation";
 import { invalidateInstallationCache } from "./app-auth";
+import { handleMirrorPullRequest } from "./mirror-pulls";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -236,7 +237,7 @@ export async function handlePullRequest(
       state: string;
       merged?: boolean;
       html_url: string;
-      head: { ref: string; sha: string };
+      head: { ref: string; sha: string; repo?: { full_name?: unknown } | null };
       base: { ref: string };
       user: { login: string };
     };
@@ -252,6 +253,30 @@ export async function handlePullRequest(
   const pr = payload.pull_request;
 
   logger.info("Processing GitHub PR event", { owner, repo, prNumber, action });
+
+  // This handler matches a pull request to a change by BRANCH NAME, which is
+  // sound only for a branch in the repository itself: Stratum pushed it there
+  // when it promoted the change. A pull request from a fork names its own
+  // branch, so a stranger who calls theirs the same as a workspace could
+  // otherwise re-point that change's pull request link, or close it by closing
+  // their own pull request (#420). GitHub sends `head.repo` on every event —
+  // null when the fork has been deleted — so when it is present and is not
+  // this repository, the event is not about anything Stratum promoted.
+  const headRepo = pr.head.repo;
+  if (headRepo !== undefined) {
+    const headFullName = headRepo?.full_name;
+    if (
+      typeof headFullName !== "string" ||
+      headFullName.toLowerCase() !== `${owner}/${repo}`.toLowerCase()
+    ) {
+      logger.debug("Pull request head is not in the base repository; ignored", {
+        owner,
+        repo,
+        prNumber,
+      });
+      return;
+    }
+  }
 
   const projectResult = await getProjectByGitHubRepo(
     env,
@@ -373,7 +398,10 @@ export async function handlePullRequestReview(
   env: Env,
   payload: {
     action: string;
-    pull_request: { number: number; head: { ref: string } };
+    pull_request: {
+      number: number;
+      head: { ref: string; repo?: { full_name?: unknown } | null };
+    };
     review: { state: string; user: { login: string } };
     repository: { owner: { login: string }; name: string };
     installation?: { id?: unknown };
@@ -392,6 +420,26 @@ export async function handlePullRequestReview(
   if (reviewState === "dismissed" || reviewState === "commented") {
     logger.debug("No status change for review state", { reviewState });
     return;
+  }
+
+  // The same rule as `handlePullRequest`, for the same reason: the change is
+  // found by branch name, and only a branch in this repository is one Stratum
+  // pushed. A review of a fork's pull request must not mark someone else's
+  // change as needing changes because the fork's branch shares its name.
+  const headRepo = payload.pull_request.head.repo;
+  if (headRepo !== undefined) {
+    const headFullName = headRepo?.full_name;
+    if (
+      typeof headFullName !== "string" ||
+      headFullName.toLowerCase() !== `${owner}/${repo}`.toLowerCase()
+    ) {
+      logger.debug("Reviewed pull request's head is not in the base repository; ignored", {
+        owner,
+        repo,
+        prNumber,
+      });
+      return;
+    }
   }
 
   const projectResult = await getProjectByGitHubRepo(
@@ -676,6 +724,11 @@ app.post("/", async (c) => {
         break;
 
       case "pull_request":
+        // A repository that is a project's push mirror is handled by the
+        // mirror path and by nothing else (#420): pull requests there come
+        // from strangers, and the layer-mode handler below trusts things a
+        // stranger chooses.
+        if ((await handleMirrorPullRequest(c.env, data, logger)) === "handled") break;
         await handlePullRequest(
           c.env,
           data as {

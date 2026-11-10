@@ -52,6 +52,7 @@ import {
   getCheckRun,
   isTerminalCheckStatus,
 } from "../storage/checks";
+import { getExternalPullRequestByChange } from "../storage/external-pull-requests";
 import { freshRepoToken, getDiffBetweenRepos } from "../storage/git-ops";
 import {
   type Change,
@@ -332,6 +333,12 @@ async function deliverCiJob(
   const token = await freshRepoToken(env.ARTIFACTS, target.project.remote, "read", logger);
   if (!token.success) return "a read token for the repository could not be minted";
 
+  // A change that began as a pull request on the mirror is marked as such
+  // (#420), so the executor can hold it to the CI profile on its own account.
+  // If the lookup fails the job is marked external: the stricter of the two.
+  const external = await getExternalPullRequestByChange(env.DB, logger, target.changeId);
+  const jobOrigin = !external.success || external.data !== null ? "external" : "project";
+
   const origin = new URL(callbackUrl).origin;
   return submitCiJob(executor, logger, {
     event: "checks.requested",
@@ -357,6 +364,7 @@ async function deliverCiJob(
         ]),
       ),
       now,
+      origin: jobOrigin,
     }),
   });
 }

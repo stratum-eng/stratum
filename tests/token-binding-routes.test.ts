@@ -840,6 +840,10 @@ const AUDITED_BOUND_REACHABLE: readonly string[] = [
   "POST /api/changes/:id/comments/:commentId/unresolve",
   "POST /api/changes/:id/evaluate",
   "POST /api/changes/:id/github-pr",
+  // #420: importing a mirror's pull request. Resolves the change to its
+  // project and authorizes through canWriteProject with the request's binding,
+  // like the merge next to it; a user identity is required on top.
+  "POST /api/changes/:id/import",
   "POST /api/changes/:id/merge",
   "POST /api/changes/:id/reject",
   "POST /api/changes/:id/reviews",

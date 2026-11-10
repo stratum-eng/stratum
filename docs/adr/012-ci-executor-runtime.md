@@ -397,6 +397,26 @@ than the text above. Nothing here reverses a decision.
   single and the batch merge. The non-atomic window described above is
   unchanged.
 
+### Changes from outside the trust boundary (#420)
+
+Added with pull requests from the mirror. The decision above — such a change
+runs under the CI profile and nothing else — is held in three places:
+
+- **No job before a maintainer acts.** A pull request is recorded as a change in
+  status `external`, which is never evaluated and so never has checks
+  dispatched. Importing it is a person's action, and so is importing each later
+  version of it. This is stricter than the decision requires. The reason is the
+  capacity note above: the executor is one small queue for the instance, with
+  no per-project limit yet, and a job runs the pull request's own scripts.
+- **The dispatch says where the change came from.** `job.origin` is `project`
+  or `external`. Stratum marks a job `external` when the change has a pull
+  request record, and also when that lookup fails.
+- **The executor enforces it by itself.** Before it looks at which profiles it
+  implements, it refuses an `external` job whose profile is not `ci`. Today
+  that refuses nothing the profile check would not, because `ci` is the only
+  profile. It is there so that adding a deploy or publish profile cannot make
+  one reachable from a stranger's pull request by omission.
+
 ### Where the implementation is narrower
 
 - **Slots and the coordinator.** A job keeps its slot until its container is

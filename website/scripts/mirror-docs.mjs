@@ -21,6 +21,7 @@ const GUIDES = [
   ["getting-started", "From sign-up to a merged, evaluation-gated change — policy, agent identity, and the change flow."],
   ["importing", "Import a repository from GitHub, GitLab, or Bitbucket, track progress, and keep the project in sync with its source."],
   ["push-mirror", "Keep a read-only copy of a project on GitHub: fast-forward-only pushes of the default branch and tags after every merge, the GitHub App permissions it needs, and what happens on divergence."],
+  ["mirror-pull-requests", "Bring a pull request opened on a project's GitHub mirror into Stratum as a change: what waits for a maintainer, the trust model, the contributor agreement, the limits, and what GitHub shows after the merge."],
   ["code-review", "Line-anchored comment threads, replies, resolve/unresolve, and the three review verdicts."],
   ["issues", "Open, triage, search, and link issues — and how a merged change closes them."],
   ["ci-integration", "Bring your own CI: run evaluations on your existing infrastructure and report verdicts back."],

@@ -271,6 +271,36 @@ export const ProjectSettingsPage: FC<ProjectSettingsProps> = ({
                 />
               </label>
             </div>
+            <div class="secret-field">
+              <label>
+                Accept pull requests
+                <input
+                  type="checkbox"
+                  name="acceptPullRequests"
+                  checked={mirror.current?.acceptPullRequests ?? false}
+                />
+              </label>
+              <p class="settings-help">
+                A pull request opened against <code>{mirror.defaultBranch}</code> on the mirror
+                becomes an external change here. Nothing runs on it, and it cannot merge, until a
+                maintainer imports it. Needs the GitHub App's Pull requests permission (read and
+                write) and its <code>pull_request</code> webhook event.
+              </p>
+            </div>
+            <div class="secret-field">
+              <label>
+                Require a contributor agreement
+                <input
+                  type="checkbox"
+                  name="requireContributorAgreement"
+                  checked={mirror.current?.requireContributorAgreement ?? false}
+                />
+              </label>
+              <p class="settings-help">
+                The maintainer importing a pull request must confirm that its author has agreed to
+                the project's contributor agreement. The confirmation is recorded in the audit log.
+              </p>
+            </div>
             <button type="submit" class="btn">
               {mirror.current ? "Save mirror" : "Set up mirror"}
             </button>

@@ -5,6 +5,8 @@ import type { EvalPolicy } from "../evaluation/types";
 import { resolveGitHubToken } from "../github/app-auth";
 import { GitHubClient } from "../github/client";
 import { requestPushMirror } from "../github/mirror";
+import { importPullRequest, toExternalPullRequestView } from "../github/mirror-pulls";
+import { coAuthorTrailers } from "../github/pull-request-content";
 import { buildEvaluationReport, reportEvaluationToGitHub } from "../github/sync";
 import { runPostMergeCheck } from "../merge/post-merge";
 import { checkMergeProtection } from "../merge/protection";
@@ -40,6 +42,11 @@ import {
 } from "../storage/costs";
 import { isTargetDeleting } from "../storage/deletion";
 import { listEvalRuns, recordEvalRuns } from "../storage/eval-runs";
+import {
+  getExternalPullRequestByChange,
+  listExternalChangeIds,
+  supersedeImportedChange,
+} from "../storage/external-pull-requests";
 import {
   MergeConflictError,
   type NodeFS,
@@ -495,6 +502,7 @@ app.get("/projects/:name/changes", async (c) => {
   const validStatuses: Change["status"][] = [
     "open",
     "evaluating",
+    "external",
     "needs_changes",
     "accepted",
     "approved",
@@ -570,12 +578,17 @@ app.get("/changes/:id", async (c) => {
   }
 
   const costsResult = await getChangeCostSummary(c.env.DB, logger, id);
+  // Present only for a change that came from the mirror's pull request (#420).
+  const external = await getExternalPullRequestByChange(c.env.DB, logger, id);
 
   logger.info("Change retrieved", { changeId: id });
   return ok({
     change,
     evalRuns: evalRunsResult.data,
     costs: costsResult.success ? costsResult.data : [],
+    ...(external.success && external.data !== null
+      ? { externalPullRequest: toExternalPullRequestView(external.data) }
+      : {}),
   });
 });
 
@@ -620,6 +633,48 @@ app.post("/changes/:id/merge", async (c) => {
 
   if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
     return refuseProjectAccess(credentialBindingFrom(c), project, () => notFound("Change", id));
+
+  // A pull request nobody has imported (#420). Refused before force is even
+  // considered: force bypasses a verdict, and this change has no workspace
+  // content a maintainer chose to bring in, let alone a verdict on it.
+  if (change.status === "external") {
+    return c.json(
+      {
+        error: "This pull request has not been imported; import it before merging",
+        code: "EXTERNAL_NOT_IMPORTED",
+      },
+      409,
+    );
+  }
+  // Whether the change began as a pull request on the mirror. It decides only
+  // how the merge is written, never whether it is allowed: such a change takes
+  // the paths that keep its commits, so the people who wrote them stay the
+  // authors of what lands. A failed lookup stops the merge instead of quietly
+  // choosing a path that would drop them.
+  const externalOrigin = await getExternalPullRequestByChange(c.env.DB, logger, id);
+  if (!externalOrigin.success) return internalError("Failed to read the change's origin");
+  const fromPullRequest = externalOrigin.data;
+  // The one thing it does refuse: commits the pull request has moved past. A
+  // push normally sends the change back to `external`, but that takes two
+  // writes, and an import that died between starting its run and noticing
+  // the new head leaves the old commits evaluating, and later mergeable.
+  // This reads the stored record, so it holds whatever was interrupted, and
+  // it is not something `force` may skip.
+  if (fromPullRequest !== null && fromPullRequest.headSha !== fromPullRequest.importedHeadSha) {
+    // Finish what was interrupted: the change goes back to `external`, the
+    // only state an import accepts. Without this the refusal would ask for
+    // an import the API then refuses.
+    const superseded = await supersedeImportedChange(c.env.DB, logger, id);
+    if (!superseded.success) return internalError("Failed to return the change to external");
+    return c.json(
+      {
+        error: `Pull request #${fromPullRequest.prNumber} has commits newer than the ones that were imported; import them before merging`,
+        code: "PR_HEAD_MOVED",
+        headSha: fromPullRequest.headSha,
+      },
+      409,
+    );
+  }
 
   // Branch protection: the policy's merge rules gate every merge path. Cached +
   // coalesced so a swarm of merges doesn't each clone the repo for the policy file.
@@ -804,7 +859,10 @@ app.post("/changes/:id/merge", async (c) => {
       };
       // Prefer the R2 fetch-free path; fall back to the Phase-1 FF/cold path when the
       // change has no staged tree (e.g. committed before R2 staging was enabled).
-      const r2 = await stub.mergeViaR2(id);
+      // A change from a pull request always takes the second (#420): the R2
+      // path lands a commit of its own built from the staged tree, which
+      // would discard the contributor's commits and their authorship.
+      const r2 = fromPullRequest !== null ? { fallback: true as const } : await stub.mergeViaR2(id);
       return "fallback" in r2 ? await stub.advance(id) : r2;
     };
   } else if (mergeQueue) {
@@ -957,6 +1015,11 @@ app.post("/changes/:id/merge", async (c) => {
       // evaluated revision; legacy changes without these fields merge the live tip.
       ...(change.workspaceHeadSha ? { workspaceSha: change.workspaceHeadSha } : {}),
       ...(change.evaluatedSha !== undefined ? { expectedWorkspaceSha: change.evaluatedSha } : {}),
+      // A squash drops the contributor's commits, so name them on the one it
+      // writes (#420). The trailers are rebuilt from sanitized stored authors.
+      ...(fromPullRequest !== null && strategy === "squash"
+        ? { messageTrailers: coAuthorTrailers(fromPullRequest.commitAuthors) }
+        : {}),
     },
   );
   if (!mergeResult.success) {
@@ -1200,10 +1263,20 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   const changesResult = await getChangesByIds(c.env.DB, logger, changeIds);
   if (!changesResult.success) return internalError(changesResult.error.message);
   const changeMap = new Map(changesResult.data.map((ch) => [ch.id, ch]));
+  // A batch lands each change as a commit of its own, which would discard a
+  // pull request's commits and their authors (#420). Those merge one at a time.
+  const fromPullRequests = await listExternalChangeIds(c.env.DB, logger, changeIds);
+  if (!fromPullRequests.success) return internalError(fromPullRequests.error.message);
   const resolved = await Promise.all(
     changeIds.map(async (id) => {
       const change = changeMap.get(id);
       if (!change) return { id, skip: "not found" };
+      if (fromPullRequests.data.has(id)) {
+        return {
+          id,
+          skip: "came from a pull request; merge it on its own so its commits are kept",
+        };
+      }
       if (change.project !== projectName && change.project !== project.id)
         return { id, skip: "wrong project" };
       if (change.status === "evaluating") return { id, skip: "evaluation pending" };
@@ -1312,7 +1385,12 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
         503,
       );
     }
-    return badRequest(`No eligible changes to merge (${skipped.length} skipped)`);
+    // The reasons ride along: "0 of 1 merged" with no reason sends a caller
+    // looking for a fault where there is a rule.
+    return c.json(
+      { error: `No eligible changes to merge (${skipped.length} skipped)`, skipped },
+      400,
+    );
   }
   const resolveMs = Date.now() - tResolve;
 
@@ -1523,6 +1601,160 @@ app.post("/projects/:name/changes/merge-batch", async (c) => {
   });
 });
 
+/**
+ * Outcomes of an import the change page knows how to describe. A form
+ * round-trip carries one of these codes and nothing else; a refusal that is a
+ * property of the pull request is stored on it and shown from there.
+ */
+export const IMPORT_NOTICES = {
+  CONTRIBUTOR_AGREEMENT_REQUIRED:
+    "Confirm that the contributor has agreed to this project's contributor agreement, then import again.",
+  PR_HEAD_MOVED: "The pull request has new commits. Look at it again before importing.",
+  PR_NOT_OPEN: "The pull request is no longer open against the default branch on the mirror.",
+  EXTERNAL_IMPORT_UNAVAILABLE: "This project's mirror no longer accepts pull requests.",
+  NOT_EXTERNAL: "This change is not waiting to be imported.",
+  REFUSED: "The pull request cannot be imported as it stands. The reason is shown below.",
+  FAILED: "The pull request could not be imported. Try again shortly.",
+} as const;
+
+/** The message for an `?import=` code, or undefined for anything else. */
+export function importNotice(code: string | undefined): string | undefined {
+  return code !== undefined && Object.hasOwn(IMPORT_NOTICES, code)
+    ? IMPORT_NOTICES[code as keyof typeof IMPORT_NOTICES]
+    : undefined;
+}
+
+/** Refusals that are stored on the pull request and shown on its change. */
+const STORED_REFUSALS = new Set([
+  "PR_TOO_MANY_COMMITS",
+  "PR_TOO_MANY_FILES",
+  "PR_TOO_LARGE",
+  "PR_UNRELATED_HISTORY",
+  "PR_CONFLICTS",
+  "PR_EMPTY",
+  "SUBMODULES_UNSUPPORTED",
+  "LFS_UNSUPPORTED",
+]);
+
+/**
+ * POST /api/changes/:id/import — bring an external change's pull request into
+ * a workspace and start its evaluation (#420).
+ *
+ * A person with write access to the project, and nobody else: an agent
+ * credential is refused, as it is for a merge. This is the decision to run a
+ * stranger's code through the project's evaluators and CI, and the place the
+ * contributor agreement is confirmed.
+ *
+ * Body (JSON or form): `agreementConfirmed` — required where the project asks
+ * for it; `headSha` — the head the caller looked at, so that an import of
+ * commits pushed since is refused.
+ */
+app.post("/changes/:id/import", async (c) => {
+  const logger = createLogger({
+    requestId: crypto.randomUUID(),
+    userId: c.get("userId"),
+    path: c.req.path,
+    method: c.req.method,
+  });
+
+  const userId = c.get("userId");
+  if (!userId) return unauthorized("Only authenticated users can import a pull request");
+
+  const { id } = c.req.param();
+  const changeResult = await getChange(c.env.DB, logger, id);
+  if (!changeResult.success) {
+    if (changeResult.error.code === "NOT_FOUND") return notFound("Change", id);
+    logger.error("Failed to get change", changeResult.error);
+    return internalError(changeResult.error.message);
+  }
+  const change = changeResult.data;
+
+  const projectResult = await getProject(c.env.STATE, change.project, logger);
+  if (!projectResult.success) {
+    if (projectResult.error.code === "NOT_FOUND") return notFound("Project", change.project);
+    logger.error("Failed to get project", projectResult.error);
+    return internalError(projectResult.error.message);
+  }
+  const project = projectResult.data;
+
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
+    return refuseProjectAccess(credentialBindingFrom(c), project, () => notFound("Change", id));
+
+  const contentType = c.req.header("content-type") ?? "";
+  const isForm =
+    contentType.includes("application/x-www-form-urlencoded") ||
+    contentType.includes("multipart/form-data");
+  const refuse = (code: string, message: string, status: number) => {
+    if (isForm) {
+      const notice = STORED_REFUSALS.has(code)
+        ? "REFUSED"
+        : Object.hasOwn(IMPORT_NOTICES, code)
+          ? code
+          : "FAILED";
+      return c.redirect(`/changes/${id}?import=${notice}`, 302);
+    }
+    return c.json({ error: message, code }, status as 400 | 409 | 422 | 500 | 502);
+  };
+
+  if (await isTargetDeleting(c.env, project, logger)) {
+    return refuse("TARGET_DELETING", "Project is being deleted", 409);
+  }
+
+  let agreementConfirmed = false;
+  let expectedHeadSha: string | undefined;
+  if (isForm) {
+    const form = await c.req.parseBody();
+    // A checkbox is present when ticked and absent otherwise.
+    agreementConfirmed = form.agreementConfirmed !== undefined;
+    if (typeof form.headSha === "string" && form.headSha !== "") expectedHeadSha = form.headSha;
+  } else {
+    const body = await readJsonWithLimit<{ agreementConfirmed?: unknown; headSha?: unknown }>(
+      c,
+      MAX_CHANGE_CREATE_BODY_BYTES,
+      logger,
+    ).catch(() => ({}) as { agreementConfirmed?: unknown; headSha?: unknown });
+    if (body instanceof Response) return body;
+    agreementConfirmed = body.agreementConfirmed === true;
+    if (typeof body.headSha === "string" && body.headSha !== "") expectedHeadSha = body.headSha;
+  }
+
+  const waitUntil = getWaitUntil(c);
+  const imported = await importPullRequest(c.env, logger, {
+    project,
+    change,
+    userId,
+    agreementConfirmed,
+    ...(expectedHeadSha !== undefined ? { expectedHeadSha } : {}),
+    requestOrigin: new URL(c.req.url).origin,
+    ...(waitUntil ? { waitUntil } : {}),
+  });
+  if (!imported.success) {
+    const { code, message, statusCode } = imported.error;
+    if (statusCode >= 500) logger.error("Pull request import failed", imported.error);
+    // GitHub refusing the App's token arrives carrying GitHub's own 401, 403
+    // or 404. Passed on, a caller would read those as a bad Stratum
+    // credential or a missing change; it is the upstream that said no.
+    const status =
+      code === "GITHUB_ACCESS_DENIED"
+        ? 502
+        : statusCode >= 500 && statusCode !== 502
+          ? 500
+          : statusCode;
+    return refuse(code, message, status);
+  }
+
+  if (isForm) return c.redirect(`/changes/${id}`, 302);
+  const current = await getChange(c.env.DB, logger, id);
+  return ok(
+    {
+      change: current.success ? current.data : imported.data.change,
+      externalPullRequest: toExternalPullRequestView(imported.data.record),
+      evaluation: { runId: imported.data.runId, mode: imported.data.dispatched.mode },
+    },
+    202,
+  );
+});
+
 app.post("/changes/:id/reject", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
@@ -1624,6 +1856,20 @@ app.post("/changes/:id/evaluate", async (c) => {
 
   if (change.status === "merged" || change.status === "rejected" || change.status === "promoted") {
     return badRequest(`Cannot re-evaluate a ${change.status} change`);
+  }
+  // An evaluation is what an import starts, once a maintainer has chosen to
+  // bring the pull request's commits in (#420). Evaluating without importing
+  // would spend on, and dispatch CI for, content nobody has accepted — or, for
+  // an imported change whose pull request moved, pass a verdict on the old
+  // commits and make them mergeable again.
+  if (change.status === "external") {
+    return c.json(
+      {
+        error: "This pull request has not been imported; import it to evaluate it",
+        code: "EXTERNAL_NOT_IMPORTED",
+      },
+      409,
+    );
   }
 
   const workspaceResult = await getWorkspace(c.env.STATE, project.id, change.workspace, logger);

@@ -794,6 +794,15 @@ export interface Change {
     /** An evaluation run is queued or running; no verdict yet (#412). Never
      * mergeable, even by force — the change has no evaluated revision to pin. */
     | "evaluating"
+    /**
+     * A pull request from the project's GitHub mirror, recorded and waiting for
+     * a maintainer to import it (#420). Its workspace may not exist yet, and
+     * nothing has run against it. Never mergeable, even by force, and never
+     * evaluated or reviewed: importing it is the only way out besides closing
+     * it. An imported change returns here when its pull request gets new
+     * commits.
+     */
+    | "external"
     | "needs_changes"
     | "accepted"
     | "approved"

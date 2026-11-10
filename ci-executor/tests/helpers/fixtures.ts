@@ -66,6 +66,7 @@ export function makeJob(now: number, overrides: Partial<Job> = {}): Job {
   return {
     changeId: "chg_1",
     project: "@owner/app",
+    origin: "project",
     baseSha: BASE_SHA,
     headSha: HEAD_SHA,
     headTreeSha: HEAD_TREE_SHA,

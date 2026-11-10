@@ -93,6 +93,7 @@ receiving mail servers.
 | **Your outbound webhook URLs** | A project webhook subscription | Event payloads for that project |
 | **Cloudflare (your account) or Vercel** | A `deploys:` entry in the policy | The merged tree, uploaded with the project's own credentials. See [Deployments](deployments.md) |
 | **GitHub** | A [push mirror](push-mirror.md) an admin configured on a project | That project's default branch and tags — its full history — pushed to the one repository the admin named, with a GitHub App installation token limited to that repository. A [break-glass resync](push-mirror.md#break-glass-resync-from-github) reads that repository's default branch back, with a read-only token limited to it. The read sends nothing. Afterwards the resync resumes a `failed` or `diverged` mirror and queues an ordinary mirror push, which sends commits to GitHub if the project is ahead of it |
+| **GitHub** | [Pull requests on the mirror](mirror-pull-requests.md), where an admin turned them on | Read from GitHub: the pull request's number, title, author login and commits, with a token limited to the mirror repository. Sent to GitHub: one comment on the pull request naming the Stratum change it merged as (its id and link), and a request to close it |
 | **GitHub / GitLab / Bitbucket** | Importing or syncing a project | Anonymous clones of **public** repositories only — imports carry no provider token. GitHub sync and PR promotion use an instance-wide `GITHUB_TOKEN` when the operator sets one |
 
 ## What is encrypted, and by whom

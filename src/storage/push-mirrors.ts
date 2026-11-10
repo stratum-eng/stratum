@@ -45,6 +45,16 @@ export interface PushMirror {
   repoOwner: string;
   repoName: string;
   enabled: boolean;
+  /**
+   * Whether pull requests opened against the mirror become external changes
+   * (#420). Off unless an admin turns it on.
+   */
+  acceptPullRequests: boolean;
+  /**
+   * Whether importing such a pull request needs a maintainer to confirm the
+   * contributor agreement (#420).
+   */
+  requireContributorAgreement: boolean;
   state: PushMirrorState;
   requestedSeq: number;
   pushedSeq: number;
@@ -80,6 +90,9 @@ interface PushMirrorRow {
   configured_by: string | null;
   created_at: string;
   updated_at: string;
+  /** Added by migration 080; optional so an older row or fixture still maps. */
+  accept_pull_requests?: number | null;
+  require_contributor_agreement?: number | null;
 }
 
 /** Narrow a stored state column to a known mirror state. */
@@ -96,6 +109,8 @@ function fromRow(row: PushMirrorRow): PushMirror {
     repoOwner: row.repo_owner,
     repoName: row.repo_name,
     enabled: row.enabled === 1,
+    acceptPullRequests: row.accept_pull_requests === 1,
+    requireContributorAgreement: row.require_contributor_agreement === 1,
     state: isState(row.state) ? row.state : "idle",
     requestedSeq: row.requested_seq,
     pushedSeq: row.pushed_seq,
@@ -216,6 +231,10 @@ export interface UpsertPushMirrorInput {
   repoName: string;
   enabled: boolean;
   configuredBy: string;
+  /** Left as stored when omitted (off for a new mirror). */
+  acceptPullRequests?: boolean;
+  /** Left as stored when omitted (off for a new mirror). */
+  requireContributorAgreement?: boolean;
 }
 
 /**
@@ -239,14 +258,25 @@ export async function upsertPushMirror(
   // below and the one-mirror-per-repository index ignore case on their own.
   const owner = input.repoOwner;
   const repo = input.repoName;
+  // NULL means "not stated": a new row gets the default (off) and an existing
+  // one keeps what it has, so a caller that only knows the target cannot
+  // switch pull requests on or off by omission.
+  const flag = (value: boolean | undefined): number | null =>
+    value === undefined ? null : value ? 1 : 0;
+  const accept = flag(input.acceptPullRequests);
+  const agreement = flag(input.requireContributorAgreement);
   try {
     const row = await db
       .prepare(
         `INSERT INTO push_mirrors
            (project_id, namespace, slug, repo_owner, repo_name, enabled, state,
-            configured_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?)
+            configured_by, created_at, updated_at,
+            accept_pull_requests, require_contributor_agreement)
+         VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, COALESCE(?, 0), COALESCE(?, 0))
          ON CONFLICT (project_id) DO UPDATE SET
+           accept_pull_requests = COALESCE(?, push_mirrors.accept_pull_requests),
+           require_contributor_agreement =
+             COALESCE(?, push_mirrors.require_contributor_agreement),
            namespace = excluded.namespace,
            slug = excluded.slug,
            enabled = excluded.enabled,
@@ -298,6 +328,10 @@ export async function upsertPushMirror(
         input.configuredBy,
         now,
         now,
+        accept,
+        agreement,
+        accept,
+        agreement,
       )
       .first<PushMirrorRow>();
     if (!row) return err(new AppError("Push mirror vanished after save", "DATABASE_ERROR", 500));
@@ -640,5 +674,31 @@ export async function listDuePushMirrors(
     return ok(rows.results.map(fromRow));
   } catch (error) {
     return err(storageError("Failed to list due push mirrors", error, logger));
+  }
+}
+
+/**
+ * The enabled mirror that targets `owner/repo`, if any (#420).
+ *
+ * This is how a webhook from GitHub is tied to a project: by the repository
+ * GitHub says the event is about, matched against a target an admin configured
+ * and Stratum verified. A disabled mirror does not match — its project is back
+ * in layer mode. A storage failure is an error, not "no mirror": the caller
+ * must not fall through to another handler on a lookup that did not answer.
+ */
+export async function getEnabledPushMirrorByRepo(
+  db: D1Database,
+  logger: Logger,
+  owner: string,
+  repo: string,
+): Promise<Result<PushMirror | null, AppError>> {
+  try {
+    const row = await db
+      .prepare("SELECT * FROM push_mirrors WHERE repo_owner = ? AND repo_name = ? AND enabled = 1")
+      .bind(owner, repo)
+      .first<PushMirrorRow>();
+    return ok(row ? fromRow(row) : null);
+  } catch (error) {
+    return err(storageError("Failed to look up push mirror by repository", error, logger));
   }
 }

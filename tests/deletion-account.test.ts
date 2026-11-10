@@ -81,7 +81,7 @@ describe("anonymizeUserContributions", () => {
     expect(result.success).toBe(true);
 
     const updates = executed.filter((s) => s.sql.startsWith("UPDATE"));
-    expect(updates.length).toBe(13);
+    expect(updates.length).toBe(15);
     for (const stmt of updates) {
       expect(stmt.sql).toMatch(/^UPDATE \w+ SET \w+ = \? WHERE \w+ = \?$/);
       expect(stmt.bindings).toEqual([DELETED_USER_SENTINEL, "usr_1"]);
@@ -100,6 +100,13 @@ describe("anonymizeUserContributions", () => {
     expect(cols).toContain("UPDATE cost_records SET owner_id = ? WHERE owner_id = ?");
     expect(cols).toContain(
       "UPDATE github_issue_imports SET initiated_by = ? WHERE initiated_by = ?",
+    );
+    // An org-owned project keeps its pull request records after an erasure.
+    expect(cols).toContain(
+      "UPDATE external_pull_requests SET imported_by = ? WHERE imported_by = ?",
+    );
+    expect(cols).toContain(
+      "UPDATE external_pull_requests SET agreement_confirmed_by = ? WHERE agreement_confirmed_by = ?",
     );
   });
 });

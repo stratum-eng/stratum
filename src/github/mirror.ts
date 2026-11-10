@@ -66,6 +66,7 @@ import { getProjectByPath } from "../storage/state";
 import { type Env, type ProjectEntry, projectDefaultBranch } from "../types";
 import type { Logger } from "../utils/logger";
 import { fromPromise } from "../utils/result";
+import { settleMergedPullRequests, sweepMergedPullRequests } from "./mirror-pulls";
 import {
   type GitHubRemote,
   isAncestor,
@@ -608,6 +609,10 @@ async function runPushMirrorUnsafe(
     if (recorded.success && recorded.data.lease !== undefined) lease = recorded.data.lease;
     if (!recorded.success || recorded.data.released) {
       logger.info("Push mirror up to date", { projectId, sha: result.sha });
+      // The merge is on GitHub now, so a pull request it came from can be told
+      // so (#420). After the lease is released, and never able to fail the
+      // push it follows.
+      if (recorded.success) await settleMergedPullRequests(env, logger, projectId);
       return { kind: "pushed", sha: result.sha };
     }
 
@@ -636,6 +641,10 @@ async function runPushMirrorUnsafe(
  * inline; mirrors then lag merges by up to the cron interval.
  */
 export async function sweepPushMirrors(env: MirrorEnv, logger: Logger): Promise<void> {
+  // Independent of whether any push is due: this is what closes a pull request
+  // GitHub did not mark merged by itself, a few minutes after the push (#420).
+  await sweepMergedPullRequests(env, logger);
+
   const due = await listDuePushMirrors(env.DB, logger, SWEEP_BATCH_LIMIT);
   if (!due.success || due.data.length === 0) return;
 

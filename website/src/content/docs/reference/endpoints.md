@@ -151,7 +151,9 @@ anyone else `404`, and an agent `401`.
     "lastAttemptAt": "2026-11-09T10:15:00.000Z",
     "lastError": null,
     "nextAttemptAt": null,
-    "attempts": 0
+    "attempts": 0,
+    "acceptPullRequests": false,
+    "requireContributorAgreement": false
   }
 }
 ```
@@ -169,11 +171,22 @@ or `attempts`.
 `PUT /api/projects/{namespace}/{slug}/mirror`
 
 ```json
-{ "repo": "acme/widgets", "enabled": true }
+{
+  "repo": "acme/widgets",
+  "enabled": true,
+  "acceptPullRequests": true,
+  "requireContributorAgreement": true
+}
 ```
 
 `repo` is `owner/repository` on GitHub. `enabled` defaults to `true`. `POST` to
 the same path does the same thing.
+
+`acceptPullRequests` brings pull requests opened against the mirror's default
+branch into the project as `external` changes, and `requireContributorAgreement`
+makes importing one need a maintainer's confirmation. Both are off for a new
+mirror and are left unchanged when omitted. See
+[Pull requests on the mirror](/guides/mirror-pull-requests/).
 
 The target is checked against GitHub before it is saved, whether or not the
 mirror is enabled; only disabling an existing mirror skips the check. Saving an
@@ -349,6 +362,10 @@ branch. See the [OpenAPI specification](/reference/openapi/) for exact schemas, 
 ### List Changes
 `GET /api/projects/{name}/changes`
 
+`?status=` filters by status. `external` lists the pull requests from the
+project's GitHub mirror that are waiting for a maintainer to
+[import](#import-a-pull-request) them.
+
 ### Create Change
 `POST /api/projects/{name}/changes`
 
@@ -374,10 +391,77 @@ message — inline as a `400`, queued as a `needs_changes` verdict.
 ### Get Change
 `GET /api/changes/{id}`
 
+For a change that came from a pull request on the project's GitHub mirror, the
+response also carries `externalPullRequest`:
+
+```json
+{
+  "repo": "acme/widgets",
+  "number": 7,
+  "url": "https://github.com/acme/widgets/pull/7",
+  "author": "casey-c",
+  "title": "Fix the widget",
+  "headSha": "9f2c1e7a…",
+  "importedHeadSha": null,
+  "commits": 2,
+  "changedFiles": 3,
+  "state": "open",
+  "refusal": null,
+  "importedBy": null,
+  "importedAt": null,
+  "agreementConfirmedBy": null,
+  "agreementConfirmedAt": null,
+  "commitAuthors": [],
+  "closure": { "state": "none", "error": null }
+}
+```
+
+`title`, `author` and `commitAuthors` are text chosen by the pull request's
+author. Display them as text.
+
+### Import a pull request
+`POST /api/changes/{id}/import`
+
+Brings the commits of an `external` change's pull request into a workspace and
+starts the change's evaluation. See
+[Pull requests on the mirror](/guides/mirror-pull-requests/) for the
+whole flow and its trust model.
+
+A person with write access to the project only. An agent gets `401`.
+
+```json
+{ "agreementConfirmed": true, "headSha": "9f2c1e7a…" }
+```
+
+Both fields are optional. `agreementConfirmed` is required when the mirror sets
+`requireContributorAgreement`. `headSha` is the head commit you looked at; send
+it so that commits pushed since are not imported unseen.
+
+Answers `202` with the change, its `externalPullRequest`, and
+`evaluation.mode` (`queued`, or `inline` when the verdict is already in the
+response).
+
+| Status | `code` | Meaning |
+|---|---|---|
+| `409` | `NOT_EXTERNAL` | The change is not waiting to be imported |
+| `409` | `PR_HEAD_MOVED` | The pull request has commits newer than `headSha` |
+| `409` | `PR_NOT_OPEN` | The pull request is closed, or no longer targets the default branch |
+| `409` | `EXTERNAL_IMPORT_UNAVAILABLE` | The mirror is disabled or no longer accepts pull requests |
+| `422` | `CONTRIBUTOR_AGREEMENT_REQUIRED` | `agreementConfirmed` was not `true` |
+| `502` | `GITHUB_ACCESS_DENIED` | GitHub refused the App's token for the mirror repository. Always `502`, whatever status GitHub gave |
+| `422` | `PR_TOO_MANY_COMMITS`, `PR_TOO_MANY_FILES`, `PR_TOO_LARGE` | Over a [limit](/guides/mirror-pull-requests/#limits) |
+| `422` | `SUBMODULES_UNSUPPORTED`, `LFS_UNSUPPORTED` | The pull request adds a submodule or a Git LFS pointer |
+| `422` | `PR_CONFLICTS`, `PR_UNRELATED_HISTORY`, `PR_EMPTY` | It cannot be joined to the default branch, or adds nothing to it |
+
+A `422` other than the first is also stored on the change, as
+`externalPullRequest.refusal`, until the pull request gets new commits.
+
 ### Re-evaluate
 `POST /api/changes/{id}/evaluate`
 
-Users only. Merged, rejected, and promoted changes cannot be re-evaluated.
+Users only. Merged, rejected, and promoted changes cannot be re-evaluated. An
+`external` change answers `409 EXTERNAL_NOT_IMPORTED`:
+[importing](#import-a-pull-request) it is what starts its evaluation.
 
 With an evaluation queue this **re-enqueues** and answers `202`: the change
 moves to `evaluating` under a new run, and any run still in flight is
@@ -404,6 +488,8 @@ the full list and the response shapes):
 | Code | Meaning |
 |---|---|
 | `EVALUATION_PENDING` | The change is still `evaluating`; refused even with `force` |
+| `EXTERNAL_NOT_IMPORTED` | The change is `external`: a pull request nobody has imported; refused even with `force` |
+| `PR_HEAD_MOVED` | The change came from a pull request that now has commits newer than the ones imported; refused even with `force` — import them first |
 | `EVALUATION_MISSING` | The evaluation failed closed and pinned no revision; refused even with `force` — re-evaluate first |
 | `STALE_BASE` | Under `merge.requireFreshBase`: the recorded base is behind project HEAD, or the change has no recorded base |
 | `BASE_UNVERIFIABLE` (`503`) | Under `merge.requireFreshBase`: project HEAD could not be read, so freshness could not be verified. Nothing merged; retry |
@@ -425,11 +511,14 @@ The `200` response has three lists, and a client must read all of them:
 `merged` holds the ids that merged, `conflicted` the ids that hit a merge
 conflict, and `skipped` each change that was not attempted, with a `reason`.
 
-When nothing is eligible the answer is `400`. Its message gives the number
-skipped, not the reasons. One case is different: under
+When nothing is eligible the answer is `400`, and its body carries the
+`skipped` list. One case is different: under
 `merge.requireFreshBase`, if the project head could not be read and that
 leaves nothing to merge, the answer is `503 BASE_UNVERIFIABLE` with the
 `skipped` list. That is a fault to retry, not an ineligible batch.
+
+A change that came from a pull request on the mirror is skipped, so that its
+commits are kept. Merge it on its own.
 
 ### Check runs
 

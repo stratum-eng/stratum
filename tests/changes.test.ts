@@ -60,6 +60,13 @@ vi.mock("../src/storage/git-ops", async (importActual) => {
   };
 });
 
+// No change in this suite came from a mirror's pull request (#420); that path
+// has its own suite, on a real database, in mirror-pull-requests.test.ts.
+vi.mock("../src/storage/external-pull-requests", () => ({
+  getExternalPullRequestByChange: vi.fn(async () => ({ success: true, data: null })),
+  listExternalChangeIds: vi.fn(async () => ({ success: true, data: new Set<string>() })),
+}));
+
 vi.mock("../src/storage/repo-snapshot", () => ({
   readRepoSnapshot: vi.fn().mockResolvedValue({ success: true, data: null }),
 }));

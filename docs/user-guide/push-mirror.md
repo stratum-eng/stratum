@@ -29,6 +29,9 @@ Enabling a mirror puts the project in forge mode. While the mirror is enabled:
   read as "no mirror", and it ignores pull request events from GitHub in the
   same case.
 
+People can still open pull requests on the mirror. To bring those into
+Stratum as changes, see [Pull requests on the mirror](mirror-pull-requests.md).
+
 Disable or remove the mirror to go back to layer mode. An imported project can
 mirror to the same repository it was imported from. That is the usual way to
 move a project from GitHub to Stratum and leave a copy behind.
