@@ -296,7 +296,8 @@ export async function updateProjectSyncError(
  * leave the flag set for good, and the flag is what makes a pushed commit and a
  * manual sync both stand aside: one lost job stopped a project following its
  * source until someone edited KV by hand. Longer than a queue consumer may run
- * (15 minutes), so a sync that is really running is never doubled.
+ * (15 minutes), and the job claims again when it starts, so time spent waiting
+ * in the queue does not count against a sync that is really running.
  */
 export const SYNC_IN_PROGRESS_TTL_MS = 30 * 60 * 1000;
 

@@ -66,6 +66,7 @@ vi.mock("../src/storage/state", () => ({
 vi.mock("../src/storage/sync", () => ({
   recordSyncHistory: vi.fn(async () => {}),
   settleSyncStatus: vi.fn(async () => {}),
+  setSyncInProgress: vi.fn(async () => ({ success: true, data: undefined })),
   getProjectProvider: vi.fn(() => null),
   getProjectSourceUrl: vi.fn((project: ProjectEntry) => project.sourceUrl || project.githubUrl),
   // Daily cron gates on an update check first; default to "updates available"
@@ -98,6 +99,7 @@ import { writeSnapshotFromRepo } from "../src/storage/repo-snapshot";
 import { setProject } from "../src/storage/state";
 import {
   recordSyncHistory,
+  setSyncInProgress,
   settleSyncStatus,
   updateProjectAfterSync,
   updateProjectSyncError,
@@ -189,6 +191,7 @@ beforeEach(() => {
   vi.mocked(setProject).mockClear();
   vi.mocked(recordSyncHistory).mockClear();
   vi.mocked(settleSyncStatus).mockClear();
+  vi.mocked(setSyncInProgress).mockClear();
   vi.mocked(writeSnapshotFromRepo).mockClear();
   vi.mocked(updateImportStatus).mockClear();
   vi.mocked(updateProjectSyncError).mockClear();
@@ -296,6 +299,20 @@ describe("queue consumer sync jobs (webhook + manual sync)", () => {
     );
     expect(msg.ack).toHaveBeenCalled();
     expect(msg.retry).not.toHaveBeenCalled();
+  });
+
+  it("claims the sync again when the job starts, before it does any work", async () => {
+    projects.set("@test/repo", makeProject());
+    vi.mocked(syncFromGitHub).mockResolvedValue({
+      success: true,
+      data: { status: "fast-forwarded", commit: "newsha" },
+    });
+    const env = makeEnv();
+    await handleImportQueue(makeBatch([makeSyncMessage()]), env);
+    expect(setSyncInProgress).toHaveBeenCalledWith(env.STATE, "@test", "repo", expect.anything());
+    expect(vi.mocked(setSyncInProgress).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(syncFromGitHub).mock.invocationCallOrder[0] ?? 0,
+    );
   });
 
   it("clears the in-progress flag when a sync succeeds", async () => {

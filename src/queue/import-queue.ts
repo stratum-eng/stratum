@@ -27,7 +27,7 @@ import {
 import { pushMirrorMode } from "../storage/push-mirrors";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { getProjectByPath, setProject } from "../storage/state";
-import { recordSyncHistory, settleSyncStatus } from "../storage/sync";
+import { recordSyncHistory, setSyncInProgress, settleSyncStatus } from "../storage/sync";
 import type {
   EmailMessage,
   Env,
@@ -598,6 +598,13 @@ async function processSyncJob(
       msg.ack();
       return;
     }
+
+    // Claim again now that the job is running. The claim made when it was
+    // queued lapses after SYNC_IN_PROGRESS_TTL_MS, and a message can wait in
+    // the queue for part of that: without this, a job that started late would
+    // still be running when its claim lapsed, and the next push would start a
+    // second sync beside it.
+    await setSyncInProgress(env.STATE, namespace, slug, logger);
 
     // Forge mode (#417), checked again HERE and not only where the job was
     // queued: an admin can enable the mirror between the two, and this job
