@@ -20,16 +20,26 @@ interface ChangeDetailProps {
     createdAt: string;
     mergedAt?: string;
     githubPrUrl?: string;
+    githubPrNumber?: number;
+    /** The workspace commit the verdict is for. */
+    evaluatedSha?: string;
+    /** Username of the person the change belongs to. */
+    openedBy?: string;
+    agentId?: string;
+    agentModel?: string;
   };
-  evalRuns: Array<{
-    id: string;
-    evaluatorType: string;
-    score: number;
-    passed: boolean;
-    reason: string;
-    issues?: string[];
-    ranAt: string;
-  }>;
+  /**
+   * What the diff was taken from, when the diff could be loaded: the commits
+   * the workspace adds and how far it is behind the project.
+   */
+  diffContext?: {
+    commits: Array<{ oid: string; subject: string; authorName: string; authoredAt: string }>;
+    behindBy: number;
+    /** The commit the workspace forked from; the diff starts here. */
+    forkPoint: string;
+    branch: string;
+  } | null;
+  evalRuns: EvalRunView[];
   provenance: {
     commitSha: string;
     workspace: string;
@@ -65,6 +75,94 @@ interface ChangeDetailProps {
   /** The 80% warning, when this account has one. See `Layout`. */
   usageNotice?: UsageBannerNotice | null;
 }
+
+interface EvalRunView {
+  id: string;
+  evaluatorType: string;
+  score: number;
+  passed: boolean;
+  reason: string;
+  issues?: string[];
+  ranAt: string;
+  /** Runs recorded by one evaluation share a round. Absent on old rows. */
+  roundId?: string;
+}
+
+/**
+ * Split runs into the latest evaluation and the ones before it. A change that
+ * was evaluated twice has two sets of rows, and listing them together reads as
+ * one evaluation that both failed and passed.
+ */
+export function splitEvalRounds(runs: EvalRunView[]): {
+  latest: EvalRunView[];
+  earlier: EvalRunView[][];
+} {
+  const rounds = new Map<string, EvalRunView[]>();
+  for (const run of runs) {
+    const key = run.roundId ?? run.ranAt;
+    rounds.set(key, [...(rounds.get(key) ?? []), run]);
+  }
+  const newestFirst = [...rounds.values()].sort((a, b) =>
+    (b[0]?.ranAt ?? "").localeCompare(a[0]?.ranAt ?? ""),
+  );
+  return { latest: newestFirst[0] ?? [], earlier: newestFirst.slice(1) };
+}
+
+/**
+ * A change has no title of its own, so its first commit speaks for it, as the
+ * author wrote it. `commits` is newest first.
+ */
+function headlineFor(
+  commits: Array<{ subject: string }> | undefined,
+  workspace: string,
+): { text: string; fromCommit: boolean } {
+  const first = commits?.[commits.length - 1]?.subject.trim();
+  return first
+    ? { text: first, fromCommit: true }
+    : { text: `Change from workspace ${workspace}`, fromCommit: false };
+}
+
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+const EvalRunTable: FC<{ runs: EvalRunView[] }> = ({ runs }) => (
+  <div class="table-scroll">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Evaluator</th>
+          <th>Status</th>
+          <th>Score</th>
+          <th>Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        {runs.map((run) => (
+          <tr key={run.id}>
+            <td>{run.evaluatorType}</td>
+            <td>
+              {run.passed ? (
+                <span class="badge badge-approved">passed</span>
+              ) : (
+                <span class="badge badge-rejected">failed</span>
+              )}
+            </td>
+            <td>{Math.round(run.score * 100)}%</td>
+            <td>
+              {run.reason}
+              {run.issues !== undefined && run.issues.length > 0 && (
+                <ul class="issue-list">
+                  {run.issues.map((issue) => (
+                    <li key={issue}>{issue}</li>
+                  ))}
+                </ul>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+);
 
 function statusBadgeClass(status: string): string {
   switch (status) {
@@ -246,6 +344,7 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   externalPullRequest = null,
   requireContributorAgreement = false,
   importNotice,
+  diffContext = null,
   canReview = false,
   projectRef = null,
   user,
@@ -255,6 +354,12 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
   // diff; anchorless comments stay in the change-level discussion below.
   const lineComments = comments.filter((comment) => comment.file !== undefined);
   const discussionComments = comments.filter((comment) => comment.file === undefined);
+
+  const headline = headlineFor(diffContext?.commits, change.workspace);
+  const rounds = splitEvalRounds(evalRuns);
+  const latestRanAt = rounds.latest[0]?.ranAt;
+  const additions = (diff ?? []).reduce((sum, file) => sum + file.additions, 0);
+  const deletions = (diff ?? []).reduce((sum, file) => sum + file.deletions, 0);
 
   const hasGithubPr = change.githubPrUrl !== undefined;
   const canMerge = !hasGithubPr && canReview && MERGEABLE_STATUSES.includes(change.status);
@@ -282,9 +387,19 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
       {projectRef && <ProjectHeader project={projectRef} active="changes" canWrite={canReview} />}
       <div class="page-header">
         <h1>
-          <span class="mono">{change.id}</span>{" "}
-          <span class={statusBadgeClass(change.status)}>{change.status}</span>
+          {headline.text} <span class={statusBadgeClass(change.status)}>{change.status}</span>
         </h1>
+        <p class="text-muted">
+          <span class="mono">{change.id}</span>
+          {change.openedBy !== undefined && <> · opened by {change.openedBy}</>}
+          {change.agentId !== undefined && (
+            <>
+              {" "}
+              · agent <span class="mono">{change.agentId}</span>
+              {change.agentModel !== undefined && <> ({change.agentModel})</>}
+            </>
+          )}
+        </p>
         {isPending && !autoRefresh && (
           <p class="text-muted pending-refresh">
             {isEvaluating ? "Evaluation is in progress." : "Waiting for evaluation."}{" "}
@@ -312,6 +427,16 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
       {hasActions && (
         <div class="card">
           <h2>Actions</h2>
+          {hasGithubPr && (
+            <p class="text-muted">
+              This change was promoted to GitHub
+              {change.githubPrNumber !== undefined && (
+                <> as pull request #{change.githubPrNumber}</>
+              )}
+              . Review and merging happen there, and Stratum reports this evaluation on the pull
+              request.
+            </p>
+          )}
           <div class="action-row">
             {hasGithubPr ? (
               <a class="btn btn-primary" href={change.githubPrUrl} target="_blank" rel="noreferrer">
@@ -413,43 +538,34 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
             <p>No evaluator evidence recorded.</p>
           </div>
         ) : (
-          <div class="table-scroll">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Evaluator</th>
-                  <th>Status</th>
-                  <th>Score</th>
-                  <th>Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {evalRuns.map((run) => (
-                  <tr key={run.id}>
-                    <td>{run.evaluatorType}</td>
-                    <td>
-                      {run.passed ? (
-                        <span class="badge badge-approved">passed</span>
-                      ) : (
-                        <span class="badge badge-rejected">failed</span>
-                      )}
-                    </td>
-                    <td>{Math.round(run.score * 100)}%</td>
-                    <td>
-                      {run.reason}
-                      {run.issues !== undefined && run.issues.length > 0 && (
-                        <ul class="issue-list">
-                          {run.issues.map((issue) => (
-                            <li key={issue}>{issue}</li>
-                          ))}
-                        </ul>
-                      )}
-                    </td>
-                  </tr>
+          <>
+            <p class="text-muted">
+              The latest evaluation
+              {latestRanAt !== undefined && <>, run {new Date(latestRanAt).toLocaleString()}</>}
+              {change.evaluatedSha !== undefined && (
+                <>
+                  , of revision <span class="mono">{change.evaluatedSha.slice(0, 12)}</span>
+                </>
+              )}
+              . The result above is this one.
+            </p>
+            <EvalRunTable runs={rounds.latest} />
+            {rounds.earlier.length > 0 && (
+              <details class="earlier-runs">
+                <summary>
+                  {plural(rounds.earlier.length, "earlier evaluation")}, replaced by the one above
+                </summary>
+                {rounds.earlier.map((round) => (
+                  <div key={round[0]?.id}>
+                    <p class="text-muted">
+                      Run {round[0] ? new Date(round[0].ranAt).toLocaleString() : ""}
+                    </p>
+                    <EvalRunTable runs={round} />
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </div>
+              </details>
+            )}
+          </>
         )}
       </div>
 
@@ -537,6 +653,32 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
       {diff !== null && (
         <div class="card">
           <h2>Files changed</h2>
+          <p class="text-muted">
+            {plural(diff.length, "file")} changed, +{additions} −{deletions}
+            {diffContext !== null && diffContext.commits.length > 0 && (
+              <>, in {plural(diffContext.commits.length, "commit")}</>
+            )}
+            .
+            {diffContext !== null && diffContext.behindBy > 0 && (
+              <>
+                {" "}
+                The workspace is {plural(diffContext.behindBy, "commit")} behind{" "}
+                {diffContext.branch}. This is what the workspace changed since it forked at{" "}
+                <span class="mono">{diffContext.forkPoint.slice(0, 12)}</span>; the newer commits on{" "}
+                {diffContext.branch} are not part of it.
+              </>
+            )}
+          </p>
+          {diffContext !== null && diffContext.commits.length > 0 && (
+            <ul class="commit-list">
+              {diffContext.commits.map((commit) => (
+                <li key={commit.oid}>
+                  <span class="mono">{commit.oid.slice(0, 12)}</span> {commit.subject}{" "}
+                  <span class="text-muted">({commit.authorName})</span>
+                </li>
+              ))}
+            </ul>
+          )}
           <DiffView files={diff} />
         </div>
       )}
@@ -657,17 +799,18 @@ export const ChangeDetailPage: FC<ChangeDetailProps> = ({
         )}
       </div>
 
-      {(change.status === "accepted" ||
-        change.status === "approved" ||
-        change.status === "promoted") && (
-        <div class="action-row">
-          <form method="post" action={`/api/changes/${change.id}/merge`}>
-            <button type="submit" class="btn">
-              Merge into Stratum repo
-            </button>
-          </form>
-        </div>
-      )}
+      {canReview &&
+        (change.status === "accepted" ||
+          change.status === "approved" ||
+          change.status === "promoted") && (
+          <div class="action-row">
+            <form method="post" action={`/api/changes/${change.id}/merge`}>
+              <button type="submit" class="btn">
+                Merge into Stratum repo
+              </button>
+            </form>
+          </div>
+        )}
     </Layout>
   );
 };

@@ -1,6 +1,6 @@
 import { renderToString } from "hono/jsx/dom/server";
 import { describe, expect, it } from "vitest";
-import { ChangeDetailPage } from "../src/ui/pages/change-detail";
+import { ChangeDetailPage, splitEvalRounds } from "../src/ui/pages/change-detail";
 
 const baseChange = {
   id: "chg_test123",
@@ -170,5 +170,147 @@ describe("ChangeDetailPage while evaluation is pending (#412)", () => {
     const html = renderAs("accepted", signedIn);
     expect(html).not.toContain('http-equiv="refresh"');
     expect(html).not.toContain(">Refresh</a>");
+  });
+});
+
+describe("ChangeDetailPage: what the change is", () => {
+  const run = (id: string, type: string, passed: boolean, ranAt: string, roundId: string) => ({
+    id,
+    evaluatorType: type,
+    score: passed ? 1 : 0,
+    passed,
+    reason: `${type} ${passed ? "ok" : "broke"}`,
+    ranAt,
+    roundId,
+  });
+  const first = "2026-11-10T01:33:59.008Z";
+  const second = "2026-11-10T02:46:24.166Z";
+  const twoRounds = [
+    run("e1", "secret_scan", true, first, "r1"),
+    run("e2", "llm", false, first, "r1"),
+    run("e3", "secret_scan", true, second, "r2"),
+    run("e4", "llm", true, second, "r2"),
+  ];
+  const diff = [
+    { path: "docs/log.md", additions: 34, deletions: 0, lines: [] },
+    { path: "README.md", additions: 2, deletions: 1, lines: [] },
+  ];
+  const commits = [
+    { oid: "b".repeat(40), subject: "Fix a typo", authorName: "Ada", authoredAt: second },
+    {
+      oid: "a".repeat(40),
+      subject: "Start the friction log",
+      authorName: "Ada",
+      authoredAt: first,
+    },
+  ];
+
+  function page(props: Partial<Parameters<typeof ChangeDetailPage>[0]> = {}): string {
+    return renderToString(
+      <ChangeDetailPage
+        change={{ ...baseChange, status: "accepted" }}
+        evalRuns={[]}
+        provenance={null}
+        user={null}
+        {...props}
+      />,
+    );
+  }
+
+  it("heads the page with the change's first commit, and keeps the id beneath it", () => {
+    const html = page({
+      diff,
+      diffContext: { commits, behindBy: 0, forkPoint: "f".repeat(40), branch: "main" },
+    });
+    expect(html).toMatch(/<h1>Start the friction log /);
+    expect(html).toContain("chg_test123");
+  });
+
+  it("falls back to naming the workspace when the commits are not known", () => {
+    expect(page()).toMatch(/<h1>Change from workspace fix-bug /);
+  });
+
+  it("says who opened the change and which agent wrote it", () => {
+    const html = page({
+      change: {
+        ...baseChange,
+        status: "accepted",
+        openedBy: "ada",
+        agentId: "agt_1",
+        agentModel: "claude-fable-5-2",
+      },
+    });
+    expect(html).toContain("opened by ada");
+    expect(html).toContain("agt_1");
+    expect(html).toContain("claude-fable-5-2");
+  });
+
+  it("totals the diff and lists the commits", () => {
+    const html = page({
+      diff,
+      diffContext: { commits, behindBy: 0, forkPoint: "f".repeat(40), branch: "main" },
+    });
+    expect(html).toContain("2 files changed, +36 −1, in 2 commits");
+    expect(html).toContain("Fix a typo");
+    expect(html).toContain("aaaaaaaaaaaa");
+    expect(html).not.toContain("behind main");
+  });
+
+  it("says when the workspace is behind and what the diff is taken from", () => {
+    const html = page({
+      diff,
+      diffContext: {
+        commits,
+        behindBy: 3,
+        forkPoint: "5604f6456e6f".padEnd(40, "0"),
+        branch: "main",
+      },
+    });
+    expect(html).toContain("The workspace is 3 commits behind main");
+    expect(html).toContain("5604f6456e6f");
+  });
+
+  it("shows the latest evaluation on its own and folds earlier ones away", () => {
+    const html = page({
+      change: { ...baseChange, status: "accepted", evaluatedSha: "afc6556feaf2c8b8673e" },
+      evalRuns: twoRounds,
+    });
+    const [latest, earlier] = html.split("earlier-runs");
+    expect(latest).toContain("llm ok");
+    expect(latest).not.toContain("llm broke");
+    expect(latest).toContain("of revision");
+    expect(latest).toContain("afc6556feaf2");
+    expect(earlier).toContain("1 earlier evaluation, replaced by the one above");
+    expect(earlier).toContain("llm broke");
+  });
+
+  it("has no earlier-evaluations fold for a change evaluated once", () => {
+    expect(page({ evalRuns: twoRounds.slice(2) })).not.toContain("earlier-runs");
+  });
+
+  it("groups rows without a round id by when they ran", () => {
+    const legacy = twoRounds.map(({ roundId: _roundId, ...rest }) => rest);
+    const { latest, earlier } = splitEvalRounds(legacy);
+    expect(latest.map((r) => r.id)).toEqual(["e3", "e4"]);
+    expect(earlier.map((round) => round.map((r) => r.id))).toEqual([["e1", "e2"]]);
+  });
+
+  it("tells a reader of a promoted change where review and merging happen", () => {
+    const html = page({
+      change: {
+        ...baseChange,
+        status: "promoted",
+        githubPrUrl: "https://github.com/acme/api/pull/42",
+        githubPrNumber: 42,
+      },
+    });
+    expect(html).toContain("promoted to GitHub");
+    expect(html).toContain("pull request #");
+    expect(html).toContain("Review and merging happen there");
+  });
+
+  it("does not offer the merge button to someone who cannot merge", () => {
+    expect(page({ canReview: false })).not.toContain("Merge into Stratum repo");
+    expect(page({ canReview: true })).toContain("Merge into Stratum repo");
   });
 });

@@ -768,6 +768,8 @@ describe("getDiffBetweenRepos", () => {
     expect(result.data.mergeBaseOid).toBe(forkSha);
     expect(result.data.baseOid).toBe(baseTip);
     expect(result.data.behindBy).toBe(2);
+    // The one commit the workspace adds, not the history it shares.
+    expect(result.data.commits.map((commit) => commit.subject)).toEqual(["seed 1"]);
   });
 
   it("reports an up-to-date workspace as forked from the project's tip", async () => {
