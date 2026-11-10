@@ -222,6 +222,11 @@ ${NAV_CSS}
 
 .mono { font-family: 'JetBrains Mono', monospace; }
 .text-muted { color: var(--text-muted); }
+.commit-list { list-style: none; padding: 0; margin: 0.5rem 0 1rem; display: grid; gap: 0.25rem; }
+.commit-list li { overflow-wrap: anywhere; }
+.earlier-runs { margin-top: 1rem; }
+.earlier-runs summary { cursor: pointer; color: var(--text-muted); }
+.earlier-runs > div { margin-top: 0.75rem; }
 
 /* Import Progress Styles */
 .import-progress-card {

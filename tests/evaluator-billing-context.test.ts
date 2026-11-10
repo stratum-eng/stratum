@@ -210,6 +210,7 @@ function stubDiff() {
       baseOid: "base_from_diff_clone",
       mergeBaseOid: "base_from_diff_clone",
       behindBy: 0,
+      commits: [],
     },
   });
 }

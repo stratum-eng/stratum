@@ -243,6 +243,7 @@ describe("POST /api/changes/:id/evaluate — GitHub verdict reporting", () => {
         baseOid: "base_sha_from_diff_clone",
         mergeBaseOid: "base_sha_from_diff_clone",
         behindBy: 0,
+        commits: [],
       },
     });
     vi.mocked(recordEvalRuns).mockResolvedValue({ success: true, data: [] });

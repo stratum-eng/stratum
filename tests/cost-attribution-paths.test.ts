@@ -234,6 +234,7 @@ beforeEach(() => {
       baseOid: "base_from_diff_clone",
       mergeBaseOid: "base_from_diff_clone",
       behindBy: 0,
+      commits: [],
     },
   });
   vi.mocked(createChange).mockResolvedValue({ success: true, data: CHANGE });

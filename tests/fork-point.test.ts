@@ -7,7 +7,7 @@
  */
 import git from "isomorphic-git";
 import { describe, expect, it, vi } from "vitest";
-import { type DeepenFetch, findForkPoint } from "../src/storage/git-ops";
+import { type DeepenFetch, findForkPoint, newestFirst } from "../src/storage/git-ops";
 import { MemoryFS } from "../src/storage/memory-fs";
 import { AppError } from "../src/utils/errors";
 import { err, ok } from "../src/utils/result";
@@ -279,5 +279,42 @@ describe("findForkPoint", () => {
 
     expect(found.success).toBe(false);
     if (!found.success) expect(found.error.message).toBe("network down");
+  });
+});
+
+describe("newestFirst", () => {
+  const commit = (oid: string) => ({
+    oid,
+    subject: oid,
+    authorName: "A",
+    authoredAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  it("puts a commit after everything built on it, though a merge reached it first", () => {
+    // tip merges `side` (one commit on `first`) with `long2 <- long1 <- first`.
+    // By distance from the tip, `first` (via side) comes before `long1`.
+    const parents = new Map([
+      ["tip", ["long2", "side"]],
+      ["long2", ["long1"]],
+      ["side", ["first"]],
+      ["long1", ["first"]],
+      ["first", ["fork"]],
+    ]);
+    const byDistance = ["tip", "long2", "side", "first", "long1"].map(commit);
+    const ordered = newestFirst(byDistance, parents).map((c) => c.oid);
+    expect(ordered).toEqual(["tip", "long2", "side", "long1", "first"]);
+  });
+
+  it("leaves a single line of commits as it was", () => {
+    const parents = new Map([
+      ["c", ["b"]],
+      ["b", ["a"]],
+      ["a", ["fork"]],
+    ]);
+    expect(newestFirst(["c", "b", "a"].map(commit), parents).map((c) => c.oid)).toEqual([
+      "c",
+      "b",
+      "a",
+    ]);
   });
 });

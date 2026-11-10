@@ -419,6 +419,7 @@ describe("POST /api/projects/:name/changes", () => {
         baseOid: "base_sha_from_diff_clone",
         mergeBaseOid: "base_sha_from_diff_clone",
         behindBy: 0,
+        commits: [],
       },
     });
     vi.mocked(updateChangeStatus).mockResolvedValue({
@@ -3693,6 +3694,7 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         baseOid: "base_sha_from_diff_clone",
         mergeBaseOid: "base_sha_from_diff_clone",
         behindBy: 0,
+        commits: [],
       },
     });
     vi.mocked(updateChangeStatus).mockResolvedValue({ success: true, data: undefined });
@@ -3806,6 +3808,7 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         baseOid: "base_sha_from_diff_clone",
         mergeBaseOid: "base_sha_from_diff_clone",
         behindBy: 0,
+        commits: [],
       },
     });
     vi.mocked(diffTouchesProtectedConfig).mockReturnValue(true);
@@ -3884,6 +3887,7 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         baseOid: "base_sha_from_diff_clone",
         mergeBaseOid: "base_sha_from_diff_clone",
         behindBy: 0,
+        commits: [],
       },
     });
 
@@ -3920,6 +3924,7 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         baseOid: "base_sha_from_diff_clone",
         mergeBaseOid: "base_sha_from_diff_clone",
         behindBy: 0,
+        commits: [],
       },
     });
 
@@ -3968,6 +3973,7 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
         baseOid: "base_sha_from_diff_clone",
         mergeBaseOid: "base_sha_from_diff_clone",
         behindBy: 0,
+        commits: [],
       },
     });
 

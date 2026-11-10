@@ -166,6 +166,7 @@ describe("asynchronous evaluation (#412)", () => {
         baseOid: "base-sha",
         mergeBaseOid: "base-sha",
         behindBy: 0,
+        commits: [],
       },
     });
     secretScanEvaluate.mockResolvedValue({

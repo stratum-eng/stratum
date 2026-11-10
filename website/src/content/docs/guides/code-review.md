@@ -12,6 +12,34 @@ change past a failing required evaluator.
 Everything here works on a change, from the change page in the web UI or
 through the API.
 
+## Reading the change page
+
+The change page is built to answer two questions before you give a verdict:
+what is this change, and what did the gates look at.
+
+- **The heading** is the subject of the change's first commit, as its author
+  wrote it. A change has no separate title. The change id, who opened it and the
+  agent that wrote it are on the line beneath.
+- **Files changed** gives the totals, lists the commits the workspace adds, and
+  shows the diff. The diff is what the workspace changed since it forked from
+  the project. If the project has moved on since, the page says how many commits
+  the workspace is behind and which commit the diff starts from; those newer
+  commits are not part of the change.
+- **Evaluator evidence** shows the latest evaluation: when it ran, which
+  revision it judged, and each evaluator's verdict and findings. Earlier
+  evaluations of the same change are folded away beneath it, since a newer one
+  replaces them. The exception is an evaluator the latest evaluation did not
+  run: merging is decided on each evaluator's newest result, so that earlier
+  result still counts, and it stays in view under "Still counted from an
+  earlier evaluation".
+- **Checks**, where the project declares any, are the results its runner
+  reported for that same revision.
+
+Once a change has been promoted to a GitHub pull request the page says so and
+links to it: review and merging then happen on GitHub (see
+[Reviewing in GitHub instead](#reviewing-in-github-instead)). The diff stays
+visible here so the page still says what the change is.
+
 ## Comment threads
 
 A comment is either **floating** — attached to the change as a whole — or

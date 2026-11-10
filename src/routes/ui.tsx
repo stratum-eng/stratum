@@ -42,7 +42,7 @@ import { type Deployment, getDeployment, listDeployments } from "../storage/depl
 import { listEvalRuns } from "../storage/eval-runs";
 import { listProjectEvents } from "../storage/events";
 import { getExternalPullRequestByChange } from "../storage/external-pull-requests";
-import type { RefResolutionFailure } from "../storage/git-ops";
+import type { ChangeCommit, RefResolutionFailure } from "../storage/git-ops";
 import {
   freshRepoToken,
   getDiffBetweenRepos,
@@ -1612,9 +1612,19 @@ app.get("/changes/:id", async (c) => {
   const provenance = provenanceResult.success ? provenanceResult.data : null;
 
   // The diff is only renderable while the workspace still exists and the
-  // change is still in review; failures degrade to "no diff section".
+  // change has not landed or been closed; failures degrade to "no diff
+  // section". A promoted change is reviewed on its pull request, but the page
+  // still has to say what the change is.
   let diffFiles: ReturnType<typeof parseUnifiedDiff> | null = null;
-  const DIFFABLE_STATUSES = ["open", "evaluating", "needs_changes", "accepted", "approved"];
+  let diffContext: { commits: ChangeCommit[]; behindBy: number; forkPoint: string } | null = null;
+  const DIFFABLE_STATUSES = [
+    "open",
+    "evaluating",
+    "needs_changes",
+    "accepted",
+    "approved",
+    "promoted",
+  ];
   if (DIFFABLE_STATUSES.includes(change.status)) {
     const workspaceResult = await getWorkspace(
       c.env.STATE,
@@ -1638,6 +1648,11 @@ app.get("/changes/:id", async (c) => {
         );
         if (diffResult.success) {
           diffFiles = parseUnifiedDiff(diffResult.data.diff);
+          diffContext = {
+            commits: diffResult.data.commits,
+            behindBy: diffResult.data.behindBy,
+            forkPoint: diffResult.data.mergeBaseOid,
+          };
         } else {
           logger.warn("Failed to load change diff", { changeId: change.id });
         }
@@ -1659,8 +1674,16 @@ app.get("/changes/:id", async (c) => {
         reason: run.reason,
         ...(run.issues !== undefined ? { issues: run.issues } : {}),
         ranAt: run.ranAt,
+        ...(run.roundId !== undefined ? { roundId: run.roundId } : {}),
       }))
     : [];
+
+  // Who opened it, by name. A lookup that fails leaves the row out rather
+  // than failing the page.
+  const author =
+    change.createdByUserId !== undefined
+      ? await getUser(c.env.DB, change.createdByUserId, logger)
+      : null;
 
   const canReview =
     !!userResult &&
@@ -1695,7 +1718,15 @@ app.get("/changes/:id", async (c) => {
         createdAt: change.createdAt,
         ...(change.mergedAt !== undefined ? { mergedAt: change.mergedAt } : {}),
         ...(change.githubPrUrl !== undefined ? { githubPrUrl: change.githubPrUrl } : {}),
+        ...(change.githubPrNumber !== undefined ? { githubPrNumber: change.githubPrNumber } : {}),
+        ...(change.evaluatedSha !== undefined ? { evaluatedSha: change.evaluatedSha } : {}),
+        ...(author?.success ? { openedBy: author.data.username } : {}),
+        ...(change.agentId !== undefined ? { agentId: change.agentId } : {}),
+        ...(change.agentModel !== undefined ? { agentModel: change.agentModel } : {}),
       }}
+      diffContext={
+        diffContext && { ...diffContext, branch: projectDefaultBranch(projectResult.data) }
+      }
       evalRuns={evalRuns}
       checks={checksResult.success ? checksResult.data.map(toCheckRunView) : []}
       provenance={provenance}

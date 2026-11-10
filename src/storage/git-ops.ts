@@ -4316,13 +4316,25 @@ interface KnownHistory {
   /** Commit oid -> distance from the tip. Iterates nearest first. */
   distance: Map<string, number>;
   parents: Map<string, string[]>;
+  summaries: Map<string, ChangeCommit>;
   /** True when some parent is not present locally, so a deeper fetch may reveal more. */
   truncated: boolean;
+}
+
+/** One commit a change adds, as much as a reader needs to recognise it. */
+export interface ChangeCommit {
+  oid: string;
+  /** First line of the commit message. */
+  subject: string;
+  authorName: string;
+  /** Author time, ISO 8601. */
+  authoredAt: string;
 }
 
 async function readKnownHistory(fs: NodeFS, tip: string): Promise<KnownHistory> {
   const distance = new Map<string, number>([[tip, 0]]);
   const parents = new Map<string, string[]>();
+  const summaries = new Map<string, ChangeCommit>();
   let truncated = false;
   let frontier = [tip];
   for (let depth = 0; frontier.length > 0; depth++) {
@@ -4336,6 +4348,12 @@ async function readKnownHistory(fs: NodeFS, tip: string): Promise<KnownHistory> 
         continue;
       }
       parents.set(oid, commit.data.commit.parent);
+      summaries.set(oid, {
+        oid,
+        subject: commit.data.commit.message.split("\n", 1)[0] ?? "",
+        authorName: commit.data.commit.author.name,
+        authoredAt: new Date(commit.data.commit.author.timestamp * 1000).toISOString(),
+      });
       for (const parent of commit.data.commit.parent) {
         if (distance.has(parent)) continue;
         distance.set(parent, depth + 1);
@@ -4344,7 +4362,45 @@ async function readKnownHistory(fs: NodeFS, tip: string): Promise<KnownHistory> 
     }
     frontier = next;
   }
-  return { distance, parents, truncated };
+  return { distance, parents, summaries, truncated };
+}
+
+/**
+ * Order commits so that each comes before every commit it descends from.
+ *
+ * {@link readKnownHistory} lists commits by distance from the tip, and through
+ * a merge commit that can put a commit ahead of one built on top of it: the
+ * short side of the merge is reached first. A reader takes the last entry for
+ * the change's first commit, so the order has to follow ancestry.
+ *
+ * Among commits neither of which descends from the other, the given order is
+ * kept, so the result is the same on every read.
+ */
+export function newestFirst(
+  commits: ChangeCommit[],
+  parents: ReadonlyMap<string, string[]>,
+): ChangeCommit[] {
+  const listed = new Set(commits.map((commit) => commit.oid));
+  const waitingOn = new Map<string, number>(commits.map((commit) => [commit.oid, 0]));
+  for (const commit of commits) {
+    for (const parent of parents.get(commit.oid) ?? []) {
+      if (listed.has(parent)) waitingOn.set(parent, (waitingOn.get(parent) ?? 0) + 1);
+    }
+  }
+  const ordered: ChangeCommit[] = [];
+  const remaining = [...commits];
+  while (remaining.length > 0) {
+    const index = remaining.findIndex((commit) => waitingOn.get(commit.oid) === 0);
+    // Commits cannot form a cycle, so one is always ready; the fallback keeps
+    // a malformed history from looping forever.
+    const [commit] = remaining.splice(index === -1 ? 0 : index, 1);
+    if (commit === undefined) break;
+    ordered.push(commit);
+    for (const parent of parents.get(commit.oid) ?? []) {
+      if (listed.has(parent)) waitingOn.set(parent, (waitingOn.get(parent) ?? 1) - 1);
+    }
+  }
+  return ordered;
 }
 
 /**
@@ -4570,6 +4626,9 @@ export async function getDiffBetweenRepos(
        * the fetched history shows; 0 when the workspace is up to date, and 0
        * when the histories are unrelated and there is no fork to count from. */
       behindBy: number;
+      /** The commits the workspace adds, newest first. Empty when the two
+       * histories share nothing, since there is then no telling which they are. */
+      commits: ChangeCommit[];
     },
     AppError
   >
@@ -4666,10 +4725,32 @@ export async function getDiffBetweenRepos(
   // A fork point is in both clones; the project's tip, used when the histories
   // are unrelated, is only in the project's.
   const mergeBaseFs = mergeBaseOid === baseOid ? baseFs : workspaceFs;
+  const [workspaceHistory, baseHistory] = await Promise.all([
+    readKnownHistory(workspaceFs, workspaceOid),
+    readKnownHistory(baseFs, baseOid),
+  ]);
   const behindBy =
+    forkPoint.data.kind === "found" ? countCommitsSince(baseHistory, mergeBaseOid) : 0;
+  // What the workspace holds that the fork point does not reach. Not "what the
+  // project's clone lacks": the workspace's window can run further back past
+  // the fork point than the project's does.
+  const beforeFork = new Set<string>();
+  for (let frontier = [mergeBaseOid]; frontier.length > 0; ) {
+    const next: string[] = [];
+    for (const oid of frontier) {
+      if (beforeFork.has(oid)) continue;
+      beforeFork.add(oid);
+      next.push(...(workspaceHistory.parents.get(oid) ?? []));
+    }
+    frontier = next;
+  }
+  const commits =
     forkPoint.data.kind === "found"
-      ? countCommitsSince(await readKnownHistory(baseFs, baseOid), mergeBaseOid)
-      : 0;
+      ? newestFirst(
+          [...workspaceHistory.summaries.values()].filter((commit) => !beforeFork.has(commit.oid)),
+          workspaceHistory.parents,
+        )
+      : [];
 
   const [workspaceFilesResult, baseFilesResult] = await Promise.all([
     listFilesAtCommit(workspaceFs, workspaceOid, logger),
@@ -4724,6 +4805,7 @@ export async function getDiffBetweenRepos(
     baseOid,
     mergeBaseOid,
     behindBy,
+    commits,
   });
 }
 
