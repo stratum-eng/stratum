@@ -349,6 +349,33 @@ describe("where the deploy credential is, and is not", () => {
   });
 });
 
+describe("when the repository proxy cannot be closed after the checkout", () => {
+  // Before any step runs, the job's route to its repository — the one request
+  // path that carries a credential for a CI job — is replaced with a handler
+  // that refuses everything. If that replacement fails, no step may start.
+  for (const profile of ["ci", "deploy"] as const) {
+    it(`a ${profile} job starts no step, destroys its container and reports errored`, async () => {
+      const h = harness({
+        job: profile === "deploy" ? makeDeployJob(T0) : makeJob(T0),
+        profile,
+      });
+      h.container.failInterceptsWhileRunning = true;
+      await h.begin();
+      await h.run();
+
+      expect(scriptOf(h.container, "prepare")).toBeDefined();
+      expect(scriptOf(h.container, "s0")).toBeUndefined();
+      expect(h.container.running).toBe(false);
+      expect(h.sent.length).toBeGreaterThan(0);
+      expect(h.sent.every((report) => report.status === "errored")).toBe(true);
+      expect(h.sent[0]?.summary).toContain("could not be closed");
+      // The repository token is not kept past this point either.
+      expect(h.everythingStored()).not.toContain("SUPERSECRETTOKEN");
+      expect(h.control.released).toBe(1);
+    });
+  }
+});
+
 describe("a CI job cannot obtain the deploy credential", () => {
   it("the CI profile's egress has no way to construct a credentialed handler", () => {
     const { exports, credentialRequests } = fakeExports();
