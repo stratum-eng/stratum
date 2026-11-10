@@ -26,6 +26,10 @@ import {
 import { getChange } from "../storage/changes";
 import { type CostSample, recordCosts } from "../storage/costs";
 import type { EvalRun } from "../storage/eval-runs";
+import {
+  getExternalPullRequestByChange,
+  supersedeImportedChange,
+} from "../storage/external-pull-requests";
 import { getProject, getWorkspace } from "../storage/state";
 import type { Change, Env, EvaluationQueueMessage } from "../types";
 import { AppError } from "../utils/errors";
@@ -102,6 +106,26 @@ export async function runEvaluationJob(
     log.info("Evaluation run superseded before it started", {
       status: change.status,
       currentRunId: change.evalRunId,
+    });
+    return ok({ status: "superseded" });
+  }
+
+  // A change from a pull request on the mirror is evaluated only at the head
+  // that was imported. An import that died after starting its run, or whose
+  // look at the head failed, can leave a run for commits the pull request has
+  // moved past; this is where every way of running it arrives (the queue, an
+  // inline run, the sweep that recovers a stuck one). The change goes back to
+  // `external` and nothing is evaluated. A failed lookup is retried, never
+  // read as "no pull request".
+  const origin = await getExternalPullRequestByChange(env.DB, log, changeId);
+  if (!origin.success) return err(transient(origin.error));
+  if (origin.data !== null && origin.data.headSha !== origin.data.importedHeadSha) {
+    const returned = await supersedeImportedChange(env.DB, log, changeId);
+    if (!returned.success) return err(transient(returned.error));
+    log.info("Evaluation run dropped: the pull request has commits past the imported ones", {
+      prNumber: origin.data.prNumber,
+      headSha: origin.data.headSha,
+      importedHeadSha: origin.data.importedHeadSha,
     });
     return ok({ status: "superseded" });
   }

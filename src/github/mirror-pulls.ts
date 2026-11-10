@@ -1081,9 +1081,16 @@ export function mergedComment(input: {
   return lines.join("\n");
 }
 
-/** `mergedThrough` for the comment, when the pull request has commits past the imported ones. */
-function leftBehind(record: ExternalPullRequest): { mergedThrough?: string } {
-  return record.importedHeadSha !== undefined && record.headSha !== record.importedHeadSha
+/**
+ * `mergedThrough` for the comment, when the pull request has commits past the
+ * imported ones.
+ *
+ * Judged from the head GitHub reports now, not the stored one: a push whose
+ * webhook arrives after the change is `merged` is ignored, so the record
+ * never learns of it.
+ */
+function leftBehind(record: ExternalPullRequest, liveHeadSha: string): { mergedThrough?: string } {
+  return record.importedHeadSha !== undefined && liveHeadSha !== record.importedHeadSha
     ? { mergedThrough: record.importedHeadSha }
     : {};
 }
@@ -1267,7 +1274,7 @@ async function settleOne(
         changeId: record.changeId,
         branch,
         ...(env.APP_URL !== undefined ? { appUrl: env.APP_URL } : {}),
-        ...leftBehind(record),
+        ...leftBehind(record, live.headSha),
         closing: false,
       }),
     });
@@ -1350,7 +1357,7 @@ async function settleOne(
         changeId: record.changeId,
         branch,
         ...(env.APP_URL !== undefined ? { appUrl: env.APP_URL } : {}),
-        ...leftBehind(record),
+        ...leftBehind(record, live.headSha),
         closing: true,
       }),
     });

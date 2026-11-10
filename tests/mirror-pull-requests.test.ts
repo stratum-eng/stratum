@@ -194,6 +194,7 @@ import { fetchPullRequestHead } from "../src/github/remote";
 import { handlePullRequest, handlePullRequestReview } from "../src/github/webhooks";
 import worker from "../src/index";
 import { profileAllowedForOrigin } from "../src/services/ci-executor";
+import { runEvaluationJob } from "../src/services/evaluation-run";
 import { createAgent } from "../src/storage/agents";
 import {
   buildUnifiedDiff,
@@ -1930,6 +1931,47 @@ describe("a change whose pull request moved on without it", () => {
     expect((await getChange(changeId)).change.status).toBe("external");
     expect((await importChange(changeId, cookies.writer, { headSha: newer })).status).toBe(202);
     expect((await getChange(changeId)).change.evaluatedSha).toBe(newer);
+  });
+
+  it("is not evaluated by a run that an interrupted import left behind", async () => {
+    await configureMirror();
+    const { changeId, fork: contributorFork } = await openPullRequest(7);
+    expect((await importChange(changeId)).status).toBe(202);
+
+    // The import started a run and stopped there: the change is `evaluating`
+    // under that run, and the push's new head is on record with nothing
+    // having returned the change to `external`.
+    const newer = await contributorFork.commit({ "late.txt": "late\n" }, "late", contributor);
+    await github.pushToPull(7, contributorFork, newer);
+    db.prepare("UPDATE external_pull_requests SET head_sha = ?").run(newer);
+    db.prepare(
+      "UPDATE changes SET status = 'evaluating', eval_run_id = 'run_left' WHERE id = ?",
+    ).run(changeId);
+    const runsBefore = rows("SELECT * FROM eval_runs").length;
+
+    // Whatever picks the run up (the queue, or the sweep for stuck runs).
+    const outcome = await runEvaluationJob(env, logger, { changeId, runId: "run_left" });
+    expect(outcome).toEqual({ success: true, data: { status: "superseded" } });
+    expect(rows("SELECT * FROM eval_runs")).toHaveLength(runsBefore);
+    expect((await getChange(changeId)).change.status).toBe("external");
+  });
+
+  it("says on GitHub that a push missed the merge, even when its webhook came too late to record", async () => {
+    await configureMirror();
+    const { changeId, head, fork: contributorFork } = await openPullRequest(7);
+    expect((await importChange(changeId)).status).toBe(202);
+    expect((await mergeChange(changeId, cookies.admin, "?strategy=squash")).status).toBe(200);
+
+    // The contributor pushes as the merge finishes. The webhook for it finds
+    // a merged change and is ignored, so the record still holds the old head.
+    const late = await contributorFork.commit({ "late.txt": "late\n" }, "late", contributor);
+    await github.pushToPull(7, contributorFork, late);
+    await webhook(github.payload(7, "synchronize"));
+    expect((await getChange(changeId)).externalPullRequest?.headSha).toBe(head);
+
+    await drainMirror();
+    expect(github.comments).toHaveLength(1);
+    expect(github.comments[0]?.body).toContain(`Only the commits up to \`${head.slice(0, 12)}\``);
   });
 
   it("says so on GitHub when a push arrived too late to be part of the merge", () => {
