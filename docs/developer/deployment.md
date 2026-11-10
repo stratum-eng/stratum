@@ -664,11 +664,16 @@ instance files an issue when one of its own health checks fails
 (`src/services/ops-alerts.ts`). Today the only such check is the daily
 `evaluation-health` job on the `0 6 * * *` cron
 (`src/services/evaluation-health.ts`). Unset, a failure is logged at error level
-and nothing else happens. The hosted instance sets it to `@stratum/stratum` in
-`[env.production.vars]`; staging leaves it unset.
+and, unless `OPS_ALERT_EMAIL` is set, nothing else happens. The hosted instance
+sets it to `@stratum/stratum` in `[env.production.vars]`; staging leaves it
+unset.
 
-`OPS_ALERT_EMAIL` (a secret) adds an email when such an alert is first raised
-and when it clears. It is deliberately not `ADMIN_EMAIL`: that secret also makes
+`OPS_ALERT_EMAIL` (a secret, so set it per environment:
+`wrangler secret put OPS_ALERT_EMAIL --env production`) adds an email when the
+issue is opened and when it is closed. With no `OPS_ALERT_PROJECT`, or when the
+issue cannot be filed, there is no issue to mark the alert as already raised:
+the instance then mails on every failing run, and sends no message when the
+check recovers. It is deliberately not `ADMIN_EMAIL`: that secret also makes
 the matching account an instance administrator (`src/utils/admin.ts`), so it
 must not be set just to receive mail.
 

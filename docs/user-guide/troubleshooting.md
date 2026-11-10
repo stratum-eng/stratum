@@ -208,10 +208,19 @@ for one fails with error `5028`.
 
 #### The instance checks this itself (self-hosting)
 
-Once a day an instance with a Workers AI binding runs its default `llm` model
-on two fixed diffs, one that should pass and one that should not, and counts
-the real evaluations of the last 24 hours that ended with no verdict. The two
-diffs are built into Stratum; no project's code is sent.
+Once a day an instance checks its own evaluation in two ways:
+
+- **A trial run.** It runs its default `llm` model on two fixed diffs, one that
+  should pass and one that should not. The two diffs are built into Stratum; no
+  project's code is sent. An instance with no Workers AI binding skips this
+  part and still does the next.
+- **Counts over the last 24 hours**, from real evaluations. It reports when at
+  least five `llm` reviews, and at least half of them, ended with no verdict
+  from the model (a provider error or a timeout). It also reports when at least
+  three changes had an evaluation that never reported back at all, which
+  usually means the evaluation worker is being stopped mid-run by a memory or
+  time limit; look for `exceededMemory` or `exceededCpu` on the
+  `stratum-evaluations` queue consumer in the Worker's logs.
 
 Set `OPS_ALERT_PROJECT` in the environment's `[vars]` to a project on the
 instance, as `"@namespace/slug"`, and a failed check opens an issue there
@@ -220,13 +229,15 @@ It lists what failed. While it is open no second issue is filed, and it is
 closed automatically when the check passes again. Left unset, which is the
 default, the result is written to the Worker's logs only.
 
-To be emailed as well, set the `OPS_ALERT_EMAIL` secret to an address
-(`wrangler secret put OPS_ALERT_EMAIL`). The instance then sends one message
-when the issue is opened and one when it is closed. This needs the instance's
-email sending to be configured (`EMAIL` binding and `EMAIL_FROM_ADDRESS`).
-With no `OPS_ALERT_PROJECT`, or when the issue could not be opened (the message
-says why), there is no issue to mark the alert as already raised, so a failing
-check sends a message every day until it passes.
+To be emailed as well, set the `OPS_ALERT_EMAIL` secret to an address. Secrets
+are per environment, so name the one you deploy:
+`wrangler secret put OPS_ALERT_EMAIL --env production`. The instance then sends
+one message when the issue is opened and one when it is closed. This needs the
+instance's email sending to be configured (`EMAIL` binding and
+`EMAIL_FROM_ADDRESS`). With no `OPS_ALERT_PROJECT`, or when the issue could not
+be opened (the message says why), there is no issue to mark the alert as
+already raised, so a failing check sends a message every day until it passes,
+and none when it does.
 
 ### `... allowance is used up` or an evaluation rate limit
 
