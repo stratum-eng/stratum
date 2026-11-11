@@ -355,7 +355,7 @@ it into files, commits or messages.
 | `stratum_rerun_check` | Re-run one check on the revision it ran against — a flaky failure, or a runner that never reported. It does not pick up new commits: after a push, use `stratum_evaluate_change`. Re-running a first-party CI step re-runs the whole job, so every step gets a new run. Needs write access to the project; user credentials only. |
 | `stratum_comment_change` | Comment on a change: change-wide, anchored to a diff line (`file` + `line`), or as a reply (`parent_comment_id`). Needs read access to the project. |
 | `stratum_list_change_comments` | A change's comments in order, with anchors, replies and resolved state. |
-| `stratum_promote_change` | Push an **accepted** change's branch to the project's linked GitHub repository and open a PR (a draft by default) against the default branch. The PR is opened as the person the connection acts for when they have [connected their GitHub account](code-review.md#who-the-pull-request-is-opened-as), and as the Stratum app otherwise; the result's `openedAs` says which. Needs write access to the project. |
+| `stratum_promote_change` | Push an **accepted** change's branch to the project's linked GitHub repository and open a PR (a draft by default) against the default branch. The PR is opened as the person the connection acts for when they have [connected their GitHub account](code-review.md#who-the-pull-request-is-opened-as), and as the Stratum app otherwise; the result's `github.openedAs` says which, and is absent when the PR already existed, since its author was settled when it was first opened. Needs write access to the project. |
 
 **Issues**
 

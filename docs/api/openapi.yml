@@ -3383,8 +3383,12 @@ paths:
         instance's credential, described next. The PR itself is created with the
         promoting person's own GitHub authorization when they have connected
         their GitHub account, so that GitHub records them as its author, and
-        with the instance's credential otherwise; `github.openedAs` in the
-        response says which.
+        with the instance's credential otherwise. Connecting does not
+        guarantee it: the instance's credential is also used when the person's
+        authorization has lapsed, is being renewed by another promotion at
+        that moment, cannot be read, or is refused by GitHub for this
+        repository. `github.openedAs` in the response says which was used,
+        and `github.openedAsAppBecause` why.
 
         The instance's credential is the GitHub App's installation token when the project's
         owner is linked to the installation covering the repository (or an
@@ -3498,7 +3502,9 @@ paths:
       summary: Take a promoted change's GitHub pull request out of draft
       description: >-
         Users only, with write access to the project. Acts on the pull request
-        the change was promoted to. A pull request that is already ready
+        the change was promoted to, always with the instance's GitHub
+        credential and never with a person's connected GitHub account, whoever
+        the pull request was opened as. A pull request that is already ready
         succeeds with `alreadyReady: true`.
       security: [{ bearerAuth: [] }]
       responses:
@@ -5963,8 +5969,11 @@ paths:
         the installation must be listed for them, and they must be an active
         `admin` (owner) of the organization it is installed on, or be the
         personal account it is installed on. Who installed the app decides
-        nothing. The GitHub user token is used for that one request, never
-        stored or logged, and revoked afterwards.
+        nothing. The GitHub user token this round trip obtains is used for that
+        one request, never stored or logged, and revoked afterwards. (A person
+        who separately connects their GitHub account does have an
+        authorization stored, encrypted, for opening the pull requests they
+        promote; linking never reads or changes it.)
 
         Requires a browser session: a token cannot be walked through GitHub's
         authorization page and is refused with 403 (`BROWSER_REQUIRED`). The

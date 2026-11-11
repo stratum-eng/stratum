@@ -196,7 +196,8 @@ can approve it themselves.
 To have your promotions opened as you, connect your GitHub account under
 **Settings → GitHub**. After that:
 
-- a pull request **you** promote is opened as you;
+- a pull request **you** promote is opened as you, whenever GitHub accepts
+  your authorization for it (the exceptions are listed below);
 - nobody else's promotion is ever opened as you. When a teammate promotes a
   change you opened, the pull request is theirs, or the app's if they have not
   connected.

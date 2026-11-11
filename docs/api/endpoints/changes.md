@@ -368,7 +368,9 @@ evaluation finishes; that re-pushes to the same PR.
 Takes the change's pull request out of draft, so promoting a change and asking
 for its review stay two separate decisions. Users only, with write access to the
 project; no body. It acts on the pull request the change was promoted to, with
-the same credential rules as promotion.
+the instance credential that pushes a promoted branch, under the same rules. It
+never uses a person's connected GitHub account, whoever the pull request was
+opened as.
 
 ```json
 { "ready": true, "changeId": "chg_…", "alreadyReady": false,

@@ -636,7 +636,8 @@ const SETTINGS_NOTICES: Record<string, SettingsNotice> = {
   },
   "github-connected": {
     kind: "success",
-    message: "GitHub connected. Pull requests you promote are now opened as you.",
+    message:
+      "GitHub connected. Pull requests you promote are now opened as you, or as the Stratum app when GitHub does not accept your authorization for a repository.",
   },
   "github-disconnected": {
     kind: "success",
