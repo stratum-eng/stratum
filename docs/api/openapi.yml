@@ -3379,7 +3379,14 @@ paths:
         repository's canonical project. Creates a (draft by default) PR from
         branch `stratum/{changeId}` and marks the change `promoted`.
 
-        The credential is the GitHub App's installation token when the project's
+        Two credentials are involved. The branch is always pushed with the
+        instance's credential, described next. The PR itself is created with the
+        promoting person's own GitHub authorization when they have connected
+        their GitHub account, so that GitHub records them as its author, and
+        with the instance's credential otherwise; `github.openedAs` in the
+        response says which.
+
+        The instance's credential is the GitHub App's installation token when the project's
         owner is linked to the installation covering the repository (or an
         operator binding names that owner). Otherwise it is the instance
         `GITHUB_TOKEN`, and only under an operator binding. A refused

@@ -7,9 +7,8 @@
  * it, and the person whose agent wrote the code can approve it themselves.
  *
  * So the pull request is opened as the person promoting, when they have
- * connected their GitHub account: the person at the keyboard, or the owner of
- * the agent doing it. Never anyone else. A change opened by one person and
- * promoted by another is the promoter's pull request, as it would be had they
+ * connected their GitHub account. Never anyone else. A change opened by one
+ * person and promoted by another is the promoter's pull request, as it would be had they
  * pushed the branch themselves; nobody's identity is used for an action they
  * took no part in.
  *
@@ -115,8 +114,8 @@ export function toConnectionTokens(
  * is a person.
  *
  * @param env - Worker environment
- * @param actingUserId - The person promoting, or the owner of the agent
- *   promoting; undefined when the caller is neither
+ * @param actingUserId - The person promoting; undefined when the caller is
+ *   not a person
  * @param logger - Request logger
  * @param nowMs - The current time; a parameter so tests can move it
  * @returns The person and a usable token, or the app and why

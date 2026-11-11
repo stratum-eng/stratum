@@ -870,7 +870,7 @@ export interface Change {
   baseSha?: string;
   /** The commit the workspace forked from the project: the evaluated diff runs
    * from here to `evaluatedSha`. Differs from `baseSha` when the workspace is
-   * behind the project. Absent on changes evaluated before migration 086, which
+   * behind the project. Absent on changes evaluated before migration 083, which
    * were evaluated on the diff against `baseSha`. */
   forkPointSha?: string;
   /** Workspace tip the evaluation ran against; a merge rejects if it moved

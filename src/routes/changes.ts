@@ -2774,8 +2774,7 @@ app.post("/changes/:id/github-pr", async (c) => {
   // they have connected GitHub, as the app otherwise, and as the app again if
   // GitHub will not have it from them: their access to this repository is not
   // something a promotion should fail on.
-  // An agent promoting acts for its owner, the person answerable for it.
-  let author = await resolvePrAuthor(c.env, userId ?? c.get("agentOwnerId"), logger);
+  let author = await resolvePrAuthor(c.env, userId, logger);
   let result =
     author.kind === "user"
       ? await new GitHubClient(author.token, logger, { personal: true }).createOrReusePR(

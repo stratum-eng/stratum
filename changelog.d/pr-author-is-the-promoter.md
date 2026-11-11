@@ -4,8 +4,8 @@
   its author, so every promoted pull request was authored by the app's bot:
   review tools skipped it or wanted a seat for the bot, and the person whose
   agent wrote the code could approve it themselves. A person can now connect
-  their GitHub account under Settings, and the pull requests they promote, and
-  the ones an agent they own promotes, are opened as them. Nobody else's
+  their GitHub account under Settings, and the pull requests they promote are
+  opened as them. Nobody else's
   promotion is ever opened as them. The promote response reports
   `pullRequestAuthor`, `openedAs` and, when the app opened it, why. Off unless
   the operator sets the new `GITHUB_USER_TOKEN_SECRET`, which encrypts the

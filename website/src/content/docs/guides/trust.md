@@ -159,7 +159,9 @@ the `BACKUPS` R2 bucket:
 
 - **When:** daily from its own cron, `0 4 * * *` (UTC), in production, plus on
   demand through an admin endpoint. Staging has no backup cron.
-- **What:** one NDJSON dump per D1 table, the project and workspace registry
+- **What:** one NDJSON dump per D1 table, apart from the tables listed as not
+  backed up below and short-lived ones such as sign-in links and OAuth states,
+  the project and workspace registry
   records from KV, and a Git pack of the reachable history of **project**
   repositories. Each run snapshots at most `MAX_REPOS_PER_RUN` (default 25)
   projects, taking the projects least recently attempted first. A repository
@@ -573,7 +575,7 @@ Cloudflare documents none, and no setting in Stratum creates one.
 | D1, R2, Artifacts: storage and processing | **Covered by a jurisdiction set at creation** (and `jurisdiction = "eu"` on each R2 binding) | Not checked by Stratum at run time |
 | Queue messages: storage and processing by Queues | **Covered by a jurisdiction set at queue creation** | Covers the messages, not the consumer — see the next row |
 | Queue consumers (`stratum-events`, `stratum-imports`, `stratum-deploys`, `stratum-evaluations`) | **No guarantee available**, because Cloudflare states that Regional Services "does not apply to other Worker triggers, like Queues or Cron Triggers", that a restricted queue can be consumed "from any location", and that placement settings "only [affect] the execution of fetch event handlers" | The consumer Worker may run in any Cloudflare data center. It handles event delivery, imports and syncs, post-merge deploys and evaluation runs, so repository contents and database rows read from EU storage can be processed in memory outside the EU. Whatever it writes still lands in EU storage |
-| Cron Triggers: `0 4 * * *` (backup), `0 6 * * *` (housekeeping, sync), `*/5 * * * *` (outbox and import sweeps) | **No guarantee available**, for the same reason; Cloudflare says only that scheduled Workers "run on underutilized machines" | The backup cron reads every D1 table and every project repository, so it processes the full dataset wherever it runs |
+| Cron Triggers: `0 4 * * *` (backup), `0 6 * * *` (housekeeping, sync), `*/5 * * * *` (outbox and import sweeps) | **No guarantee available**, for the same reason; Cloudflare says only that scheduled Workers "run on underutilized machines" | The backup cron reads every D1 table it backs up and every project repository, so it processes the full dataset wherever it runs |
 | Workers KV | **Durable storage covered by a jurisdiction set at creation; cached copies have no guarantee available**, because Cloudflare states KV data "can be cached outside the jurisdiction" | KV holds project and workspace registry records, short-lived OAuth state, and caches. See also the documentation conflict noted above |
 | Worker code and secrets at rest | **No guarantee available**, because Cloudflare states they "are deployed globally to all Cloudflare data centers" even under Regional Services | This includes `DEPLOY_SECRET_KEY`, `SSO_ENCRYPTION_SECRET`, `BACKUP_ENCRYPTION_SECRET` and the OAuth client secrets |
 | Outbound subrequests: OAuth, PostHog, BYOK LLM providers, deploy targets, webhooks, Git hosts | **No guarantee available**, because Regional Services "does not extend to outgoing subrequests" | Choose EU-hosted endpoints, or disable each one (step 7) |

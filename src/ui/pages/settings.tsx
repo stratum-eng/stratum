@@ -424,8 +424,7 @@ const GitHubConnectionCard: FC<{ connection: GitHubConnectionView }> = ({ connec
     <p class="settings-help">
       A pull request Stratum opens on GitHub is authored by the Stratum app unless the person
       promoting the change has connected their GitHub account here. Connected, the pull requests you
-      promote are opened as you, and so are the ones an agent you own promotes. Nobody else&rsquo;s
-      promotion is ever opened as you.
+      promote are opened as you. Nobody else&rsquo;s promotion is ever opened as you.
     </p>
     {connection.state === "connected" ? (
       <>
@@ -457,9 +456,9 @@ const GitHubConnectionCard: FC<{ connection: GitHubConnectionView }> = ({ connec
         </form>
         <p class="settings-help">
           Stratum keeps an authorization for your GitHub account, encrypted, and uses it for one
-          thing: opening the pull request when you or your agent promotes a change. Through it
-          Stratum can act as you only where the Stratum app is installed and you already have
-          access. You can disconnect at any time, here or in your GitHub settings.
+          thing: opening the pull request when you promote a change. Through it Stratum can act as
+          you only where the Stratum app is installed and you already have access. You can
+          disconnect at any time, here or in your GitHub settings.
         </p>
       </>
     ) : (
