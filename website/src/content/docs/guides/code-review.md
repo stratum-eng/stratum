@@ -196,8 +196,8 @@ can approve it themselves.
 To have your promotions opened as you, connect your GitHub account under
 **Settings → GitHub**. After that:
 
-- a pull request **you** promote is opened as you, whenever GitHub accepts
-  your authorization for it (the exceptions are listed below);
+- a pull request **you** promote is opened as you, unless one of the
+  exceptions listed below applies at that moment;
 - nobody else's promotion is ever opened as you. When a teammate promotes a
   change you opened, the pull request is theirs, or the app's if they have not
   connected.
@@ -212,10 +212,16 @@ access. The branch is still pushed by the app. Disconnect at any time from the
 same settings card, or by revoking the app in your GitHub settings; pull
 requests already opened as you stay yours.
 
-Stratum falls back to the app, and the promotion still succeeds, when you are
-not connected, when your authorization has lapsed (connect again), or when
-GitHub will not let you open a pull request on that repository. The promote
-response says which happened: see
+Stratum falls back to the app, and the promotion still succeeds, when:
+
+- you are not connected;
+- your authorization has lapsed or been revoked (connect again);
+- another promotion of yours is renewing your authorization at that same
+  moment, which lasts a few seconds;
+- your stored authorization cannot be read or renewed just then;
+- GitHub will not let you open a pull request on that repository.
+
+The promote response says which happened: see
 [Promote to a GitHub PR](/reference/endpoints/#promote-to-a-github-pr).
 
 The account you authorize must be the GitHub account you sign in to Stratum
