@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-11
+
+### Added
+- **A change can have a title and a description.** Give them when opening a
+  change (`title` and `description` on `POST /api/projects/{name}/changes`, on
+  the `stratum_create_change` MCP tool, and as `--title` / `--description` on
+  `stratum change create`), or set them later with `PATCH /api/changes/{id}` or
+  the new `stratum_update_change` MCP tool. The title heads the change page and
+  the changes list, and both become the pull request's title and body when the
+  change is promoted to GitHub. A change without a title is still headed by the
+  subject of its first commit.
+- **Mark a promoted change's pull request ready for review from Stratum.** A
+  promoted change opens a draft pull request, and taking it out of draft meant
+  going to GitHub. While the pull request is a draft, the change page's button
+  is now "Mark ready for review" (`POST /api/changes/{id}/github-pr/ready`); it
+  becomes "Open GitHub PR" once the pull request is ready. A change
+  records whether its pull request is a draft (`githubPrDraft`), and follows
+  along when that is changed on GitHub.
+
 ## [0.4.0] - 2026-11-10
 
 ### Added
@@ -1864,7 +1883,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes, GitHub import/sync, server-rendered web UI, email and GitHub OAuth authentication,
   API tokens, agent identities, and provenance tracking.
 
-[Unreleased]: https://github.com/stratum-eng/stratum/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/stratum-eng/stratum/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/stratum-eng/stratum/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/stratum-eng/stratum/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/stratum-eng/stratum/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/stratum-eng/stratum/compare/v0.1.0...v0.2.0
