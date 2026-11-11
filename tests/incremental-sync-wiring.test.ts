@@ -94,7 +94,7 @@ import { handleImportQueue } from "../src/queue/import-queue";
 import { processSyncJob as processFallbackSyncJob } from "../src/routes/projects";
 import { syncAllProjects } from "../src/routes/sync";
 import { importFromGitHub, syncFromGitHub } from "../src/storage/git-ops";
-import { updateImportStatus } from "../src/storage/imports";
+import { isImportCancelled, updateImportStatus } from "../src/storage/imports";
 import { pushMirrorMode } from "../src/storage/push-mirrors";
 import { writeSnapshotFromRepo } from "../src/storage/repo-snapshot";
 import { setProject } from "../src/storage/state";
@@ -388,6 +388,59 @@ describe("queue consumer sync jobs (webhook + manual sync)", () => {
         expect.anything(),
       );
       vi.mocked(pushMirrorMode).mockResolvedValue("layer");
+    });
+  });
+
+  describe("a sync job that ends without syncing", () => {
+    const abandoned = (env: ReturnType<typeof makeEnv>) =>
+      expect(settleSyncStatus).toHaveBeenCalledWith(
+        env.STATE,
+        "@test",
+        "repo",
+        { status: "abandoned" },
+        expect.anything(),
+      );
+
+    it("releases its claim when it was cancelled before it started", async () => {
+      projects.set("@test/repo", makeProject());
+      vi.mocked(isImportCancelled).mockResolvedValueOnce(true);
+      const env = makeEnv();
+      const msg = makeSyncMessage();
+      await handleImportQueue(makeBatch([msg]), env);
+      expect(syncFromGitHub).not.toHaveBeenCalled();
+      expect(msg.ack).toHaveBeenCalled();
+      abandoned(env);
+    });
+
+    it("releases its claim when it was cancelled while the sync was failing", async () => {
+      projects.set("@test/repo", makeProject());
+      vi.mocked(syncFromGitHub).mockResolvedValue({
+        success: false,
+        error: new AppError("clone interrupted", "GIT_ERROR", 500),
+      });
+      // Not cancelled when the job starts; cancelled by the time the sync returns.
+      vi.mocked(isImportCancelled).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+      const env = makeEnv();
+      const msg = makeSyncMessage();
+      await handleImportQueue(makeBatch([msg]), env);
+      expect(msg.ack).toHaveBeenCalled();
+      abandoned(env);
+      expect(settleSyncStatus).not.toHaveBeenCalledWith(
+        env.STATE,
+        "@test",
+        "repo",
+        expect.objectContaining({ status: "failed" }),
+        expect.anything(),
+      );
+    });
+
+    it("releases the claim when the project at that path is no longer the one it was queued for", async () => {
+      projects.set("@test/repo", makeProject({ id: "proj_other" }));
+      const env = makeEnv();
+      const msg = makeSyncMessage();
+      await handleImportQueue(makeBatch([msg]), env);
+      expect(syncFromGitHub).not.toHaveBeenCalled();
+      abandoned(env);
     });
   });
 

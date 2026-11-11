@@ -581,6 +581,9 @@ async function processSyncJob(
     // Verify project ID matches (security check)
     if (project.id !== projectId) {
       logger.error("Project ID mismatch", undefined, { expected: projectId, got: project.id });
+      // The claim was made by path, so it now sits on whichever project is at
+      // this path. Release it: that project did not ask for this sync.
+      await settleSyncStatus(env.STATE, namespace, slug, { status: "abandoned" }, logger);
       msg.ack();
       return;
     }
@@ -588,6 +591,7 @@ async function processSyncJob(
     // No-op if the owner is being erased (see processImportJob for rationale).
     if (await isTargetDeleting(env, project, logger)) {
       logger.info("Skipping sync for deleting owner", { namespace, slug });
+      await settleSyncStatus(env.STATE, namespace, slug, { status: "abandoned" }, logger);
       msg.ack();
       return;
     }
@@ -690,6 +694,7 @@ async function processSyncJob(
       // Check if it was cancelled during the operation
       if (await checkAndHandleCancellation(env, namespace, slug)) {
         await recordImportCancelled(env.DB, namespace, slug, logger);
+        await settleSyncStatus(env.STATE, namespace, slug, { status: "abandoned" }, logger);
         msg.ack();
         return;
       }
