@@ -595,6 +595,7 @@ async function processSyncJob(
     // Check cancellation before starting
     if (await checkAndHandleCancellation(env, namespace, slug)) {
       await recordImportCancelled(env.DB, namespace, slug, logger);
+      await settleSyncStatus(env.STATE, namespace, slug, { status: "abandoned" }, logger);
       msg.ack();
       return;
     }
@@ -613,6 +614,15 @@ async function processSyncJob(
     const mirrorMode = await pushMirrorMode(env.DB, logger, project.id);
     if (mirrorMode === "unknown") {
       logger.warn("Sync job: could not read the project's mirror state; retrying", { projectId });
+      if (isLastDelivery(msg)) {
+        await settleSyncStatus(
+          env.STATE,
+          namespace,
+          slug,
+          { status: "failed", error: "Sync gave up: the project's mirror state could not be read" },
+          logger,
+        );
+      }
       msg.retry();
       return;
     }
@@ -626,6 +636,10 @@ async function processSyncJob(
         logger,
         "Sync cancelled: the project now mirrors to GitHub and no longer syncs from it",
       );
+      // Release the claim too. Left in place it would outlive the mirror: were
+      // the mirror disabled again, pushes and manual syncs would stand aside
+      // for this job until the claim lapsed.
+      await settleSyncStatus(env.STATE, namespace, slug, { status: "abandoned" }, logger);
       msg.ack();
       return;
     }
@@ -851,6 +865,7 @@ async function processSyncJob(
       await updateImportStatus(env.DB, namespace, slug, "cancelled", logger, "Sync cancelled");
       await recordImportCancelled(env.DB, namespace, slug, logger);
       await deleteImportJob(env.DB, namespace, slug, logger);
+      await settleSyncStatus(env.STATE, namespace, slug, { status: "abandoned" }, logger);
     } else {
       // Handle failure with logging and metrics
       await handleImportFailure(env, {
@@ -886,6 +901,18 @@ async function processSyncJob(
         logger,
         `Sync failed: ${err.message}`,
       );
+      // While another delivery is coming the claim stays, so nothing starts a
+      // second sync beside the retry. After the last one nobody is left to
+      // clear it.
+      if (isLastDelivery(msg)) {
+        await settleSyncStatus(
+          env.STATE,
+          namespace,
+          slug,
+          { status: "failed", error: err.message },
+          logger,
+        );
+      }
     }
 
     msg.retry();
@@ -934,6 +961,19 @@ export async function handleImportQueue(
     });
     msg.ack();
   }
+}
+
+/**
+ * How many times the import queue delivers one message: the first delivery plus
+ * `max_retries = 3` for `stratum-imports` in `wrangler.toml`. A self-hoster who
+ * raises that only delays the moment a failing sync's claim is released; the
+ * claim's own time limit still applies.
+ */
+const SYNC_MAX_DELIVERIES = 4;
+
+/** Whether the queue will not deliver this message again after a retry. */
+function isLastDelivery(msg: { attempts?: number }): boolean {
+  return (msg.attempts ?? 1) >= SYNC_MAX_DELIVERIES;
 }
 
 /** Delivery attempts after which an issue-import page that keeps throwing fails its run. */

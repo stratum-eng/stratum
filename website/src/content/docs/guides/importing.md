@@ -127,6 +127,13 @@ object while a sync is active), or follow it live over SSE with
 `GET …/sync/stream` — the sync-status object is emitted every 2 seconds until
 the sync succeeds or fails, and the stream self-closes after 5 minutes.
 
+One sync runs at a time per project. While `lastSyncStatus` is `in_progress`,
+a push to the source and `POST …/sync` both stand aside; the latter answers
+`400` with "A sync is already in progress for this project". The sync clears
+that state when it finishes, fails for the last time, or is cancelled. A sync
+that never reports back cannot hold a project forever: an `in_progress` state
+older than 30 minutes is ignored, and the next push or `POST …/sync` runs.
+
 Enable automatic syncing with:
 
 ```bash

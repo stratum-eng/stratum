@@ -333,14 +333,20 @@ export function isSyncInProgress(
  * @param kv - STATE namespace
  * @param namespace - Project namespace
  * @param slug - Project slug
- * @param outcome - Success with the commit synced to, when known, or the failure
+ * @param outcome - Success with the commit synced to, when known; the failure;
+ *   or `abandoned` for a job dropped before it synced anything
  * @param logger - Logger
  */
 export async function settleSyncStatus(
   kv: KVNamespace,
   namespace: string,
   slug: string,
-  outcome: { status: "success"; commit?: string } | { status: "failed"; error: string },
+  outcome:
+    | { status: "success"; commit?: string }
+    | { status: "failed"; error: string }
+    // The job was dropped without syncing: cancelled, or the project stopped
+    // following its source. Nothing ran, so nothing is recorded but the release.
+    | { status: "abandoned" },
   logger: Logger,
 ): Promise<void> {
   try {
@@ -348,6 +354,16 @@ export async function settleSyncStatus(
     const existing = parseSyncStatus(await kv.get(statusKey));
     const now = new Date().toISOString();
     const succeeded = outcome.status === "success";
+    if (outcome.status === "abandoned") {
+      // Only release a claim that is there: an abandoned job has no result to
+      // put over whatever the last real sync recorded.
+      if (existing?.lastSyncStatus !== "in_progress") return;
+      await kv.put(
+        statusKey,
+        JSON.stringify({ ...existing, lastCheckedAt: now, lastSyncStatus: "idle" }),
+      );
+      return;
+    }
     const status: SyncStatus = {
       namespace,
       slug,

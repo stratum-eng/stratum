@@ -104,6 +104,34 @@ describe("settleSyncStatus", () => {
     expect((await statusOf(kv))?.lastSyncedCommit).toBe("abc123");
   });
 
+  it("releases the claim of a job that was dropped, and records no result", async () => {
+    const kv = makeFakeKV();
+    await settleSyncStatus(kv, "@acme", "api", { status: "success", commit: "abc123" }, logger);
+    const before = await statusOf(kv);
+    await setSyncInProgress(kv, "@acme", "api", logger);
+
+    await settleSyncStatus(kv, "@acme", "api", { status: "abandoned" }, logger);
+
+    const status = await statusOf(kv);
+    expect(isSyncInProgress(status)).toBe(false);
+    expect(status).toMatchObject({
+      lastSyncStatus: "idle",
+      lastSyncedCommit: "abc123",
+      lastSyncedAt: before?.lastSyncedAt,
+    });
+    expect(status?.lastSyncError).toBeUndefined();
+  });
+
+  it("leaves a finished sync's result alone when a dropped job reports after it", async () => {
+    const kv = makeFakeKV();
+    await settleSyncStatus(kv, "@acme", "api", { status: "failed", error: "diverged" }, logger);
+    await settleSyncStatus(kv, "@acme", "api", { status: "abandoned" }, logger);
+    expect(await statusOf(kv)).toMatchObject({
+      lastSyncStatus: "failed",
+      lastSyncError: "diverged",
+    });
+  });
+
   it("keeps the project's sync settings", async () => {
     const kv = makeFakeKV();
     await kv.put(

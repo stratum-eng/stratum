@@ -95,6 +95,7 @@ import { processSyncJob as processFallbackSyncJob } from "../src/routes/projects
 import { syncAllProjects } from "../src/routes/sync";
 import { importFromGitHub, syncFromGitHub } from "../src/storage/git-ops";
 import { updateImportStatus } from "../src/storage/imports";
+import { pushMirrorMode } from "../src/storage/push-mirrors";
 import { writeSnapshotFromRepo } from "../src/storage/repo-snapshot";
 import { setProject } from "../src/storage/state";
 import {
@@ -313,6 +314,81 @@ describe("queue consumer sync jobs (webhook + manual sync)", () => {
     expect(vi.mocked(setSyncInProgress).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(syncFromGitHub).mock.invocationCallOrder[0] ?? 0,
     );
+  });
+
+  describe("a sync job that throws", () => {
+    const delivery = (attempts: number) =>
+      Object.assign(makeSyncMessage(), { attempts }) as Message<SyncJobMessage>;
+
+    beforeEach(() => {
+      projects.set("@test/repo", makeProject());
+      vi.mocked(syncFromGitHub).mockRejectedValue(new Error("artifacts unreachable"));
+    });
+
+    it("keeps its claim while the queue will deliver it again", async () => {
+      const env = makeEnv();
+      const msg = delivery(1);
+      await handleImportQueue(makeBatch([msg]), env);
+      expect(msg.retry).toHaveBeenCalled();
+      expect(settleSyncStatus).not.toHaveBeenCalled();
+    });
+
+    it("releases its claim on the last delivery, when nothing else would", async () => {
+      const env = makeEnv();
+      const msg = delivery(4);
+      await handleImportQueue(makeBatch([msg]), env);
+      expect(msg.retry).toHaveBeenCalled();
+      expect(settleSyncStatus).toHaveBeenCalledWith(
+        env.STATE,
+        "@test",
+        "repo",
+        { status: "failed", error: "artifacts unreachable" },
+        expect.anything(),
+      );
+    });
+  });
+
+  describe("a sync job for a project whose mirror state has changed", () => {
+    beforeEach(() => {
+      projects.set("@test/repo", makeProject());
+    });
+
+    it("releases its claim when it is dropped because the project now mirrors to GitHub", async () => {
+      vi.mocked(pushMirrorMode).mockResolvedValueOnce("forge");
+      const env = makeEnv();
+      const msg = makeSyncMessage();
+      await handleImportQueue(makeBatch([msg]), env);
+      expect(syncFromGitHub).not.toHaveBeenCalled();
+      expect(msg.ack).toHaveBeenCalled();
+      expect(settleSyncStatus).toHaveBeenCalledWith(
+        env.STATE,
+        "@test",
+        "repo",
+        { status: "abandoned" },
+        expect.anything(),
+      );
+    });
+
+    it("releases its claim when the mirror state is still unreadable on the last delivery", async () => {
+      vi.mocked(pushMirrorMode).mockResolvedValue("unknown");
+      const env = makeEnv();
+      const early = Object.assign(makeSyncMessage(), { attempts: 2 }) as Message<SyncJobMessage>;
+      await handleImportQueue(makeBatch([early]), env);
+      expect(early.retry).toHaveBeenCalled();
+      expect(settleSyncStatus).not.toHaveBeenCalled();
+
+      const last = Object.assign(makeSyncMessage(), { attempts: 4 }) as Message<SyncJobMessage>;
+      await handleImportQueue(makeBatch([last]), env);
+      expect(last.retry).toHaveBeenCalled();
+      expect(settleSyncStatus).toHaveBeenCalledWith(
+        env.STATE,
+        "@test",
+        "repo",
+        expect.objectContaining({ status: "failed" }),
+        expect.anything(),
+      );
+      vi.mocked(pushMirrorMode).mockResolvedValue("layer");
+    });
   });
 
   it("clears the in-progress flag when a sync succeeds", async () => {
