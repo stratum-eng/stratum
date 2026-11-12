@@ -492,6 +492,11 @@ never overwrite a newer revision's result. Re-evaluating a change that is stuck
 in `evaluating` is allowed, and is the manual way to recover it. Without the
 queue the evaluation runs inline and answers `200` with the verdict.
 
+An inline evaluation records its results, its verdict and any approval
+dismissal together, or not at all. If the change was merged, rejected or
+promoted while it ran, nothing is recorded, the change keeps that decision, and
+the answer is `409 CHANGE_FINALIZED`.
+
 Re-evaluation runs under the **current** evaluator defaults, so a change that
 passed under older limits may fail. Approvals are dismissed when the evaluated
 base moves, not only when the tip does.

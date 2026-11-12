@@ -3112,6 +3112,11 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: >-
+            An inline evaluation finished after the change was merged, rejected
+            or promoted (`CHANGE_FINALIZED`); nothing was recorded. Also an
+            `external` change (`EXTERNAL_NOT_IMPORTED`).
         "500":
           $ref: "#/components/responses/InternalError"
 

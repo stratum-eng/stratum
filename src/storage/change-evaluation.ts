@@ -129,7 +129,7 @@ export interface FinalizeEvaluationRunResult {
  * the change's status and pins — as ONE D1 batch, every statement guarded by
  * the same-run predicate.
  *
- * One batch rather than three writes for the reason `dismissApprovalsAndUpdateStatus`
+ * One batch rather than three writes for the reason `recordReevaluation`
  * is one: a partial landing would record a round's rows with no verdict on the
  * change, or dismiss approvals for a re-pin that never happened. The guards sit
  * on the INSERTs and the DELETE as well as the UPDATE because the predicate has
