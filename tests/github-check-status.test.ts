@@ -187,6 +187,20 @@ describe("reportChecksToGitHub", () => {
       expect.objectContaining({ check: "a" }),
     );
   });
+
+  it("carries on when a status request throws", async () => {
+    setStatus.mockRejectedValueOnce(new Error("network down"));
+    await reportChecksToGitHub(env, logger, {
+      change,
+      project,
+      checks: [check("a", "passed"), check("b", "passed")],
+    });
+    expect(setStatus).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Failed to set a check status on GitHub",
+      expect.objectContaining({ check: "a", error: "network down" }),
+    );
+  });
 });
 
 describe("latestChecksOn", () => {

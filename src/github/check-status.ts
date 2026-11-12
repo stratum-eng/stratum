@@ -105,21 +105,29 @@ export async function reportChecksToGitHub(
       return;
     }
     const client = new GitHubClient(token.data.token, logger);
+    // Each check on its own: one refused or failed request must not keep the
+    // rest off the pull request.
     for (const check of checks) {
-      const result = await client.setStatus({
-        owner,
-        repo,
-        sha,
-        state: STATE_FOR[check.status],
-        description: statusDescription(check),
-        context: `${CHECK_STATUS_CONTEXT_PREFIX}${check.name}`,
-        ...(check.detailsUrl !== undefined ? { target_url: check.detailsUrl } : {}),
-      });
-      if (!result.success) {
+      let error: string | null;
+      try {
+        const result = await client.setStatus({
+          owner,
+          repo,
+          sha,
+          state: STATE_FOR[check.status],
+          description: statusDescription(check),
+          context: `${CHECK_STATUS_CONTEXT_PREFIX}${check.name}`,
+          ...(check.detailsUrl !== undefined ? { target_url: check.detailsUrl } : {}),
+        });
+        error = result.success ? null : result.error;
+      } catch (thrown) {
+        error = thrown instanceof Error ? thrown.message : String(thrown);
+      }
+      if (error !== null) {
         logger.warn("Failed to set a check status on GitHub", {
           changeId: change.id,
           check: check.name,
-          error: result.error,
+          error,
         });
       }
     }
