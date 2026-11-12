@@ -367,18 +367,22 @@ async function reportVerdictOnPromotion(
       // The stored row for the verdict and the comment id; the pull request
       // coordinates and pushed head from this promotion, in case recording
       // them failed (they are what GitHub has now either way).
-      await reportEvaluationToGitHub(
-        c.env,
-        { ...current, ...pullRequestFieldsOf(change) },
-        project,
-        evaluation,
-        logger,
-      );
-      // Checks that finished before the promotion had no PR to report to.
+      const published = { ...current, ...pullRequestFieldsOf(change) };
+      try {
+        await reportEvaluationToGitHub(c.env, published, project, evaluation, logger);
+      } catch (error) {
+        logger.warn("Posting the verdict to the promoted PR threw; posting its checks anyway", {
+          changeId: change.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      // Checks that finished before the promotion had no PR to report to, and
+      // nothing later is bound to post them, so a verdict failure must not
+      // cost them this chance.
       const checks = await listChecksForChange(c.env.DB, logger, change.id);
       if (checks.success) {
         await reportChecksToGitHub(c.env, logger, {
-          change: { ...current, ...pullRequestFieldsOf(change) },
+          change: published,
           project,
           checks: checks.data,
         });

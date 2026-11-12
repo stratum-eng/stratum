@@ -155,6 +155,15 @@ describe("reportChecksToGitHub", () => {
     expect(GitHubClient).not.toHaveBeenCalled();
   });
 
+  it("does nothing when the pull request's head was never recorded", async () => {
+    await reportChecksToGitHub(env, logger, {
+      change: { ...change, githubHeadSha: undefined },
+      project,
+      checks: [check("lint", "passed")],
+    });
+    expect(GitHubClient).not.toHaveBeenCalled();
+  });
+
   it("posts only the newest attempt of a re-run check", async () => {
     await reportChecksToGitHub(env, logger, {
       change,

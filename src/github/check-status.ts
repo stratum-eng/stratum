@@ -81,7 +81,9 @@ export async function reportChecksToGitHub(
   const projectRepo = resolveGitHubRepo(project);
   if (!projectRepo) return;
 
-  const sha = change.githubHeadSha ?? change.evaluatedSha;
+  // Only a head this deployment recorded pushing. Without one, nothing says
+  // the pull request is on the evaluated revision.
+  const sha = change.githubHeadSha;
   if (sha === undefined || sha !== change.evaluatedSha) return;
   const checks = latestChecksOn(args.checks, sha);
   if (checks.length === 0) return;
