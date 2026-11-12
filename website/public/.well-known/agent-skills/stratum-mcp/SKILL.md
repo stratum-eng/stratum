@@ -41,7 +41,7 @@ On an **agent token it returns 401, and that is the expected answer**, not a
 misconfiguration: the endpoint behind it is user-only. A 401 here means you are
 an agent, so plan for `stratum_review_change`, `stratum_merge_change`,
 `stratum_reject_change`, `stratum_update_issue`, `stratum_evaluate_change`,
-`stratum_rerun_check`, `stratum_promote_change`, project creation, import and sync, and org changes to
+`stratum_rerun_check`, project creation, import and sync, and org changes to
 be refused, and address
 projects by `namespace/slug` rather than through `stratum_list_projects`, which
 returns an empty list for you.
@@ -68,7 +68,7 @@ returns an empty list for you.
 | `stratum_evaluate_change` | Re-run a change's gates after pushing more commits; poll `stratum_get_change` while it is `evaluating`. User credentials only. |
 | `stratum_list_checks` | Read a change's check runs: per-job CI results the project's runner reports asynchronously. A required check blocks the merge until it is `passed`, so **poll this until every required check is terminal** before asking for a merge. Checks belong to one revision and start again after a re-evaluation. |
 | `stratum_rerun_check` | Re-run one check on the same revision (a flaky failure, a runner that never reported). Does not pick up new commits. User credentials only. |
-| `stratum_promote_change` | Open the GitHub PR for an accepted change. User credentials only. |
+| `stratum_promote_change` | Open the GitHub PR for an accepted change. Agent tokens may use it, unless the workspace's `.github/` differs from the project's or the change edits the merge-protection config: then it answers `PROMOTION_NEEDS_PERSON` to an agent token, a read-write scoped API token and an `mcp:write` OAuth connection alike (without write scope the answer is `TOKEN_SCOPE_INSUFFICIENT` first), and you ask a person to promote it on the change page. An agent can only open a draft: `draft: false` gets the same answer |
 | `stratum_create_project`, `stratum_import_project` | Create a project, or import one from GitHub/GitLab/Bitbucket — into your namespace or, with `org`, an organization you can write to. User credentials only. |
 | `stratum_get_import_status`, `stratum_get_sync_status` | Follow an import, or read an imported project's sync state. Needs read access to the project (write access while an import is unfinished); agent tokens may use them. |
 | `stratum_sync_project` | Pull new commits from an imported project's source. User credentials only. |
@@ -85,6 +85,8 @@ returns an empty list for you.
 6. If a gate failed, fix it and go back to step 4. Do not retry the merge.
 7. When green, hand it to a human for review. `stratum_review_change` will refuse
    an agent token, by design; leave your notes with `stratum_comment_change`.
+   On a project that reviews on GitHub, `stratum_promote_change` opens the pull
+   request for the accepted change; you may call it yourself.
 8. After a human approves, `stratum_merge_change`.
 
 ## Constraints to respect

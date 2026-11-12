@@ -4822,6 +4822,52 @@ export async function getDiffBetweenRepos(
  * the file — which is why a consumer that rebuilds a tree from this checks the
  * result against the tree id it was given.
  */
+/**
+ * Whether one top-level entry of the tree (a file, a directory, a symlink)
+ * differs between a workspace's tip and its project's.
+ *
+ * Compared as git objects: a directory's oid covers everything beneath it, so
+ * equal oids and modes mean nothing under `name` differs, in any file, of any
+ * type, however it is named. Nothing is recovered from diff text and no blob
+ * has to be readable, which is what a check that guards something needs; the
+ * unified diff skips files it cannot read as text.
+ *
+ * Against the project's tip, not the workspace's fork point: a workspace that
+ * is behind can differ here through no change of its own, and reports that it
+ * differs. For a guard that is the safe direction.
+ */
+export async function rootEntryDiffers(
+  baseRemote: string,
+  baseToken: string,
+  workspaceRemote: string,
+  workspaceToken: string,
+  logger: Logger,
+  name: string,
+  branch = "main",
+): Promise<Result<{ differs: boolean; workspaceOid: string }, AppError>> {
+  const tipOnly = { ref: branch, depth: 1, noCheckout: true };
+  const workspaceClone = await cloneRepo(workspaceRemote, workspaceToken, logger, tipOnly);
+  if (!workspaceClone.success) return err(workspaceClone.error);
+  const baseClone = await cloneRepo(baseRemote, baseToken, logger, tipOnly);
+  if (!baseClone.success) return err(baseClone.error);
+
+  const entryAt = async (fs: NodeFS) => {
+    const tip = await git.resolveRef({ fs, dir: DIR, ref: branch });
+    const { tree } = await git.readTree({ fs, dir: DIR, oid: tip });
+    const entry = tree.find((candidate) => candidate.path === name);
+    return { tip, entry: entry ? `${entry.mode} ${entry.oid}` : null };
+  };
+  const read = await fromPromise(
+    Promise.all([entryAt(workspaceClone.data.fs), entryAt(baseClone.data.fs)]),
+  );
+  if (!read.success) {
+    logger.error("Failed to read a root tree entry", read.error, { name, branch });
+    return err(new AppError(`Failed to read ${name} from the repository`, "GIT_ERROR", 500));
+  }
+  const [workspace, base] = read.data;
+  return ok({ differs: workspace.entry !== base.entry, workspaceOid: workspace.tip });
+}
+
 export function buildUnifiedDiff(
   baseFiles: Map<string, string>,
   workspaceFiles: Map<string, string>,

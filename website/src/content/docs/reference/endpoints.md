@@ -670,7 +670,39 @@ requests share the per-address anonymous rate limit.
 ### Promote to a GitHub PR
 `POST /api/changes/{id}/github-pr`
 
-Users only. The change must be `accepted` (or already promoted), and the project
+Users and agents, with write access to the project. An agent may promote because
+a change can only be promoted once its gates have passed, and whether the pull
+request merges is still decided on GitHub; `promotedBy` records the agent's id.
+An agent can only open a **draft**: `"draft": false` from an agent is refused
+with `403 PROMOTION_NEEDS_PERSON`, because asking for review is a person's
+decision (see [Mark the PR ready for review](#mark-the-pr-ready-for-review)).
+
+Two kinds of change have to be promoted by a person. For them, three kinds of
+credential get `403 PROMOTION_NEEDS_PERSON`: an agent token, a scoped API
+token, and an OAuth grant (an MCP client, the CLI) acting for a user, since
+those are the credentials an agent is handed. A signed-in browser session
+counts as the person, and so does the legacy account-wide `stratum_user_` key,
+which is not scoped and predates delegation. All of this is about credentials
+with write scope: a read-only API token or an `mcp:read` grant never gets this
+far, and is refused with `403 TOKEN_SCOPE_INSUFFICIENT` like any other write.
+
+- **A workspace whose `.github/` differs from the project's.** A pull request
+  from a branch of the repository itself runs that branch's workflow files with
+  the repository's secrets, so a changed workflow would run as written the
+  moment the pull request opened. The whole directory is compared as git
+  objects against the project's current default branch, so nothing beneath it
+  can differ unnoticed. A workspace that is behind the project can differ
+  through no change of its own; bring it up to date and evaluate again.
+- **A change to the merge-protection config** (`.stratum/policy.yaml`,
+  `stratum.config.json`), which needs a human approval to merge.
+
+The same answer comes back if the repositories cannot be read to check, or the
+change has no evaluated revision on record. This guard covers workflow *files*
+only: your existing workflows still run on a promoted pull request, with
+whatever secrets they expose to pull requests, and they run the code the agent
+wrote. Scope those secrets with that in mind.
+
+The change must be `accepted` (or already promoted), and the project
 must be connected to GitHub with a configured token. Creates a PR — **draft by
 default** — from branch `stratum/{changeId}` and marks the change `promoted`.
 
@@ -698,7 +730,8 @@ installation lookup or token minting failed. The last case is logged as a
 configuration is missing.
 
 **Who the PR is opened as.** The branch is always pushed with the credential
-above. The PR itself is opened as the person promoting when they have
+above. The PR itself is opened as the person promoting, or as the owner of the
+agent promoting, when that person has
 [connected their GitHub account](#connect-a-github-account), so
 that GitHub records them as its author, and with the instance's own credential
 otherwise (reported as `app`). The response

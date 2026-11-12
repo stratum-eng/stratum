@@ -152,6 +152,7 @@ import {
   readRepoFiles,
   resolveConflict,
   revertToCommit,
+  rootEntryDiffers,
 } from "../src/storage/git-ops";
 import { MemoryFS } from "../src/storage/memory-fs";
 import type { Logger } from "../src/utils/logger";
@@ -892,6 +893,83 @@ describe("getDiffBetweenRepos", () => {
       "https://r/fork.git",
       "wtok",
       logger,
+    );
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("rootEntryDiffers", () => {
+  const compare = (base: Record<string, string>, fork: Record<string, string>) => {
+    h.servers.set("https://r/base.git", { branch: "trunk", commits: [base] });
+    h.servers.set("https://r/fork.git", { branch: "trunk", commits: [fork] });
+    return rootEntryDiffers(
+      "https://r/base.git",
+      "btok",
+      "https://r/fork.git",
+      "wtok",
+      logger,
+      ".github",
+      "trunk",
+    );
+  };
+  const workflow = { ".github/workflows/ci.yml": "on: push\n", "src/a.ts": "a\n" };
+
+  it("reports no difference when only other files changed", async () => {
+    const result = await compare(workflow, { ...workflow, "src/a.ts": "changed\n" });
+    expect(result.success && result.data.differs).toBe(false);
+  });
+
+  it("reports a file changed anywhere beneath the entry, however deep", async () => {
+    const result = await compare(workflow, {
+      ...workflow,
+      ".github/workflows/ci.yml": "on: pull_request_target\n",
+    });
+    expect(result.success && result.data.differs).toBe(true);
+  });
+
+  it("reports a file added beneath it, and the entry appearing or disappearing", async () => {
+    const added = await compare(workflow, { ...workflow, ".github/actions/x/action.yml": "x\n" });
+    expect(added.success && added.data.differs).toBe(true);
+
+    const appeared = await compare({ "src/a.ts": "a\n" }, workflow);
+    expect(appeared.success && appeared.data.differs).toBe(true);
+
+    const gone = await compare(workflow, { "src/a.ts": "a\n" });
+    expect(gone.success && gone.data.differs).toBe(true);
+  });
+
+  it("treats the entry being absent on both sides as no difference", async () => {
+    const result = await compare({ "src/a.ts": "a\n" }, { "src/a.ts": "b\n" });
+    expect(result.success && result.data.differs).toBe(false);
+  });
+
+  it("is not set off by a same-named directory further down the tree", async () => {
+    const result = await compare(workflow, { ...workflow, "docs/.github/notes.md": "n\n" });
+    expect(result.success && result.data.differs).toBe(false);
+  });
+
+  it("returns the workspace tip it compared, and reads no file contents", async () => {
+    const fork = { ...workflow, "src/a.ts": "changed\n" };
+    const result = await compare(workflow, fork);
+    const [tip] = await precomputeShas({ branch: "trunk", commits: [fork] });
+    expect(result.success && result.data.workspaceOid).toBe(tip);
+    expect(h.calls.readBlob).toEqual([]);
+    expect(h.calls.clone).toEqual([
+      expect.objectContaining({ url: "https://r/fork.git", depth: 1, noCheckout: true }),
+      expect.objectContaining({ url: "https://r/base.git", depth: 1, noCheckout: true }),
+    ]);
+  });
+
+  it("fails when a side cannot be cloned, instead of reporting no difference", async () => {
+    h.servers.set("https://r/base.git", { branch: "trunk", commits: [workflow] });
+    const result = await rootEntryDiffers(
+      "https://r/base.git",
+      "btok",
+      "https://r/missing.git",
+      "wtok",
+      logger,
+      ".github",
+      "trunk",
     );
     expect(result.success).toBe(false);
   });

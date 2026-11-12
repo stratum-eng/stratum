@@ -23,12 +23,19 @@ For programmatic access:
   read, fork workspaces, commit, open changes, comment, and open issues — but
   every **deciding** endpoint requires a user identity and refuses an agent
   token: review verdicts (approve and request-changes alike), merge, reject,
-  re-evaluate, GitHub PR promotion, issue editing/closing, approving a gated
+  re-evaluate, marking a pull request ready, issue editing/closing, approving a gated
   deployment, and managing a project's deploy secrets — the secret routes refuse
   an agent outright, including one whose *owner* is a project admin, because
   deploy credentials are the one thing an agent is never trusted with. Retrying
   an already-finished deployment is not a deciding endpoint and *is* open to an
-  agent with write access. Session-only
+  agent with write access. Neither is promoting an accepted change to a GitHub
+  pull request (`POST /api/changes/{id}/github-pr`): an agent with write access
+  may, as a draft only, except for a change whose workspace `.github/` differs
+  from the project's or that edits merge-protection configuration, which
+  answers `403 PROMOTION_NEEDS_PERSON` to an agent token, a read-write scoped
+  API token and an `mcp:write` OAuth grant alike (a read-only token or an
+  `mcp:read` grant is refused earlier, with `TOKEN_SCOPE_INSUFFICIENT`).
+  Session-only
   endpoints (token management) refuse agent and scoped tokens alike — the one
   exception is `rotate-token`, [below](#the-legacy-token). Revoke one by
   deleting the agent (settings UI, or `DELETE /api/agents/{id}`).

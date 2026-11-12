@@ -46,6 +46,12 @@ vi.mock("../src/storage/changes", () => ({
   }),
 }));
 
+// Real behaviour unless a test stands in a scoped token: the promotion guard
+// treats one as a delegated credential, not a person.
+vi.mock("../src/storage/api-tokens", async (importActual) => {
+  const actual = await importActual<typeof import("../src/storage/api-tokens")>();
+  return { ...actual, resolveApiToken: vi.fn(actual.resolveApiToken) };
+});
 vi.mock("../src/storage/git-ops", async (importActual) => {
   const actual = await importActual<typeof import("../src/storage/git-ops")>();
   return {
@@ -58,6 +64,7 @@ vi.mock("../src/storage/git-ops", async (importActual) => {
     batchMergeStagedTrees: vi.fn(),
     pushBranchToRemote: vi.fn(async () => ({ success: true, data: undefined })),
     resolveLocalTip: vi.fn(),
+    rootEntryDiffers: vi.fn(),
   };
 });
 
@@ -247,6 +254,7 @@ import {
   mergeWorkspaceIntoProject,
   pushBranchToRemote,
   resolveLocalTip,
+  rootEntryDiffers,
 } from "../src/storage/git-ops";
 import { packObjects } from "../src/storage/object-loader";
 import { recordProvenance } from "../src/storage/provenance";
@@ -289,6 +297,7 @@ function request(
   });
 }
 
+import { resolveApiToken } from "../src/storage/api-tokens";
 import { AppError, NotFoundError } from "../src/utils/errors";
 
 const mockProject = {
@@ -2792,6 +2801,251 @@ describe("POST /api/changes/:id/github-pr", () => {
     });
   });
 
+  describe("as an agent", () => {
+    const agent = (ownerId: string) => ({
+      success: true as const,
+      data: {
+        id: "agent_test",
+        ownerId,
+        name: "test-agent",
+        tokenHash: "hash",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    const evaluated: Change = { ...acceptedChange, evaluatedSha: "sha-evaluated" };
+    const githubDir = (differs: boolean, workspaceOid = "sha-evaluated") => ({
+      success: true as const,
+      data: { differs, workspaceOid },
+    });
+    const promoteAsAgent = () =>
+      app.fetch(request("POST", "/api/changes/chg_abc123/github-pr", {}, AGENT_AUTH), env);
+    const refusal = async (res: Response) => {
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { code: string; error: string };
+      expect(body.code).toBe("PROMOTION_NEEDS_PERSON");
+      // Nothing reached GitHub.
+      expect(pushBranchToRemote).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      return body.error;
+    };
+
+    beforeEach(() => {
+      vi.mocked(getAgentByToken).mockResolvedValue(agent("user_test"));
+      vi.mocked(getChange).mockResolvedValue({ success: true, data: evaluated });
+      vi.mocked(resolveLocalTip).mockResolvedValue({ success: true, data: "sha-evaluated" });
+      vi.mocked(rootEntryDiffers).mockResolvedValue(githubDir(false));
+    });
+
+    it("has its pull request opened as its owner, when the owner has connected GitHub", async () => {
+      vi.mocked(resolvePrAuthor).mockResolvedValueOnce({
+        kind: "user",
+        userId: "user_test",
+        githubLogin: "tess",
+        token: "ghu_tess",
+      });
+      const res = await promoteAsAgent();
+      expect(res.status).toBe(200);
+      // The owner, not the agent, is whose connection is looked for.
+      expect(resolvePrAuthor).toHaveBeenLastCalledWith(env, "user_test", expect.anything());
+      expect(
+        new Headers((fetchMock.mock.calls[0]?.[1] as RequestInit).headers).get("authorization"),
+      ).toBe("Bearer ghu_tess");
+      const body = (await res.json()) as { github: Record<string, unknown> };
+      expect(body.github.openedAs).toBe("user");
+    });
+
+    it("cannot open a pull request that is not a draft", async () => {
+      const res = await app.fetch(
+        request("POST", "/api/changes/chg_abc123/github-pr", { draft: false }, AGENT_AUTH),
+        env,
+      );
+      expect(await refusal(res)).toContain("draft");
+    });
+
+    it("opens a draft when it asks for one, or says nothing", async () => {
+      for (const body of [{}, { draft: true }]) {
+        fetchMock.mockClear();
+        const res = await app.fetch(
+          request("POST", "/api/changes/chg_abc123/github-pr", body, AGENT_AUTH),
+          env,
+        );
+        expect(res.status).toBe(200);
+        const sent = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+        expect(sent.draft).toBe(true);
+      }
+    });
+
+    it("is recorded as the promoter when it re-pushes to a pull request that already exists", async () => {
+      vi.mocked(getChange).mockResolvedValue({
+        success: true,
+        data: {
+          ...evaluated,
+          githubOwner: "acme",
+          githubRepo: "widgets",
+          githubBranch: "stratum/chg_abc123",
+          githubPrNumber: 42,
+          githubPrUrl: "https://github.com/acme/widgets/pull/42",
+          githubPrState: "open",
+        },
+      });
+
+      const res = await promoteAsAgent();
+
+      expect(res.status).toBe(200);
+      // No new pull request: the stored one was reused.
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(updateChangeStatus).toHaveBeenCalledWith(
+        env.DB,
+        expect.anything(),
+        "chg_abc123",
+        "promoted",
+        { githubHeadSha: "sha-evaluated", promotedBy: "agent_test" },
+      );
+    });
+
+    it("promotes an accepted change and is recorded as the one who did", async () => {
+      const res = await promoteAsAgent();
+
+      expect(res.status).toBe(200);
+      expect(pushBranchToRemote).toHaveBeenCalled();
+      expect(updateChangeStatus).toHaveBeenCalledWith(
+        env.DB,
+        expect.anything(),
+        "chg_abc123",
+        "promoted",
+        // The agent, not its owner.
+        expect.objectContaining({ promotedBy: "agent_test" }),
+      );
+      // The whole .github entry is compared, on the project's own branch.
+      expect(rootEntryDiffers).toHaveBeenCalledWith(
+        githubProject.remote,
+        "artifacts-token",
+        mockWorkspace.remote,
+        "artifacts-token",
+        expect.anything(),
+        ".github",
+        "develop",
+      );
+    });
+
+    it("cannot promote a change the gates have not accepted", async () => {
+      vi.mocked(getChange).mockResolvedValue({
+        success: true,
+        data: { ...evaluated, status: "needs_changes" },
+      });
+
+      const res = await promoteAsAgent();
+
+      expect(res.status).toBe(400);
+      expect(pushBranchToRemote).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("is refused when its owner cannot write to the project", async () => {
+      vi.mocked(getAgentByToken).mockResolvedValue(agent("user_other"));
+
+      const res = await promoteAsAgent();
+
+      expect(res.status).toBe(403);
+      expect(pushBranchToRemote).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("cannot promote when .github differs: its workflows would run with the repo's secrets", async () => {
+      vi.mocked(rootEntryDiffers).mockResolvedValue(githubDir(true));
+
+      const why = await refusal(await promoteAsAgent());
+
+      expect(why).toContain(".github/");
+      expect(why).toContain("signed in on the change page");
+      // Says what to do when the cause is a stale workspace rather than an edit.
+      expect(why).toContain("bring it up to date");
+    });
+
+    it("cannot promote a change to the project's merge-protection config", async () => {
+      vi.mocked(getChange).mockResolvedValue({
+        success: true,
+        data: { ...evaluated, touchesProtectedConfig: true },
+      });
+
+      expect(await refusal(await promoteAsAgent())).toContain("merge-protection config");
+    });
+
+    it("is refused when the repositories cannot be read to check", async () => {
+      vi.mocked(rootEntryDiffers).mockResolvedValue({
+        success: false,
+        error: new AppError("clone failed", "GIT_ERROR", 500),
+      });
+
+      expect(await refusal(await promoteAsAgent())).toContain("could not be checked");
+    });
+
+    it("answers 409 STALE_WORKSPACE when the workspace advanced while being checked", async () => {
+      // Not PROMOTION_NEEDS_PERSON: a person cannot fix this, re-evaluating does.
+      vi.mocked(rootEntryDiffers).mockResolvedValue(githubDir(false, "sha-newer"));
+
+      const res = await promoteAsAgent();
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        code: "STALE_WORKSPACE",
+        evaluatedSha: "sha-evaluated",
+        currentTip: "sha-newer",
+      });
+      expect(pushBranchToRemote).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("is refused on a change with no evaluated revision on record", async () => {
+      vi.mocked(getChange).mockResolvedValue({ success: true, data: acceptedChange });
+
+      await refusal(await promoteAsAgent());
+    });
+
+    it("holds a scoped API token acting for a user to the same rule", async () => {
+      // A token or an OAuth grant acts for a person but is what an agent is
+      // handed, so it is not "a person" here any more than it is for approvals.
+      vi.mocked(resolveApiToken).mockResolvedValueOnce({
+        success: true,
+        data: {
+          user: {
+            id: "user_test",
+            email: "test@example.com",
+            username: "test",
+            tokenHash: "hash",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+          scope: "read_write",
+          binding: { kind: "unbound" },
+          tokenId: "tok_scoped",
+        },
+      } as Awaited<ReturnType<typeof resolveApiToken>>);
+      vi.mocked(rootEntryDiffers).mockResolvedValue(githubDir(true));
+      const scoped = { Authorization: "Bearer stratum_user_scopedtoken0000000000000000" };
+
+      const res = await app.fetch(
+        request("POST", "/api/changes/chg_abc123/github-pr", {}, scoped),
+        env,
+      );
+
+      await refusal(res);
+    });
+
+    it("leaves a person free to promote a change under .github", async () => {
+      vi.mocked(rootEntryDiffers).mockResolvedValue(githubDir(true));
+
+      expect((await promote()).status).toBe(200);
+      // A person's promotion is not put through the check at all.
+      expect(rootEntryDiffers).not.toHaveBeenCalled();
+    });
+  });
+
+  it("refuses a caller with no credential", async () => {
+    const res = await app.fetch(request("POST", "/api/changes/chg_abc123/github-pr", {}), env);
+    expect(res.status).toBe(401);
+    expect(pushBranchToRemote).not.toHaveBeenCalled();
+  });
+
   // #412: a re-evaluation began while the branch was being pushed, so the
   // `promoted` write is held back. The PR exists on GitHub either way.
   it("keeps the PR link and answers 409 when a pending run holds the promotion back", async () => {
@@ -3563,7 +3817,7 @@ describe("POST /api/changes/:id/github-pr", () => {
       expect.anything(),
       "chg_abc123",
       "promoted",
-      { githubHeadSha: "sha-second" },
+      { githubHeadSha: "sha-second", promotedBy: "user_test" },
     );
     // Only the sha: re-promotion is not treated as a fresh promotion event, so
     // promoted_at/promoted_by are deliberately left alone.

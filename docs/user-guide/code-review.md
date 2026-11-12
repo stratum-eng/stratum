@@ -195,12 +195,14 @@ To have your promotions opened as you, connect your GitHub account under
 
 - a pull request **you** promote is opened as you, unless one of the
   exceptions listed below applies at that moment;
+- so is a pull request **an agent you own** promotes, with the same
+  exceptions, since you are the person answerable for that agent;
 - nobody else's promotion is ever opened as you. When a teammate promotes a
   change you opened, the pull request is theirs, or the instance's if they have
   not connected.
 
 GitHub then applies its own rules to you as the author. In particular you
-cannot approve your own pull request.
+cannot approve your own pull request, including one your agent promoted.
 
 Connecting stores an authorization for your GitHub account, encrypted. Stratum
 uses it for one thing, opening the pull request at promotion, and through it
