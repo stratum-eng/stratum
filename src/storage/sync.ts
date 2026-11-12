@@ -288,6 +288,108 @@ export async function updateProjectSyncError(
 }
 
 /**
+ * How long a sync may claim to be running before the claim is ignored.
+ *
+ * "In progress" is written when a sync is queued and cleared when its job
+ * reports back. A job that never reports back (it was cancelled, its project's
+ * owner was being erased, or the Worker running it was killed) would otherwise
+ * leave the flag set for good, and the flag is what makes a pushed commit and a
+ * manual sync both stand aside: one lost job stopped a project following its
+ * source until someone edited KV by hand. Longer than a queue consumer may run
+ * (15 minutes), and the job claims again when it starts, so time spent waiting
+ * in the queue does not count against a sync that is really running.
+ */
+export const SYNC_IN_PROGRESS_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Is a sync of this project running now, as far as its status record can say?
+ *
+ * @param status - The project's sync status, if it has one
+ * @param nowMs - The current time; a parameter so tests can move it
+ * @returns True only for an in-progress record written within the TTL
+ */
+export function isSyncInProgress(
+  status: Pick<SyncStatus, "lastSyncStatus" | "lastCheckedAt"> | null | undefined,
+  nowMs: number = Date.now(),
+): boolean {
+  if (status?.lastSyncStatus !== "in_progress") return false;
+  const claimedAt = Date.parse(status.lastCheckedAt ?? "");
+  // No readable time means no way to tell a live claim from a dead one. Treat
+  // it as dead: a doubled sync is idempotent, a project that never syncs again
+  // is not.
+  if (Number.isNaN(claimedAt)) return false;
+  return nowMs - claimedAt < SYNC_IN_PROGRESS_TTL_MS;
+}
+
+/**
+ * Records how a queued sync ended in the project's sync status, which is where
+ * "in progress" was written when it started. The job also updates the project
+ * entry; without this the two disagree, and the stale "in progress" here is the
+ * one the next sync consults.
+ *
+ * Best effort: a failed write is logged, and {@link isSyncInProgress} lets the
+ * claim lapse by itself.
+ *
+ * @param kv - STATE namespace
+ * @param namespace - Project namespace
+ * @param slug - Project slug
+ * @param outcome - Success with the commit synced to, when known; the failure;
+ *   or `abandoned` for a job dropped before it synced anything
+ * @param logger - Logger
+ */
+export async function settleSyncStatus(
+  kv: KVNamespace,
+  namespace: string,
+  slug: string,
+  outcome:
+    | { status: "success"; commit?: string }
+    | { status: "failed"; error: string }
+    // The job was dropped without syncing: cancelled, or the project stopped
+    // following its source. Nothing ran, so nothing is recorded but the release.
+    | { status: "abandoned" },
+  logger: Logger,
+): Promise<void> {
+  try {
+    const statusKey = syncStatusKey(namespace, slug);
+    const existing = parseSyncStatus(await kv.get(statusKey));
+    const now = new Date().toISOString();
+    const succeeded = outcome.status === "success";
+    if (outcome.status === "abandoned") {
+      // Only release a claim that is there: an abandoned job has no result to
+      // put over whatever the last real sync recorded.
+      if (existing?.lastSyncStatus !== "in_progress") return;
+      await kv.put(
+        statusKey,
+        JSON.stringify({ ...existing, lastCheckedAt: now, lastSyncStatus: "idle" }),
+      );
+      return;
+    }
+    const status: SyncStatus = {
+      namespace,
+      slug,
+      lastCheckedAt: now,
+      lastSyncedAt: succeeded ? now : existing?.lastSyncedAt,
+      lastSyncedCommit: succeeded
+        ? (outcome.commit ?? existing?.lastSyncedCommit)
+        : existing?.lastSyncedCommit,
+      lastSyncStatus: outcome.status,
+      ...(succeeded ? {} : { lastSyncError: outcome.error }),
+      hasUpdates: succeeded ? false : existing?.hasUpdates || false,
+      commitsBehind: succeeded ? 0 : existing?.commitsBehind,
+      autoSyncEnabled: existing?.autoSyncEnabled || false,
+      syncFrequency: existing?.syncFrequency,
+    };
+    await kv.put(statusKey, JSON.stringify(status));
+  } catch (error) {
+    logger.warn("Could not record how a sync ended; its in-progress flag will lapse", {
+      namespace,
+      slug,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
  * Set sync in progress status
  * Marks the project as currently syncing
  */

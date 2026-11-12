@@ -21,7 +21,7 @@ import {
 import { createImportJob, getLatestImportDepth } from "../storage/imports";
 import { layerModeAllowed, pushMirrorMode } from "../storage/push-mirrors";
 import { getWorkspace } from "../storage/state";
-import { getSyncStatus, setSyncInProgress } from "../storage/sync";
+import { getSyncStatus, isSyncInProgress, setSyncInProgress } from "../storage/sync";
 import { type Env, projectDefaultBranch } from "../types";
 import { type Logger, createLogger } from "../utils/logger";
 import { DEFAULT_CLONE_DEPTH } from "../utils/validation";
@@ -154,7 +154,7 @@ async function handlePush(
 
   // De-duplicate: skip if a sync is already running for this project.
   const syncStatusResult = await getSyncStatus(env.STATE, project.namespace, project.slug, logger);
-  if (syncStatusResult.success && syncStatusResult.data?.lastSyncStatus === "in_progress") {
+  if (syncStatusResult.success && isSyncInProgress(syncStatusResult.data)) {
     logger.info("Sync already in progress, skipping webhook-triggered sync", {
       projectId: project.id,
     });

@@ -65,6 +65,8 @@ vi.mock("../src/storage/state", () => ({
 
 vi.mock("../src/storage/sync", () => ({
   recordSyncHistory: vi.fn(async () => {}),
+  settleSyncStatus: vi.fn(async () => {}),
+  setSyncInProgress: vi.fn(async () => ({ success: true, data: undefined })),
   getProjectProvider: vi.fn(() => null),
   getProjectSourceUrl: vi.fn((project: ProjectEntry) => project.sourceUrl || project.githubUrl),
   // Daily cron gates on an update check first; default to "updates available"
@@ -92,11 +94,14 @@ import { handleImportQueue } from "../src/queue/import-queue";
 import { processSyncJob as processFallbackSyncJob } from "../src/routes/projects";
 import { syncAllProjects } from "../src/routes/sync";
 import { importFromGitHub, syncFromGitHub } from "../src/storage/git-ops";
-import { updateImportStatus } from "../src/storage/imports";
+import { isImportCancelled, updateImportStatus } from "../src/storage/imports";
+import { pushMirrorMode } from "../src/storage/push-mirrors";
 import { writeSnapshotFromRepo } from "../src/storage/repo-snapshot";
 import { setProject } from "../src/storage/state";
 import {
   recordSyncHistory,
+  setSyncInProgress,
+  settleSyncStatus,
   updateProjectAfterSync,
   updateProjectSyncError,
 } from "../src/storage/sync";
@@ -186,6 +191,8 @@ beforeEach(() => {
   vi.mocked(syncFromGitHub).mockReset();
   vi.mocked(setProject).mockClear();
   vi.mocked(recordSyncHistory).mockClear();
+  vi.mocked(settleSyncStatus).mockClear();
+  vi.mocked(setSyncInProgress).mockClear();
   vi.mocked(writeSnapshotFromRepo).mockClear();
   vi.mocked(updateImportStatus).mockClear();
   vi.mocked(updateProjectSyncError).mockClear();
@@ -282,8 +289,176 @@ describe("queue consumer sync jobs (webhook + manual sync)", () => {
       expect.objectContaining({ status: "failed" }),
       expect.anything(),
     );
+    // The in-progress flag set when the job was queued is cleared, or every
+    // later push and manual sync would stand aside for this one.
+    expect(settleSyncStatus).toHaveBeenCalledWith(
+      env.STATE,
+      "@test",
+      "repo",
+      { status: "failed", error: expect.stringContaining("diverged") },
+      expect.anything(),
+    );
     expect(msg.ack).toHaveBeenCalled();
     expect(msg.retry).not.toHaveBeenCalled();
+  });
+
+  it("claims the sync again when the job starts, before it does any work", async () => {
+    projects.set("@test/repo", makeProject());
+    vi.mocked(syncFromGitHub).mockResolvedValue({
+      success: true,
+      data: { status: "fast-forwarded", commit: "newsha" },
+    });
+    const env = makeEnv();
+    await handleImportQueue(makeBatch([makeSyncMessage()]), env);
+    expect(setSyncInProgress).toHaveBeenCalledWith(env.STATE, "@test", "repo", expect.anything());
+    expect(vi.mocked(setSyncInProgress).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(syncFromGitHub).mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  describe("a sync job that throws", () => {
+    const delivery = (attempts: number) =>
+      Object.assign(makeSyncMessage(), { attempts }) as Message<SyncJobMessage>;
+
+    beforeEach(() => {
+      projects.set("@test/repo", makeProject());
+      vi.mocked(syncFromGitHub).mockRejectedValue(new Error("artifacts unreachable"));
+    });
+
+    it("keeps its claim while the queue will deliver it again", async () => {
+      const env = makeEnv();
+      const msg = delivery(1);
+      await handleImportQueue(makeBatch([msg]), env);
+      expect(msg.retry).toHaveBeenCalled();
+      expect(settleSyncStatus).not.toHaveBeenCalled();
+    });
+
+    it("releases its claim on the last delivery, when nothing else would", async () => {
+      const env = makeEnv();
+      const msg = delivery(4);
+      await handleImportQueue(makeBatch([msg]), env);
+      expect(msg.retry).toHaveBeenCalled();
+      expect(settleSyncStatus).toHaveBeenCalledWith(
+        env.STATE,
+        "@test",
+        "repo",
+        { status: "failed", error: "artifacts unreachable" },
+        expect.anything(),
+      );
+    });
+  });
+
+  describe("a sync job for a project whose mirror state has changed", () => {
+    beforeEach(() => {
+      projects.set("@test/repo", makeProject());
+    });
+
+    it("releases its claim when it is dropped because the project now mirrors to GitHub", async () => {
+      vi.mocked(pushMirrorMode).mockResolvedValueOnce("forge");
+      const env = makeEnv();
+      const msg = makeSyncMessage();
+      await handleImportQueue(makeBatch([msg]), env);
+      expect(syncFromGitHub).not.toHaveBeenCalled();
+      expect(msg.ack).toHaveBeenCalled();
+      expect(settleSyncStatus).toHaveBeenCalledWith(
+        env.STATE,
+        "@test",
+        "repo",
+        { status: "abandoned" },
+        expect.anything(),
+      );
+    });
+
+    it("releases its claim when the mirror state is still unreadable on the last delivery", async () => {
+      vi.mocked(pushMirrorMode).mockResolvedValue("unknown");
+      const env = makeEnv();
+      const early = Object.assign(makeSyncMessage(), { attempts: 2 }) as Message<SyncJobMessage>;
+      await handleImportQueue(makeBatch([early]), env);
+      expect(early.retry).toHaveBeenCalled();
+      expect(settleSyncStatus).not.toHaveBeenCalled();
+
+      const last = Object.assign(makeSyncMessage(), { attempts: 4 }) as Message<SyncJobMessage>;
+      await handleImportQueue(makeBatch([last]), env);
+      expect(last.retry).toHaveBeenCalled();
+      expect(settleSyncStatus).toHaveBeenCalledWith(
+        env.STATE,
+        "@test",
+        "repo",
+        expect.objectContaining({ status: "failed" }),
+        expect.anything(),
+      );
+      vi.mocked(pushMirrorMode).mockResolvedValue("layer");
+    });
+  });
+
+  describe("a sync job that ends without syncing", () => {
+    const abandoned = (env: ReturnType<typeof makeEnv>) =>
+      expect(settleSyncStatus).toHaveBeenCalledWith(
+        env.STATE,
+        "@test",
+        "repo",
+        { status: "abandoned" },
+        expect.anything(),
+      );
+
+    it("releases its claim when it was cancelled before it started", async () => {
+      projects.set("@test/repo", makeProject());
+      vi.mocked(isImportCancelled).mockResolvedValueOnce(true);
+      const env = makeEnv();
+      const msg = makeSyncMessage();
+      await handleImportQueue(makeBatch([msg]), env);
+      expect(syncFromGitHub).not.toHaveBeenCalled();
+      expect(msg.ack).toHaveBeenCalled();
+      abandoned(env);
+    });
+
+    it("releases its claim when it was cancelled while the sync was failing", async () => {
+      projects.set("@test/repo", makeProject());
+      vi.mocked(syncFromGitHub).mockResolvedValue({
+        success: false,
+        error: new AppError("clone interrupted", "GIT_ERROR", 500),
+      });
+      // Not cancelled when the job starts; cancelled by the time the sync returns.
+      vi.mocked(isImportCancelled).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+      const env = makeEnv();
+      const msg = makeSyncMessage();
+      await handleImportQueue(makeBatch([msg]), env);
+      expect(msg.ack).toHaveBeenCalled();
+      abandoned(env);
+      expect(settleSyncStatus).not.toHaveBeenCalledWith(
+        env.STATE,
+        "@test",
+        "repo",
+        expect.objectContaining({ status: "failed" }),
+        expect.anything(),
+      );
+    });
+
+    it("releases the claim when the project at that path is no longer the one it was queued for", async () => {
+      projects.set("@test/repo", makeProject({ id: "proj_other" }));
+      const env = makeEnv();
+      const msg = makeSyncMessage();
+      await handleImportQueue(makeBatch([msg]), env);
+      expect(syncFromGitHub).not.toHaveBeenCalled();
+      abandoned(env);
+    });
+  });
+
+  it("clears the in-progress flag when a sync succeeds", async () => {
+    projects.set("@test/repo", makeProject());
+    vi.mocked(syncFromGitHub).mockResolvedValue({
+      success: true,
+      data: { status: "fast-forwarded", commit: "newsha" },
+    });
+    const env = makeEnv();
+    await handleImportQueue(makeBatch([makeSyncMessage()]), env);
+    expect(settleSyncStatus).toHaveBeenCalledWith(
+      env.STATE,
+      "@test",
+      "repo",
+      expect.objectContaining({ status: "success" }),
+      expect.anything(),
+    );
   });
 });
 

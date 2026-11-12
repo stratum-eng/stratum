@@ -27,7 +27,7 @@ import {
 import { pushMirrorMode } from "../storage/push-mirrors";
 import { writeSnapshotFromRepo } from "../storage/repo-snapshot";
 import { getProjectByPath, setProject } from "../storage/state";
-import { recordSyncHistory } from "../storage/sync";
+import { recordSyncHistory, setSyncInProgress, settleSyncStatus } from "../storage/sync";
 import type {
   EmailMessage,
   Env,
@@ -581,6 +581,9 @@ async function processSyncJob(
     // Verify project ID matches (security check)
     if (project.id !== projectId) {
       logger.error("Project ID mismatch", undefined, { expected: projectId, got: project.id });
+      // The claim was made by path, so it now sits on whichever project is at
+      // this path. Release it: that project did not ask for this sync.
+      await settleSyncStatus(env.STATE, namespace, slug, { status: "abandoned" }, logger);
       msg.ack();
       return;
     }
@@ -588,6 +591,7 @@ async function processSyncJob(
     // No-op if the owner is being erased (see processImportJob for rationale).
     if (await isTargetDeleting(env, project, logger)) {
       logger.info("Skipping sync for deleting owner", { namespace, slug });
+      await settleSyncStatus(env.STATE, namespace, slug, { status: "abandoned" }, logger);
       msg.ack();
       return;
     }
@@ -595,9 +599,17 @@ async function processSyncJob(
     // Check cancellation before starting
     if (await checkAndHandleCancellation(env, namespace, slug)) {
       await recordImportCancelled(env.DB, namespace, slug, logger);
+      await settleSyncStatus(env.STATE, namespace, slug, { status: "abandoned" }, logger);
       msg.ack();
       return;
     }
+
+    // Claim again now that the job is running. The claim made when it was
+    // queued lapses after SYNC_IN_PROGRESS_TTL_MS, and a message can wait in
+    // the queue for part of that: without this, a job that started late would
+    // still be running when its claim lapsed, and the next push would start a
+    // second sync beside it.
+    await setSyncInProgress(env.STATE, namespace, slug, logger);
 
     // Forge mode (#417), checked again HERE and not only where the job was
     // queued: an admin can enable the mirror between the two, and this job
@@ -606,6 +618,15 @@ async function processSyncJob(
     const mirrorMode = await pushMirrorMode(env.DB, logger, project.id);
     if (mirrorMode === "unknown") {
       logger.warn("Sync job: could not read the project's mirror state; retrying", { projectId });
+      if (isLastDelivery(msg)) {
+        await settleSyncStatus(
+          env.STATE,
+          namespace,
+          slug,
+          { status: "failed", error: "Sync gave up: the project's mirror state could not be read" },
+          logger,
+        );
+      }
       msg.retry();
       return;
     }
@@ -619,6 +640,10 @@ async function processSyncJob(
         logger,
         "Sync cancelled: the project now mirrors to GitHub and no longer syncs from it",
       );
+      // Release the claim too. Left in place it would outlive the mirror: were
+      // the mirror disabled again, pushes and manual syncs would stand aside
+      // for this job until the claim lapsed.
+      await settleSyncStatus(env.STATE, namespace, slug, { status: "abandoned" }, logger);
       msg.ack();
       return;
     }
@@ -669,6 +694,7 @@ async function processSyncJob(
       // Check if it was cancelled during the operation
       if (await checkAndHandleCancellation(env, namespace, slug)) {
         await recordImportCancelled(env.DB, namespace, slug, logger);
+        await settleSyncStatus(env.STATE, namespace, slug, { status: "abandoned" }, logger);
         msg.ack();
         return;
       }
@@ -707,6 +733,13 @@ async function processSyncJob(
         lastSyncError: syncError.message,
       };
       await setProject(env.STATE, updatedProject, logger);
+      await settleSyncStatus(
+        env.STATE,
+        namespace,
+        slug,
+        { status: "failed", error: syncError.message },
+        logger,
+      );
 
       await updateImportStatus(
         env.DB,
@@ -755,6 +788,16 @@ async function processSyncJob(
     if (!setResult.success) {
       logger.error("Failed to update project after sync", setResult.error, { namespace, slug });
     }
+    // The sync status is where "in progress" was written when this job was
+    // queued. Left alone it would say so for good, and every later push and
+    // manual sync would stand aside for a sync that finished long ago.
+    await settleSyncStatus(
+      env.STATE,
+      namespace,
+      slug,
+      { status: "success", ...(latestCommitSha !== undefined ? { commit: latestCommitSha } : {}) },
+      logger,
+    );
 
     // Mark sync as complete
     await updateImportStatus(
@@ -827,6 +870,7 @@ async function processSyncJob(
       await updateImportStatus(env.DB, namespace, slug, "cancelled", logger, "Sync cancelled");
       await recordImportCancelled(env.DB, namespace, slug, logger);
       await deleteImportJob(env.DB, namespace, slug, logger);
+      await settleSyncStatus(env.STATE, namespace, slug, { status: "abandoned" }, logger);
     } else {
       // Handle failure with logging and metrics
       await handleImportFailure(env, {
@@ -862,6 +906,18 @@ async function processSyncJob(
         logger,
         `Sync failed: ${err.message}`,
       );
+      // While another delivery is coming the claim stays, so nothing starts a
+      // second sync beside the retry. After the last one nobody is left to
+      // clear it.
+      if (isLastDelivery(msg)) {
+        await settleSyncStatus(
+          env.STATE,
+          namespace,
+          slug,
+          { status: "failed", error: err.message },
+          logger,
+        );
+      }
     }
 
     msg.retry();
@@ -910,6 +966,19 @@ export async function handleImportQueue(
     });
     msg.ack();
   }
+}
+
+/**
+ * How many times the import queue delivers one message: the first delivery plus
+ * `max_retries = 3` for `stratum-imports` in `wrangler.toml`. A self-hoster who
+ * raises that only delays the moment a failing sync's claim is released; the
+ * claim's own time limit still applies.
+ */
+const SYNC_MAX_DELIVERIES = 4;
+
+/** Whether the queue will not deliver this message again after a retry. */
+function isLastDelivery(msg: { attempts?: number }): boolean {
+  return (msg.attempts ?? 1) >= SYNC_MAX_DELIVERIES;
 }
 
 /** Delivery attempts after which an issue-import page that keeps throwing fails its run. */

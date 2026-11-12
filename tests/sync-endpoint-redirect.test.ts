@@ -385,8 +385,23 @@ describe("POST /api/projects/:namespace/:slug/sync — content-type redirect beh
     beforeEach(() => {
       mockGetSyncStatus.mockResolvedValue({
         success: true,
-        data: { lastSyncStatus: "in_progress" },
+        data: { lastSyncStatus: "in_progress", lastCheckedAt: new Date().toISOString() },
       });
+    });
+
+    // The claim is only honoured while a sync could still be running: a job
+    // that never reported back must not stop the project syncing for good.
+    it("syncs anyway once the in-progress claim is older than any sync could run", async () => {
+      mockGetSyncStatus.mockResolvedValue({
+        success: true,
+        data: {
+          lastSyncStatus: "in_progress",
+          lastCheckedAt: new Date(Date.now() - 19 * 3600_000).toISOString(),
+        },
+      });
+      const res = await app.fetch(makeSyncRequest("@owner", "my-repo", "application/json"), env);
+      expect(res.status).not.toBe(400);
+      expect(mockSetSyncInProgress).toHaveBeenCalled();
     });
 
     it("JSON POST returns 400", async () => {
