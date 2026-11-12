@@ -128,7 +128,7 @@ describe("reportChecksToGitHub", () => {
     await reportChecksToGitHub(env, logger, {
       change,
       project,
-      checks: [check("review", "failed", { summary: `x`.repeat(500) })],
+      checks: [check("review", "failed", { summary: "x".repeat(500) })],
     });
     const description = setStatus.mock.calls[0]?.[0].description as string;
     expect(description).toHaveLength(140);
