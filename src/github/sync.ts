@@ -68,6 +68,50 @@ export function buildEvaluationReport(
 }
 
 /**
+ * The report for a change's most recent evaluation, rebuilt from what was
+ * stored: the change's aggregate verdict and the runs of its latest round.
+ *
+ * Used when a change is promoted. Evaluation usually finishes before the pull
+ * request exists, and a verdict is only posted to a linked pull request, so
+ * without this a promoted pull request never shows the verdict that let it be
+ * promoted. Null when the change has no recorded verdict.
+ *
+ * "Latest round" groups runs by `roundId`, falling back to `ranAt` for rows
+ * written before rounds existed, the same key the merge gate and the change
+ * page compare.
+ */
+export function latestEvaluationReport(
+  change: Pick<Change, "evalScore" | "evalPassed">,
+  runs: ReadonlyArray<{
+    evaluatorType: string;
+    score: number;
+    passed: boolean;
+    reason: string;
+    ranAt: string;
+    roundId?: string;
+  }>,
+): EvaluationReport | null {
+  if (change.evalScore === undefined || change.evalPassed === undefined) return null;
+  let latestKey: string | undefined;
+  for (const run of runs) {
+    const key = run.roundId ?? run.ranAt;
+    if (latestKey === undefined || key.localeCompare(latestKey) > 0) latestKey = key;
+  }
+  return {
+    score: change.evalScore,
+    passed: change.evalPassed,
+    results: runs
+      .filter((run) => (run.roundId ?? run.ranAt) === latestKey)
+      .map(({ evaluatorType, score, passed, reason }) => ({
+        evaluatorType,
+        score,
+        passed,
+        reason,
+      })),
+  };
+}
+
+/**
  * Resolve the GitHub owner/repo a project is connected to, or null when the
  * project has no GitHub source (pure-Stratum projects, or projects on another
  * provider). Identity comes from the KV project entry, never from D1.

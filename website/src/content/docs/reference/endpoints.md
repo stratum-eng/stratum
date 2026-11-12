@@ -812,7 +812,10 @@ ready or converting it back to a draft on GitHub updates it too.
 
 Once a change has a linked PR, each evaluation posts the verdict to the PR as a
 comment (edited in place on re-evaluation) and as a `stratum/evaluation` commit
-status.
+status. Promotion posts the change's latest verdict the same way, on the
+revision it pushed, since the change was evaluated before the PR existed. That
+post is best-effort and not retried: if it fails, the promotion still succeeds,
+and promoting again re-posts it.
 
 ## Reviews and Comments API
 
