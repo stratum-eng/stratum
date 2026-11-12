@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-12
+
+### Changed
+- **Agents can promote an accepted change to a GitHub pull request.**
+  `POST /api/changes/{id}/github-pr` and the `stratum_promote_change` MCP tool
+  used to refuse agent tokens and agent-bound connections. They are now accepted
+  when the agent has write access to the project (it has its owner's). A change
+  can only be promoted once its gates have accepted it, and merging the pull
+  request is still decided on GitHub. `promotedBy` records the agent's id when
+  an agent promoted. An agent can only open a draft. When the agent's owner has
+  connected their GitHub account, the pull request is opened as the owner, so
+  GitHub will not let them approve their own agent's work; otherwise it is
+  opened with the instance's own credential. Review verdicts, merging, rejecting and re-evaluating
+  remain user-only. A person signed in to the browser must still promote a
+  change whose `.github/` differs from the project's, or from the base branch
+  on GitHub (its workflows would run with the repository's secrets as soon as
+  the pull request opened), or that edits the merge-protection config. This
+  guards the workflow files, not the code they run: a workflow that builds or
+  tests pull requests runs an agent-promoted change's code with whatever
+  secrets it is given, so keep secrets out of workflows that run on
+  `stratum/**` pull requests if agents promote on your project.
+- **A scoped API token or an OAuth grant (an MCP client, the CLI) can only open
+  a draft pull request, and cannot mark one ready** (`403 READY_NEEDS_PERSON`).
+  Promoting again with one onto a pull request that is already ready, after a
+  review asked for changes, first returns it to draft. Those credentials act
+  for a person but are what an agent is handed, and marking a pull request
+  ready is what asks for review and, on repositories whose workflows deploy
+  pull requests, lets its code run with secrets. Mark ready on the change page.
+- **Promoting such a change with a scoped API token or an OAuth grant is now
+  refused** with `403 PROMOTION_NEEDS_PERSON`, as it is for an agent. Those
+  credentials act for a user but are what an agent is handed; before, they
+  could promote anything. Promote from the change page instead.
+- A person's refusals from GitHub no longer count against a repository's
+  circuit breaker. Only calls made with the deployment's own credential do.
+
+### Fixed
+- A project's changes list showed each change's workspace name where its title
+  should be. The title was passed to the list on the legacy `/p/` route only.
+- The `stratum_promote_change` MCP tool described the old defaults for the pull
+  request's title and description; they default to the change's own.
+- The **Connect GitHub** button under Settings → GitHub now works. The browser had been blocking its redirect to GitHub, so clicking it did nothing.
+- **Re-evaluating a change without an evaluation queue can no longer undo a promotion, merge or rejection.** An inline re-evaluation now records its results, its verdict and any approval dismissal in one write, and records none of them if the change reached a final status while it ran: it answers `409 CHANGE_FINALIZED` instead of moving a promoted change back to `accepted`. A reverted change is now refused before it is evaluated, as merged, rejected and promoted ones already were. The results and the verdict can no longer disagree after a failed write either, so the merge gate, the change page and the verdict posted to GitHub always describe the same evaluation. When the verdict is reported to a linked pull request, it goes to the pull request the change has once the verdict is recorded, so one linked while the evaluation ran gets it too.
+- **An imported project stopped syncing from its source after its first queued
+  sync.** The sync job recorded its result on the project and left the sync
+  status saying "in progress". That status is what a pushed commit and a manual
+  sync both check before standing aside, so every later push was skipped and
+  every manual sync was refused with "A sync is already in progress", until the
+  status was edited by hand. The job now records how it ended there too, and an
+  "in progress" claim older than 30 minutes is ignored, so a project stuck this
+  way recovers at its next push or sync, and a job that never reports back can
+  no longer block the ones after it.
+- **A promoted pull request now shows Stratum's verdict.** Promoting a change posts its latest evaluation to the pull request as a comment and a `stratum/evaluation` commit status. Before, the verdict was posted only by evaluations that ran after the pull request existed, so a pull request opened from an already-evaluated change showed nothing, and `stratum/evaluation` could not be made a required check.
+
+### Added
+- A `checks` dispatch now carries the change's `title` and `description` (or `null` when the change has none), so a check that reviews the change, such as an AI code reviewer, can judge it against what its author says it does.
+- A promoted change's check runs now appear on its GitHub pull request as `stratum/check/<name>` commit statuses, kept up to date as runners report, so a reviewer on GitHub sees a failing or still-running check, not just the `stratum/evaluation` verdict.
+- **Promoted pull requests can be opened as the person promoting, not with the
+  instance's own credential.** GitHub records whoever's credential created a
+  pull request as its author, so every promoted pull request was authored by
+  the Stratum app's bot (or the `GITHUB_TOKEN` account under an operator
+  binding):
+  review tools skipped it or wanted a seat for the bot, and the person whose
+  agent wrote the code could approve it themselves. A person can now connect
+  their GitHub account under Settings, and the pull requests they promote are
+  opened as them. Stratum creates the pull request with the instance's own
+  credential, as it did before, when their authorization has lapsed, is being renewed by
+  another of their promotions at that moment, cannot be read, or is refused by
+  GitHub for that repository. Nobody else's
+  promotion is ever opened as them. The promote response reports
+  `pullRequestAuthor`, `openedAs` and, when the app opened it, why. Off unless
+  the operator sets the new `GITHUB_USER_TOKEN_SECRET`, which encrypts the
+  stored authorizations; see `docs/developer/deployment.md`.
+
 ## [0.5.0] - 2026-11-11
 
 ### Added
@@ -1883,7 +1956,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes, GitHub import/sync, server-rendered web UI, email and GitHub OAuth authentication,
   API tokens, agent identities, and provenance tracking.
 
-[Unreleased]: https://github.com/stratum-eng/stratum/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/stratum-eng/stratum/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/stratum-eng/stratum/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/stratum-eng/stratum/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/stratum-eng/stratum/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/stratum-eng/stratum/compare/v0.2.0...v0.3.0
