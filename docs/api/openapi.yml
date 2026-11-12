@@ -3115,7 +3115,8 @@ paths:
         "409":
           description: >-
             An inline evaluation finished after the change was merged, rejected
-            or promoted (`CHANGE_FINALIZED`); nothing was recorded. Also an
+            or promoted (`CHANGE_FINALIZED`, with the change's `status`); its
+            results, verdict and approval changes were not recorded. Also an
             `external` change (`EXTERNAL_NOT_IMPORTED`).
         "500":
           $ref: "#/components/responses/InternalError"

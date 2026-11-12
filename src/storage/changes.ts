@@ -403,12 +403,6 @@ export interface UpdateChangeStatusOpts {
    * {@link STATUSES_ALLOWED_FROM_EVALUATING}.
    */
   allowFromEvaluating?: boolean;
-  /**
-   * Refuse the write when the change is merged, rejected, promoted or
-   * reverted. For a verdict computed while the change was not held in
-   * `evaluating`, which a final decision may have overtaken (issue #5).
-   */
-  unlessTerminal?: boolean;
 }
 
 /**
@@ -444,6 +438,12 @@ function buildUpdateChangeStatusStatement(
   id: string,
   status: Change["status"],
   opts?: UpdateChangeStatusOpts,
+  /**
+   * Refuse the write when the change is terminal. Only `recordReevaluation`
+   * sets it: its zero-row result is read there as "finalized", which
+   * `updateChangeStatus` would misreport as an evaluation pending.
+   */
+  unlessTerminal = false,
 ): D1PreparedStatement {
   const assignments = ["status = ?"];
   const bindings: unknown[] = [status];
@@ -490,7 +490,7 @@ function buildUpdateChangeStatusStatement(
     opts?.allowFromEvaluating === true || STATUSES_ALLOWED_FROM_EVALUATING.includes(status)
       ? ""
       : " AND status != 'evaluating'";
-  const terminalGuard = opts?.unlessTerminal === true ? ` AND ${NOT_TERMINAL}` : "";
+  const terminalGuard = unlessTerminal ? ` AND ${NOT_TERMINAL}` : "";
   return db
     .prepare(`UPDATE changes SET ${assignments.join(", ")} WHERE id = ?${guard}${terminalGuard}`)
     .bind(...bindings);
@@ -622,7 +622,8 @@ export interface RecordReevaluationArgs {
   /** Drop stale 'approve' verdicts as part of the same write (#193). */
   dismissApprovals: boolean;
   status: Change["status"];
-  opts: UpdateChangeStatusOpts;
+  /** `allowFromEvaluating` is always set here; see `recordReevaluation`. */
+  opts: Omit<UpdateChangeStatusOpts, "allowFromEvaluating">;
 }
 
 export interface RecordReevaluationResult {
@@ -710,11 +711,18 @@ export async function recordReevaluation(
     }
 
     const updateIndex = statements.length;
+    // `allowFromEvaluating` because the INSERTs and the DELETE above do not
+    // test for `evaluating`: all four must agree, or a refused verdict would
+    // still commit its rows. This IS the verdict, so replacing `evaluating`
+    // (a run whose queue has since been unbound) is what it should do.
     statements.push(
-      buildUpdateChangeStatusStatement(db, changeId, args.status, {
-        ...args.opts,
-        unlessTerminal: true,
-      }),
+      buildUpdateChangeStatusStatement(
+        db,
+        changeId,
+        args.status,
+        { ...args.opts, allowFromEvaluating: true },
+        true,
+      ),
     );
 
     const results = await db.batch<{ reviewer_id?: string }>(statements);

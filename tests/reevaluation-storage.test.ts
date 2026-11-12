@@ -88,7 +88,7 @@ describe("recordReevaluation", () => {
     });
   });
 
-  it.each(["promoted", "merged", "rejected"] as const)(
+  it.each(["promoted", "merged", "rejected", "reverted"] as const)(
     "writes nothing to a change %s while it was being evaluated",
     async (finalStatus) => {
       const { db, raw } = makeSqliteD1();
@@ -120,6 +120,40 @@ describe("recordReevaluation", () => {
       });
     },
   );
+
+  it("replaces `evaluating`, with its rows and its verdict agreeing", async () => {
+    // A change queued on an instance whose evaluation queue was since unbound:
+    // re-evaluating inline is how it gets a verdict.
+    const { db, raw } = makeSqliteD1();
+    const change = await settledChange(db);
+    raw.prepare("UPDATE changes SET status = 'evaluating' WHERE id = ?").run(change.id);
+    approve(raw, change.id);
+
+    const result = await recordReevaluation(db, logger, {
+      changeId: change.id,
+      ...verdict,
+      dismissApprovals: true,
+    });
+
+    expect(result.success && result.data.applied).toBe(true);
+    expect(evalRunCount(raw, change.id)).toBe(2);
+    expect(result.success && result.data.dismissedReviewerIds).toEqual(["usr_rev"]);
+    const read = await getChange(db, logger, change.id);
+    expect(read.success && read.data.status).toBe("accepted");
+  });
+
+  it("writes nothing to a change that no longer exists", async () => {
+    const { db, raw } = makeSqliteD1();
+
+    const result = await recordReevaluation(db, logger, {
+      changeId: "chg_gone",
+      ...verdict,
+      dismissApprovals: true,
+    });
+
+    expect(result.success && result.data.applied).toBe(false);
+    expect(evalRunCount(raw, "chg_gone")).toBe(0);
+  });
 
   it("keeps approvals when not asked to dismiss them", async () => {
     const { db, raw } = makeSqliteD1();

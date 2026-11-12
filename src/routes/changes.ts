@@ -24,7 +24,11 @@ import { type DispatchOutcome, dispatchEvaluationRun } from "../services/evaluat
 import { dropRejectedConnection, resolvePrAuthor } from "../services/github-pr-author";
 import { getCommitLogPreferNative } from "../storage/artifacts-reads";
 import { recordAudit } from "../storage/audit";
-import { beginEvaluationRun, newEvaluationRunId } from "../storage/change-evaluation";
+import {
+  TERMINAL_CHANGE_STATUSES,
+  beginEvaluationRun,
+  newEvaluationRunId,
+} from "../storage/change-evaluation";
 import {
   type GithubPrLink,
   getChange,
@@ -1966,7 +1970,9 @@ app.post("/changes/:id/evaluate", async (c) => {
   if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
     return refuseProjectAccess(credentialBindingFrom(c), project, () => notFound("Change", id));
 
-  if (change.status === "merged" || change.status === "rejected" || change.status === "promoted") {
+  // The same list the recording batch guards on, so a change that cannot take
+  // a verdict is refused before anything is spent on evaluating it.
+  if (TERMINAL_CHANGE_STATUSES.includes(change.status)) {
     return badRequest(`Cannot re-evaluate a ${change.status} change`);
   }
   // An evaluation is what an import starts, once a maintainer has chosen to
@@ -2098,10 +2104,8 @@ app.post("/changes/:id/evaluate", async (c) => {
     // acquire a policy edit, pass the staleness check, and merge without the
     // approval the flag exists to force.
     touchesProtectedConfig: diffTouchesProtectedConfig(diff),
-    // This IS the verdict, so it may replace `evaluating` — reachable when a
-    // change was queued on an instance whose evaluation queue has since been
-    // unbound, and re-evaluating inline is how it gets one.
-    allowFromEvaluating: true,
+    // May replace `evaluating` (a change queued on an instance whose queue has
+    // since been unbound): `recordReevaluation` always allows that.
   };
 
   // Stale-approval dismissal (#193): a different evaluated sha means any prior
@@ -2148,11 +2152,15 @@ app.post("/changes/:id/evaluate", async (c) => {
     return internalError(recorded.error.message);
   }
   if (!recorded.data.applied) {
+    // Say what actually happened to it: finalized, or deleted outright.
+    const now = await getChange(c.env.DB, logger, id);
+    if (!now.success && now.error.code === "NOT_FOUND") return notFound("Change", id);
+    const finalStatus = now.success ? now.data.status : undefined;
     return c.json(
       {
-        error:
-          "The change was merged, rejected or promoted while it was being evaluated, so this evaluation was discarded.",
+        error: `The change was ${finalStatus ?? "finalized"} while it was being evaluated, so this evaluation's results and verdict were discarded.`,
         code: "CHANGE_FINALIZED",
+        ...(finalStatus !== undefined ? { status: finalStatus } : {}),
       },
       409,
     );

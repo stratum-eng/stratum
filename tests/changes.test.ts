@@ -4709,7 +4709,10 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
   });
 
   it("discards its verdict when the change was finalized while it ran (issue #5)", async () => {
-    // Promoted, merged or rejected meanwhile: the guarded batch wrote nothing.
+    // Promoted meanwhile: the guarded batch wrote nothing.
+    vi.mocked(getChange)
+      .mockResolvedValueOnce({ success: true, data: evaluatedChange })
+      .mockResolvedValue({ success: true, data: { ...evaluatedChange, status: "promoted" } });
     vi.mocked(recordReevaluation).mockResolvedValue({
       success: true,
       data: { applied: false, runs: [], dismissedReviewerIds: [] },
@@ -4721,10 +4724,49 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
     );
 
     expect(res.status).toBe(409);
-    expect(((await res.json()) as { code: string }).code).toBe("CHANGE_FINALIZED");
+    const body = (await res.json()) as { code: string; status: string; error: string };
+    expect(body).toMatchObject({ code: "CHANGE_FINALIZED", status: "promoted" });
+    expect(body.error).toContain("promoted while it was being evaluated");
     // Nothing is announced for a verdict that was not recorded.
     expect(recordAudit).not.toHaveBeenCalled();
   });
+
+  it("answers 404 when the change was deleted while it ran", async () => {
+    vi.mocked(getChange)
+      .mockResolvedValueOnce({ success: true, data: evaluatedChange })
+      .mockResolvedValue({ success: false, error: new NotFoundError("Change", "chg_abc123") });
+    vi.mocked(recordReevaluation).mockResolvedValue({
+      success: true,
+      data: { applied: false, runs: [], dismissedReviewerIds: [] },
+    });
+
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/evaluate", {}, USER_AUTH),
+      env,
+    );
+
+    expect(res.status).toBe(404);
+  });
+
+  it.each(["merged", "rejected", "promoted", "reverted"] as const)(
+    "refuses a %s change before evaluating it",
+    async (finalStatus) => {
+      vi.mocked(getChange).mockResolvedValue({
+        success: true,
+        data: { ...evaluatedChange, status: finalStatus },
+      });
+
+      const res = await app.fetch(
+        request("POST", "/api/changes/chg_abc123/evaluate", {}, USER_AUTH),
+        env,
+      );
+
+      expect(res.status).toBe(400);
+      // Refused before anything was spent: no diff, no evaluation, no write.
+      expect(getDiffBetweenRepos).not.toHaveBeenCalled();
+      expect(recordReevaluation).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("PATCH /api/changes/:id", () => {
