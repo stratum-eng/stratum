@@ -155,6 +155,13 @@ export const BACKUP_EXCLUDED_TABLES: readonly string[] = [
   // state names a session hash no restored cookie would be trusted with.
   "github_app_link_states",
   "github_app_access_snapshots",
+  // People's stored GitHub authorizations (migration 086). Left out on two
+  // counts. A backup is copied and kept in more places than the database is,
+  // and these are credentials for people's GitHub accounts, encrypted or not.
+  // And a restored row would not work: the access token lasts eight hours and
+  // each refresh replaces the refresh token, so a backup holds a pair GitHub
+  // has since retired. After a restore people connect again from Settings.
+  "github_user_connections",
 ];
 
 const PAGE_SIZE = 500;

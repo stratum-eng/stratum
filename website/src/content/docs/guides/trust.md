@@ -98,7 +98,8 @@ receiving mail servers.
 | **Cloudflare (your account) or Vercel** | A `deploys:` entry in the policy | The merged tree, uploaded with the project's own credentials. See [Deployments](/guides/deployments/) |
 | **GitHub** | A [push mirror](/guides/push-mirror/) an admin configured on a project | That project's default branch and tags — its full history — pushed to the one repository the admin named, with a GitHub App installation token limited to that repository. A [break-glass resync](/guides/push-mirror/#break-glass-resync-from-github) reads that repository's default branch back, with a read-only token limited to it. The read sends nothing. Afterwards the resync resumes a `failed` or `diverged` mirror and queues an ordinary mirror push, which sends commits to GitHub if the project is ahead of it |
 | **GitHub** | [Pull requests on the mirror](/guides/mirror-pull-requests/), where an admin turned them on | Read from GitHub: the pull request's number, title, author login and commits, with a token limited to the mirror repository. Sent to GitHub: one comment on the pull request naming the Stratum change it merged as (its id and link), and a request to close it |
-| **GitHub / GitLab / Bitbucket** | Importing or syncing a project | Anonymous clones of **public** repositories only — imports carry no provider token. GitHub sync and PR promotion use an instance-wide `GITHUB_TOKEN` when the operator sets one |
+| **GitHub** | Promoting a change, for a person who [connected their GitHub account](/guides/code-review/#who-the-pull-request-is-opened-as) | The request that opens the pull request is made with that person's stored authorization, so GitHub records them as its author. Nothing else is sent with it: the branch is pushed with the app's token. When the authorization has expired, a request to GitHub to renew it |
+| **GitHub / GitLab / Bitbucket** | Importing or syncing a project | Anonymous clones of **public** repositories only — imports carry no provider token. GitHub sync and PR promotion use the instance's own GitHub credential: the GitHub App's installation token where the app is installed and linked, or an instance-wide `GITHUB_TOKEN` under an operator binding. The one exception is in the row above: creating the pull request for a person who connected their GitHub account |
 
 ## What is encrypted, and by whom
 
@@ -134,6 +135,7 @@ before they are written (`src/utils/crypto.ts`, `src/storage/backup-store.ts`):
 |------|-----------|-----|
 | Per-project secrets (deploy credentials, BYOK provider keys) | AES-256-GCM, key derived with PBKDF2-SHA256 (100k iterations); the secret's scope is bound as additional authenticated data. Write-only: no route returns a value | `DEPLOY_SECRET_KEY` (Wrangler secret) |
 | Org SSO client secrets | AES-256-GCM, PBKDF2-derived key with an SSO-specific salt | `SSO_ENCRYPTION_SECRET` (Wrangler secret) |
+| GitHub authorizations of people who [connected their GitHub account](/guides/code-review/#who-the-pull-request-is-opened-as) | AES-256-GCM, PBKDF2-derived key with its own salt. A GitHub App user access token, and its refresh token when the app issues expiring ones. Present only for people who chose to connect; removed when they disconnect, delete their account or revoke the app on GitHub, and when GitHub stops accepting or renewing it; left out of backups | `GITHUB_USER_TOKEN_SECRET` (Wrangler secret); unset, nobody can connect and nothing is stored |
 | Backup blobs in R2 | AES-256-GCM per blob, PBKDF2-derived key — **only when the secret is set** | `BACKUP_ENCRYPTION_SECRET` |
 | Session ids, API tokens, magic-link tokens | Stored as SHA-256 hashes; the plaintext is never persisted | — |
 | Outbound webhook signing secrets | Stored in plaintext in D1, because the Worker must sign with them | — |
@@ -157,7 +159,9 @@ the `BACKUPS` R2 bucket:
 
 - **When:** daily from its own cron, `0 4 * * *` (UTC), in production, plus on
   demand through an admin endpoint. Staging has no backup cron.
-- **What:** one NDJSON dump per D1 table, the project and workspace registry
+- **What:** one NDJSON dump per D1 table, apart from the tables listed as not
+  backed up below and short-lived ones such as sign-in links and OAuth states,
+  the project and workspace registry
   records from KV, and a Git pack of the reachable history of **project**
   repositories. Each run snapshots at most `MAX_REPOS_PER_RUN` (default 25)
   projects, taking the projects least recently attempted first. A repository
@@ -167,6 +171,12 @@ the `BACKUPS` R2 bucket:
   `@namespace/slug`) are snapshotted in **every** run in addition to that
   rotation, and do not use up any of its `MAX_REPOS_PER_RUN` slots. The run
   manifest lists them under `repos.pinned`.
+- **Not backed up: stored GitHub authorizations.** The `github_user_connections`
+  table is left out of the D1 dump. They are credentials for people's GitHub
+  accounts, and a restored pair would not work anyway, since GitHub retires a
+  refresh token each time it is used. After a restore, people who had connected
+  their GitHub account connect again from Settings; until they do, the pull
+  requests they promote are opened with the instance's own credential.
 - **Not backed up: workspace repositories.** The repo pass iterates projects
   only (`listProjects` in `src/backup/run-backup.ts`). Workspace forks, which
   hold unmerged work, are not snapshotted. Their KV registry records are backed
@@ -238,7 +248,7 @@ all.
 | Data | Retention |
 |------|-----------|
 | Accounts, projects, repositories, changes, issues | Until deleted by the user or owner |
-| Account deletion (`DELETE /api/users/me`) | Deletes the account and its owned projects (including their Artifacts repositories), revokes tokens and sessions, and anonymizes contributions to other people's projects and audit log entries. See [Users API](/reference/endpoints/#delete-account) |
+| Account deletion (`DELETE /api/users/me`) | Deletes the account and its owned projects (including their Artifacts repositories), revokes tokens and sessions, deletes a stored GitHub authorization and asks GitHub to revoke it, and anonymizes contributions to other people's projects and audit log entries. See [Users API](/reference/endpoints/#delete-account) |
 | Import job records | Pruned after 30 days by the daily housekeeping cron |
 | Workspaces | Swept by the daily TTL sweep when they expire |
 | Rate-limit counters, OAuth state, caches in KV | Short KV TTLs (minutes to a day) |
@@ -565,7 +575,7 @@ Cloudflare documents none, and no setting in Stratum creates one.
 | D1, R2, Artifacts: storage and processing | **Covered by a jurisdiction set at creation** (and `jurisdiction = "eu"` on each R2 binding) | Not checked by Stratum at run time |
 | Queue messages: storage and processing by Queues | **Covered by a jurisdiction set at queue creation** | Covers the messages, not the consumer — see the next row |
 | Queue consumers (`stratum-events`, `stratum-imports`, `stratum-deploys`, `stratum-evaluations`) | **No guarantee available**, because Cloudflare states that Regional Services "does not apply to other Worker triggers, like Queues or Cron Triggers", that a restricted queue can be consumed "from any location", and that placement settings "only [affect] the execution of fetch event handlers" | The consumer Worker may run in any Cloudflare data center. It handles event delivery, imports and syncs, post-merge deploys and evaluation runs, so repository contents and database rows read from EU storage can be processed in memory outside the EU. Whatever it writes still lands in EU storage |
-| Cron Triggers: `0 4 * * *` (backup), `0 6 * * *` (housekeeping, sync), `*/5 * * * *` (outbox and import sweeps) | **No guarantee available**, for the same reason; Cloudflare says only that scheduled Workers "run on underutilized machines" | The backup cron reads every D1 table and every project repository, so it processes the full dataset wherever it runs |
+| Cron Triggers: `0 4 * * *` (backup), `0 6 * * *` (housekeeping, sync), `*/5 * * * *` (outbox and import sweeps) | **No guarantee available**, for the same reason; Cloudflare says only that scheduled Workers "run on underutilized machines" | The backup cron reads every D1 table it backs up and every project repository, so it processes the full dataset wherever it runs |
 | Workers KV | **Durable storage covered by a jurisdiction set at creation; cached copies have no guarantee available**, because Cloudflare states KV data "can be cached outside the jurisdiction" | KV holds project and workspace registry records, short-lived OAuth state, and caches. See also the documentation conflict noted above |
 | Worker code and secrets at rest | **No guarantee available**, because Cloudflare states they "are deployed globally to all Cloudflare data centers" even under Regional Services | This includes `DEPLOY_SECRET_KEY`, `SSO_ENCRYPTION_SECRET`, `BACKUP_ENCRYPTION_SECRET` and the OAuth client secrets |
 | Outbound subrequests: OAuth, PostHog, BYOK LLM providers, deploy targets, webhooks, Git hosts | **No guarantee available**, because Regional Services "does not extend to outgoing subrequests" | Choose EU-hosted endpoints, or disable each one (step 7) |

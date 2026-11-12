@@ -342,6 +342,24 @@ installation lookup or token minting failed. The last case is logged as a
 "GitHub App token unavailable" warning; check for it before assuming the
 configuration is missing.
 
+**Who the PR is opened as.** The branch is always pushed with the credential
+above. The PR itself is opened as the person promoting when they have
+[connected their GitHub account](github-app.md#connect-a-github-account), so
+that GitHub records them as its author, and with the instance's own credential
+otherwise (reported as `app`). The response
+reports it under `github`:
+
+| Field | Meaning |
+|---|---|
+| `pullRequestAuthor` | The author's GitHub login, as GitHub returned it. Absent when GitHub named none. |
+| `openedAs` | `user` or `app`: who this call opened the PR as. `app` means the instance's own credential, which is the GitHub App's installation token or, under an operator binding, `GITHUB_TOKEN`. Absent when the PR already existed, since its author was settled when it was first opened. |
+| `openedAsAppBecause` | Present with `openedAs: "app"` on an instance where accounts can be connected. `not_connected`: the promoter has no connection. `connection_expired`: their authorization lapsed or was revoked, and has been removed; they need to connect again. `refresh_in_progress`: another promotion of theirs was renewing the authorization at that moment. `unavailable`: the connection could not be read or renewed just now. `github_refused`: GitHub would not open the PR as them, for example because they cannot read the repository. |
+
+None of these fails the promotion by itself: Stratum then creates the PR with
+the instance credential, and that attempt succeeds or fails (`502
+GITHUB_ERROR`) as it would have without a connection. A PR opened with the instance's credential can be closed and the
+change promoted again once the cause is fixed.
+
 If a re-evaluation begins while the branch is being pushed, the response is
 `409 EVALUATION_PENDING`: the PR exists and its link is recorded (`github` in
 the body), but the change is not marked `promoted`. Promote again once the
@@ -353,7 +371,9 @@ evaluation finishes; that re-pushes to the same PR.
 Takes the change's pull request out of draft, so promoting a change and asking
 for its review stay two separate decisions. Users only, with write access to the
 project; no body. It acts on the pull request the change was promoted to, with
-the same credential rules as promotion.
+the instance credential that pushes a promoted branch, under the same rules. It
+never uses a person's connected GitHub account, whoever the pull request was
+opened as.
 
 ```json
 { "ready": true, "changeId": "chg_…", "alreadyReady": false,

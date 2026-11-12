@@ -249,6 +249,16 @@ export interface Env {
   GITHUB_APP_CLIENT_ID?: string;
   GITHUB_APP_CLIENT_SECRET?: string;
   /**
+   * Encrypts the GitHub user tokens of people who connect their GitHub account
+   * so their promoted pull requests are opened as them, not as the app
+   * (src/services/github-pr-author.ts). A high-entropy random string, set with
+   * `wrangler secret put GITHUB_USER_TOKEN_SECRET`. Unset, together with or
+   * apart from the two above, means the feature is off: nobody can connect,
+   * nothing is stored, and every pull request is opened as the app. Changing
+   * it makes every stored connection unreadable; people connect again.
+   */
+  GITHUB_USER_TOKEN_SECRET?: string;
+  /**
    * Operator bindings from a GitHub owner to the Stratum owner allowed to act
    * on its repos without an installation link: comma-separated
    * `githubOwner=org:<orgId>` / `githubOwner=user:<userId>` entries. Ids, not

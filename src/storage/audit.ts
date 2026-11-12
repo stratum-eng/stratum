@@ -107,6 +107,10 @@ export type AuditAction =
   // what lets an owner's projects act on that installation's repositories.
   | "github_app.installation_linked"
   | "github_app.installation_unlinked"
+  // A person's own GitHub account, connected so their promoted pull requests
+  // are opened as them (migration 086). The stored token is never in a row.
+  | "github.account_connected"
+  | "github.account_disconnected"
   // Per-org IP allowlist (#399). Denials are sampled: see auditIpDenial.
   | "org.ip_allowlist_changed"
   | "org.ip_access_denied"

@@ -185,6 +185,52 @@ evaluation verdict to the PR as a comment (edited in place on re-evaluation)
 and as a `stratum/evaluation` commit status. See
 [Getting Started](/guides/getting-started/#choose-your-level-of-buy-in-layer-mode-vs-forge-mode).
 
+### Who the pull request is opened as
+
+GitHub records whoever's credential created a pull request as its author. By
+default that is the instance's own credential, normally the Stratum GitHub App,
+so a promoted pull request is authored by a bot. Tools that look at the author treat it accordingly: a review tool may
+skip it or ask for a seat for the bot, and the person whose agent wrote the code
+can approve it themselves.
+
+To have your promotions opened as you, connect your GitHub account under
+**Settings → GitHub**. After that:
+
+- a pull request **you** promote is opened as you, unless one of the
+  exceptions listed below applies at that moment;
+- nobody else's promotion is ever opened as you. When a teammate promotes a
+  change you opened, the pull request is theirs, or the instance's if they have
+  not connected.
+
+GitHub then applies its own rules to you as the author. In particular you
+cannot approve your own pull request.
+
+Connecting stores an authorization for your GitHub account, encrypted. Stratum
+uses it for one thing, opening the pull request at promotion, and through it
+can act as you only where the Stratum app is installed and you already have
+access. The branch is still pushed by the app. Disconnect at any time from the
+same settings card, or by revoking the app in your GitHub settings; pull
+requests already opened as you stay yours.
+
+Stratum creates the pull request with the instance's own GitHub credential
+instead, exactly as it would have if you had never connected, when:
+
+- you are not connected;
+- your authorization has lapsed or been revoked (connect again);
+- another promotion of yours is renewing your authorization at that same
+  moment, which lasts a few seconds;
+- your stored authorization cannot be read or renewed just then;
+- GitHub will not let you open a pull request on that repository.
+
+The promote response says which happened: see
+[Promote to a GitHub PR](/reference/endpoints/#promote-to-a-github-pr).
+
+The account you authorize must be the GitHub account you sign in to Stratum
+with. An account that has only ever signed in by email has none yet: sign in
+with GitHub once, using a GitHub account whose verified email is your Stratum
+account's, and the two are linked. The card is absent when the instance's
+operator has not turned the feature on.
+
 ## Reference
 
 - [Reviews and comments API](/reference/endpoints/)

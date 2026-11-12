@@ -148,7 +148,19 @@ interface SettingsPageProps {
   telemetryOptOut: boolean;
   /** The 80% warning, when this account has one. See `Layout`. */
   usageNotice?: UsageBannerNotice | null;
+  /** Absent when the deployment has not turned the feature on; the card is then not rendered. */
+  githubConnection?: GitHubConnectionView;
 }
+
+/**
+ * The person's GitHub connection, as the settings page shows it. `unknown`
+ * when it could not be read: neither "connected" nor "not connected" may be
+ * claimed then.
+ */
+export type GitHubConnectionView =
+  | { state: "connected"; githubLogin: string; connectedAt: string }
+  | { state: "not_connected"; canConnect: boolean }
+  | { state: "unknown" };
 
 const SCOPE_LABEL: Record<ApiTokenScope, string> = {
   read: "Read-only",
@@ -168,6 +180,7 @@ const SECTIONS: ReadonlyArray<readonly [id: string, label: string]> = [
   ["privacy", "Privacy"],
   ["tokens", "API tokens"],
   ["connections", "Connected apps"],
+  ["github", "GitHub"],
   ["agents", "Agents"],
   ["danger", "Danger zone"],
 ];
@@ -400,6 +413,66 @@ const AccountCard: FC<{
   </div>
 );
 
+/**
+ * Connecting a GitHub account so promoted pull requests are opened as the
+ * person. The consent is this card's text: what Stratum keeps, what it will do
+ * with it, and when, said before the button and not after.
+ */
+const GitHubConnectionCard: FC<{ connection: GitHubConnectionView }> = ({ connection }) => (
+  <div class="card" id="github">
+    <h2>GitHub</h2>
+    <p class="settings-help">
+      A pull request Stratum opens on GitHub is authored by this instance&rsquo;s own GitHub
+      identity, normally the Stratum app, unless the person promoting the change has connected their
+      GitHub account here. Connected, the pull requests you promote are opened as you whenever
+      GitHub accepts your authorization for that repository, and with the instance&rsquo;s identity
+      when it does not. Nobody else&rsquo;s promotion is ever opened as you.
+    </p>
+    {connection.state === "connected" ? (
+      <>
+        <p>
+          Connected as <strong>@{connection.githubLogin}</strong> since{" "}
+          {formatDate(connection.connectedAt)}.
+        </p>
+        <form method="post" action="/github/app/disconnect">
+          <button type="submit" class="btn">
+            Disconnect GitHub
+          </button>
+        </form>
+        <p class="settings-help">
+          Disconnecting deletes the stored authorization and asks GitHub to revoke it. Pull requests
+          already opened as you stay yours.
+        </p>
+      </>
+    ) : connection.state === "unknown" ? (
+      <p class="settings-help">
+        Whether your GitHub account is connected could not be checked just now. Nothing has been
+        disconnected &mdash; reload the page to try again.
+      </p>
+    ) : connection.canConnect ? (
+      <>
+        <form method="post" action="/github/app/connect">
+          <button type="submit" class="btn btn-primary">
+            Connect GitHub
+          </button>
+        </form>
+        <p class="settings-help">
+          Stratum keeps an authorization for your GitHub account, encrypted, and uses it for one
+          thing: opening the pull request when you promote a change. Through it Stratum can act as
+          you only where the Stratum app is installed and you already have access. You can
+          disconnect at any time, here or in your GitHub settings.
+        </p>
+      </>
+    ) : (
+      <p class="settings-help">
+        Connecting needs a GitHub identity on this account, so Stratum can check that the account
+        you authorize is yours. Sign in with GitHub once, using a GitHub account whose verified
+        email is this account&rsquo;s, then come back here.
+      </p>
+    )}
+  </div>
+);
+
 /** The whole settings page: jump links, then one card per section in `SECTIONS` order. */
 export const SettingsPage: FC<SettingsPageProps> = ({
   user,
@@ -418,6 +491,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({
   nonce,
   telemetryOptOut,
   usageNotice,
+  githubConnection,
 }) => {
   const now = Date.now();
   // Mirrors the server-side cap in `createApiToken`: an expired row occupies no
@@ -440,11 +514,13 @@ export const SettingsPage: FC<SettingsPageProps> = ({
         </div>
       </div>
       <nav class="section-nav" aria-label="Settings sections">
-        {SECTIONS.map(([id, label]) => (
-          <a key={id} href={`#${id}`}>
-            {label}
-          </a>
-        ))}
+        {SECTIONS.filter(([id]) => id !== "github" || githubConnection !== undefined).map(
+          ([id, label]) => (
+            <a key={id} href={`#${id}`}>
+              {label}
+            </a>
+          ),
+        )}
       </nav>
 
       {fieldError ? (
@@ -703,6 +779,8 @@ export const SettingsPage: FC<SettingsPageProps> = ({
           name you do not recognise as untrusted and disconnect it.
         </p>
       </div>
+
+      {githubConnection !== undefined && <GitHubConnectionCard connection={githubConnection} />}
 
       <div class="card" id="legacy-key">
         <h2>Legacy API key</h2>

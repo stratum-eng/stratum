@@ -1,4 +1,5 @@
 import { usageMeterName } from "../queue/usage-meter";
+import { forgetConnection } from "../services/github-pr-author";
 import type { Env, ProjectEntry, WorkspaceEntry } from "../types";
 import { durableObjectNamespace } from "../utils/durable-objects";
 import { type AppError, toAppError } from "../utils/errors";
@@ -1110,6 +1111,12 @@ export async function deleteAccountCascade(
     // The agent-signup request that created this account, if any, still names
     // the email address it was sent to (migration 058).
     await db.prepare("DELETE FROM agent_signups WHERE user_id = ?").bind(userId).run();
+    // The person's stored GitHub authorization (migration 086): a credential
+    // for their GitHub account, which must not outlive the account here. The
+    // token is revoked at GitHub where it can be, and the row removed either way.
+    if (!(await forgetConnection(env, userId, logger))) {
+      residuals.push("account:github_connection");
+    }
     // The owner-scoped usage aggregate (migration 054). Erasing the account is
     // the ONLY event that may clear it: `usage_periods` is deliberately outside
     // `PROJECT_SCOPED_TABLES` because an allowance a user can reset by deleting

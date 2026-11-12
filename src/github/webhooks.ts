@@ -18,6 +18,7 @@ import {
   setInstallationSuspended,
   upsertInstallation,
 } from "../storage/github-installations";
+import { deleteConnectionsForGitHubUser } from "../storage/github-user-connections";
 import { createImportJob, getLatestImportDepth } from "../storage/imports";
 import { layerModeAllowed, pushMirrorMode } from "../storage/push-mirrors";
 import { getWorkspace } from "../storage/state";
@@ -789,6 +790,27 @@ app.post("/", async (c) => {
       case "installation_repositories":
         await handleInstallationChange(c.env, eventType, data, logger);
         break;
+
+      // Also sent without subscribing: a person revoked their authorization
+      // of the app in their GitHub settings. Their stored token is dead, so
+      // the connection that held it goes, and their next promotion is opened
+      // as the app instead of failing its way there.
+      case "github_app_authorization": {
+        const sender = data.sender;
+        const senderId =
+          typeof sender === "object" && sender !== null
+            ? (sender as { id?: unknown }).id
+            : undefined;
+        if (data.action === "revoked" && typeof senderId === "number") {
+          const removed = await deleteConnectionsForGitHubUser(c.env.DB, String(senderId), logger);
+          if (removed.success && removed.data > 0) {
+            logger.info("GitHub authorization revoked; connection removed", {
+              connections: removed.data,
+            });
+          }
+        }
+        break;
+      }
 
       default:
         logger.debug("Unhandled GitHub event type", { eventType });

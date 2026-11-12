@@ -26,6 +26,9 @@ export const ACCESS_SNAPSHOT_TTL_SECONDS = 600;
  */
 export const ACCESS_SNAPSHOT_MAX_INSTALLATIONS = 30;
 
+const PURPOSE_LINK = "link";
+const PURPOSE_CONNECT = "connect";
+
 /** What a person asked for before being sent to GitHub. */
 export interface LinkIntent {
   userId: string;
@@ -33,6 +36,12 @@ export interface LinkIntent {
   installationId?: number;
   /** Absent: link to the person's own account. */
   targetOrgId?: string;
+  /**
+   * Set when the round trip is not about an installation at all: the person is
+   * connecting their GitHub account so their pull requests are opened as them
+   * (migration 086). The callback then keeps the token it would otherwise revoke.
+   */
+  connectAccount?: true;
 }
 
 interface LinkStateRow {
@@ -40,6 +49,7 @@ interface LinkStateRow {
   user_id: string;
   installation_id: number | null;
   target_org_id: string | null;
+  purpose: string;
   expires_at: number;
 }
 
@@ -82,8 +92,8 @@ export async function issueLinkState(
     await db
       .prepare(
         `INSERT INTO github_app_link_states
-           (state_hash, session_hash, user_id, installation_id, target_org_id, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+           (state_hash, session_hash, user_id, installation_id, target_org_id, purpose, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         await hashToken(state),
@@ -91,6 +101,7 @@ export async function issueLinkState(
         intent.userId,
         intent.installationId ?? null,
         intent.targetOrgId ?? null,
+        intent.connectAccount ? PURPOSE_CONNECT : PURPOSE_LINK,
         nowSeconds() + LINK_STATE_TTL_SECONDS,
       )
       .run();
@@ -130,7 +141,7 @@ export async function consumeLinkState(
     const row = await db
       .prepare(
         `DELETE FROM github_app_link_states WHERE state_hash = ?
-         RETURNING session_hash, user_id, installation_id, target_org_id, expires_at`,
+         RETURNING session_hash, user_id, installation_id, target_org_id, purpose, expires_at`,
       )
       .bind(await hashToken(state))
       .first<LinkStateRow>();
@@ -142,6 +153,10 @@ export async function consumeLinkState(
       logger.warn("GitHub App link state presented on a different session; burned", { userId });
       return ok(null);
     }
+    if (row.purpose === PURPOSE_CONNECT) return ok({ userId: row.user_id, connectAccount: true });
+    // Anything else was issued as a link. An unknown purpose is refused, not
+    // read as one: a state must only ever do what it was issued for.
+    if (row.purpose !== PURPOSE_LINK) return ok(null);
     return ok({
       userId: row.user_id,
       ...(row.installation_id !== null ? { installationId: row.installation_id } : {}),

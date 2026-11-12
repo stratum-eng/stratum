@@ -6,6 +6,7 @@ import {
   fetchCurrentGitHubAccess,
   githubAppCallbackUrl,
   githubAppOAuthConfig,
+  refreshGitHubAppUserTokens,
   revokeGitHubAppUserToken,
 } from "../src/github/user-access";
 import {
@@ -113,13 +114,92 @@ describe("exchangeGitHubAppCode", () => {
       sent = JSON.parse(String(init?.body));
       return json({ access_token: TOKEN });
     });
-    expect(await exchange()).toEqual({ success: true, data: TOKEN });
+    expect(await exchange()).toEqual({ success: true, data: { accessToken: TOKEN } });
     expect(sent).toEqual({
       client_id: CONFIG.clientId,
       client_secret: CONFIG.clientSecret,
       code: "the-code",
       redirect_uri: "https://app.example/github/app/callback",
     });
+  });
+});
+
+describe("the tokens GitHub issues", () => {
+  const exchange = () =>
+    exchangeGitHubAppCode(CONFIG, "the-code", "https://app.example/github/app/callback", logger);
+
+  it("carries the refresh token and both lifetimes when the app's tokens expire", async () => {
+    answerWith(() =>
+      json({
+        access_token: TOKEN,
+        expires_in: 28800,
+        refresh_token: "ghr_refresh",
+        refresh_token_expires_in: 15897600,
+      }),
+    );
+    expect(await exchange()).toEqual({
+      success: true,
+      data: {
+        accessToken: TOKEN,
+        refreshToken: "ghr_refresh",
+        accessExpiresIn: 28800,
+        refreshExpiresIn: 15897600,
+      },
+    });
+  });
+
+  it("drops lifetimes that are not positive whole numbers", async () => {
+    answerWith(() => json({ access_token: TOKEN, expires_in: "soon", refresh_token: "" }));
+    expect(await exchange()).toEqual({ success: true, data: { accessToken: TOKEN } });
+  });
+});
+
+describe("refreshGitHubAppUserTokens", () => {
+  const refresh = () => refreshGitHubAppUserTokens(CONFIG, "ghr_old", logger);
+
+  it("sends the refresh grant with the app's credentials and returns the new pair", async () => {
+    let sent: unknown;
+    answerWith((_url, init) => {
+      sent = JSON.parse(String(init?.body));
+      return json({ access_token: TOKEN, refresh_token: "ghr_new", expires_in: 28800 });
+    });
+    expect(await refresh()).toEqual({
+      success: true,
+      data: { accessToken: TOKEN, refreshToken: "ghr_new", accessExpiresIn: 28800 },
+    });
+    expect(sent).toEqual({
+      client_id: CONFIG.clientId,
+      client_secret: CONFIG.clientSecret,
+      grant_type: "refresh_token",
+      refresh_token: "ghr_old",
+    });
+  });
+
+  it("is null, not an error, when GitHub refuses the refresh token", async () => {
+    answerWith(() => json({ error: "bad_refresh_token" }));
+    expect(await refresh()).toEqual({ success: true, data: null });
+  });
+
+  it("is an error when GitHub refuses for a reason that is not the token", async () => {
+    for (const code of ["incorrect_client_credentials", "unsupported_grant_type", "x y z"]) {
+      answerWith(() => json({ error: code }));
+      expect((await refresh()).success).toBe(false);
+    }
+  });
+
+  it("is an error, which says nothing about the token, when GitHub cannot be asked", async () => {
+    for (const answer of [
+      () => {
+        throw new TypeError("network down");
+      },
+      () => new Response("unavailable", { status: 503 }),
+      () => new Response("<html>", { status: 200 }),
+    ]) {
+      answerWith(answer);
+      const result = await refresh();
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.message).not.toContain("ghr_old");
+    }
   });
 });
 

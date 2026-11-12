@@ -390,11 +390,28 @@ npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app.pkcs8.pem
 # page. These are NOT GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET above, which
 # belong to the sign-in OAuth App. Until both are set, every link attempt is
 # refused with 501 NOT_CONFIGURED and the setup page says so; there is no
-# fallback rule. Existing links and unlinking keep working. The user token is
-# used inside the callback request only: never stored, never logged, revoked on
-# the way out.
+# fallback rule. Existing links and unlinking keep working. The user token a
+# link uses lives inside the callback request only: never stored, never logged,
+# revoked on the way out.
 npx wrangler secret put GITHUB_APP_CLIENT_ID
 npx wrangler secret put GITHUB_APP_CLIENT_SECRET
+# Optional: let people connect their GitHub account (Settings -> GitHub) so the
+# pull requests they promote are opened as them, not with the instance's own
+# credential (the app's bot, or the GITHUB_TOKEN account under a binding). This is
+# the one case where Stratum KEEPS a GitHub user token, encrypted with this
+# secret in the github_user_connections table. Generate it once
+# (openssl rand -base64 48) and do not change it: changing it makes every
+# stored connection unreadable, and people have to connect again. Unset, nobody
+# can connect, nothing is stored, and every pull request is opened with the
+# instance's own credential, as before.
+# It needs the two secrets above, and on the GitHub App:
+#   - "Pull requests: Read and write" (already needed to open them at all);
+#   - "Expire user authorization tokens" left ON (GitHub's default), so a
+#     stored token is good for eight hours and is renewed when next used.
+#     Turned off it still works: the stored token then never expires, which
+#     makes a leak of it worth more.
+# Stored connections are left out of D1 backups on purpose.
+npx wrangler secret put GITHUB_USER_TOKEN_SECRET
 # Optional operator bindings: comma-separated githubOwner=org:<orgId> or
 # githubOwner=user:<userId> entries. Each lets that Stratum org or user (and,
 # for a user, their agents) act on that GitHub owner's repos without an
@@ -455,6 +472,10 @@ npx wrangler secret put GOOGLE_CLIENT_SECRET --env=staging
 # URL is https://<staging host>/github/app/callback.
 npx wrangler secret put GITHUB_APP_CLIENT_ID --env=staging
 npx wrangler secret put GITHUB_APP_CLIENT_SECRET --env=staging
+# Optional, as in production: lets people connect their GitHub account so the
+# pull requests they promote are opened as them. Use a different value from
+# production's.
+npx wrangler secret put GITHUB_USER_TOKEN_SECRET --env=staging
 ```
 
 Each provider is independent, and neither blocks magic-link sign-in.

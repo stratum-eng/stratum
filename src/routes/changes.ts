@@ -20,6 +20,7 @@ import {
 } from "../services/change-flow";
 import { dispatchChecks } from "../services/check-runs";
 import { type DispatchOutcome, dispatchEvaluationRun } from "../services/evaluation-run";
+import { dropRejectedConnection, resolvePrAuthor } from "../services/github-pr-author";
 import { getCommitLogPreferNative } from "../storage/artifacts-reads";
 import { recordAudit } from "../storage/audit";
 import { beginEvaluationRun, newEvaluationRunId } from "../storage/change-evaluation";
@@ -92,6 +93,18 @@ import {
   ok,
   unauthorized,
 } from "../utils/response";
+
+/** The author's login in a pull request GitHub returned, when it names one. */
+function githubLoginOf(pr: unknown): string | undefined {
+  if (typeof pr !== "object" || pr === null) return undefined;
+  const user = (pr as { user?: unknown }).user;
+  if (typeof user !== "object" || user === null) return undefined;
+  const login = (user as { login?: unknown }).login;
+  // Bot logins end in "[bot]"; nothing else outside letters, digits and hyphens is a login.
+  return typeof login === "string" && /^[A-Za-z0-9-]{1,64}(\[bot\])?$/.test(login)
+    ? login
+    : undefined;
+}
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -2742,22 +2755,44 @@ app.post("/changes/:id/github-pr", async (c) => {
   // this head lives in the client (createOrReusePR): a re-promotion race, or
   // a retry after `updateChangeStatus` failed post-creation, both 422 here,
   // and the PR the caller wanted already exists either way.
-  const client = new GitHubClient(githubToken, logger);
-  const result = await client.createOrReusePR(
-    {
-      owner: repo.owner,
-      repo: repo.repo,
-      title: body.title ?? change.title ?? `Stratum: ${change.id}`,
-      body: prBody,
-      head: branch,
-      base,
-      draft: body.draft ?? true,
-    },
-    // A duplicate-head lookup hit is only worth reusing if it's a PR this
-    // route would be willing to persist — otherwise the original create
-    // error is the more useful thing to report (see isUsableGithubPr above).
-    (candidate) => isUsableGithubPr(candidate, repo),
-  );
+  const prOptions = {
+    owner: repo.owner,
+    repo: repo.repo,
+    title: body.title ?? change.title ?? `Stratum: ${change.id}`,
+    body: prBody,
+    head: branch,
+    base,
+    draft: body.draft ?? true,
+  };
+  // A duplicate-head lookup hit is only worth reusing if it's a PR this
+  // route would be willing to persist — otherwise the original create
+  // error is the more useful thing to report (see isUsableGithubPr above).
+  const isReusable = (candidate: unknown) => isUsableGithubPr(candidate, repo);
+
+  // The branch was pushed with the app's token above and stays that way; only
+  // this call decides the pull request's author. As the person promoting when
+  // they have connected GitHub, as the app otherwise, and as the app again if
+  // GitHub will not have it from them: their access to this repository is not
+  // something a promotion should fail on.
+  let author = await resolvePrAuthor(c.env, userId, logger);
+  let result =
+    author.kind === "user"
+      ? await new GitHubClient(author.token, logger, { personal: true }).createOrReusePR(
+          prOptions,
+          isReusable,
+        )
+      : undefined;
+  if (author.kind === "user" && result !== undefined && !result.success) {
+    logger.warn("GitHub would not open the pull request as the person; opening it as the app", {
+      changeId: id,
+      userId: author.userId,
+      status: result.status,
+    });
+    if (result.status === 401) await dropRejectedConnection(c.env, author.userId, logger);
+    author = { kind: "app", reason: "github_refused" };
+    result = undefined;
+  }
+  result ??= await new GitHubClient(githubToken, logger).createOrReusePR(prOptions, isReusable);
 
   if (!result.success) {
     if (result.networkError) {
@@ -2872,10 +2907,17 @@ app.post("/changes/:id/github-pr", async (c) => {
     return badRequest(updateResult.error.message);
   }
 
+  // Who GitHub says the author is, which on a reused pull request is whoever
+  // opened it the first time and not who was chosen just now.
+  const prAuthorLogin = githubLoginOf(result.pr);
+  const openedAs = result.reused ? undefined : author.kind;
   logger.info("Change promoted to GitHub PR", {
     changeId: id,
     prNumber: pr.number,
     repo: `${repo.owner}/${repo.repo}`,
+    reused: result.reused,
+    ...(openedAs !== undefined ? { openedAs } : {}),
+    ...(author.kind === "app" ? { openedAsAppBecause: author.reason } : {}),
   });
   return okOrFormRedirect(c, id, {
     changeId: id,
@@ -2885,6 +2927,13 @@ app.post("/changes/:id/github-pr", async (c) => {
       branch,
       pullRequestNumber: pr.number,
       pullRequestUrl: pr.html_url,
+      ...(prAuthorLogin !== undefined ? { pullRequestAuthor: prAuthorLogin } : {}),
+      ...(openedAs !== undefined ? { openedAs } : {}),
+      // Only where there was a choice: a deployment without the feature has
+      // nothing to explain, and neither has a pull request that already existed.
+      ...(openedAs === "app" && author.kind === "app" && author.reason !== "not_configured"
+        ? { openedAsAppBecause: author.reason }
+        : {}),
     },
   });
 });

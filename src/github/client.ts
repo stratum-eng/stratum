@@ -392,10 +392,30 @@ export type GitHubPageResult =
 export class GitHubClient {
   private token: string;
   private logger: Logger;
+  private sharesRepositoryHealth: boolean;
 
-  constructor(token: string, logger: Logger) {
+  /**
+   * @param token - The credential every call is made with
+   * @param logger - Request logger
+   * @param options - `personal` for a token that is one person's own. The
+   *   circuit breaker measures whether a repository is reachable by the
+   *   deployment's credential; a person without access to it answers 403 or
+   *   404 every time, and counting those would open the breaker for callers
+   *   that can reach the repository perfectly well. A personal client neither
+   *   feeds the breaker nor is stopped by it.
+   */
+  constructor(token: string, logger: Logger, options: { personal?: boolean } = {}) {
     this.token = token;
     this.logger = logger;
+    this.sharesRepositoryHealth = options.personal !== true;
+  }
+
+  private circuitOpen(endpoint: string): boolean {
+    return this.sharesRepositoryHealth && isCircuitOpen(endpoint);
+  }
+
+  private recordCircuit(endpoint: string, success: boolean): void {
+    if (this.sharesRepositoryHealth) recordCircuitResult(endpoint, success);
   }
 
   /**
@@ -434,7 +454,7 @@ export class GitHubClient {
     const maxRetries = requestOpts.maxRetries ?? MAX_RETRIES;
     const retryCount = requestOpts.retryCount ?? 0;
 
-    if (isCircuitOpen(endpoint)) {
+    if (this.circuitOpen(endpoint)) {
       return {
         success: false,
         error: "Service temporarily unavailable (circuit open)",
@@ -483,7 +503,7 @@ export class GitHubClient {
             return this.request(endpoint, options, { ...requestOpts, retryCount: retryCount + 1 });
           }
           await discardResponseBody(response, this.logger, endpoint);
-          recordCircuitResult(endpoint, false);
+          this.recordCircuit(endpoint, false);
           return {
             success: false,
             error: `GitHub rate limit exceeded. Resets at ${new Date(resetTime).toISOString()}`,
@@ -517,7 +537,7 @@ export class GitHubClient {
           error: errorText,
         });
         if (isCircuitFailureStatus(response.status)) {
-          recordCircuitResult(endpoint, false);
+          this.recordCircuit(endpoint, false);
         }
         return {
           success: false,
@@ -528,7 +548,7 @@ export class GitHubClient {
         };
       }
 
-      recordCircuitResult(endpoint, true);
+      this.recordCircuit(endpoint, true);
       // A 2xx response with a body that isn't valid JSON is a malformed
       // response, not a network failure — GitHub was reached and answered.
       // Parsed separately from the fetch itself so the outer catch (network
@@ -555,7 +575,7 @@ export class GitHubClient {
       this.logger.error("GitHub API request failed", error instanceof Error ? error : undefined, {
         endpoint,
       });
-      recordCircuitResult(endpoint, false);
+      this.recordCircuit(endpoint, false);
       return {
         success: false,
         error: `Request failed: ${error instanceof Error ? error.message : "Unknown error"}`,

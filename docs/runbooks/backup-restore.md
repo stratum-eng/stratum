@@ -12,7 +12,7 @@ Each run writes one timestamped prefix `<runTs>/` (an ISO-8601 instant) to the
 
 | Path | Contents |
 | --- | --- |
-| `<runTs>/d1/<table>.ndjson` | One NDJSON dump per D1 table (header line carries table + columns). |
+| `<runTs>/d1/<table>.ndjson` | One NDJSON dump per backed-up D1 table (header line carries table + columns). Tables excluded on purpose are listed in `src/storage/d1-backup.ts`; `github_user_connections` is one. |
 | `<runTs>/kv/projects.json` | All project identity records from KV. |
 | `<runTs>/kv/workspaces.json` | All workspace identity records from KV. |
 | `<runTs>/repos/<projectId>.pack` | Git pack of the **full reachable object set** for the repo. |
@@ -330,6 +330,10 @@ least one tag.
   restored `project_secrets` rows were encrypted under a different
   `DEPLOY_SECRET_KEY`. Not a backup defect: that key is never backed up. Restore
   the original key, or have each project re-enter its secrets.
+- **Promoted pull requests are opened by the app again after a restore** —
+  expected. People's stored GitHub authorizations (`github_user_connections`)
+  are not backed up, and a restored pair would not work anyway. Each person
+  connects again under Settings → GitHub.
 - **Repo restore `409`** — the project's repo still exists; pass `force` only when
   intentionally overwriting.
 - **Repo restore `404`** — the run did not complete, or holds no pack for that

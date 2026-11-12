@@ -138,7 +138,10 @@ has one. Otherwise they return `403 REAUTHENTICATION_REQUIRED`.
 `DELETE /api/users/me`
 
 GDPR-grade account erasure. Deletes the caller's account and **all** owned
-projects, revokes all tokens/sessions (and the user's agents), and **anonymizes**
+projects, revokes all tokens/sessions (and the user's agents), deletes the
+GitHub authorization stored for a
+[connected GitHub account](github-app.md#connect-a-github-account) and asks
+GitHub to revoke it, and **anonymizes**
 the user's contributions to *other* people's projects (author set to a
 `deleted-user` tombstone — the contribution stays, the identity is removed).
 Audit log entries are kept, with the account's id and email replaced by

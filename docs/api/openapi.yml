@@ -3379,7 +3379,18 @@ paths:
         repository's canonical project. Creates a (draft by default) PR from
         branch `stratum/{changeId}` and marks the change `promoted`.
 
-        The credential is the GitHub App's installation token when the project's
+        Two credentials are involved. The branch is always pushed with the
+        instance's credential, described next. The PR itself is created with the
+        promoting person's own GitHub authorization when they have connected
+        their GitHub account, so that GitHub records them as its author, and
+        with the instance's credential otherwise. Connecting does not
+        guarantee it: the instance's credential is also used when the person's
+        authorization has lapsed, is being renewed by another promotion at
+        that moment, cannot be read, or is refused by GitHub for this
+        repository. `github.openedAs` in the response says which was used,
+        and `github.openedAsAppBecause` why.
+
+        The instance's credential is the GitHub App's installation token when the project's
         owner is linked to the installation covering the repository (or an
         operator binding names that owner). Otherwise it is the instance
         `GITHUB_TOKEN`, and only under an operator binding. A refused
@@ -3421,6 +3432,28 @@ paths:
                       branch: { type: string }
                       pullRequestNumber: { type: integer }
                       pullRequestUrl: { type: string }
+                      pullRequestAuthor:
+                        type: string
+                        description: The PR author's GitHub login, as GitHub returned it.
+                      openedAs:
+                        type: string
+                        enum: [user, app]
+                        description: |
+                          Who this call opened the PR as: the person promoting,
+                          when they have connected their GitHub account, or the
+                          app. Absent when the PR already existed.
+                      openedAsAppBecause:
+                        type: string
+                        enum:
+                          - not_connected
+                          - connection_expired
+                          - refresh_in_progress
+                          - unavailable
+                          - github_refused
+                        description: |
+                          Why the app opened the PR, on an instance where
+                          accounts can be connected. The PR was created with the
+                          instance's credential.
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -3470,7 +3503,9 @@ paths:
       summary: Take a promoted change's GitHub pull request out of draft
       description: >-
         Users only, with write access to the project. Acts on the pull request
-        the change was promoted to. A pull request that is already ready
+        the change was promoted to, always with the instance's GitHub
+        credential and never with a person's connected GitHub account, whoever
+        the pull request was opened as. A pull request that is already ready
         succeeds with `alreadyReady: true`.
       security: [{ bearerAuth: [] }]
       responses:
@@ -5927,7 +5962,12 @@ paths:
       description: |
         Starts the GitHub round trip that links an installation; it links
         nothing by itself. Once linked, projects owned by the target use the
-        installation's token for outbound GitHub calls on its repositories.
+        installation's token for the app's own outbound GitHub calls on its
+        repositories: pushing a promoted change's branch, sync, and evaluation
+        comments and statuses. Creating the pull request at promotion is the one
+        call that may be made as a person instead: with the promoting person's
+        connected GitHub authorization when they have one that can be used, and
+        with the installation's token otherwise (see the promote operation).
 
         Control is proven with GitHub at the moment of linking. The caller is
         sent to the app's authorization page (`authorizeUrl`), and on return to
@@ -5935,8 +5975,11 @@ paths:
         the installation must be listed for them, and they must be an active
         `admin` (owner) of the organization it is installed on, or be the
         personal account it is installed on. Who installed the app decides
-        nothing. The GitHub user token is used for that one request, never
-        stored or logged, and revoked afterwards.
+        nothing. The GitHub user token this round trip obtains is used for that
+        one request, never stored or logged, and revoked afterwards. (A person
+        who separately connects their GitHub account does have an
+        authorization stored, encrypted, for opening the pull requests they
+        promote; linking never reads or changes it.)
 
         Requires a browser session: a token cannot be walked through GitHub's
         authorization page and is refused with 403 (`BROWSER_REQUIRED`). The

@@ -697,6 +697,24 @@ installation lookup or token minting failed. The last case is logged as a
 "GitHub App token unavailable" warning; check for it before assuming the
 configuration is missing.
 
+**Who the PR is opened as.** The branch is always pushed with the credential
+above. The PR itself is opened as the person promoting when they have
+[connected their GitHub account](#connect-a-github-account), so
+that GitHub records them as its author, and with the instance's own credential
+otherwise (reported as `app`). The response
+reports it under `github`:
+
+| Field | Meaning |
+|---|---|
+| `pullRequestAuthor` | The author's GitHub login, as GitHub returned it. Absent when GitHub named none. |
+| `openedAs` | `user` or `app`: who this call opened the PR as. `app` means the instance's own credential, which is the GitHub App's installation token or, under an operator binding, `GITHUB_TOKEN`. Absent when the PR already existed, since its author was settled when it was first opened. |
+| `openedAsAppBecause` | Present with `openedAs: "app"` on an instance where accounts can be connected. `not_connected`: the promoter has no connection. `connection_expired`: their authorization lapsed or was revoked, and has been removed; they need to connect again. `refresh_in_progress`: another promotion of theirs was renewing the authorization at that moment. `unavailable`: the connection could not be read or renewed just now. `github_refused`: GitHub would not open the PR as them, for example because they cannot read the repository. |
+
+None of these fails the promotion by itself: Stratum then creates the PR with
+the instance credential, and that attempt succeeds or fails (`502
+GITHUB_ERROR`) as it would have without a connection. A PR opened with the instance's credential can be closed and the
+change promoted again once the cause is fixed.
+
 If a re-evaluation begins while the branch is being pushed, the response is
 `409 EVALUATION_PENDING`: the PR exists and its link is recorded (`github` in
 the body), but the change is not marked `promoted`. Promote again once the
@@ -708,7 +726,9 @@ evaluation finishes; that re-pushes to the same PR.
 Takes the change's pull request out of draft, so promoting a change and asking
 for its review stay two separate decisions. Users only, with write access to the
 project; no body. It acts on the pull request the change was promoted to, with
-the same credential rules as promotion.
+the instance credential that pushes a promoted branch, under the same rules. It
+never uses a person's connected GitHub account, whoever the pull request was
+opened as.
 
 ```json
 { "ready": true, "changeId": "chg_…", "alreadyReady": false,
@@ -1361,7 +1381,10 @@ has one. Otherwise they return `403 REAUTHENTICATION_REQUIRED`.
 `DELETE /api/users/me`
 
 GDPR-grade account erasure. Deletes the caller's account and **all** owned
-projects, revokes all tokens/sessions (and the user's agents), and **anonymizes**
+projects, revokes all tokens/sessions (and the user's agents), deletes the
+GitHub authorization stored for a
+[connected GitHub account](#connect-a-github-account) and asks
+GitHub to revoke it, and **anonymizes**
 the user's contributions to *other* people's projects (author set to a
 `deleted-user` tombstone — the contribution stays, the identity is removed).
 Audit log entries are kept, with the account's id and email replaced by
@@ -1543,9 +1566,9 @@ an account that is being deleted.
 
 ## GitHub App installations
 
-When the instance runs a GitHub App, outbound GitHub calls for a project — PR
-promotion, sync, and evaluation comments and statuses — use the app's
-installation token for the repository **only if that installation is linked to
+When the instance runs a GitHub App, outbound GitHub calls for a project —
+pushing a promoted change's branch, sync, and evaluation comments and statuses
+— use the app's installation token for the repository **only if that installation is linked to
 the project's owner, or an [operator binding](#operator-bindings) names that
 owner** for the repository's GitHub owner. A project's source URL is whatever
 its owner typed, so without one of the two anyone could import another
@@ -1554,6 +1577,13 @@ installation. An installation that is neither linked nor covered by a binding
 grants nothing, and a caller the installation refuses is **not** handed the
 instance-wide `GITHUB_TOKEN` instead: that credential is reserved for owners the
 operator binds explicitly.
+
+One call at promotion is not always the app's. The pull request itself is
+created with the promoting person's own GitHub authorization when they have
+[connected their GitHub account](#connect-a-github-account) and it can be used,
+so that GitHub records them as its author, and with the installation token
+otherwise. See
+[Promote to a GitHub PR](#promote-to-a-github-pr) for the rule.
 
 A [push mirror](/guides/push-mirror/) uses the app too, and only
 the app: it never falls back to `GITHUB_TOKEN`. For each push it asks for an
@@ -1590,8 +1620,10 @@ must be the one connected to your Stratum account; sign in with GitHub once to
 connect one.
 
 The answer is used for that one request. Stratum does not store the GitHub user
-token it is given, does not log it, and asks GitHub to revoke it before the
-request ends. A link, once made, is not re-checked when someone later leaves
+token a link round trip gives it, does not log it, and asks GitHub to revoke it
+before the request ends. (The only GitHub user token Stratum keeps is the one a
+person stores by [connecting their account](#connect-a-github-account), which
+linking neither reads nor changes.) A link, once made, is not re-checked when someone later leaves
 the GitHub organization; unlink it, or suspend or uninstall the app on GitHub.
 
 Linking is **off until the operator sets `GITHUB_APP_CLIENT_ID` and
@@ -1734,6 +1766,42 @@ your own.
 Allowed for the linked user, or an admin of the linked org. The installation's
 repositories then serve no project until it is linked again (or an operator
 binding covers them).
+
+### Connect a GitHub account
+
+Separate from installations: this is one person letting Stratum open the pull
+requests **they** promote as them, so that GitHub records them as the author
+and not the app. See
+[Who the pull request is opened as](/guides/code-review/#who-the-pull-request-is-opened-as).
+
+`POST /github/app/connect`
+
+A browser session only. Redirects to GitHub to authorize the app, and GitHub
+returns to the same [callback](#the-callback) as linking. The account that
+authorizes must be the GitHub account the Stratum account signs in with;
+anything else is refused and the authorization revoked. On success Stratum
+stores the user access token, and the refresh token when the app issues expiring
+tokens, encrypted with `GITHUB_USER_TOKEN_SECRET`. This is the only GitHub user
+token Stratum keeps: the token a link round trip uses is still revoked before
+that request ends.
+
+`POST /github/app/disconnect`
+
+A browser session only. Deletes the stored authorization and asks GitHub to
+revoke the token. The same happens when the account is deleted. The stored
+authorization is also deleted, with nothing left to revoke, when GitHub reports
+that the person revoked the app (`github_app_authorization` webhook), when
+GitHub refuses to renew it, and when GitHub answers `401` for it at a
+promotion.
+
+Both end with a redirect to `/settings#github` carrying a fixed notice code.
+There is no JSON form of either. They need **`GITHUB_APP_CLIENT_ID`,
+`GITHUB_APP_CLIENT_SECRET` and `GITHUB_USER_TOKEN_SECRET`**; without all three
+the settings card is not shown, connecting is refused, and every pull request
+is opened with the instance's own credential.
+
+Stored authorizations are deliberately left out of database backups. After a
+restore, people connect again.
 
 ### Operator bindings
 
