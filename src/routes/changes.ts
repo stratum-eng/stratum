@@ -393,13 +393,18 @@ async function reportVerdictOnPromotion(
       // nothing later is bound to post them, so nothing that went wrong with
       // the verdict may cost them this chance.
       const checks = await listChecksForChange(c.env.DB, logger, change.id);
-      if (checks.success) {
-        await reportChecksToGitHub(c.env, logger, {
-          change: published,
-          project,
-          checks: checks.data,
+      if (!checks.success) {
+        logger.warn("Could not read check runs; the promoted PR gets no check statuses yet", {
+          changeId: change.id,
+          error: checks.error.message,
         });
+        return;
       }
+      await reportChecksToGitHub(c.env, logger, {
+        change: published,
+        project,
+        checks: checks.data,
+      });
     } catch (error) {
       logger.warn("Posting the verdict to the promoted PR threw; the promotion stands", {
         changeId: change.id,
