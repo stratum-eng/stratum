@@ -2137,7 +2137,7 @@ app.post("/changes/:id/evaluate", async (c) => {
   const tipChanged = change.evaluatedSha !== undefined && change.evaluatedSha !== evaluatedSha;
   const baseChanged = change.baseSha !== undefined && change.baseSha !== baseOid;
   // The runs, the dismissal and the re-pin land together or not at all, and
-  // not at all if the change was merged, rejected or promoted while this ran
+  // not at all if the change reached a final status while this ran
   // (issue #5): inline evaluation does not hold the change in `evaluating`, so
   // a final decision can overtake it, and must not be overwritten by it.
   const recorded = await recordReevaluation(c.env.DB, logger, {

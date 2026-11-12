@@ -117,7 +117,7 @@ codes are in the [OpenAPI specification](openapi.yml).
   was being opened — the PR exists (the response carries `github`) but the
   change is not promoted; promote again once the evaluation finishes
 - `CHANGE_FINALIZED` — `409`; from `POST /api/changes/{id}/evaluate` when the
-  evaluation runs inline: the change was merged, rejected or promoted while it
+  evaluation runs inline: the change was merged, rejected, promoted or reverted while it
   ran, so its results, verdict and approval changes were discarded (its cost
   is still recorded). The change keeps that final decision, which the
   response's `status` names

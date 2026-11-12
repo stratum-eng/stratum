@@ -494,8 +494,8 @@ in `evaluating` is allowed, and is the manual way to recover it. Without the
 queue the evaluation runs inline and answers `200` with the verdict.
 
 An inline evaluation records its results, its verdict and any approval
-dismissal together, or not at all. If the change was merged, rejected or
-promoted while it ran, none of them is recorded, the change keeps that
+dismissal together, or not at all. If the change was merged, rejected,
+promoted or reverted while it ran, none of them is recorded, the change keeps that
 decision, and the answer is `409 CHANGE_FINALIZED` with the change's `status`.
 The evaluation's cost is still recorded, since it was spent. A change deleted
 while it ran answers `404`.
