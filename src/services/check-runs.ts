@@ -97,6 +97,13 @@ export interface CheckDispatchPayload {
   event: "checks.requested";
   /** The change the checks belong to. */
   changeId: string;
+  /**
+   * The change's title and description as its author wrote them, or `null`
+   * when it has none. A runner that reviews the change, rather than builds it,
+   * needs what the author said it does to judge whether it does that.
+   */
+  title: string | null;
+  description: string | null;
   /** `@namespace/slug` of the project. */
   project: string;
   /** The commit `diff` was computed against. */
@@ -167,6 +174,8 @@ function dispatchTimeoutMs(entry: ChecksEvaluatorConfig): number {
 /** What a dispatch needs to know about the revision it announces. */
 export interface CheckDispatchTarget {
   changeId: string;
+  title?: string;
+  description?: string;
   project: ProjectEntry;
   /** The policy read from the project's base branch — never from the change. */
   policy: EvalPolicy;
@@ -178,6 +187,16 @@ export interface CheckDispatchTarget {
   headTreeSha: string;
   /** Origin of the triggering request, used when `APP_URL` is not set. */
   requestOrigin?: string;
+}
+
+/** The change's own text for a dispatch target, leaving out what it does not have. */
+export function dispatchTextOf(
+  change: Pick<Change, "title" | "description">,
+): Pick<CheckDispatchTarget, "title" | "description"> {
+  return {
+    ...(change.title !== undefined ? { title: change.title } : {}),
+    ...(change.description !== undefined ? { description: change.description } : {}),
+  };
 }
 
 /**
@@ -222,6 +241,8 @@ async function deliverDispatch(
   const payload: CheckDispatchPayload = {
     event: "checks.requested",
     changeId: target.changeId,
+    title: target.title ?? null,
+    description: target.description ?? null,
     project: projectDisplayName(target.project),
     baseSha: target.baseSha,
     headSha: target.headSha,
@@ -343,6 +364,8 @@ async function deliverCiJob(
   return submitCiJob(executor, logger, {
     event: "checks.requested",
     changeId: target.changeId,
+    title: target.title ?? null,
+    description: target.description ?? null,
     project: projectDisplayName(target.project),
     baseSha: target.baseSha,
     headSha: target.headSha,
@@ -598,6 +621,7 @@ export async function rerunCheck(
 
   const target: CheckDispatchTarget = {
     changeId: change.id,
+    ...dispatchTextOf(change),
     project,
     policy,
     diff: diffResult.data.diff,

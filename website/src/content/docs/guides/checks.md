@@ -138,6 +138,8 @@ runs with new ids, and ends any still-pending runs from before.
 {
   "event": "checks.requested",
   "changeId": "chg_8f2b…",
+  "title": "Retry uploads that time out",
+  "description": "Uploads to the archive time out under load…",
   "project": "@acme/api",
   "baseSha": "9c1e…",
   "headSha": "4a7d…",
@@ -153,6 +155,8 @@ runs with new ids, and ends any still-pending runs from before.
 |---|---|
 | `event` | Always `checks.requested`. Also sent as the `X-Stratum-Event` header. |
 | `changeId` | The change the checks belong to. |
+| `title` | The change's title as its author wrote it, or `null` if it has none. |
+| `description` | The change's description (Markdown source), or `null` if it has none. A check that reviews the change can hold it to what its author says it does. |
 | `project` | The project, as `@namespace/slug`. |
 | `baseSha` | The commit `diff` was computed against: where the workspace forked from the project. It is the project's tip only while the workspace is up to date. |
 | `headSha` | The evaluated revision. Echo it back in every report. |

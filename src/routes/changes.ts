@@ -23,7 +23,7 @@ import {
   evaluateWorkspace,
   resolveProjectHead,
 } from "../services/change-flow";
-import { dispatchChecks } from "../services/check-runs";
+import { dispatchChecks, dispatchTextOf } from "../services/check-runs";
 import { type DispatchOutcome, dispatchEvaluationRun } from "../services/evaluation-run";
 import { dropRejectedConnection, resolvePrAuthor } from "../services/github-pr-author";
 import { getCommitLogPreferNative } from "../storage/artifacts-reads";
@@ -2285,6 +2285,7 @@ app.post("/changes/:id/evaluate", async (c) => {
   // A new set of runs replaces whatever the previous revision's were waiting on.
   await dispatchChecks(c.env, logger, {
     changeId: id,
+    ...dispatchTextOf(change),
     project,
     policy: evaluatedPolicy,
     diff,

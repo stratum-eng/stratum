@@ -52,7 +52,7 @@ import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import type { Result } from "../utils/result";
 import { err, ok } from "../utils/result";
-import { dispatchChecks } from "./check-runs";
+import { dispatchChecks, dispatchTextOf } from "./check-runs";
 
 /**
  * The create-change + evaluate pipeline, extracted from the REST route so every
@@ -856,6 +856,7 @@ export async function createChangeWithEvaluation(
   // the change already on the revision its checks were dispatched for (#414).
   await dispatchChecks(env, logger, {
     changeId: change.id,
+    ...dispatchTextOf(change),
     project,
     policy,
     diff,
