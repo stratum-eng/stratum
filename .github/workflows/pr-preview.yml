@@ -2,7 +2,7 @@ name: PR Preview Environment
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened, ready_for_review, closed]
   # Re-runs the cleanup for one closed PR, for previews an earlier cleanup
   # left behind. Deploys never run from here.
   workflow_dispatch:
@@ -291,10 +291,18 @@ jobs:
     # Fork PRs are excluded: pull_request withholds secrets from forks, so the
     # deploy can only fail there — and unreviewed fork code shouldn't get a live
     # preview environment anyway. Never convert this workflow to pull_request_target.
+    #
+    # Draft PRs are excluded too. This job runs the PR's own code (`npm ci`,
+    # the build, wrangler) with the Cloudflare API token in its environment,
+    # and an agent can open a draft PR from a branch of this repository by
+    # promoting a Stratum change. Marking a PR ready is a person's step, so it
+    # is the approval for that code to run with the token; `ready_for_review`
+    # above deploys the preview at that moment.
     if: >
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !github.event.pull_request.draft
     permissions:
       contents: read
       pull-requests: write
