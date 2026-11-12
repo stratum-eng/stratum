@@ -806,7 +806,8 @@ Once a change has a linked PR, each evaluation posts the verdict to the PR as a
 comment (edited in place on re-evaluation) and as a `stratum/evaluation` commit
 status. Promotion posts the change's latest verdict the same way, on the
 revision it pushed, since the change was evaluated before the PR existed. That
-post is best-effort: if it fails, the promotion still succeeds.
+post is best-effort and not retried: if it fails, the promotion still succeeds,
+and promoting again re-posts it.
 
 ## Reviews and Comments API
 

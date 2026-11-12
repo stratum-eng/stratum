@@ -297,6 +297,16 @@ function lacksEvaluatedRevision(change: Change): boolean {
   return change.evaluatedSha === undefined && change.evalRunId !== undefined;
 }
 
+/** The pull request coordinates and head a promotion set on its copy of the change. */
+function pullRequestFieldsOf(change: Change): Partial<Change> {
+  const fields: Partial<Change> = {};
+  if (change.githubOwner !== undefined) fields.githubOwner = change.githubOwner;
+  if (change.githubRepo !== undefined) fields.githubRepo = change.githubRepo;
+  if (change.githubPrNumber !== undefined) fields.githubPrNumber = change.githubPrNumber;
+  if (change.githubHeadSha !== undefined) fields.githubHeadSha = change.githubHeadSha;
+  return fields;
+}
+
 /**
  * Post the change's latest verdict to the pull request it was just promoted to:
  * the comment and the `stratum/evaluation` commit status.
@@ -309,16 +319,6 @@ function lacksEvaluatedRevision(change: Change): boolean {
  * Best-effort, and off the response path where the runtime allows: the pull
  * request exists either way, and a later evaluation reports again.
  */
-/** The pull request coordinates and head a promotion set on its copy of the change. */
-function pullRequestFieldsOf(change: Change): Partial<Change> {
-  const fields: Partial<Change> = {};
-  if (change.githubOwner !== undefined) fields.githubOwner = change.githubOwner;
-  if (change.githubRepo !== undefined) fields.githubRepo = change.githubRepo;
-  if (change.githubPrNumber !== undefined) fields.githubPrNumber = change.githubPrNumber;
-  if (change.githubHeadSha !== undefined) fields.githubHeadSha = change.githubHeadSha;
-  return fields;
-}
-
 async function reportVerdictOnPromotion(
   c: Context<{ Bindings: Env }>,
   logger: Logger,

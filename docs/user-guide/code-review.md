@@ -188,9 +188,11 @@ In layer mode, promoting a change to a GitHub PR moves the conversation to
 GitHub, and your team reviews there as usual. Stratum posts the evaluation
 verdict to the PR as a comment (edited in place on re-evaluation) and as a
 `stratum/evaluation` commit status: the verdict that let the change be promoted
-when the PR is opened, and each later one after that. Because every promoted
-PR carries the status, you can make `stratum/evaluation` a required check in
-GitHub's branch protection. See
+when the PR is opened, and each later one after that. That makes
+`stratum/evaluation` usable as a required check in GitHub's branch protection.
+Posting it is best-effort and is not retried: if GitHub refused it when the PR
+was opened, the PR has no status until the change is evaluated again, and a
+required check would hold the merge. Promote the change again to re-post it. See
 [Getting Started](getting-started.md#choose-your-level-of-buy-in-layer-mode-vs-forge-mode).
 
 ### Who the pull request is opened as
