@@ -224,6 +224,23 @@ function dumpDatabase(): string {
 }
 
 describe("connecting a GitHub account", () => {
+  it("lets the settings page's Connect form follow the redirect to GitHub", async () => {
+    // Chromium and WebKit check every hop of a form's redirect chain against
+    // the submitting page's `form-action`; under `'self'` alone the button did
+    // nothing in production.
+    const page = await call("/settings", { cookie: cookies.alice ?? "" });
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('action="/github/app/connect"');
+    const csp = page.headers.get("Content-Security-Policy") ?? "";
+    expect(csp).toContain("form-action 'self' https://github.com");
+
+    // Once connected the form is gone, and so is the exception.
+    await connectAs("alice", ALICE);
+    const after = await call("/settings", { cookie: cookies.alice ?? "" });
+    expect(await after.text()).not.toContain('action="/github/app/connect"');
+    expect(after.headers.get("Content-Security-Policy") ?? "").toMatch(/form-action 'self'(;|$)/);
+  });
+
   it("stores the authorization encrypted, keeps the token alive, and records who", async () => {
     expect(await connectAs("alice", ALICE)).toBe("github-connected");
 
