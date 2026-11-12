@@ -1,8 +1,8 @@
 # GitHub App installations
 
-When the instance runs a GitHub App, outbound GitHub calls for a project — PR
-promotion, sync, and evaluation comments and statuses — use the app's
-installation token for the repository **only if that installation is linked to
+When the instance runs a GitHub App, outbound GitHub calls for a project —
+pushing a promoted change's branch, sync, and evaluation comments and statuses
+— use the app's installation token for the repository **only if that installation is linked to
 the project's owner, or an [operator binding](#operator-bindings) names that
 owner** for the repository's GitHub owner. A project's source URL is whatever
 its owner typed, so without one of the two anyone could import another
@@ -11,6 +11,13 @@ installation. An installation that is neither linked nor covered by a binding
 grants nothing, and a caller the installation refuses is **not** handed the
 instance-wide `GITHUB_TOKEN` instead: that credential is reserved for owners the
 operator binds explicitly.
+
+One call at promotion is not always the app's. The pull request itself is
+created with the promoting person's own GitHub authorization when they have
+[connected their GitHub account](#connect-a-github-account) and it can be used,
+so that GitHub records them as its author, and with the installation token
+otherwise. See
+[Promote to a GitHub PR](changes.md#promote-to-a-github-pr) for the rule.
 
 A [push mirror](../../user-guide/push-mirror.md) uses the app too, and only
 the app: it never falls back to `GITHUB_TOKEN`. For each push it asks for an

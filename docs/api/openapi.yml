@@ -5961,7 +5961,12 @@ paths:
       description: |
         Starts the GitHub round trip that links an installation; it links
         nothing by itself. Once linked, projects owned by the target use the
-        installation's token for outbound GitHub calls on its repositories.
+        installation's token for the app's own outbound GitHub calls on its
+        repositories: pushing a promoted change's branch, sync, and evaluation
+        comments and statuses. Creating the pull request at promotion is the one
+        call that may be made as a person instead: with the promoting person's
+        connected GitHub authorization when they have one that can be used, and
+        with the installation's token otherwise (see the promote operation).
 
         Control is proven with GitHub at the moment of linking. The caller is
         sent to the app's authorization page (`authorizeUrl`), and on return to
