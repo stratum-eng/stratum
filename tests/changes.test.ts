@@ -2670,6 +2670,18 @@ describe("POST /api/changes/:id/github-pr", () => {
       expect((await promote()).status).toBe(200);
     });
 
+    it("leaves the verdict to an evaluation that started after the promotion read the change", async () => {
+      // The route reads the change once; the post re-reads it just before
+      // sending, and by then a re-evaluation is under way.
+      vi.mocked(getChange)
+        .mockResolvedValueOnce({ success: true, data: evaluated })
+        .mockResolvedValue({ success: true, data: { ...evaluated, status: "evaluating" } });
+
+      expect((await promote()).status).toBe(200);
+
+      expect(calls((u) => u.includes("/statuses/") || u.includes("/comments"))).toEqual([]);
+    });
+
     it("posts nothing for a change with no recorded verdict", async () => {
       vi.mocked(getChange).mockResolvedValue({
         success: true,

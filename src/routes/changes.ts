@@ -309,6 +309,16 @@ function lacksEvaluatedRevision(change: Change): boolean {
  * Best-effort, and off the response path where the runtime allows: the pull
  * request exists either way, and a later evaluation reports again.
  */
+/** The pull request coordinates and head a promotion set on its copy of the change. */
+function pullRequestFieldsOf(change: Change): Partial<Change> {
+  const fields: Partial<Change> = {};
+  if (change.githubOwner !== undefined) fields.githubOwner = change.githubOwner;
+  if (change.githubRepo !== undefined) fields.githubRepo = change.githubRepo;
+  if (change.githubPrNumber !== undefined) fields.githubPrNumber = change.githubPrNumber;
+  if (change.githubHeadSha !== undefined) fields.githubHeadSha = change.githubHeadSha;
+  return fields;
+}
+
 async function reportVerdictOnPromotion(
   c: Context<{ Bindings: Env }>,
   logger: Logger,
@@ -317,6 +327,27 @@ async function reportVerdictOnPromotion(
 ): Promise<void> {
   const report = async (): Promise<void> => {
     try {
+      // Re-read: this runs after the response, and an evaluation may have
+      // started or finished since the request read the change. Posting the
+      // request's copy could then overwrite a newer verdict with an older one.
+      // That evaluation reports for itself, so stand aside unless the change
+      // still holds the verdict for the revision that was just pushed.
+      const fresh = await getChange(c.env.DB, logger, change.id);
+      if (!fresh.success) {
+        logger.warn("Could not re-read the change; the promoted PR gets no verdict yet", {
+          changeId: change.id,
+          error: fresh.error.message,
+        });
+        return;
+      }
+      const current = fresh.data;
+      if (current.status === "evaluating" || current.evaluatedSha !== change.evaluatedSha) {
+        logger.info("Evaluation moved on since promotion; leaving the verdict to it", {
+          changeId: change.id,
+          status: current.status,
+        });
+        return;
+      }
       const runs = await listEvalRuns(c.env.DB, logger, change.id);
       if (!runs.success) {
         logger.warn("Could not read eval runs; the promoted PR gets no verdict yet", {
@@ -325,9 +356,18 @@ async function reportVerdictOnPromotion(
         });
         return;
       }
-      const evaluation = latestEvaluationReport(change, runs.data);
+      const evaluation = latestEvaluationReport(current, runs.data);
       if (evaluation === null) return;
-      await reportEvaluationToGitHub(c.env, change, project, evaluation, logger);
+      // The stored row for the verdict and the comment id; the pull request
+      // coordinates and pushed head from this promotion, in case recording
+      // them failed (they are what GitHub has now either way).
+      await reportEvaluationToGitHub(
+        c.env,
+        { ...current, ...pullRequestFieldsOf(change) },
+        project,
+        evaluation,
+        logger,
+      );
     } catch (error) {
       logger.warn("Posting the verdict to the promoted PR threw; the promotion stands", {
         changeId: change.id,
