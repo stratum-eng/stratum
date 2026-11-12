@@ -2813,19 +2813,43 @@ describe("POST /api/changes/:id/github-pr", () => {
       },
     });
     const evaluated: Change = { ...acceptedChange, evaluatedSha: "sha-evaluated" };
+    const GITHUB_DIR_OID = "0123456789abcdef0123456789abcdef01234567";
     const githubDir = (differs: boolean, workspaceOid = "sha-evaluated") => ({
       success: true as const,
-      data: { differs, workspaceOid },
+      data: { differs, workspaceOid, workspaceEntryOid: GITHUB_DIR_OID },
     });
+    /** GitHub's answer for the root of the base branch: `.github` at this id, or absent. */
+    const treeOnGitHub = (oid: string | null) =>
+      new Response(
+        JSON.stringify({
+          tree: [
+            { path: "README.md", sha: "f".repeat(40), type: "blob" },
+            ...(oid === null ? [] : [{ path: ".github", sha: oid, type: "tree" }]),
+          ],
+          truncated: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    const answerGitHub = (tree: () => Response) =>
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) =>
+        String(url).includes("/git/trees/") && (init?.method ?? "GET") === "GET"
+          ? tree()
+          : githubPrCreated(String(url)),
+      );
+    /** Requests that would create a pull request, as opposed to the read of GitHub's tree. */
+    const prCalls = () =>
+      fetchMock.mock.calls.filter(
+        (call) => (call[1] as RequestInit | undefined)?.method === "POST",
+      );
     const promoteAsAgent = () =>
       app.fetch(request("POST", "/api/changes/chg_abc123/github-pr", {}, AGENT_AUTH), env);
     const refusal = async (res: Response) => {
       expect(res.status).toBe(403);
       const body = (await res.json()) as { code: string; error: string };
       expect(body.code).toBe("PROMOTION_NEEDS_PERSON");
-      // Nothing reached GitHub.
+      // Nothing was published to GitHub.
       expect(pushBranchToRemote).not.toHaveBeenCalled();
-      expect(fetchMock).not.toHaveBeenCalled();
+      expect(prCalls()).toEqual([]);
       return body.error;
     };
 
@@ -2834,6 +2858,55 @@ describe("POST /api/changes/:id/github-pr", () => {
       vi.mocked(getChange).mockResolvedValue({ success: true, data: evaluated });
       vi.mocked(resolveLocalTip).mockResolvedValue({ success: true, data: "sha-evaluated" });
       vi.mocked(rootEntryDiffers).mockResolvedValue(githubDir(false));
+      answerGitHub(() => treeOnGitHub(GITHUB_DIR_OID));
+    });
+
+    it("cannot promote when .github differs from GitHub's own branch, though it matches the project", async () => {
+      // The project has fallen behind its repository: its .github is an older one.
+      answerGitHub(() => treeOnGitHub("a".repeat(40)));
+      const reason = await refusal(await promoteAsAgent());
+      expect(reason).toContain("on GitHub");
+      expect(reason).toContain("Sync the project");
+      // Asked of the base branch the pull request would target.
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.github.com/repos/acme/widgets/git/trees/develop",
+        expect.anything(),
+      );
+    });
+
+    it("cannot promote when GitHub has no .github and the workspace has one, or the reverse", async () => {
+      answerGitHub(() => treeOnGitHub(null));
+      await refusal(await promoteAsAgent());
+
+      vi.mocked(rootEntryDiffers).mockResolvedValue({
+        success: true,
+        data: { differs: false, workspaceOid: "sha-evaluated", workspaceEntryOid: null },
+      });
+      answerGitHub(() => treeOnGitHub(GITHUB_DIR_OID));
+      await refusal(await promoteAsAgent());
+    });
+
+    it("promotes a repository with no .github on either side", async () => {
+      vi.mocked(rootEntryDiffers).mockResolvedValue({
+        success: true,
+        data: { differs: false, workspaceOid: "sha-evaluated", workspaceEntryOid: null },
+      });
+      answerGitHub(() => treeOnGitHub(null));
+      expect((await promoteAsAgent()).status).toBe(200);
+    });
+
+    it("is refused when GitHub's tree cannot be read, or comes back truncated", async () => {
+      answerGitHub(() => new Response("{}", { status: 404 }));
+      expect(await refusal(await promoteAsAgent())).toContain("could not be checked");
+
+      answerGitHub(
+        () =>
+          new Response(JSON.stringify({ tree: [], truncated: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      expect(await refusal(await promoteAsAgent())).toContain("could not be checked");
     });
 
     it("has its pull request opened as its owner, when the owner has connected GitHub", async () => {
@@ -2847,9 +2920,9 @@ describe("POST /api/changes/:id/github-pr", () => {
       expect(res.status).toBe(200);
       // The owner, not the agent, is whose connection is looked for.
       expect(resolvePrAuthor).toHaveBeenLastCalledWith(env, "user_test", expect.anything());
-      expect(
-        new Headers((fetchMock.mock.calls[0]?.[1] as RequestInit).headers).get("authorization"),
-      ).toBe("Bearer ghu_tess");
+      expect(new Headers((prCalls()[0]?.[1] as RequestInit).headers).get("authorization")).toBe(
+        "Bearer ghu_tess",
+      );
       const body = (await res.json()) as { github: Record<string, unknown> };
       expect(body.github.openedAs).toBe("user");
     });
@@ -2870,7 +2943,7 @@ describe("POST /api/changes/:id/github-pr", () => {
           env,
         );
         expect(res.status).toBe(200);
-        const sent = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+        const sent = JSON.parse((prCalls()[0]?.[1] as RequestInit).body as string);
         expect(sent.draft).toBe(true);
       }
     });
@@ -2893,7 +2966,7 @@ describe("POST /api/changes/:id/github-pr", () => {
 
       expect(res.status).toBe(200);
       // No new pull request: the stored one was reused.
-      expect(fetchMock).not.toHaveBeenCalled();
+      expect(prCalls()).toEqual([]);
       expect(updateChangeStatus).toHaveBeenCalledWith(
         env.DB,
         expect.anything(),

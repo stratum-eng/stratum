@@ -920,6 +920,48 @@ export class GitHubClient {
     return { success: true, private: !isPublic };
   }
 
+  /**
+   * The object id of one entry at the root of a branch's tree, as GitHub has
+   * it now, or null when the branch has no such entry.
+   *
+   * A git tree's id is a hash of its contents, so comparing this with the id
+   * of the same directory elsewhere says whether the two are identical without
+   * reading a single file.
+   *
+   * @param owner - Repository owner
+   * @param repo - Repository name
+   * @param ref - Branch name or commit
+   * @param name - The root entry, e.g. `.github`
+   */
+  async getRootTreeEntryOid(
+    owner: string,
+    repo: string,
+    ref: string,
+    name: string,
+  ): Promise<{ success: true; oid: string | null } | { success: false; error: string }> {
+    const result = await this.request<{ tree?: unknown; truncated?: unknown }>(
+      `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}`,
+      {},
+      { timeoutMs: DEFAULT_TIMEOUT_MS },
+    );
+    if (!result.success) return { success: false, error: result.error };
+    const { tree, truncated } = result.data;
+    // A truncated listing cannot say an entry is absent, and absence is an answer here.
+    if (!Array.isArray(tree) || truncated === true) {
+      return { success: false, error: "GitHub returned an unreadable tree" };
+    }
+    for (const item of tree) {
+      if (typeof item !== "object" || item === null) continue;
+      const { path, sha } = item as { path?: unknown; sha?: unknown };
+      if (path === name) {
+        return typeof sha === "string"
+          ? { success: true, oid: sha }
+          : { success: false, error: "GitHub returned an unreadable tree" };
+      }
+    }
+    return { success: true, oid: null };
+  }
+
   private async listPage(endpoint: string): Promise<GitHubPageResult> {
     const result = await this.request<unknown>(endpoint, {}, { timeoutMs: DEFAULT_TIMEOUT_MS });
     if (!result.success) {

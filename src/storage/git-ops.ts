@@ -4844,7 +4844,9 @@ export async function rootEntryDiffers(
   logger: Logger,
   name: string,
   branch = "main",
-): Promise<Result<{ differs: boolean; workspaceOid: string }, AppError>> {
+): Promise<
+  Result<{ differs: boolean; workspaceOid: string; workspaceEntryOid: string | null }, AppError>
+> {
   const tipOnly = { ref: branch, depth: 1, noCheckout: true };
   const workspaceClone = await cloneRepo(workspaceRemote, workspaceToken, logger, tipOnly);
   if (!workspaceClone.success) return err(workspaceClone.error);
@@ -4855,7 +4857,7 @@ export async function rootEntryDiffers(
     const tip = await git.resolveRef({ fs, dir: DIR, ref: branch });
     const { tree } = await git.readTree({ fs, dir: DIR, oid: tip });
     const entry = tree.find((candidate) => candidate.path === name);
-    return { tip, entry: entry ? `${entry.mode} ${entry.oid}` : null };
+    return { tip, entry: entry ? `${entry.mode} ${entry.oid}` : null, oid: entry?.oid ?? null };
   };
   const read = await fromPromise(
     Promise.all([entryAt(workspaceClone.data.fs), entryAt(baseClone.data.fs)]),
@@ -4865,7 +4867,11 @@ export async function rootEntryDiffers(
     return err(new AppError(`Failed to read ${name} from the repository`, "GIT_ERROR", 500));
   }
   const [workspace, base] = read.data;
-  return ok({ differs: workspace.entry !== base.entry, workspaceOid: workspace.tip });
+  return ok({
+    differs: workspace.entry !== base.entry,
+    workspaceOid: workspace.tip,
+    workspaceEntryOid: workspace.oid,
+  });
 }
 
 export function buildUnifiedDiff(

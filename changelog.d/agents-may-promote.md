@@ -10,9 +10,13 @@
   GitHub will not let them approve their own agent's work; otherwise it is
   opened with the instance's own credential. Review verdicts, merging, rejecting and re-evaluating
   remain user-only. A person signed in to the browser must still promote a
-  change whose `.github/` differs from the project's (its workflows would run
-  with the repository's secrets as soon as the pull request opened) or that
-  edits the merge-protection config.
+  change whose `.github/` differs from the project's, or from the base branch
+  on GitHub (its workflows would run with the repository's secrets as soon as
+  the pull request opened), or that edits the merge-protection config. This
+  guards the workflow files, not the code they run: a workflow that builds or
+  tests pull requests runs an agent-promoted change's code with whatever
+  secrets it is given, so keep secrets out of workflows that run on
+  `stratum/**` pull requests if agents promote on your project.
 - **Promoting such a change with a scoped API token or an OAuth grant is now
   refused** with `403 PROMOTION_NEEDS_PERSON`, as it is for an agent. Those
   credentials act for a user but are what an agent is handed; before, they

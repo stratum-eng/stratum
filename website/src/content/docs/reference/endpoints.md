@@ -692,7 +692,19 @@ far, and is refused with `403 TOKEN_SCOPE_INSUFFICIENT` like any other write.
   moment the pull request opened. The whole directory is compared as git
   objects against the project's current default branch, so nothing beneath it
   can differ unnoticed. A workspace that is behind the project can differ
-  through no change of its own; bring it up to date and evaluate again.
+  through no change of its own; bring it up to date and evaluate again. The
+  same comparison is then made against the base branch **on GitHub**, because
+  the project is a copy of the repository as of its last sync and the pull
+  request runs on the repository as it is now: a project that has fallen
+  behind is refused until it is synced and the workspace brought up to date.
+  If GitHub cannot be asked, the answer is the same refusal.
+
+  This rule covers the workflow files, not the code they run. A workflow that
+  builds or tests a pull request runs the change's own code, with whatever
+  secrets that workflow is given. Stratum's gates have passed on that code, but
+  nobody has approved it. If agents promote on your project, keep secrets out
+  of the workflows that run on pull requests from `stratum/**` branches, or
+  put those jobs behind a GitHub environment that needs approval.
 - **A change to the merge-protection config** (`.stratum/policy.yaml`,
   `stratum.config.json`), which needs a human approval to merge.
 

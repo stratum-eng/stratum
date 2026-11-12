@@ -2474,9 +2474,11 @@ async function promotionNeedsPerson(
     workspaceRemote: string;
     workspaceToken: string;
     branch: string;
+    /** The repository the pull request will be opened on, and its base branch. */
+    github: { token: string; owner: string; repo: string; base: string };
   },
 ): Promise<PromotionRefusal | null> {
-  const { change, project, workspaceRemote, workspaceToken, branch } = args;
+  const { change, project, workspaceRemote, workspaceToken, branch, github } = args;
   const needsPerson = (reason: string): PromotionRefusal => ({ kind: "needs-person", reason });
   const askPerson =
     "A person with write access to the project has to promote it, signed in on the change page.";
@@ -2510,6 +2512,32 @@ async function promotionNeedsPerson(
   if (compared.data.differs) {
     return needsPerson(
       `The workspace's ${GITHUB_CONFIG_DIR}/ differs from the project's. A pull request runs the workflows on its own branch with the repository's secrets, as soon as it opens. ${askPerson} If the change does not touch ${GITHUB_CONFIG_DIR}/, the workspace is behind the project: bring it up to date and evaluate again.`,
+    );
+  }
+
+  // The same question asked of GitHub itself. The project is a copy of the
+  // repository as of its last sync, and the pull request runs on the
+  // repository as it is now: a workspace forked from a project that has
+  // fallen behind would publish the workflows of that older day, which may be
+  // the very ones a later commit on GitHub fixed.
+  const onGitHub = await new GitHubClient(github.token, logger).getRootTreeEntryOid(
+    github.owner,
+    github.repo,
+    github.base,
+    GITHUB_CONFIG_DIR,
+  );
+  if (!onGitHub.success) {
+    logger.error("Could not read .github from GitHub to check a promotion", undefined, {
+      changeId: change.id,
+      reason: onGitHub.error,
+    });
+    return needsPerson(
+      `The repository's ${GITHUB_CONFIG_DIR}/ on GitHub could not be checked right now. ${askPerson}`,
+    );
+  }
+  if (onGitHub.oid !== compared.data.workspaceEntryOid) {
+    return needsPerson(
+      `The workspace's ${GITHUB_CONFIG_DIR}/ differs from ${github.base} on GitHub, so the project is behind its GitHub repository. Sync the project, bring the workspace up to date and evaluate again. ${askPerson}`,
     );
   }
   return null;
@@ -2753,6 +2781,7 @@ app.post("/changes/:id/github-pr", async (c) => {
       workspaceRemote,
       workspaceToken: repoTokenResult.data,
       branch: defaultBranch,
+      github: { token: githubToken, owner: repo.owner, repo: repo.repo, base },
     });
     if (refusal?.kind === "stale") {
       // Reachable only if the workspace advanced between the clone checked

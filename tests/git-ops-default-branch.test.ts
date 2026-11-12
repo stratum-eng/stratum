@@ -960,6 +960,23 @@ describe("rootEntryDiffers", () => {
     ]);
   });
 
+  it("returns the id of the workspace's entry, the same for the same contents, null when absent", async () => {
+    const same = await compare(workflow, { ...workflow, "src/a.ts": "changed\n" });
+    const again = await compare(workflow, { ...workflow, "src/b.ts": "new\n" });
+    const edited = await compare(workflow, {
+      ...workflow,
+      ".github/workflows/ci.yml": "on: pull_request_target\n",
+    });
+    const absent = await compare(workflow, { "src/a.ts": "a\n" });
+    if (!same.success || !again.success || !edited.success || !absent.success) {
+      throw new Error("comparison failed");
+    }
+    expect(same.data.workspaceEntryOid).toMatch(/^[0-9a-f]{40}$/);
+    expect(again.data.workspaceEntryOid).toBe(same.data.workspaceEntryOid);
+    expect(edited.data.workspaceEntryOid).not.toBe(same.data.workspaceEntryOid);
+    expect(absent.data.workspaceEntryOid).toBeNull();
+  });
+
   it("fails when a side cannot be cloned, instead of reporting no difference", async () => {
     h.servers.set("https://r/base.git", { branch: "trunk", commits: [workflow] });
     const result = await rootEntryDiffers(
