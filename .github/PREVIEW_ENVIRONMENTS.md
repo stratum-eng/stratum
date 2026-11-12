@@ -8,7 +8,11 @@ This repository uses isolated preview environments for each Pull Request. Each P
 
 ## How It Works
 
-### On PR Open/Sync
+### On PR Open/Sync (or when a draft is marked ready)
+
+Draft PRs get no preview: the deploy runs the PR's code with the Cloudflare API
+token, so it waits until a person marks the PR ready for review.
+
 1. Creates a new D1 database for the PR
 2. Applies all migrations to the database
 3. Deploys a Worker with the PR's code

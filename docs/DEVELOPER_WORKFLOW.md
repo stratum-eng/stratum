@@ -6,7 +6,7 @@ This document explains the new PR-based CI/CD workflow and how to use it effecti
 
 The Stratum project uses a PR-based workflow with per-PR preview environments, integration tests, and automatic staging and production deploys from `main`.
 
-Each PR gets its own isolated preview Worker. The shared staging and production
+Each PR that is not a draft gets its own isolated preview Worker. The shared staging and production
 environments are deployed only from `main`, after the PR merges.
 
 ```text
@@ -79,7 +79,7 @@ When you create or update a PR, the following happens automatically:
 3. **Unit Tests** - Fast unit test suite
 4. **Integration Tests** - Integration test suite
 5. **Security Scan** - Secret detection and security checks
-6. **Preview Environment** - Deploy an isolated preview Worker for this PR
+6. **Preview Environment** - Deploy an isolated preview Worker for this PR (not while it is a draft)
 
 PRs do **not** deploy to the shared staging Worker. See
 [Why PRs don't deploy to staging](#why-prs-dont-deploy-to-staging).
@@ -97,7 +97,7 @@ The CI will automatically comment on your PR with:
 Every push to your PR branch will:
 
 1. Re-run all checks
-2. Update the preview environment
+2. Update the preview environment, unless the PR is a draft
 3. Update the PR comment with new information
 
 ## Preview Environment
