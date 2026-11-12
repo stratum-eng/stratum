@@ -805,6 +805,58 @@ export class GitHubClient {
     return { success: true, alreadyReady: false };
   }
 
+  /**
+   * Put every open pull request whose head is `head` back into draft. Used
+   * before new commits are pushed to a branch on a delegated credential's
+   * say-so: a pull request that is ready for review runs its preview deploy
+   * (with the repository's secrets) on every push, so new code must not reach
+   * one until a person marks it ready again. Fails closed: if the open pull
+   * requests cannot be listed, or one cannot be converted, nothing is pushed.
+   */
+  async returnHeadPRsToDraft(
+    owner: string,
+    repo: string,
+    head: string,
+  ): Promise<{ success: true; converted: number[] } | { success: false; error: string }> {
+    const listed = await this.request<unknown>(
+      `/repos/${owner}/${repo}/pulls?head=${encodeURIComponent(`${owner}:${head}`)}&state=open&per_page=100`,
+      {},
+      { timeoutMs: DEFAULT_TIMEOUT_MS },
+    );
+    if (!listed.success) return { success: false, error: listed.error };
+    if (!Array.isArray(listed.data)) {
+      return { success: false, error: "GitHub did not return a list of pull requests" };
+    }
+    const converted: number[] = [];
+    for (const pr of listed.data as Array<Partial<GitHubPullRequest>>) {
+      if (pr.draft === true) continue;
+      if (typeof pr.number !== "number" || !pr.node_id) {
+        return { success: false, error: "GitHub did not return the pull request's id" };
+      }
+      const result = await this.request<{
+        data?: { convertPullRequestToDraft?: { pullRequest?: { isDraft?: boolean } } };
+        errors?: Array<{ message?: string }>;
+      }>("/graphql", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query:
+            "mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { isDraft } } }",
+          variables: { id: pr.node_id },
+        }),
+      });
+      if (!result.success) return { success: false, error: result.error };
+      // GraphQL reports a refused mutation in a 200 response.
+      const refused = result.data.errors?.map((e) => e.message).filter(Boolean) ?? [];
+      if (refused.length > 0) return { success: false, error: refused.join("; ") };
+      if (result.data.data?.convertPullRequestToDraft?.pullRequest?.isDraft !== true) {
+        return { success: false, error: "GitHub did not confirm the pull request is a draft" };
+      }
+      converted.push(pr.number);
+    }
+    return { success: true, converted };
+  }
+
   async getPR(
     owner: string,
     repo: string,
@@ -918,6 +970,48 @@ export class GitHubClient {
     // response missing both fields fails closed.
     const isPublic = result.data.private === false && result.data.visibility !== "internal";
     return { success: true, private: !isPublic };
+  }
+
+  /**
+   * The object id of one entry at the root of a branch's tree, as GitHub has
+   * it now, or null when the branch has no such entry.
+   *
+   * A git tree's id is a hash of its contents, so comparing this with the id
+   * of the same directory elsewhere says whether the two are identical without
+   * reading a single file.
+   *
+   * @param owner - Repository owner
+   * @param repo - Repository name
+   * @param ref - Branch name or commit
+   * @param name - The root entry, e.g. `.github`
+   */
+  async getRootTreeEntryOid(
+    owner: string,
+    repo: string,
+    ref: string,
+    name: string,
+  ): Promise<{ success: true; oid: string | null } | { success: false; error: string }> {
+    const result = await this.request<{ tree?: unknown; truncated?: unknown }>(
+      `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}`,
+      {},
+      { timeoutMs: DEFAULT_TIMEOUT_MS },
+    );
+    if (!result.success) return { success: false, error: result.error };
+    const { tree, truncated } = result.data;
+    // A truncated listing cannot say an entry is absent, and absence is an answer here.
+    if (!Array.isArray(tree) || truncated === true) {
+      return { success: false, error: "GitHub returned an unreadable tree" };
+    }
+    for (const item of tree) {
+      if (typeof item !== "object" || item === null) continue;
+      const { path, sha } = item as { path?: unknown; sha?: unknown };
+      if (path === name) {
+        return typeof sha === "string"
+          ? { success: true, oid: sha }
+          : { success: false, error: "GitHub returned an unreadable tree" };
+      }
+    }
+    return { success: true, oid: null };
   }
 
   private async listPage(endpoint: string): Promise<GitHubPageResult> {

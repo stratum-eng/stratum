@@ -359,7 +359,7 @@ it into files, commits or messages.
 | `stratum_rerun_check` | Re-run one check on the revision it ran against — a flaky failure, or a runner that never reported. It does not pick up new commits: after a push, use `stratum_evaluate_change`. Re-running a first-party CI step re-runs the whole job, so every step gets a new run. Needs write access to the project; user credentials only. |
 | `stratum_comment_change` | Comment on a change: change-wide, anchored to a diff line (`file` + `line`), or as a reply (`parent_comment_id`). Needs read access to the project. |
 | `stratum_list_change_comments` | A change's comments in order, with anchors, replies and resolved state. |
-| `stratum_promote_change` | Push an **accepted** change's branch to the project's linked GitHub repository and open a PR (a draft by default) against the default branch. Stratum tries to open the PR as the person the connection acts for when they have [connected their GitHub account](/guides/code-review/#who-the-pull-request-is-opened-as); if they have not, or their authorization cannot be used or GitHub refuses it for the repository, Stratum creates the PR with the instance's own GitHub credential instead, as it would have without a connection. That attempt can still fail like any promotion (`502 GITHUB_ERROR`). The result's `github.openedAs` says which credential opened it, `"app"` meaning the instance's, and is absent when the PR already existed, since its author was settled when it was first opened. Needs write access to the project. A connection bound to an agent cannot promote: this needs a person's credential. |
+| `stratum_promote_change` | Push an **accepted** change's branch to the project's linked GitHub repository and open a PR (a draft by default) against the default branch. Needs write access to the project. Agent tokens may use it. Only a person signed in can open a PR that is not a draft: `draft: false` is refused with `PROMOTION_NEEDS_PERSON` for an agent token, a scoped API token and every OAuth connection, including this one. Promoting again onto a PR that is already ready (after a review asked for changes) first returns it to draft, so a person marks it ready again on the change page. Stratum tries to open the PR as the person the connection acts for, or as the owner of the agent it acts as, when that person has [connected their GitHub account](/guides/code-review/#who-the-pull-request-is-opened-as); if they have not, or their authorization cannot be used or GitHub refuses it for the repository, Stratum creates the PR with the instance's own GitHub credential instead, as it would have without a connection. That attempt can still fail like any promotion (`502 GITHUB_ERROR`). The result's `github.openedAs` says which credential opened it, `"app"` meaning the instance's, and is absent when the PR already existed, since its author was settled when it was first opened. A change whose `.github/` differs from the project's, or that edits the merge-protection config, is refused with `PROMOTION_NEEDS_PERSON` for an agent token, a read-write scoped API token and an `mcp:write` OAuth connection, whether that connection acts as an agent or as you (a read-only token or an `mcp:read` connection gets `TOKEN_SCOPE_INSUFFICIENT` first, as from every writing tool): a person promotes those on the change page, signed in. (A client configured with the legacy account-wide `stratum_user_` key is not refused; that key is not scoped and counts as the person.) |
 
 **Issues**
 
@@ -404,34 +404,41 @@ them alike. With an **agent token**, or an OAuth connection
 - **Works:** the project reading tools (`get_project`, `list_files`,
   `get_file`, `get_activity`), `stratum_create_workspace`, `stratum_commit`,
   `stratum_workspace_remote` (the credential then pushes as the agent),
-  `stratum_create_change`, `stratum_update_change`, `stratum_comment_change`,
+  `stratum_create_change`, `stratum_update_change`, `stratum_promote_change`,
+  `stratum_comment_change`,
   `stratum_list_change_comments`, `stratum_list_checks`, `stratum_create_issue`,
   `stratum_list_issues`,
   and `stratum_get_usage` (which reports the **owner's** allowance) — an agent
   can do everything up to and including proposing a gated change, discussing it,
-  and opening issues about its work. Address projects by `namespace/slug`
+  opening issues about its work, and, once the gates have accepted the change,
+  promoting it to a GitHub pull request. Address projects by `namespace/slug`
   directly: `stratum_list_projects` returns an **empty list** on an agent
   token or a bound connection rather than the owner's projects. A bare agent
   token gets a 401 from `stratum_whoami`; a bound connection gets its identity.
 - **Always refused:** `stratum_merge_change`, `stratum_reject_change`,
   `stratum_review_change`, `stratum_update_issue`, `stratum_evaluate_change`,
   `stratum_rerun_check`,
-  `stratum_promote_change`, `stratum_create_project`, `stratum_import_project`,
+  `stratum_create_project`, `stratum_import_project`,
   `stratum_sync_project`, and the organization tools that change anything.
-  Merging, deciding, issue triage, re-running gates, publishing to GitHub,
+  Merging, deciding, issue triage, re-running gates,
   creating projects and administering orgs are user actions, and review
   verdicts are refused from agent tokens **entirely** — `request_changes` as
   much as `approve`. An agent's feedback channel is
   [change comments](/guides/code-review/), through `stratum_comment_change`.
 
 So an agent-token deployment is a *proposer*: it forks, commits, opens the
-change, and a human (over the UI, [CLI](/guides/cli/), or their own MCP session)
-reviews and merges.
+change and, in layer mode, promotes it to a pull request once it is accepted. A
+human (over the UI, [CLI](/guides/cli/), their own MCP session, or on GitHub) reviews
+and merges.
 
 An **OAuth grant that acts as you** ("Me" on the consent screen) is a user
 credential: a human consented to it in a browser, so it carries the same
-authority a user token does when `mcp:write` was granted, with one exception:
-it **cannot approve**.
+authority a user token does when `mcp:write` was granted, with two exceptions.
+It cannot promote a change whose `.github/` differs from the project's, or that
+edits the merge-protection config: `stratum_promote_change` answers
+`PROMOTION_NEEDS_PERSON` (with only `mcp:read` it answers
+`TOKEN_SCOPE_INSUFFICIENT` first, as every writing tool does), and you promote that change signed in on the change
+page. And it **cannot approve**.
 An approval is the human half of the merge gate, and an OAuth grant is
 software acting for the human, so `stratum_review_change` with `approve` is
 refused with `SESSION_REQUIRED`; approve on the change page in the browser.

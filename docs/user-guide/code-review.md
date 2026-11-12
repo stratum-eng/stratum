@@ -44,6 +44,14 @@ leaving Stratum. Once the pull request is ready, whichever side that happened
 on, the button becomes **Open GitHub PR**. The text above it links to the pull
 request in both states.
 
+Marking ready is a person's step, done here signed in or on GitHub: an agent, a
+scoped API token or an OAuth connection (an MCP client, the CLI) can only open a draft
+and cannot mark one ready. When one of them promotes a change again after a
+review asked for changes, its pull request goes back to draft before the new
+commits are pushed, and a person marks it ready again. On a repository whose
+workflows deploy or test pull requests with secrets, that step is what decides
+when the new code runs with them.
+
 ## Comment threads
 
 A comment is either **floating** — attached to the change as a whole — or
@@ -195,12 +203,14 @@ To have your promotions opened as you, connect your GitHub account under
 
 - a pull request **you** promote is opened as you, unless one of the
   exceptions listed below applies at that moment;
+- so is a pull request **an agent you own** promotes, with the same
+  exceptions, since you are the person answerable for that agent;
 - nobody else's promotion is ever opened as you. When a teammate promotes a
   change you opened, the pull request is theirs, or the instance's if they have
   not connected.
 
 GitHub then applies its own rules to you as the author. In particular you
-cannot approve your own pull request.
+cannot approve your own pull request, including one your agent promoted.
 
 Connecting stores an authorization for your GitHub account, encrypted. Stratum
 uses it for one thing, opening the pull request at promotion, and through it

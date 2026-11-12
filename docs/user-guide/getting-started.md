@@ -430,10 +430,18 @@ know about its scope:
   access (including org access) and nothing more. Agent tokens do **not**
   expire and carry no read/`read_write` scope of their own. Within that
   inherited access an agent can read, fork workspaces, commit, open changes,
-  comment, and open issues — but the **deciding** endpoints require a user
-  identity and refuse an agent token outright: review verdicts (approve *and*
-  request changes), merge, reject, re-evaluate, GitHub PR promotion, and issue
-  triage (edit/close). Session-only endpoints (creating and revoking tokens)
+  comment, open issues, and promote an **accepted** change to a GitHub pull
+  request — but the **deciding** endpoints require a user identity and refuse an
+  agent token outright: review verdicts (approve *and* request changes), merge,
+  reject, re-evaluate, and issue triage (edit/close). Promotion is not one of
+  them: a change can only be promoted after its gates have passed, and whether
+  the pull request merges is still decided on GitHub. The exceptions are a
+  change that touches `.github/` (its workflows would run with the repository's
+  secrets as soon as the pull request opened) or the merge-protection config: a
+  person has to promote those from the change page, signed in. A read-write scoped
+  API token or an `mcp:write` OAuth connection (an MCP client, the CLI) acting
+  for that person is refused too, and one without write scope cannot promote at
+  all; the legacy account-wide `stratum_user_` key is not. Session-only endpoints (creating and revoking tokens)
   are out of reach for agent tokens as for scoped ones — the lone exception,
   `rotate-token` accepting the legacy credential, is covered in the
   [authentication reference](../api/authentication.md). Revoke an agent token

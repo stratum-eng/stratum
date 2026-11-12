@@ -315,7 +315,59 @@ requests share the per-address anonymous rate limit.
 ## Promote to a GitHub PR
 `POST /api/changes/{id}/github-pr`
 
-Users only. The change must be `accepted` (or already promoted), and the project
+Users and agents, with write access to the project. An agent may promote because
+a change can only be promoted once its gates have passed, and whether the pull
+request merges is still decided on GitHub; `promotedBy` records the agent's id.
+An agent can only open a **draft**: any `draft` other than `true` is refused with
+`403 PROMOTION_NEEDS_PERSON` from an agent token, a scoped API token or an OAuth
+grant, because asking for review is a person's decision (see
+[Mark the PR ready for review](#mark-the-pr-ready-for-review)). For the same
+reason, when one of those credentials promotes a change whose pull request is
+already open and ready, for example after a review asked for changes, the pull
+request is first **returned to draft**, and then the new commits are pushed: new
+code does not reach a pull request marked ready until a person marks it ready
+again. The change records the pull request as a draft, so its page offers
+**Mark ready for review** again. If GitHub refuses that, the answer is `502 GITHUB_ERROR` and nothing is
+pushed.
+
+Two kinds of change have to be promoted by a person. For them, three kinds of
+credential get `403 PROMOTION_NEEDS_PERSON`: an agent token, a scoped API
+token, and an OAuth grant (an MCP client, the CLI) acting for a user, since
+those are the credentials an agent is handed. A signed-in browser session
+counts as the person, and so does the legacy account-wide `stratum_user_` key,
+which is not scoped and predates delegation. All of this is about credentials
+with write scope: a read-only API token or an `mcp:read` grant never gets this
+far, and is refused with `403 TOKEN_SCOPE_INSUFFICIENT` like any other write.
+
+- **A workspace whose `.github/` differs from the project's.** A pull request
+  from a branch of the repository itself runs that branch's workflow files with
+  the repository's secrets, so a changed workflow would run as written the
+  moment the pull request opened. The whole directory is compared as git
+  objects against the project's current default branch, so nothing beneath it
+  can differ unnoticed. A workspace that is behind the project can differ
+  through no change of its own; bring it up to date and evaluate again. The
+  same comparison is then made against the base branch **on GitHub**, because
+  the project is a copy of the repository as of its last sync and the pull
+  request runs on the repository as it is now: a project that has fallen
+  behind is refused until it is synced and the workspace brought up to date.
+  If GitHub cannot be asked, the answer is the same refusal.
+
+  This rule covers the workflow files, not the code they run. A workflow that
+  builds or tests a pull request runs the change's own code, with whatever
+  secrets that workflow is given. Stratum's gates have passed on that code, but
+  nobody has approved it. If agents promote on your project, keep secrets out
+  of the workflows that run on pull requests from `stratum/**` branches, or
+  put those jobs behind a GitHub environment that needs approval.
+- **A change to the merge-protection config** (`.stratum/policy.yaml`,
+  `stratum.config.json`), which needs a human approval to merge.
+
+The same answer comes back if the repositories cannot be read to check, or the
+change has no evaluated revision on record. This guard covers workflow *files*
+only: your existing workflows still run on a promoted pull request, with
+whatever secrets they expose to pull requests, and they run the code the agent
+wrote. Scope those secrets with that in mind.
+
+The change must be `accepted` (or already promoted), and the project
 must be connected to GitHub with a configured token. Creates a PR — **draft by
 default** — from branch `stratum/{changeId}` and marks the change `promoted`.
 
@@ -343,7 +395,8 @@ installation lookup or token minting failed. The last case is logged as a
 configuration is missing.
 
 **Who the PR is opened as.** The branch is always pushed with the credential
-above. The PR itself is opened as the person promoting when they have
+above. The PR itself is opened as the person promoting, or as the owner of the
+agent promoting, when that person has
 [connected their GitHub account](github-app.md#connect-a-github-account), so
 that GitHub records them as its author, and with the instance's own credential
 otherwise (reported as `app`). The response
@@ -369,8 +422,13 @@ evaluation finishes; that re-pushes to the same PR.
 `POST /api/changes/{id}/github-pr/ready`
 
 Takes the change's pull request out of draft, so promoting a change and asking
-for its review stay two separate decisions. Users only, with write access to the
-project; no body. It acts on the pull request the change was promoted to, with
+for its review stay two separate decisions. A person only, with write access to
+the project; no body. A scoped API token or an OAuth grant (one acting as an agent
+included) is refused with `403 READY_NEEDS_PERSON`, and an agent token with
+`401`: those act for a user
+but are what an agent is handed, and on a repository whose workflows deploy or
+test pull requests, marking one ready can be what lets its code run with
+secrets. Use the change page, signed in, or GitHub. It acts on the pull request the change was promoted to, with
 the instance credential that pushes a promoted branch, under the same rules. It
 never uses a person's connected GitHub account, whoever the pull request was
 opened as.

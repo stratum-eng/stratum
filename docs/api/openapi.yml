@@ -3374,14 +3374,24 @@ paths:
       tags: [changes]
       summary: Promote an accepted change to a GitHub pull request
       description: |
-        Users only. The change must be accepted (or already promoted), and the
+        Users and agents with write access to the project. An agent token, a
+        scoped API token and an OAuth grant are refused with
+        `403 PROMOTION_NEEDS_PERSON` for a change whose `.github/` differs from
+        the project's, or that edits the merge-protection config; a signed-in
+        browser session and the legacy account-wide `stratum_user_` key are
+        not. A read-only API token or an `mcp:read` grant is refused before
+        any of this, with `403 TOKEN_SCOPE_INSUFFICIENT`. An agent is refused
+        the same way when it sends `draft: false`:
+        an agent can only open a draft. The change must be
+        accepted (or already promoted), and the
         project must be authorized for its GitHub repository and be that
         repository's canonical project. Creates a (draft by default) PR from
         branch `stratum/{changeId}` and marks the change `promoted`.
 
         Two credentials are involved. The branch is always pushed with the
         instance's credential, described next. The PR itself is created with the
-        promoting person's own GitHub authorization when they have connected
+        promoting person's own GitHub authorization (for an agent, its owner's)
+        when they have connected
         their GitHub account, so that GitHub records them as its author, and
         with the instance's credential otherwise. Connecting does not
         guarantee it: the instance's credential is also used when the person's
@@ -3462,7 +3472,11 @@ paths:
           description: |
             No project access, or no GitHub credential may act on the repository
             for the project's owner (`GITHUB_APP_NOT_AUTHORIZED`,
-            `GITHUB_NOT_AUTHORIZED`)
+            `GITHUB_NOT_AUTHORIZED`). Or `PROMOTION_NEEDS_PERSON` — this
+            credential may not promote this change: its `.github/` differs from
+            the project's or it edits the merge-protection config, or an agent
+            asked for a pull request that is not a draft. A person has to do it,
+            signed in on the change page.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3478,6 +3492,8 @@ paths:
             to another Stratum project (no `github` field).
             Or `PUSH_MIRROR_ENABLED` — the project mirrors to GitHub, so its
             changes merge in Stratum and are not promoted (no `github` field).
+            Or `STALE_WORKSPACE` — the workspace has commits the evaluation did
+            not see; re-evaluate the change, then promote (no `github` field).
           content:
             application/json:
               schema:
@@ -3502,7 +3518,9 @@ paths:
       tags: [changes]
       summary: Take a promoted change's GitHub pull request out of draft
       description: >-
-        Users only, with write access to the project. Acts on the pull request
+        A person only, with write access to the project: a scoped API token or
+        an OAuth grant (one acting as an agent included) is refused with
+        `403 READY_NEEDS_PERSON`, and an agent token with 401. Acts on the pull request
         the change was promoted to, always with the instance's GitHub
         credential and never with a person's connected GitHub account, whoever
         the pull request was opened as. A pull request that is already ready
@@ -3528,6 +3546,10 @@ paths:
                       url: { type: string }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >-
+            Refused to a scoped API token or an OAuth grant
+            (`READY_NEEDS_PERSON`), or no write access to the project
         "404":
           $ref: "#/components/responses/NotFound"
         "409":

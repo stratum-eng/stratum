@@ -16,7 +16,7 @@
       "name": "stratum-mcp",
       "type": "skill-md",
       "description": "Connect an MCP-capable agent or editor to Stratum and use its tools for the full evaluation-gated change flow.",
-      "digest": "sha256:94c86bccb79157186886127d7359efda7e78cc3d7bc71152b82171faf4bf176a",
+      "digest": "sha256:48f71964450a072f486e87a68c2ac24bbf99f2b6f1d3f591e5deb4040cd4fc04",
       "url": "https://docs.usestratum.dev/.well-known/agent-skills/stratum-mcp/SKILL.md"
     },
     {

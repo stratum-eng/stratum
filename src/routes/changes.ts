@@ -10,6 +10,7 @@ import { coAuthorTrailers } from "../github/pull-request-content";
 import { buildEvaluationReport, reportEvaluationToGitHub } from "../github/sync";
 import { runPostMergeCheck } from "../merge/post-merge";
 import { checkMergeProtection } from "../merge/protection";
+import { cannotMintLegacyCredential } from "../middleware/auth";
 import { enqueueMergeDeploy } from "../queue/deploy-queue";
 import { emitEvent } from "../queue/events";
 import type { MergeOutcome } from "../queue/merge-queue";
@@ -60,6 +61,7 @@ import {
   parseStagedTree,
   pushBranchToRemote,
   resolveLocalTip,
+  rootEntryDiffers,
   stagedTreeKey,
   stagedTreeShaKey,
 } from "../storage/git-ops";
@@ -2313,8 +2315,8 @@ function isUsableGithubUrl(raw: string, target: GithubRepoTarget, prNumber: numb
 // POST /changes/:id/github-pr/ready — take the change's pull request out of draft.
 //
 // Promotion opens a draft, so that publishing a change and asking people to
-// review it stay two decisions. This is the second one, and like promotion it
-// is a person's: agent credentials are refused.
+// review it stay two decisions. This is the second one, and unlike promotion
+// it is still a person's: agent credentials are refused.
 app.post("/changes/:id/github-pr/ready", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
@@ -2323,6 +2325,22 @@ app.post("/changes/:id/github-pr/ready", async (c) => {
     method: c.req.method,
   });
 
+  // A browser session, not a scoped API token or an OAuth grant: those act for
+  // a person but are exactly what an agent is handed, and marking ready is the
+  // step that lets the pull request's code run with the repository's secrets
+  // (its preview deploy) and asks people to review it. Checked before the
+  // `userId` test so an OAuth grant bound to an agent, which carries no
+  // `userId`, gets this answer too and not a bare 401.
+  if (cannotMintLegacyCredential(c)) {
+    return c.json(
+      {
+        error:
+          "Only a person signed in to Stratum can mark a pull request ready for review; a scoped API token or an OAuth connection cannot.",
+        code: "READY_NEEDS_PERSON",
+      },
+      403,
+    );
+  }
   const userId = c.get("userId");
   if (!userId) return unauthorized("Authentication required");
 
@@ -2425,6 +2443,122 @@ app.post("/changes/:id/github-pr/ready", async (c) => {
   });
 });
 
+/** Where GitHub reads workflows, shared actions and review rules from. */
+const GITHUB_CONFIG_DIR = ".github";
+
+/** The promote route's answer for a workspace that moved on from the evaluated
+ * revision. One place, so its two checks cannot come to answer differently. */
+function staleWorkspaceResponse(
+  c: Context<{ Bindings: Env }>,
+  evaluatedSha: string | undefined,
+  currentTip: string,
+): Response {
+  return c.json(
+    {
+      error:
+        "Workspace is stale: it advanced since this change was evaluated. Re-evaluate before promoting.",
+      code: "STALE_WORKSPACE",
+      evaluatedSha,
+      currentTip,
+    },
+    409,
+  );
+}
+
+/** Why a delegated credential may not promote a change as it stands. */
+type PromotionRefusal =
+  /** Only a person signed in to the browser may promote it. */
+  | { kind: "needs-person"; reason: string }
+  /** The workspace moved on from the evaluated revision. Re-evaluating fixes
+   * it, and a person is no better placed to promote it than an agent. */
+  | { kind: "stale"; currentTip: string };
+
+/**
+ * Why this change may not be promoted by the caller's credential, or null if
+ * it may.
+ *
+ * Fails closed: a repository that cannot be read, or a workspace that is not
+ * at the revision that was evaluated, is a reason to ask a person, not a
+ * reason to let it through.
+ */
+async function promotionNeedsPerson(
+  env: Env,
+  logger: Logger,
+  args: {
+    change: Change;
+    project: ProjectEntry;
+    workspaceRemote: string;
+    workspaceToken: string;
+    branch: string;
+    /** The repository the pull request will be opened on, and its base branch. */
+    github: { token: string; owner: string; repo: string; base: string };
+  },
+): Promise<PromotionRefusal | null> {
+  const { change, project, workspaceRemote, workspaceToken, branch, github } = args;
+  const needsPerson = (reason: string): PromotionRefusal => ({ kind: "needs-person", reason });
+  const askPerson =
+    "A person with write access to the project has to promote it, signed in on the change page.";
+  if (change.touchesProtectedConfig) {
+    return needsPerson(`This change edits the project's merge-protection config. ${askPerson}`);
+  }
+  if (change.evaluatedSha === undefined) {
+    return needsPerson(`This change has no evaluated revision on record. ${askPerson}`);
+  }
+  const projectToken = await freshRepoToken(env.ARTIFACTS, project.remote, "read", logger);
+  const compared = projectToken.success
+    ? await rootEntryDiffers(
+        project.remote,
+        projectToken.data,
+        workspaceRemote,
+        workspaceToken,
+        logger,
+        GITHUB_CONFIG_DIR,
+        branch,
+      )
+    : projectToken;
+  if (!compared.success) {
+    logger.error("Could not compare .github to check a promotion", compared.error, {
+      changeId: change.id,
+    });
+    return needsPerson(`The change's files could not be checked right now. ${askPerson}`);
+  }
+  if (compared.data.workspaceOid !== change.evaluatedSha) {
+    return { kind: "stale", currentTip: compared.data.workspaceOid };
+  }
+  if (compared.data.differs) {
+    return needsPerson(
+      `The workspace's ${GITHUB_CONFIG_DIR}/ differs from the project's. A pull request runs the workflows on its own branch with the repository's secrets, as soon as it opens. ${askPerson} If the change does not touch ${GITHUB_CONFIG_DIR}/, the workspace is behind the project: bring it up to date and evaluate again.`,
+    );
+  }
+
+  // The same question asked of GitHub itself. The project is a copy of the
+  // repository as of its last sync, and the pull request runs on the
+  // repository as it is now: a workspace forked from a project that has
+  // fallen behind would publish the workflows of that older day, which may be
+  // the very ones a later commit on GitHub fixed.
+  const onGitHub = await new GitHubClient(github.token, logger).getRootTreeEntryOid(
+    github.owner,
+    github.repo,
+    github.base,
+    GITHUB_CONFIG_DIR,
+  );
+  if (!onGitHub.success) {
+    logger.error("Could not read .github from GitHub to check a promotion", undefined, {
+      changeId: change.id,
+      reason: onGitHub.error,
+    });
+    return needsPerson(
+      `The repository's ${GITHUB_CONFIG_DIR}/ on GitHub could not be checked right now. ${askPerson}`,
+    );
+  }
+  if (onGitHub.oid !== compared.data.workspaceEntryOid) {
+    return needsPerson(
+      `The workspace's ${GITHUB_CONFIG_DIR}/ differs from ${github.base} on GitHub, so the project is behind its GitHub repository. Sync the project, bring the workspace up to date and evaluate again. ${askPerson}`,
+    );
+  }
+  return null;
+}
+
 app.post("/changes/:id/github-pr", async (c) => {
   const logger = createLogger({
     requestId: crypto.randomUUID(),
@@ -2433,8 +2567,14 @@ app.post("/changes/:id/github-pr", async (c) => {
     method: c.req.method,
   });
 
+  // Agents may promote, as well as people. A change can only be promoted once
+  // it is accepted, so the gates have already passed on what gets published,
+  // and the caller still needs write access to the project (an agent has its
+  // owner's). Merging the pull request remains GitHub's decision.
   const userId = c.get("userId");
-  if (!userId) return unauthorized("Authentication required");
+  const agentId = c.get("agentId");
+  const agentOwnerId = c.get("agentOwnerId");
+  if (!userId && !agentId) return unauthorized("Authentication required");
 
   const { id } = c.req.param();
 
@@ -2458,7 +2598,7 @@ app.post("/changes/:id/github-pr", async (c) => {
   }
   const project = projectResult.data;
 
-  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
+  if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId, agentOwnerId)))
     return refuseProjectAccess(credentialBindingFrom(c), project, () => notFound("Change", id));
 
   // After authorization, not before: the change's state is not the caller's to
@@ -2513,6 +2653,27 @@ app.post("/changes/:id/github-pr", async (c) => {
     logger,
   ).catch(() => ({}) as { title?: string; body?: string; draft?: boolean });
   if (body instanceof Response) return body;
+
+  // Opening a pull request and asking people to review it are two decisions,
+  // and the second is a person's: `/github-pr/ready` refuses delegated
+  // credentials. One that could promote with `draft: false` would make both at
+  // once. "A person" is a browser session here, as for the `.github/` check
+  // below: an API token or an OAuth grant acts for a user but is exactly what
+  // an agent is handed. It matters beyond review: a ready pull request runs
+  // this repository's preview deploy, with its secrets, on every push.
+  const delegated = userId === undefined || cannotMintLegacyCredential(c);
+  // Anything but an explicit or absent `true` is a request not to open a
+  // draft; GitHub is not left to decide what `"false"` or `0` means.
+  if (delegated && body.draft !== undefined && body.draft !== true) {
+    return c.json(
+      {
+        error:
+          "Only a person signed in to Stratum can open a pull request that is not a draft; an agent, a scoped API token or an OAuth connection opens a draft. Leave `draft` out, and ask a person to mark the pull request ready for review.",
+        code: "PROMOTION_NEEDS_PERSON",
+      },
+      403,
+    );
+  }
 
   // The PR base is the project's own recorded default branch, never a
   // caller-supplied value (SA-6). This endpoint acts with the instance-wide
@@ -2622,16 +2783,86 @@ app.post("/changes/:id/github-pr", async (c) => {
         evaluatedSha: change.evaluatedSha,
         currentTip: publishedSha,
       });
+      return staleWorkspaceResponse(c, change.evaluatedSha, publishedSha);
+    }
+  }
+
+  // Any credential with write access may publish a change the gates accepted,
+  // with two exceptions that need a person signed in to the browser. A pull
+  // request from a branch of the repository itself runs that branch's own
+  // workflow files with the repository's secrets, so a change under `.github/`
+  // would run as written the moment it is promoted. And a change to the
+  // project's merge-protection config needs a human approval to merge; it
+  // should not reach GitHub on an agent's say-so either.
+  //
+  // "A person" means a browser session, as it does for approvals: an API token
+  // or an OAuth grant acts for a user but is exactly what an agent is handed.
+  if (delegated) {
+    const refusal = await promotionNeedsPerson(c.env, logger, {
+      change,
+      project,
+      workspaceRemote,
+      workspaceToken: repoTokenResult.data,
+      branch: defaultBranch,
+      github: { token: githubToken, owner: repo.owner, repo: repo.repo, base },
+    });
+    if (refusal?.kind === "stale") {
+      // Reachable only if the workspace advanced between the clone checked
+      // above and this one. The same answer as that check gives.
+      return staleWorkspaceResponse(c, change.evaluatedSha, refusal.currentTip);
+    }
+    if (refusal) {
+      logger.warn("Refusing promotion by a delegated credential", {
+        changeId: id,
+        agentId,
+        reason: refusal.reason,
+      });
+      return c.json({ error: refusal.reason, code: "PROMOTION_NEEDS_PERSON" }, 403);
+    }
+  }
+
+  // New commits on a delegated credential's say-so must not land on a pull
+  // request a person has already marked ready: that would put them in front of
+  // reviewers, and through the preview deploy run them with the repository's
+  // secrets, without anyone choosing to. So such a pull request goes back to
+  // draft first, and a person marks it ready again. This is every re-promotion
+  // after review asked for changes, and also the rarer case of a pull request
+  // that exists on GitHub but not on the change's record.
+  if (delegated) {
+    const toDraft = await new GitHubClient(githubToken, logger).returnHeadPRsToDraft(
+      repo.owner,
+      repo.repo,
+      branch,
+    );
+    if (!toDraft.success) {
+      logger.error("Could not return the change's pull request to draft", undefined, {
+        changeId: id,
+        branch,
+        error: toDraft.error,
+      });
       return c.json(
         {
-          error:
-            "Workspace is stale: it advanced since this change was evaluated. Re-evaluate before promoting.",
-          code: "STALE_WORKSPACE",
-          evaluatedSha: change.evaluatedSha,
-          currentTip: publishedSha,
+          error: `Promoting again on a delegated credential first returns the open pull request to draft, and GitHub refused: ${toDraft.error}. Nothing was pushed.`,
+          code: "GITHUB_ERROR",
         },
-        409,
+        502,
       );
+    }
+    if (toDraft.converted.length > 0) {
+      logger.info("Returned the change's pull request to draft before pushing", {
+        changeId: id,
+        prNumbers: toDraft.converted,
+      });
+      // The change page offers "Mark ready for review" only while the record
+      // says draft, and the `converted_to_draft` webhook may be late or lost.
+      // Not fatal: the pull request is a draft either way, which is the safe
+      // side; the webhook still corrects the record when it arrives.
+      const noted = await recordGithubPrLink(c.env.DB, logger, id, { githubPrDraft: true });
+      if (!noted.success) {
+        logger.error("Returned the pull request to draft but did not record it", noted.error, {
+          changeId: id,
+        });
+      }
     }
   }
 
@@ -2702,6 +2933,9 @@ app.post("/changes/:id/github-pr", async (c) => {
     if (publishedSha !== undefined) {
       const headShaResult = await updateChangeStatus(c.env.DB, logger, id, "promoted", {
         githubHeadSha: publishedSha,
+        // Whoever pushed this revision, person or agent: this write can be the
+        // one that marks the change promoted, and must not do so anonymously.
+        promotedBy: userId ?? agentId,
       });
       if (!headShaResult.success && headShaResult.error.code === "EVALUATION_PENDING") {
         return promotionHeldByEvaluation(c, logger, id, {
@@ -2774,7 +3008,9 @@ app.post("/changes/:id/github-pr", async (c) => {
   // they have connected GitHub, as the app otherwise, and as the app again if
   // GitHub will not have it from them: their access to this repository is not
   // something a promotion should fail on.
-  let author = await resolvePrAuthor(c.env, userId, logger);
+  // An agent promoting acts for its owner, the person answerable for it: the
+  // pull request is theirs, and GitHub then stops them approving it themselves.
+  let author = await resolvePrAuthor(c.env, userId ?? agentOwnerId, logger);
   let result =
     author.kind === "user"
       ? await new GitHubClient(author.token, logger, { personal: true }).createOrReusePR(
@@ -2890,7 +3126,9 @@ app.post("/changes/:id/github-pr", async (c) => {
     ...(change.evalReason !== undefined ? { evalReason: change.evalReason } : {}),
     ...prLink,
     promotedAt,
-    promotedBy: userId,
+    // The agent itself when one promoted, not its owner: this is the record of
+    // who published the change.
+    ...(userId !== undefined || agentId !== undefined ? { promotedBy: userId ?? agentId } : {}),
   });
   if (!updateResult.success) {
     if (updateResult.error.code === "EVALUATION_PENDING") {

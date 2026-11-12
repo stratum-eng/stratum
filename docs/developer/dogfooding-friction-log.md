@@ -18,9 +18,12 @@ what happened, and what was done instead. Link the issue or PR once one exists.
   answered `Unauthorized`, with nothing to say that the connection's identity
   was the cause. Worked around by reconnecting as the user.
 - **An agent-bound connection cannot re-evaluate or promote a change.** Both
-  are user-credential-only, so an agent can open a change but cannot carry it
-  to a pull request. Neither call bypasses a gate, unlike merge, reject and
-  review.
+  were user-credential-only, so an agent could open a change but could not
+  carry it to a pull request. Neither call bypasses a gate, unlike merge,
+  reject and review. *Promotion is fixed:* an agent with write access may now
+  promote an accepted change, as a draft, except one whose `.github/` differs
+  from the project's or that edits merge-protection config. Re-evaluation is
+  still refused to an agent.
 - **No MCP tool links a GitHub App installation to an org.** That step exists
   only as the `/github/app/setup` page and its REST routes.
 - **CI results on a promoted pull request are not visible in Stratum.** The
