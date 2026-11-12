@@ -75,9 +75,6 @@ import {
   submitCiJob,
 } from "./ci-executor";
 
-/** How many changes one deadline sweep reports to GitHub. */
-const MAX_SWEEP_GITHUB_SYNCS = 20;
-
 /** Header carrying `sha256=<hex HMAC-SHA256 of the raw body>`, in both directions. */
 export const CHECK_SIGNATURE_HEADER = "X-Stratum-Signature";
 
@@ -905,10 +902,11 @@ export async function sweepOverdueChecks(
   if (!result.success) return { expired: 0 };
   const { expired, changeIds } = result.data;
   if (expired > 0) logger.warn("Expired check runs past their deadline", { expired });
-  // A pull request would otherwise show these as pending forever. Bounded so a
-  // backlog cannot spend the cron's subrequests; the rest stay correct in
-  // Stratum, and their next report or re-run posts them.
-  for (const changeId of changeIds.slice(0, MAX_SWEEP_GITHUB_SYNCS)) {
+  // A pull request would otherwise show these as pending forever: once a run
+  // is errored, no later sweep returns its change again, so every change is
+  // posted now. Unbounded on purpose. A change that was never promoted costs
+  // one read, and a promoted one a token and a status per check.
+  for (const changeId of changeIds) {
     await syncChangeChecksToGitHub(env, logger, changeId);
   }
   return { expired };

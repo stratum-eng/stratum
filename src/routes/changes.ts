@@ -314,6 +314,36 @@ function pullRequestFieldsOf(change: Change): Partial<Change> {
 }
 
 /**
+ * The verdict half of {@link reportVerdictOnPromotion}. Never throws: a failure
+ * here is logged and leaves the change's checks to be posted regardless.
+ */
+async function postPromotionVerdict(
+  c: Context<{ Bindings: Env }>,
+  logger: Logger,
+  published: Change,
+  project: ProjectEntry,
+): Promise<void> {
+  try {
+    const runs = await listEvalRuns(c.env.DB, logger, published.id);
+    if (!runs.success) {
+      logger.warn("Could not read eval runs; the promoted PR gets no verdict yet", {
+        changeId: published.id,
+        error: runs.error.message,
+      });
+      return;
+    }
+    const evaluation = latestEvaluationReport(published, runs.data);
+    if (evaluation === null) return;
+    await reportEvaluationToGitHub(c.env, published, project, evaluation, logger);
+  } catch (error) {
+    logger.warn("Posting the verdict to the promoted PR threw; posting its checks anyway", {
+      changeId: published.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
  * Post the change's latest verdict to the pull request it was just promoted to:
  * the comment and the `stratum/evaluation` commit status.
  *
@@ -354,31 +384,14 @@ async function reportVerdictOnPromotion(
         });
         return;
       }
-      const runs = await listEvalRuns(c.env.DB, logger, change.id);
-      if (!runs.success) {
-        logger.warn("Could not read eval runs; the promoted PR gets no verdict yet", {
-          changeId: change.id,
-          error: runs.error.message,
-        });
-        return;
-      }
-      const evaluation = latestEvaluationReport(current, runs.data);
-      if (evaluation === null) return;
       // The stored row for the verdict and the comment id; the pull request
       // coordinates and pushed head from this promotion, in case recording
       // them failed (they are what GitHub has now either way).
       const published = { ...current, ...pullRequestFieldsOf(change) };
-      try {
-        await reportEvaluationToGitHub(c.env, published, project, evaluation, logger);
-      } catch (error) {
-        logger.warn("Posting the verdict to the promoted PR threw; posting its checks anyway", {
-          changeId: change.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+      await postPromotionVerdict(c, logger, published, project);
       // Checks that finished before the promotion had no PR to report to, and
-      // nothing later is bound to post them, so a verdict failure must not
-      // cost them this chance.
+      // nothing later is bound to post them, so nothing that went wrong with
+      // the verdict may cost them this chance.
       const checks = await listChecksForChange(c.env.DB, logger, change.id);
       if (checks.success) {
         await reportChecksToGitHub(c.env, logger, {
