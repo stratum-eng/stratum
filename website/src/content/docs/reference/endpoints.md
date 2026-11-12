@@ -706,10 +706,12 @@ reports it under `github`:
 | Field | Meaning |
 |---|---|
 | `pullRequestAuthor` | The author's GitHub login, as GitHub returned it. Absent when GitHub named none. |
-| `openedAs` | `user` or `app`: who this call opened the PR as. Absent when the PR already existed, since its author was settled when it was first opened. |
+| `openedAs` | `user` or `app`: who this call opened the PR as. `app` means the instance's own credential, which is the GitHub App's installation token or, under an operator binding, `GITHUB_TOKEN`. Absent when the PR already existed, since its author was settled when it was first opened. |
 | `openedAsAppBecause` | Present with `openedAs: "app"` on an instance where accounts can be connected. `not_connected`: the promoter has no connection. `connection_expired`: their authorization lapsed or was revoked, and has been removed; they need to connect again. `refresh_in_progress`: another promotion of theirs was renewing the authorization at that moment. `unavailable`: the connection could not be read or renewed just now. `github_refused`: GitHub would not open the PR as them, for example because they cannot read the repository. |
 
-None of these fails the promotion. A PR opened as the app can be closed and the
+None of these fails the promotion by itself: Stratum then creates the PR with
+the instance credential, and that attempt succeeds or fails (`502
+GITHUB_ERROR`) as it would have without a connection. A PR opened as the app can be closed and the
 change promoted again once the cause is fixed.
 
 If a re-evaluation begins while the branch is being pushed, the response is

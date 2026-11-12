@@ -5,8 +5,8 @@
   review tools skipped it or wanted a seat for the bot, and the person whose
   agent wrote the code could approve it themselves. A person can now connect
   their GitHub account under Settings, and the pull requests they promote are
-  opened as them. The app still opens the pull request, and the promotion
-  still succeeds, when their authorization has lapsed, is being renewed by
+  opened as them. Stratum creates the pull request with the instance's own
+  credential, as it did before, when their authorization has lapsed, is being renewed by
   another of their promotions at that moment, cannot be read, or is refused by
   GitHub for that repository. Nobody else's
   promotion is ever opened as them. The promote response reports

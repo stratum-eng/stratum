@@ -3452,7 +3452,8 @@ paths:
                           - github_refused
                         description: |
                           Why the app opened the PR, on an instance where
-                          accounts can be connected. The promotion succeeded.
+                          accounts can be connected. The PR was created with the
+                          instance's credential.
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":

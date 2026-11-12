@@ -212,7 +212,8 @@ access. The branch is still pushed by the app. Disconnect at any time from the
 same settings card, or by revoking the app in your GitHub settings; pull
 requests already opened as you stay yours.
 
-Stratum falls back to the app, and the promotion still succeeds, when:
+Stratum creates the pull request with the instance's own GitHub credential
+instead, exactly as it would have if you had never connected, when:
 
 - you are not connected;
 - your authorization has lapsed or been revoked (connect again);
