@@ -99,7 +99,7 @@ receiving mail servers.
 | **GitHub** | A [push mirror](/guides/push-mirror/) an admin configured on a project | That project's default branch and tags — its full history — pushed to the one repository the admin named, with a GitHub App installation token limited to that repository. A [break-glass resync](/guides/push-mirror/#break-glass-resync-from-github) reads that repository's default branch back, with a read-only token limited to it. The read sends nothing. Afterwards the resync resumes a `failed` or `diverged` mirror and queues an ordinary mirror push, which sends commits to GitHub if the project is ahead of it |
 | **GitHub** | [Pull requests on the mirror](/guides/mirror-pull-requests/), where an admin turned them on | Read from GitHub: the pull request's number, title, author login and commits, with a token limited to the mirror repository. Sent to GitHub: one comment on the pull request naming the Stratum change it merged as (its id and link), and a request to close it |
 | **GitHub** | Promoting a change, for a person who [connected their GitHub account](/guides/code-review/#who-the-pull-request-is-opened-as) | The request that opens the pull request is made with that person's stored authorization, so GitHub records them as its author. Nothing else is sent with it: the branch is pushed with the app's token. When the authorization has expired, a request to GitHub to renew it |
-| **GitHub / GitLab / Bitbucket** | Importing or syncing a project | Anonymous clones of **public** repositories only — imports carry no provider token. GitHub sync and PR promotion use an instance-wide `GITHUB_TOKEN` when the operator sets one |
+| **GitHub / GitLab / Bitbucket** | Importing or syncing a project | Anonymous clones of **public** repositories only — imports carry no provider token. GitHub sync and PR promotion use the instance's own GitHub credential: the GitHub App's installation token where the app is installed and linked, or an instance-wide `GITHUB_TOKEN` under an operator binding. The one exception is in the row above: creating the pull request for a person who connected their GitHub account |
 
 ## What is encrypted, and by whom
 
@@ -135,7 +135,7 @@ before they are written (`src/utils/crypto.ts`, `src/storage/backup-store.ts`):
 |------|-----------|-----|
 | Per-project secrets (deploy credentials, BYOK provider keys) | AES-256-GCM, key derived with PBKDF2-SHA256 (100k iterations); the secret's scope is bound as additional authenticated data. Write-only: no route returns a value | `DEPLOY_SECRET_KEY` (Wrangler secret) |
 | Org SSO client secrets | AES-256-GCM, PBKDF2-derived key with an SSO-specific salt | `SSO_ENCRYPTION_SECRET` (Wrangler secret) |
-| GitHub authorizations of people who [connected their GitHub account](/guides/code-review/#who-the-pull-request-is-opened-as) | AES-256-GCM, PBKDF2-derived key with its own salt. A GitHub App user access token, and its refresh token when the app issues expiring ones. Present only for people who chose to connect, removed when they disconnect, delete their account, or revoke the app on GitHub, and left out of backups | `GITHUB_USER_TOKEN_SECRET` (Wrangler secret); unset, nobody can connect and nothing is stored |
+| GitHub authorizations of people who [connected their GitHub account](/guides/code-review/#who-the-pull-request-is-opened-as) | AES-256-GCM, PBKDF2-derived key with its own salt. A GitHub App user access token, and its refresh token when the app issues expiring ones. Present only for people who chose to connect; removed when they disconnect, delete their account or revoke the app on GitHub, and when GitHub stops accepting or renewing it; left out of backups | `GITHUB_USER_TOKEN_SECRET` (Wrangler secret); unset, nobody can connect and nothing is stored |
 | Backup blobs in R2 | AES-256-GCM per blob, PBKDF2-derived key — **only when the secret is set** | `BACKUP_ENCRYPTION_SECRET` |
 | Session ids, API tokens, magic-link tokens | Stored as SHA-256 hashes; the plaintext is never persisted | — |
 | Outbound webhook signing secrets | Stored in plaintext in D1, because the Worker must sign with them | — |
@@ -176,7 +176,7 @@ the `BACKUPS` R2 bucket:
   accounts, and a restored pair would not work anyway, since GitHub retires a
   refresh token each time it is used. After a restore, people who had connected
   their GitHub account connect again from Settings; until they do, the pull
-  requests they promote are opened as the Stratum app.
+  requests they promote are opened with the instance's own credential.
 - **Not backed up: workspace repositories.** The repo pass iterates projects
   only (`listProjects` in `src/backup/run-backup.ts`). Workspace forks, which
   hold unmerged work, are not snapshotted. Their KV registry records are backed
@@ -248,7 +248,7 @@ all.
 | Data | Retention |
 |------|-----------|
 | Accounts, projects, repositories, changes, issues | Until deleted by the user or owner |
-| Account deletion (`DELETE /api/users/me`) | Deletes the account and its owned projects (including their Artifacts repositories), revokes tokens and sessions, and anonymizes contributions to other people's projects and audit log entries. See [Users API](/reference/endpoints/#delete-account) |
+| Account deletion (`DELETE /api/users/me`) | Deletes the account and its owned projects (including their Artifacts repositories), revokes tokens and sessions, deletes a stored GitHub authorization and asks GitHub to revoke it, and anonymizes contributions to other people's projects and audit log entries. See [Users API](/reference/endpoints/#delete-account) |
 | Import job records | Pruned after 30 days by the daily housekeeping cron |
 | Workspaces | Swept by the daily TTL sweep when they expire |
 | Rate-limit counters, OAuth state, caches in KV | Short KV TTLs (minutes to a day) |

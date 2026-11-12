@@ -1,7 +1,9 @@
 ### Added
-- **Promoted pull requests can be opened as the person promoting, not as the
-  Stratum app.** GitHub records whoever's credential created a pull request as
-  its author, so every promoted pull request was authored by the app's bot:
+- **Promoted pull requests can be opened as the person promoting, not with the
+  instance's own credential.** GitHub records whoever's credential created a
+  pull request as its author, so every promoted pull request was authored by
+  the Stratum app's bot (or the `GITHUB_TOKEN` account under an operator
+  binding):
   review tools skipped it or wanted a seat for the bot, and the person whose
   agent wrote the code could approve it themselves. A person can now connect
   their GitHub account under Settings, and the pull requests they promote are

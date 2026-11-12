@@ -54,8 +54,10 @@ must be the one connected to your Stratum account; sign in with GitHub once to
 connect one.
 
 The answer is used for that one request. Stratum does not store the GitHub user
-token it is given, does not log it, and asks GitHub to revoke it before the
-request ends. A link, once made, is not re-checked when someone later leaves
+token a link round trip gives it, does not log it, and asks GitHub to revoke it
+before the request ends. (The only GitHub user token Stratum keeps is the one a
+person stores by [connecting their account](#connect-a-github-account), which
+linking neither reads nor changes.) A link, once made, is not re-checked when someone later leaves
 the GitHub organization; unlink it, or suspend or uninstall the app on GitHub.
 
 Linking is **off until the operator sets `GITHUB_APP_CLIENT_ID` and
@@ -220,14 +222,17 @@ that request ends.
 `POST /github/app/disconnect`
 
 A browser session only. Deletes the stored authorization and asks GitHub to
-revoke the token. The same happens when the account is deleted, and when GitHub
-reports that the person revoked the app (`github_app_authorization` webhook).
+revoke the token. The same happens when the account is deleted. The stored
+authorization is also deleted, with nothing left to revoke, when GitHub reports
+that the person revoked the app (`github_app_authorization` webhook), when
+GitHub refuses to renew it, and when GitHub answers `401` for it at a
+promotion.
 
 Both end with a redirect to `/settings#github` carrying a fixed notice code.
 There is no JSON form of either. They need **`GITHUB_APP_CLIENT_ID`,
 `GITHUB_APP_CLIENT_SECRET` and `GITHUB_USER_TOKEN_SECRET`**; without all three
 the settings card is not shown, connecting is refused, and every pull request
-is opened as the app.
+is opened with the instance's own credential.
 
 Stored authorizations are deliberately left out of database backups. After a
 restore, people connect again.

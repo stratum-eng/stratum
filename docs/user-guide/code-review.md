@@ -184,8 +184,8 @@ and as a `stratum/evaluation` commit status. See
 ### Who the pull request is opened as
 
 GitHub records whoever's credential created a pull request as its author. By
-default that is the Stratum GitHub App, so a promoted pull request is authored
-by a bot. Tools that look at the author treat it accordingly: a review tool may
+default that is the instance's own credential, normally the Stratum GitHub App,
+so a promoted pull request is authored by a bot. Tools that look at the author treat it accordingly: a review tool may
 skip it or ask for a seat for the bot, and the person whose agent wrote the code
 can approve it themselves.
 
@@ -195,8 +195,8 @@ To have your promotions opened as you, connect your GitHub account under
 - a pull request **you** promote is opened as you, unless one of the
   exceptions listed below applies at that moment;
 - nobody else's promotion is ever opened as you. When a teammate promotes a
-  change you opened, the pull request is theirs, or the app's if they have not
-  connected.
+  change you opened, the pull request is theirs, or the instance's if they have
+  not connected.
 
 GitHub then applies its own rules to you as the author. In particular you
 cannot approve your own pull request.
@@ -222,8 +222,10 @@ The promote response says which happened: see
 [Promote to a GitHub PR](../api/endpoints/changes.md#promote-to-a-github-pr).
 
 The account you authorize must be the GitHub account you sign in to Stratum
-with. The card is absent when the instance's operator has not turned the
-feature on.
+with. An account that has only ever signed in by email has none yet: sign in
+with GitHub once, using a GitHub account whose verified email is your Stratum
+account's, and the two are linked. The card is absent when the instance's
+operator has not turned the feature on.
 
 ## Reference
 

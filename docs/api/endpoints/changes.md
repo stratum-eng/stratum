@@ -345,7 +345,8 @@ configuration is missing.
 **Who the PR is opened as.** The branch is always pushed with the credential
 above. The PR itself is opened as the person promoting when they have
 [connected their GitHub account](github-app.md#connect-a-github-account), so
-that GitHub records them as its author, and as the app otherwise. The response
+that GitHub records them as its author, and with the instance's own credential
+otherwise (reported as `app`). The response
 reports it under `github`:
 
 | Field | Meaning |
@@ -356,7 +357,7 @@ reports it under `github`:
 
 None of these fails the promotion by itself: Stratum then creates the PR with
 the instance credential, and that attempt succeeds or fails (`502
-GITHUB_ERROR`) as it would have without a connection. A PR opened as the app can be closed and the
+GITHUB_ERROR`) as it would have without a connection. A PR opened with the instance's credential can be closed and the
 change promoted again once the cause is fixed.
 
 If a re-evaluation begins while the branch is being pushed, the response is

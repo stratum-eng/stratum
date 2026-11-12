@@ -131,6 +131,7 @@ npx wrangler secret put ADMIN_EMAIL          # or: a signed-in user with this em
 npx wrangler secret put POSTHOG_API_KEY      # analytics (route patterns only, never paths)
 npx wrangler secret put GITHUB_TOKEN         # REQUIRED for promote-to-PR and eval reporting to GitHub; also raises import rate limits
 npx wrangler secret put GITHUB_WEBHOOK_SECRET  # inbound GitHub sync
+npx wrangler secret put GITHUB_USER_TOKEN_SECRET  # lets people connect GitHub so their promoted PRs are opened as them; needs the GitHub App's client ID and secret
 npx wrangler secret put SSO_ENCRYPTION_SECRET  # enables enterprise SSO/SCIM
 ```
 

@@ -637,12 +637,12 @@ const SETTINGS_NOTICES: Record<string, SettingsNotice> = {
   "github-connected": {
     kind: "success",
     message:
-      "GitHub connected. Pull requests you promote are now opened as you, or as the Stratum app when GitHub does not accept your authorization for a repository.",
+      "GitHub connected. Pull requests you promote are now opened as you, or with this instance's own GitHub identity when GitHub does not accept your authorization for a repository.",
   },
   "github-disconnected": {
     kind: "success",
     message:
-      "GitHub disconnected. Pull requests you promote from now on are opened as the Stratum app.",
+      "GitHub disconnected. Pull requests you promote from now on are opened with this instance's own GitHub identity, normally the Stratum app.",
   },
   "github-connect-declined": {
     kind: "error",
@@ -656,7 +656,7 @@ const SETTINGS_NOTICES: Record<string, SettingsNotice> = {
   "github-connect-needs-github": {
     kind: "error",
     message:
-      "GitHub was not connected: this account has no GitHub identity to check the authorization against. Sign in to Stratum with GitHub first.",
+      "GitHub was not connected: this account has no GitHub identity to check the authorization against. Sign in to Stratum with GitHub first, using a GitHub account whose verified email is this account's.",
   },
   "github-connect-unavailable": {
     kind: "error",

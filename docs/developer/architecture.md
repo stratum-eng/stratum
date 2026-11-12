@@ -458,7 +458,12 @@ permission on the app; the organization is matched by account id), or is the
 personal account it is on. The
 token's user must also be the caller's OAuth-verified `users.github_id`. The
 token lives only in that request, is never written or logged, and is revoked
-on the way out. The installer recorded from the `installation.created` webhook
+on the way out. The same callback serves a second, separate round trip in which
+the token IS kept: a person connecting their GitHub account so the pull
+requests they promote are opened as them (`src/services/github-pr-author.ts`,
+`github_user_connections`, migration 086, encrypted under
+`GITHUB_USER_TOKEN_SECRET`). A link state carries a `purpose`, and a state only
+ever does what it was issued for. The installer recorded from the `installation.created` webhook
 (`sender.id`) is an audit fact and not an authorization input. Without the two
 variables linking is refused (501), never downgraded. Installation ids are cached in KV at
 `github_installation:{owner}/{repo}` (24 h TTL; "not installed" for 10 min) and

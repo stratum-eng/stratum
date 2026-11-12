@@ -454,6 +454,7 @@ ENTITLEMENTS_ENFORCE = "0"
 # GITHUB_CLIENT_SECRET =
 # GITHUB_APP_CLIENT_ID =  # the GitHub App's own client ID (not the login OAuth app's); unset → installations cannot be linked
 # GITHUB_APP_CLIENT_SECRET =  # the GitHub App's client secret; set both, and enable "Request user authorization (OAuth) during installation" on the app
+# GITHUB_USER_TOKEN_SECRET =  # optional; with the two above, lets people connect their GitHub account so the pull requests they promote are opened as them. Encrypts the stored authorizations: a long random string, never changed once set
 # GOOGLE_CLIENT_ID =
 # GOOGLE_CLIENT_SECRET =
 # EMAIL_FROM_ADDRESS = "noreply@yourdomain.com"  # for magic link emails
