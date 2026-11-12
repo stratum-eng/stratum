@@ -619,7 +619,6 @@ export async function rerunCheck(
   if (!result.success) return err(new AppError(result.error.message, "DATABASE_ERROR", 500));
   const rerun = result.data.runs.find((run) => run.name === check.name);
   if (!rerun) return err(new AppError("Check run was not created", "INTERNAL_ERROR", 500));
-  await syncChangeChecksToGitHub(env, logger, change.id);
   return ok({ check: rerun, dispatchFailure: result.data.failure });
 }
 

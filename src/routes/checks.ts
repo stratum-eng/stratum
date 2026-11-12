@@ -37,7 +37,7 @@ import {
   refuseProjectAccess,
 } from "../utils/authz";
 import { getWaitUntil } from "../utils/execution-ctx";
-import { createLogger } from "../utils/logger";
+import { type Logger, createLogger } from "../utils/logger";
 import { readTextWithLimit } from "../utils/request-body";
 import {
   badRequest,
@@ -164,6 +164,7 @@ changeChecks.post("/changes/:id/checks/:checkId/rerun", async (c) => {
     );
   }
 
+  await deferGitHubSync(c, logger, id);
   const check = toCheckRunView(rerun.data.check);
   logger.info("Check re-run dispatched", {
     changeId: id,
@@ -292,6 +293,22 @@ const CONFLICT_STATUS: Record<CheckReportConflict, 409> = {
 const checkCallback = new Hono<{ Bindings: Env }>();
 
 /**
+ * Post a change's checks to its pull request after the response, so neither a
+ * runner nor a person re-running a check waits on GitHub. Awaited only where
+ * there is no execution context to hand it to (tests).
+ */
+async function deferGitHubSync(
+  c: Context<{ Bindings: Env }>,
+  logger: Logger,
+  changeId: string,
+): Promise<void> {
+  const sync = syncChangeChecksToGitHub(c.env, logger, changeId);
+  const waitUntil = getWaitUntil(c);
+  if (waitUntil) waitUntil(sync);
+  else await sync;
+}
+
+/**
  * The runner's callback.
  *
  * How the shared middleware treats it, since it is the one API route with no
@@ -336,10 +353,7 @@ checkCallback.post("/:id", async (c) => {
     (outcome.kind === "ok" && outcome.applied) ||
     (outcome.kind === "conflict" && outcome.code === "CHECK_DEADLINE_EXCEEDED")
   ) {
-    const sync = syncChangeChecksToGitHub(c.env, logger, outcome.check.changeId);
-    const waitUntil = getWaitUntil(c);
-    if (waitUntil) waitUntil(sync);
-    else await sync;
+    await deferGitHubSync(c, logger, outcome.check.changeId);
   }
   switch (outcome.kind) {
     case "unauthenticated":
