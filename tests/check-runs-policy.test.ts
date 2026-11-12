@@ -361,6 +361,15 @@ describe("the gate against stored checks", () => {
       { name: "due", status: "errored" },
       { name: "fresh", status: "queued" },
     ]);
+    // At most `limit` per sweep, oldest deadline first; the rest wait their turn.
+    raw.prepare("UPDATE checks SET status = 'queued', summary = NULL WHERE id = ?").run(id("due"));
+    raw
+      .prepare("UPDATE checks SET deadline_at = ? WHERE id = ?")
+      .run("2026-11-09T06:00:00.000Z", id("fresh"));
+    const batch = await expireOverdueChecks(db, logger, "2026-11-09T12:00:00.000Z", 1);
+    expect(batch.success && batch.data.expired).toBe(1);
+    const next = await expireOverdueChecks(db, logger, "2026-11-09T12:00:00.000Z", 1);
+    expect(next.success && next.data.expired).toBe(1);
     // Idempotent: a second, overlapping sweep finds nothing left to do.
     const again = await expireOverdueChecks(db, logger, "2026-11-09T12:00:00.000Z");
     expect(again.success && again.data).toEqual({ expired: 0, changeIds: [] });

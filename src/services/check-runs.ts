@@ -903,9 +903,9 @@ export async function sweepOverdueChecks(
   const { expired, changeIds } = result.data;
   if (expired > 0) logger.warn("Expired check runs past their deadline", { expired });
   // A pull request would otherwise show these as pending forever: once a run
-  // is errored, no later sweep returns its change again, so every change is
-  // posted now. Unbounded on purpose. A change that was never promoted costs
-  // one read, and a promoted one a token and a status per check.
+  // is errored no later sweep returns its change again, so every change it
+  // ended is posted now. Bounded by `MAX_EXPIRED_PER_SWEEP`, which caps the
+  // runs ended per sweep rather than the posts, so nothing is left unposted.
   for (const changeId of changeIds) {
     await syncChangeChecksToGitHub(env, logger, changeId);
   }
