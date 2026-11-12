@@ -52,19 +52,22 @@ requests. Do not open one yourself, and do not push a branch to GitHub** (`gh pr
    as the Stratum app otherwise; review tools may skip one opened by the app.
 5. **Review, CI and merge happen on that pull request**, as before.
 
-The connection must act as a person for steps 1 and 4 (`stratum_whoami` reports
-`actingAs: "user"`); an agent-bound connection is refused there.
+The connection must act as a person (`stratum_whoami` reports `actingAs: "user"`) for steps 1
+and 4, and to re-evaluate in step 3; an agent-bound connection is refused there.
 
-What still needs GitHub directly, because Stratum does not do it yet. `gh` is fine for these and
-only these:
+What still needs GitHub directly, because the Stratum MCP tools do not do it yet. `gh` (and, for
+the follow-up commit, `git push` to the pull request's branch) is fine for these and only these:
 
 - reading a pull request's CI results and review comments, and replying on review threads;
-- marking a draft pull request ready, and merging it;
+- marking a draft pull request ready, and merging it. Both are a person's decision: do them when
+  the person you are working for has asked, not as a routine last step;
 - **a follow-up commit to a pull request that is already open.** A promoted change cannot be
   re-evaluated (Stratum issue #2), so push the fix to the pull request's `stratum/<change id>`
-  branch. A review that *requests changes* is the exception: it moves the change to
+  branch. A GitHub review that *requests changes* is the exception: it moves the change to
   `needs_changes`, and then the fix goes workspace → `stratum_evaluate_change` → promote again,
-  which updates the same pull request;
+  which updates the same pull request. Promoting again force-pushes the workspace's tip over
+  that branch, so first fetch `stratum/<change id>` and base the fix on it: a commit that is on
+  the branch but not in the workspace is removed from the pull request;
 - the release pull request, which Release Autopilot opens;
 - a pull request that was opened on GitHub before this rule: finish it where it is.
 
