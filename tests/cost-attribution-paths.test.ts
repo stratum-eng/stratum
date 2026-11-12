@@ -98,9 +98,9 @@ vi.mock("../src/storage/changes", async (importActual) => ({
   getChange: vi.fn(),
   updateChangeStatus: vi.fn(async () => ({ success: true, data: undefined })),
   markChangeMerged: vi.fn(async () => ({ success: true, data: { transitioned: true } })),
-  dismissApprovalsAndUpdateStatus: vi.fn(async () => ({
+  recordReevaluation: vi.fn(async () => ({
     success: true,
-    data: { dismissedReviewerIds: [] },
+    data: { applied: true, runs: [], dismissedReviewerIds: [] },
   })),
 }));
 

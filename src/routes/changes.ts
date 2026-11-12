@@ -24,16 +24,20 @@ import { type DispatchOutcome, dispatchEvaluationRun } from "../services/evaluat
 import { dropRejectedConnection, resolvePrAuthor } from "../services/github-pr-author";
 import { getCommitLogPreferNative } from "../storage/artifacts-reads";
 import { recordAudit } from "../storage/audit";
-import { beginEvaluationRun, newEvaluationRunId } from "../storage/change-evaluation";
+import {
+  TERMINAL_CHANGE_STATUSES,
+  beginEvaluationRun,
+  newEvaluationRunId,
+} from "../storage/change-evaluation";
 import {
   type GithubPrLink,
-  dismissApprovalsAndUpdateStatus,
   getChange,
   getChangesByIds,
   listChanges,
   markChangeMerged,
   mergeTransitionOpts,
   recordGithubPrLink,
+  recordReevaluation,
   updateChangeStatus,
   updateChangeText,
 } from "../storage/changes";
@@ -44,7 +48,7 @@ import {
   resolveBillingSubject,
 } from "../storage/costs";
 import { isTargetDeleting } from "../storage/deletion";
-import { listEvalRuns, recordEvalRuns } from "../storage/eval-runs";
+import { listEvalRuns } from "../storage/eval-runs";
 import {
   getExternalPullRequestByChange,
   listExternalChangeIds,
@@ -1966,7 +1970,9 @@ app.post("/changes/:id/evaluate", async (c) => {
   if (!(await canWriteProject(c.env.DB, project, credentialBindingFrom(c), userId)))
     return refuseProjectAccess(credentialBindingFrom(c), project, () => notFound("Change", id));
 
-  if (change.status === "merged" || change.status === "rejected" || change.status === "promoted") {
+  // The same list the recording batch guards on, so a change that cannot take
+  // a verdict is refused before anything is spent on evaluating it.
+  if (TERMINAL_CHANGE_STATUSES.includes(change.status)) {
     return badRequest(`Cannot re-evaluate a ${change.status} change`);
   }
   // An evaluation is what an import starts, once a maintainer has chosen to
@@ -2056,12 +2062,7 @@ app.post("/changes/:id/evaluate", async (c) => {
     policy: evaluatedPolicy,
   } = evaluation.data;
 
-  const recordResult = await recordEvalRuns(c.env.DB, logger, id, evalRuns);
-  if (!recordResult.success) {
-    logger.error("Failed to record eval runs", recordResult.error);
-    return badRequest(recordResult.error.message);
-  }
-
+  // The runs are recorded below, in the same batch as the verdict (issue #5).
   const evaluateCostSamples: CostSample[] = [
     { kind: "git_ops", quantity: 2 },
     ...evalRuns.flatMap(({ result }) => result.costs ?? []),
@@ -2103,10 +2104,8 @@ app.post("/changes/:id/evaluate", async (c) => {
     // acquire a policy edit, pass the staleness check, and merge without the
     // approval the flag exists to force.
     touchesProtectedConfig: diffTouchesProtectedConfig(diff),
-    // This IS the verdict, so it may replace `evaluating` — reachable when a
-    // change was queued on an instance whose evaluation queue has since been
-    // unbound, and re-evaluating inline is how it gets one.
-    allowFromEvaluating: true,
+    // May replace `evaluating` (a change queued on an instance whose queue has
+    // since been unbound): `recordReevaluation` always allows that.
   };
 
   // Stale-approval dismissal (#193): a different evaluated sha means any prior
@@ -2137,54 +2136,61 @@ app.post("/changes/:id/evaluate", async (c) => {
   // every re-evaluation of a change that predates the field.
   const tipChanged = change.evaluatedSha !== undefined && change.evaluatedSha !== evaluatedSha;
   const baseChanged = change.baseSha !== undefined && change.baseSha !== baseOid;
-  if (tipChanged || baseChanged) {
-    const batchResult = await dismissApprovalsAndUpdateStatus(
-      c.env.DB,
-      logger,
-      id,
-      newStatus,
-      statusOpts,
+  // The runs, the dismissal and the re-pin land together or not at all, and
+  // not at all if the change reached a final status while this ran
+  // (issue #5): inline evaluation does not hold the change in `evaluating`, so
+  // a final decision can overtake it, and must not be overwritten by it.
+  const recorded = await recordReevaluation(c.env.DB, logger, {
+    changeId: id,
+    evalRuns,
+    dismissApprovals: tipChanged || baseChanged,
+    status: newStatus,
+    opts: statusOpts,
+  });
+  if (!recorded.success) {
+    logger.error("Failed to record the re-evaluation", recorded.error);
+    return internalError(recorded.error.message);
+  }
+  if (!recorded.data.applied) {
+    // Say what actually happened to it: finalized, or deleted outright.
+    const now = await getChange(c.env.DB, logger, id);
+    if (!now.success && now.error.code === "NOT_FOUND") return notFound("Change", id);
+    const finalStatus = now.success ? now.data.status : undefined;
+    return c.json(
+      {
+        error: `The change was ${finalStatus ?? "finalized"} while it was being evaluated, so this evaluation's results and verdict were discarded.`,
+        code: "CHANGE_FINALIZED",
+        ...(finalStatus !== undefined ? { status: finalStatus } : {}),
+      },
+      409,
     );
-    if (!batchResult.success) {
-      logger.error(
-        "Failed to atomically dismiss stale approvals and update change status",
-        batchResult.error,
-      );
-      return internalError(batchResult.error.message);
-    }
-    const { dismissedReviewerIds } = batchResult.data;
-    if (dismissedReviewerIds.length > 0) {
-      const auditResult = await recordAudit(c.env.DB, logger, {
-        action: "review.approvals_dismissed",
-        actorType: "user",
-        actorId: userId,
-        subject: id,
-        project,
-        detail: {
-          project: change.project,
-          dismissed: dismissedReviewerIds.length,
-          dismissedReviewerIds,
-          previousEvaluatedSha: change.evaluatedSha,
-          evaluatedSha,
-          // Which endpoint moved — an audit reader otherwise cannot tell a
-          // re-push from a base advance, and the two have different causes.
-          previousBaseSha: change.baseSha,
-          baseSha: baseOid,
-          dismissedFor: tipChanged && baseChanged ? "tip+base" : tipChanged ? "tip" : "base",
-        },
-      });
-      if (!auditResult.success) {
-        // The dismissal + re-pin already landed together; do not fail the
-        // request. Log the gap so a missing audit record for a real
-        // dismissal is detectable.
-        logger.error("Failed to audit approval dismissal", auditResult.error, { changeId: id });
-      }
-    }
-  } else {
-    const updateResult = await updateChangeStatus(c.env.DB, logger, id, newStatus, statusOpts);
-    if (!updateResult.success) {
-      logger.error("Failed to update change status", updateResult.error);
-      return badRequest(updateResult.error.message);
+  }
+  const { dismissedReviewerIds, runs: recordedRuns } = recorded.data;
+  if (dismissedReviewerIds.length > 0) {
+    const auditResult = await recordAudit(c.env.DB, logger, {
+      action: "review.approvals_dismissed",
+      actorType: "user",
+      actorId: userId,
+      subject: id,
+      project,
+      detail: {
+        project: change.project,
+        dismissed: dismissedReviewerIds.length,
+        dismissedReviewerIds,
+        previousEvaluatedSha: change.evaluatedSha,
+        evaluatedSha,
+        // Which endpoint moved — an audit reader otherwise cannot tell a
+        // re-push from a base advance, and the two have different causes.
+        previousBaseSha: change.baseSha,
+        baseSha: baseOid,
+        dismissedFor: tipChanged && baseChanged ? "tip+base" : tipChanged ? "tip" : "base",
+      },
+    });
+    if (!auditResult.success) {
+      // The dismissal + re-pin already landed together; do not fail the
+      // request. Log the gap so a missing audit record for a real
+      // dismissal is detectable.
+      logger.error("Failed to audit approval dismissal", auditResult.error, { changeId: id });
     }
   }
 
@@ -2206,13 +2212,22 @@ app.post("/changes/:id/evaluate", async (c) => {
   // failure never fails the evaluation — and a no-op for changes without a
   // linked PR or projects without a GitHub source. Scheduled off the request
   // path since it's pure side effect the response doesn't depend on.
-  const reportEvaluation = reportEvaluationToGitHub(
-    c.env,
-    { ...change, evaluatedSha, ...(workspaceHeadSha ? { workspaceHeadSha } : {}) },
-    project,
-    buildEvaluationReport(evalResult, evalRuns),
-    logger,
-  );
+  //
+  // From the committed row, not the one read at entry: a pull request linked
+  // while this ran (a promotion held by it, say) is where the verdict belongs.
+  const reportEvaluation = (async () => {
+    const committed = await getChange(c.env.DB, logger, id);
+    const reported = committed.success
+      ? committed.data
+      : { ...change, evaluatedSha, ...(workspaceHeadSha ? { workspaceHeadSha } : {}) };
+    await reportEvaluationToGitHub(
+      c.env,
+      reported,
+      project,
+      buildEvaluationReport(evalResult, evalRuns),
+      logger,
+    );
+  })();
   const waitUntil = getWaitUntil(c);
   if (waitUntil) {
     waitUntil(reportEvaluation);
@@ -2225,7 +2240,7 @@ app.post("/changes/:id/evaluate", async (c) => {
     evalScore: evalResult.score,
     passed: evalResult.passed,
   });
-  return okOrFormRedirect(c, id, { changeId: id, eval: evalResult, evalRuns: recordResult.data });
+  return okOrFormRedirect(c, id, { changeId: id, eval: evalResult, evalRuns: recordedRuns });
 });
 
 /** The repository a promotion is targeting, as resolved from the project source. */

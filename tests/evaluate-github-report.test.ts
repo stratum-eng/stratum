@@ -29,6 +29,10 @@ vi.mock("../src/storage/changes", () => ({
   getChangesByIds: vi.fn(),
   listChanges: vi.fn(),
   updateChangeStatus: vi.fn(async () => ({ success: true, data: undefined })),
+  recordReevaluation: vi.fn(async () => ({
+    success: true,
+    data: { applied: true, runs: [], dismissedReviewerIds: [] },
+  })),
   markChangeMerged: vi.fn(async () => ({ success: true, data: { transitioned: true } })),
   mergeTransitionOpts: vi.fn(() => ({})),
 }));
@@ -308,6 +312,30 @@ describe("POST /api/changes/:id/evaluate — GitHub verdict reporting", () => {
     expect(GitHubClient).not.toHaveBeenCalled();
     expect(client.postComment).not.toHaveBeenCalled();
     expect(client.setStatus).not.toHaveBeenCalled();
+  });
+
+  it("reports to a pull request linked while the evaluation ran (issue #5)", async () => {
+    // Read at entry: no PR yet. Re-read after the verdict is recorded: linked.
+    vi.mocked(getChange)
+      .mockResolvedValueOnce({
+        success: true,
+        data: {
+          ...prLinkedChange,
+          githubPrNumber: undefined,
+          githubPrUrl: undefined,
+          githubOwner: undefined,
+          githubRepo: undefined,
+          githubHeadSha: undefined,
+        },
+      })
+      .mockResolvedValue({ success: true, data: prLinkedChange });
+
+    const res = await evaluate();
+    expect(res.status).toBe(200);
+    expect(client.postComment).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "acme", repo: "api", issue_number: 42 }),
+    );
+    expect(client.setStatus).toHaveBeenCalled();
   });
 
   it("does not touch GitHub when the change has no linked PR", async () => {

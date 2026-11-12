@@ -120,6 +120,11 @@ codes are in the [OpenAPI specification](/reference/openapi/).
   `POST /api/changes/{id}/github-pr` when a re-evaluation began while the PR
   was being opened — the PR exists (the response carries `github`) but the
   change is not promoted; promote again once the evaluation finishes
+- `CHANGE_FINALIZED` — `409`; from `POST /api/changes/{id}/evaluate` when the
+  evaluation runs inline: the change was merged, rejected, promoted or reverted while it
+  ran, so its results, verdict and approval changes were discarded (its cost
+  is still recorded). The change keeps that final decision, which the
+  response's `status` names
 - `EVALUATION_MISSING` — `409`; the change's evaluation ended without a verdict
   (it failed closed), so there is no evaluated revision to merge. Refused even
   with `force`. Re-evaluate the change first

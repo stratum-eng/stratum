@@ -29,9 +29,9 @@ vi.mock("../src/storage/changes", () => ({
   updateChangeStatus: vi.fn(async () => ({ success: true, data: undefined })),
   updateChangeText: vi.fn(),
   recordGithubPrLink: vi.fn(async () => ({ success: true, data: undefined })),
-  dismissApprovalsAndUpdateStatus: vi.fn(async () => ({
+  recordReevaluation: vi.fn(async () => ({
     success: true,
-    data: { dismissedReviewerIds: [] },
+    data: { applied: true, runs: [], dismissedReviewerIds: [] },
   })),
   // Default: this request won the transition, so the merge path emits + records.
   markChangeMerged: vi.fn(async () => ({ success: true, data: { transitioned: true } })),
@@ -232,12 +232,12 @@ import { getAgent, getAgentByToken } from "../src/storage/agents";
 import { recordAudit } from "../src/storage/audit";
 import {
   createChange,
-  dismissApprovalsAndUpdateStatus,
   getChange,
   getChangesByIds,
   listChanges,
   markChangeMerged,
   recordGithubPrLink,
+  recordReevaluation,
   updateChangeStatus,
   updateChangeText,
 } from "../src/storage/changes";
@@ -4354,10 +4354,15 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
     });
     vi.mocked(updateChangeStatus).mockResolvedValue({ success: true, data: undefined });
     vi.mocked(recordEvalRuns).mockResolvedValue({ success: true, data: [] });
-    vi.mocked(dismissApprovalsAndUpdateStatus).mockResolvedValue({
+    // As the batch behaves: approvals are only dismissed when asked to.
+    vi.mocked(recordReevaluation).mockImplementation(async (_db, _logger, args) => ({
       success: true,
-      data: { dismissedReviewerIds: ["user_1"] },
-    });
+      data: {
+        applied: true,
+        runs: [],
+        dismissedReviewerIds: args.dismissApprovals ? ["user_1"] : [],
+      },
+    }));
     vi.mocked(recordAudit).mockResolvedValue({ success: true, data: undefined });
     vi.mocked(CompositeEvaluator).mockImplementation(
       () =>
@@ -4374,14 +4379,17 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
     );
     expect(res.status).toBe(200);
 
-    // The dismissal and the status/sha re-pin are ONE call now, not two
-    // separate writes — see storage/changes.ts dismissApprovalsAndUpdateStatus.
-    expect(dismissApprovalsAndUpdateStatus).toHaveBeenCalledWith(
+    // The runs, the dismissal and the status/sha re-pin are ONE call, not
+    // separate writes — see storage/changes.ts recordReevaluation.
+    expect(recordReevaluation).toHaveBeenCalledWith(
       env.DB,
       expect.any(Object),
-      "chg_abc123",
-      "accepted",
-      expect.objectContaining({ evaluatedSha: "new_sha" }),
+      expect.objectContaining({
+        changeId: "chg_abc123",
+        status: "accepted",
+        dismissApprovals: true,
+        opts: expect.objectContaining({ evaluatedSha: "new_sha" }),
+      }),
     );
     // The plain, non-atomic updateChangeStatus must not also run for this path
     // — that would reintroduce the two-write race #238 removes.
@@ -4389,9 +4397,9 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
   });
 
   it("records an audit entry for the dismissal", async () => {
-    vi.mocked(dismissApprovalsAndUpdateStatus).mockResolvedValue({
+    vi.mocked(recordReevaluation).mockResolvedValue({
       success: true,
-      data: { dismissedReviewerIds: ["user_1", "user_2"] },
+      data: { applied: true, runs: [], dismissedReviewerIds: ["user_1", "user_2"] },
     });
     const res = await app.fetch(
       request("POST", "/api/changes/chg_abc123/evaluate", {}, USER_AUTH),
@@ -4419,15 +4427,15 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
       },
     });
     // The audit entry is only recorded once the batch itself has succeeded.
-    const batchOrder = vi.mocked(dismissApprovalsAndUpdateStatus).mock.invocationCallOrder[0] ?? 0;
+    const batchOrder = vi.mocked(recordReevaluation).mock.invocationCallOrder[0] ?? 0;
     const auditOrder = vi.mocked(recordAudit).mock.invocationCallOrder[0] ?? 0;
     expect(batchOrder).toBeLessThan(auditOrder);
   });
 
   it("logs but does not fail the request when auditing the dismissal fails", async () => {
-    vi.mocked(dismissApprovalsAndUpdateStatus).mockResolvedValue({
+    vi.mocked(recordReevaluation).mockResolvedValue({
       success: true,
-      data: { dismissedReviewerIds: ["user_1"] },
+      data: { applied: true, runs: [], dismissedReviewerIds: ["user_1"] },
     });
     vi.mocked(recordAudit).mockResolvedValue({
       success: false,
@@ -4442,7 +4450,7 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
     // The dismissal + re-pin batch already landed; a failed audit write must
     // not fail the request.
     expect(res.status).toBe(200);
-    expect(dismissApprovalsAndUpdateStatus).toHaveBeenCalled();
+    expect(recordReevaluation).toHaveBeenCalled();
   });
 
   it("recomputes the protected-config flag from the re-evaluated diff", async () => {
@@ -4480,12 +4488,13 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
     // The evaluated sha changes here (old_sha -> new_sha), so the re-pin goes
     // through the atomic dismiss+update batch (#238), not the plain
     // updateChangeStatus path.
-    expect(dismissApprovalsAndUpdateStatus).toHaveBeenCalledWith(
+    expect(recordReevaluation).toHaveBeenCalledWith(
       env.DB,
       expect.anything(),
-      "chg_abc123",
-      expect.any(String),
-      expect.objectContaining({ touchesProtectedConfig: true }),
+      expect.objectContaining({
+        changeId: "chg_abc123",
+        opts: expect.objectContaining({ touchesProtectedConfig: true }),
+      }),
     );
   });
 
@@ -4500,12 +4509,13 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
     // CREATION — against the current project head, so a change whose base moved
     // stays STALE_BASE no matter how often it is re-evaluated, and re-evaluation
     // (the documented remedy) reports a fresh pass that can never be merged.
-    expect(dismissApprovalsAndUpdateStatus).toHaveBeenCalledWith(
+    expect(recordReevaluation).toHaveBeenCalledWith(
       env.DB,
       expect.anything(),
-      "chg_abc123",
-      expect.any(String),
-      expect.objectContaining({ baseSha: "base_sha_from_diff_clone" }),
+      expect.objectContaining({
+        changeId: "chg_abc123",
+        opts: expect.objectContaining({ baseSha: "base_sha_from_diff_clone" }),
+      }),
     );
   });
 
@@ -4522,12 +4532,13 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
 
     // The default beforeEach setup re-pins a new evaluated sha, so this also
     // goes through the atomic dismiss+update batch (#238).
-    expect(dismissApprovalsAndUpdateStatus).toHaveBeenCalledWith(
+    expect(recordReevaluation).toHaveBeenCalledWith(
       env.DB,
       expect.anything(),
-      "chg_abc123",
-      expect.any(String),
-      expect.objectContaining({ touchesProtectedConfig: false }),
+      expect.objectContaining({
+        changeId: "chg_abc123",
+        opts: expect.objectContaining({ touchesProtectedConfig: false }),
+      }),
     );
   });
 
@@ -4551,10 +4562,12 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
       env,
     );
     expect(res.status).toBe(200);
-    expect(dismissApprovalsAndUpdateStatus).not.toHaveBeenCalled();
+    expect(recordReevaluation).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({ dismissApprovals: false }),
+    );
     expect(recordAudit).not.toHaveBeenCalled();
-    // No approvals at risk here, so the plain single-write path is used.
-    expect(updateChangeStatus).toHaveBeenCalled();
   });
 
   it("dismisses approvals when the BASE moved even though the tip did not", async () => {
@@ -4588,12 +4601,13 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
       env,
     );
     expect(res.status).toBe(200);
-    expect(dismissApprovalsAndUpdateStatus).toHaveBeenCalledWith(
+    expect(recordReevaluation).toHaveBeenCalledWith(
       env.DB,
       expect.anything(),
-      "chg_abc123",
-      expect.any(String),
-      expect.objectContaining({ baseSha: "base_sha_from_diff_clone" }),
+      expect.objectContaining({
+        changeId: "chg_abc123",
+        opts: expect.objectContaining({ baseSha: "base_sha_from_diff_clone" }),
+      }),
     );
     expect(recordAudit).toHaveBeenCalledWith(
       env.DB,
@@ -4637,8 +4651,11 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
       env,
     );
     expect(res.status).toBe(200);
-    expect(dismissApprovalsAndUpdateStatus).not.toHaveBeenCalled();
-    expect(updateChangeStatus).toHaveBeenCalled();
+    expect(recordReevaluation).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({ dismissApprovals: false }),
+    );
   });
 
   it("keeps approvals on a legacy change with no recorded evaluated sha", async () => {
@@ -4652,25 +4669,29 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
       env,
     );
     expect(res.status).toBe(200);
-    expect(dismissApprovalsAndUpdateStatus).not.toHaveBeenCalled();
+    expect(recordReevaluation).toHaveBeenCalledWith(
+      env.DB,
+      expect.any(Object),
+      expect.objectContaining({ dismissApprovals: false }),
+    );
   });
 
   it("skips the audit entry when there were no approvals to dismiss", async () => {
-    vi.mocked(dismissApprovalsAndUpdateStatus).mockResolvedValue({
+    vi.mocked(recordReevaluation).mockResolvedValue({
       success: true,
-      data: { dismissedReviewerIds: [] },
+      data: { applied: true, runs: [], dismissedReviewerIds: [] },
     });
     const res = await app.fetch(
       request("POST", "/api/changes/chg_abc123/evaluate", {}, USER_AUTH),
       env,
     );
     expect(res.status).toBe(200);
-    expect(dismissApprovalsAndUpdateStatus).toHaveBeenCalled();
+    expect(recordReevaluation).toHaveBeenCalled();
     expect(recordAudit).not.toHaveBeenCalled();
   });
 
   it("fails closed — without re-pinning the sha or losing approvals — when the atomic batch fails (#238)", async () => {
-    vi.mocked(dismissApprovalsAndUpdateStatus).mockResolvedValue({
+    vi.mocked(recordReevaluation).mockResolvedValue({
       success: false,
       error: new AppError("D1 unavailable", "DATABASE_ERROR", 500),
     });
@@ -4686,6 +4707,66 @@ describe("POST /api/changes/:id/evaluate — stale approval dismissal (#193)", (
     expect(updateChangeStatus).not.toHaveBeenCalled();
     expect(recordAudit).not.toHaveBeenCalled();
   });
+
+  it("discards its verdict when the change was finalized while it ran (issue #5)", async () => {
+    // Promoted meanwhile: the guarded batch wrote nothing.
+    vi.mocked(getChange)
+      .mockResolvedValueOnce({ success: true, data: evaluatedChange })
+      .mockResolvedValue({ success: true, data: { ...evaluatedChange, status: "promoted" } });
+    vi.mocked(recordReevaluation).mockResolvedValue({
+      success: true,
+      data: { applied: false, runs: [], dismissedReviewerIds: [] },
+    });
+
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/evaluate", {}, USER_AUTH),
+      env,
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code: string; status: string; error: string };
+    expect(body).toMatchObject({ code: "CHANGE_FINALIZED", status: "promoted" });
+    expect(body.error).toContain("promoted while it was being evaluated");
+    // Nothing is announced for a verdict that was not recorded.
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 when the change was deleted while it ran", async () => {
+    vi.mocked(getChange)
+      .mockResolvedValueOnce({ success: true, data: evaluatedChange })
+      .mockResolvedValue({ success: false, error: new NotFoundError("Change", "chg_abc123") });
+    vi.mocked(recordReevaluation).mockResolvedValue({
+      success: true,
+      data: { applied: false, runs: [], dismissedReviewerIds: [] },
+    });
+
+    const res = await app.fetch(
+      request("POST", "/api/changes/chg_abc123/evaluate", {}, USER_AUTH),
+      env,
+    );
+
+    expect(res.status).toBe(404);
+  });
+
+  it.each(["merged", "rejected", "promoted", "reverted"] as const)(
+    "refuses a %s change before evaluating it",
+    async (finalStatus) => {
+      vi.mocked(getChange).mockResolvedValue({
+        success: true,
+        data: { ...evaluatedChange, status: finalStatus },
+      });
+
+      const res = await app.fetch(
+        request("POST", "/api/changes/chg_abc123/evaluate", {}, USER_AUTH),
+        env,
+      );
+
+      expect(res.status).toBe(400);
+      // Refused before anything was spent: no diff, no evaluation, no write.
+      expect(getDiffBetweenRepos).not.toHaveBeenCalled();
+      expect(recordReevaluation).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("PATCH /api/changes/:id", () => {

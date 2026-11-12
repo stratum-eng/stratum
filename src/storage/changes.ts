@@ -1,9 +1,11 @@
+import type { EvalResult } from "../evaluation/types";
 import type { Change } from "../types";
 import { AppError, NotFoundError } from "../utils/errors";
 import { newId } from "../utils/ids";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
-import { buildDismissApprovalsStatement } from "./change-reviews";
+import { TERMINAL_CHANGE_STATUSES } from "./change-evaluation";
+import type { EvalRun } from "./eval-runs";
 
 interface ChangeRow {
   id: string;
@@ -422,10 +424,13 @@ const STATUSES_ALLOWED_FROM_EVALUATING: readonly Change["status"][] = [
   "reverted",
 ];
 
+/** The change is not in a status it can no longer be re-evaluated from. */
+const NOT_TERMINAL = `status NOT IN (${TERMINAL_CHANGE_STATUSES.map((status) => `'${status}'`).join(", ")})`;
+
 /**
  * Build (without running) the `UPDATE changes` statement for a status/opts
  * transition. Shared by `updateChangeStatus` and the atomic
- * `dismissApprovalsAndUpdateStatus` batch below (#238) so both paths update
+ * `recordReevaluation` batch below (#238, issue #5) so both paths update
  * with the exact same column mapping.
  */
 function buildUpdateChangeStatusStatement(
@@ -433,6 +438,12 @@ function buildUpdateChangeStatusStatement(
   id: string,
   status: Change["status"],
   opts?: UpdateChangeStatusOpts,
+  /**
+   * Refuse the write when the change is terminal. Only `recordReevaluation`
+   * sets it: its zero-row result is read there as "finalized", which
+   * `updateChangeStatus` would misreport as an evaluation pending.
+   */
+  unlessTerminal = false,
 ): D1PreparedStatement {
   const assignments = ["status = ?"];
   const bindings: unknown[] = [status];
@@ -479,8 +490,9 @@ function buildUpdateChangeStatusStatement(
     opts?.allowFromEvaluating === true || STATUSES_ALLOWED_FROM_EVALUATING.includes(status)
       ? ""
       : " AND status != 'evaluating'";
+  const terminalGuard = unlessTerminal ? ` AND ${NOT_TERMINAL}` : "";
   return db
-    .prepare(`UPDATE changes SET ${assignments.join(", ")} WHERE id = ?${guard}`)
+    .prepare(`UPDATE changes SET ${assignments.join(", ")} WHERE id = ?${guard}${terminalGuard}`)
     .bind(...bindings);
 }
 
@@ -556,7 +568,7 @@ export async function recordGithubPrLink(
 /**
  * Update a change's status (and any optional pinned fields) as a single,
  * non-batched write. Callers that also need stale approvals dismissed in the
- * same transaction should use dismissApprovalsAndUpdateStatus below instead.
+ * same transaction should use recordReevaluation below instead.
  */
 export async function updateChangeStatus(
   db: D1Database,
@@ -604,79 +616,142 @@ export async function updateChangeStatus(
   }
 }
 
-export interface DismissApprovalsAndUpdateStatusResult {
+export interface RecordReevaluationArgs {
+  changeId: string;
+  evalRuns: Array<{ evaluatorType: string; result: EvalResult }>;
+  /** Drop stale 'approve' verdicts as part of the same write (#193). */
+  dismissApprovals: boolean;
+  status: Change["status"];
+  /** `allowFromEvaluating` is always set here; see `recordReevaluation`. */
+  opts: Omit<UpdateChangeStatusOpts, "allowFromEvaluating">;
+}
+
+export interface RecordReevaluationResult {
+  /**
+   * False when nothing was written: the change was merged, rejected, promoted
+   * or reverted while it was being evaluated. Its status, its runs and its
+   * approvals are then exactly as that decision left them.
+   */
+  applied: boolean;
+  runs: EvalRun[];
   dismissedReviewerIds: string[];
 }
 
 /**
- * Atomically dismiss any stale 'approve' verdicts on a change and re-pin its
- * evaluated sha/status, as one D1 batch (#238).
+ * Record an inline re-evaluation's verdict: its `eval_runs` rows, any approval
+ * dismissal, and the change's status and pins, as ONE D1 batch, every statement
+ * conditional on the change not having reached a terminal status.
  *
- * Before this, the re-evaluate route ran `dismissApprovals` (a DELETE on
- * change_reviews) and `updateChangeStatus` (an UPDATE on changes) as two
- * separate round trips. If the DELETE landed but the UPDATE then failed
- * (e.g. a transient D1 error), the request errored out with approvals
- * already gone while the OLD evaluatedSha stayed pinned — a retry against
- * that same old sha would see zero approvals, permanently lost, even though
- * the re-pin never actually happened.
+ * Two reasons, both from Stratum issue #5. Written separately, the runs could
+ * land and the verdict fail, after which everything that reads "the latest
+ * round" (the merge gate, the change page, the verdict posted to GitHub) pairs
+ * the old verdict with the new results. And inline evaluation does not hold the
+ * change in `evaluating` while it runs, so a promotion (or merge, or reject)
+ * can land meanwhile; an unconditional write would then replace `promoted`
+ * with `accepted` under a pull request that exists.
  *
- * Both statements below run against the same D1 database (`changes` and
- * `change_reviews` are both D1 tables — see rowToChange/ChangeRow above and
- * the reviews rows in storage/change-reviews.ts), so `D1Database.batch()`
- * gives real transactional atomicity here: per Cloudflare's D1 batch
- * semantics, every statement in the list commits, or none of them do, if any
- * statement throws. That makes the lost-approvals window above impossible —
- * the delete and the re-pin now land, or fail, together.
+ * The guard sits on the INSERTs and the DELETE as well as the UPDATE, as in
+ * `finalizeEvaluationRun`: the batch runs in order inside one transaction, so
+ * every statement sees the same answer and a refused verdict leaves no rows.
  */
-export async function dismissApprovalsAndUpdateStatus(
+export async function recordReevaluation(
   db: D1Database,
   logger: Logger,
-  id: string,
-  status: Change["status"],
-  opts?: UpdateChangeStatusOpts,
-): Promise<Result<DismissApprovalsAndUpdateStatusResult, NotFoundError | AppError>> {
+  args: RecordReevaluationArgs,
+): Promise<Result<RecordReevaluationResult, AppError>> {
+  const { changeId } = args;
   try {
-    // First check if the change exists (matches updateChangeStatus above).
-    const existingRow = await db
-      .prepare("SELECT id FROM changes WHERE id = ?")
-      .bind(id)
-      .first<{ id: string }>();
-    if (!existingRow) {
-      const notFoundError = new NotFoundError("Change", id);
-      logger.debug("Change not found for atomic dismiss+update", { changeId: id });
-      return err(notFoundError);
+    const ranAt = new Date().toISOString();
+    // The shape `recordEvalRuns` writes, so the merge gate reads it the same.
+    const roundId = `${ranAt}#${newId("evr")}`;
+    const insert = db.prepare(
+      `INSERT INTO eval_runs (id, change_id, evaluator_type, score, passed, reason, issues, ran_at, round_id) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM changes WHERE id = ? AND ${NOT_TERMINAL})`,
+    );
+    const runs: EvalRun[] = [];
+    const statements: D1PreparedStatement[] = [];
+    for (const { evaluatorType, result } of args.evalRuns) {
+      const id = newId("evl");
+      const run: EvalRun = {
+        id,
+        changeId,
+        evaluatorType,
+        score: result.score,
+        passed: result.passed,
+        reason: result.reason,
+        ranAt,
+        roundId,
+      };
+      if (result.issues !== undefined) run.issues = result.issues;
+      runs.push(run);
+      statements.push(
+        insert.bind(
+          id,
+          changeId,
+          evaluatorType,
+          result.score,
+          result.passed ? 1 : 0,
+          result.reason,
+          result.issues !== undefined ? JSON.stringify(result.issues) : null,
+          ranAt,
+          roundId,
+          changeId,
+        ),
+      );
     }
 
-    const dismissStmt = buildDismissApprovalsStatement(db, id);
-    const updateStmt = buildUpdateChangeStatusStatement(db, id, status, opts);
+    const dismissIndex = args.dismissApprovals ? statements.length : -1;
+    if (args.dismissApprovals) {
+      statements.push(
+        db
+          .prepare(
+            `DELETE FROM change_reviews WHERE change_id = ? AND verdict = 'approve' AND EXISTS (SELECT 1 FROM changes WHERE id = ? AND ${NOT_TERMINAL}) RETURNING reviewer_id`,
+          )
+          .bind(changeId, changeId),
+      );
+    }
 
-    const [dismissResult] = await db.batch<{ reviewer_id: string }>([dismissStmt, updateStmt]);
-    const dismissedReviewerIds = (dismissResult?.results ?? []).map((row) => row.reviewer_id);
+    const updateIndex = statements.length;
+    // `allowFromEvaluating` because the INSERTs and the DELETE above do not
+    // test for `evaluating`: all four must agree, or a refused verdict would
+    // still commit its rows. This IS the verdict, so replacing `evaluating`
+    // (a run whose queue has since been unbound) is what it should do.
+    statements.push(
+      buildUpdateChangeStatusStatement(
+        db,
+        changeId,
+        args.status,
+        { ...args.opts, allowFromEvaluating: true },
+        true,
+      ),
+    );
 
-    if (dismissedReviewerIds.length > 0) {
-      logger.info("Stale approvals dismissed", {
-        changeId: id,
-        dismissed: dismissedReviewerIds.length,
+    const results = await db.batch<{ reviewer_id?: string }>(statements);
+    const applied = (results[updateIndex]?.meta?.changes ?? 0) > 0;
+    const dismissedReviewerIds =
+      dismissIndex >= 0
+        ? (results[dismissIndex]?.results ?? []).flatMap((row) =>
+            row.reviewer_id !== undefined ? [row.reviewer_id] : [],
+          )
+        : [];
+    if (!applied) {
+      logger.info("Re-evaluation discarded: the change reached a final status meanwhile", {
+        changeId,
       });
+      return ok({ applied: false, runs: [], dismissedReviewerIds: [] });
     }
-    logger.debug("Change status updated", { changeId: id, status, opts });
-    return ok({ dismissedReviewerIds });
+    logger.debug("Re-evaluation recorded", { changeId, runs: runs.length });
+    return ok({ applied: true, runs, dismissedReviewerIds });
   } catch (error) {
     const appError =
       error instanceof AppError
         ? error
         : new AppError(
-            error instanceof Error
-              ? error.message
-              : "Failed to dismiss approvals and update change status",
+            error instanceof Error ? error.message : "Failed to record re-evaluation",
             "DATABASE_ERROR",
             500,
-            { operation: "dismissApprovalsAndUpdateStatus", changeId: id, status },
+            { operation: "recordReevaluation", changeId },
           );
-    logger.error("Failed to atomically dismiss approvals and update change status", appError, {
-      changeId: id,
-      status,
-    });
+    logger.error("Failed to record re-evaluation", appError, { changeId });
     return err(appError);
   }
 }

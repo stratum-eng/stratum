@@ -481,7 +481,8 @@ account of the change and no gate reads it. Returns `{ "change": … }`.
 ### Re-evaluate
 `POST /api/changes/{id}/evaluate`
 
-Users only. Merged, rejected, and promoted changes cannot be re-evaluated. An
+Users only. Merged, rejected, promoted and reverted changes cannot be
+re-evaluated. An
 `external` change answers `409 EXTERNAL_NOT_IMPORTED`:
 [importing](#import-a-pull-request) it is what starts its evaluation.
 
@@ -491,6 +492,13 @@ superseded — its verdict is discarded when it finishes, so an older run can
 never overwrite a newer revision's result. Re-evaluating a change that is stuck
 in `evaluating` is allowed, and is the manual way to recover it. Without the
 queue the evaluation runs inline and answers `200` with the verdict.
+
+An inline evaluation records its results, its verdict and any approval
+dismissal together, or not at all. If the change was merged, rejected,
+promoted or reverted while it ran, none of them is recorded, the change keeps that
+decision, and the answer is `409 CHANGE_FINALIZED` with the change's `status`.
+The evaluation's cost is still recorded, since it was spent. A change deleted
+while it ran answers `404`.
 
 Re-evaluation runs under the **current** evaluator defaults, so a change that
 passed under older limits may fail. Approvals are dismissed when the evaluated

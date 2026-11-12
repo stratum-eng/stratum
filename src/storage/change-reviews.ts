@@ -545,9 +545,8 @@ export async function listReviews(
 
 /**
  * Build (without running) the statement that deletes every 'approve' verdict
- * on a change. Shared by `dismissApprovals` and the atomic
- * `dismissApprovalsAndUpdateStatus` batch in storage/changes.ts (#238) so both
- * paths delete with the exact same SQL.
+ * on a change. `recordReevaluation` in storage/changes.ts issues the same
+ * DELETE with a guard on the change's status, inside its batch (#238, issue #5).
  */
 export function buildDismissApprovalsStatement(
   db: D1Database,
@@ -569,7 +568,7 @@ export function buildDismissApprovalsStatement(
  *
  * This runs the DELETE on its own, with no accompanying write — for the
  * re-evaluate route, which must also re-pin evaluatedSha/status atomically
- * with this dismissal, use `dismissApprovalsAndUpdateStatus` in
+ * with this dismissal, use `recordReevaluation` in
  * storage/changes.ts instead (#238).
  */
 export async function dismissApprovals(
