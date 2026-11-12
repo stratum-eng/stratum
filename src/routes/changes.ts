@@ -7,7 +7,11 @@ import { GitHubClient } from "../github/client";
 import { requestPushMirror } from "../github/mirror";
 import { importPullRequest, toExternalPullRequestView } from "../github/mirror-pulls";
 import { coAuthorTrailers } from "../github/pull-request-content";
-import { buildEvaluationReport, reportEvaluationToGitHub } from "../github/sync";
+import {
+  buildEvaluationReport,
+  latestEvaluationReport,
+  reportEvaluationToGitHub,
+} from "../github/sync";
 import { runPostMergeCheck } from "../merge/post-merge";
 import { checkMergeProtection } from "../merge/protection";
 import { cannotMintLegacyCredential } from "../middleware/auth";
@@ -291,6 +295,49 @@ async function resolveWorkspaceTip(
  */
 function lacksEvaluatedRevision(change: Change): boolean {
   return change.evaluatedSha === undefined && change.evalRunId !== undefined;
+}
+
+/**
+ * Post the change's latest verdict to the pull request it was just promoted to:
+ * the comment and the `stratum/evaluation` commit status.
+ *
+ * Evaluation reports to GitHub only once a pull request is linked, and a change
+ * is evaluated before it is promoted, so this is the first moment its verdict
+ * has somewhere to go. Without it a promoted pull request carries no Stratum
+ * status at all, and `stratum/evaluation` cannot be made a required check.
+ *
+ * Best-effort, and off the response path where the runtime allows: the pull
+ * request exists either way, and a later evaluation reports again.
+ */
+async function reportVerdictOnPromotion(
+  c: Context<{ Bindings: Env }>,
+  logger: Logger,
+  change: Change,
+  project: ProjectEntry,
+): Promise<void> {
+  const report = async (): Promise<void> => {
+    try {
+      const runs = await listEvalRuns(c.env.DB, logger, change.id);
+      if (!runs.success) {
+        logger.warn("Could not read eval runs; the promoted PR gets no verdict yet", {
+          changeId: change.id,
+          error: runs.error.message,
+        });
+        return;
+      }
+      const evaluation = latestEvaluationReport(change, runs.data);
+      if (evaluation === null) return;
+      await reportEvaluationToGitHub(c.env, change, project, evaluation, logger);
+    } catch (error) {
+      logger.warn("Posting the verdict to the promoted PR threw; the promotion stands", {
+        changeId: change.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+  const waitUntil = getWaitUntil(c);
+  if (waitUntil) waitUntil(report());
+  else await report();
 }
 
 /**
@@ -2961,6 +3008,15 @@ app.post("/changes/:id/github-pr", async (c) => {
         );
       }
     }
+    await reportVerdictOnPromotion(
+      c,
+      logger,
+      {
+        ...change,
+        ...(publishedSha !== undefined ? { githubHeadSha: publishedSha } : {}),
+      },
+      project,
+    );
     return okOrFormRedirect(c, id, {
       changeId: id,
       github: {
@@ -3144,6 +3200,8 @@ app.post("/changes/:id/github-pr", async (c) => {
     logger.error("Failed to update change status to promoted", updateResult.error);
     return badRequest(updateResult.error.message);
   }
+
+  await reportVerdictOnPromotion(c, logger, { ...change, ...prLink }, project);
 
   // Who GitHub says the author is, which on a reused pull request is whoever
   // opened it the first time and not who was chosen just now.

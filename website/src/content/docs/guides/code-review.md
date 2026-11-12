@@ -189,9 +189,12 @@ conflict-resolution path when the originating change is unknown.)
 ## Reviewing in GitHub instead
 
 In layer mode, promoting a change to a GitHub PR moves the conversation to
-GitHub, and your team reviews there as usual. Stratum still posts the
-evaluation verdict to the PR as a comment (edited in place on re-evaluation)
-and as a `stratum/evaluation` commit status. See
+GitHub, and your team reviews there as usual. Stratum posts the evaluation
+verdict to the PR as a comment (edited in place on re-evaluation) and as a
+`stratum/evaluation` commit status: the verdict that let the change be promoted
+when the PR is opened, and each later one after that. Because every promoted
+PR carries the status, you can make `stratum/evaluation` a required check in
+GitHub's branch protection. See
 [Getting Started](/guides/getting-started/#choose-your-level-of-buy-in-layer-mode-vs-forge-mode).
 
 ### Who the pull request is opened as

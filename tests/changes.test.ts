@@ -2574,6 +2574,13 @@ describe("POST /api/changes/:id/github-pr", () => {
       data: { fs: {} as NodeFS, dir: "/" },
     });
     vi.mocked(pushBranchToRemote).mockResolvedValue({ success: true, data: undefined });
+    // Most tests here count the requests that open the pull request. Posting
+    // the verdict afterwards is covered by its own block below, so it is kept
+    // out of the way: with no runs to read, nothing is posted.
+    vi.mocked(listEvalRuns).mockResolvedValue({
+      success: false,
+      error: new Error("eval runs are not read in this test"),
+    });
     fetchMock = vi.fn(async (url: string) => githubPrCreated(url));
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -2584,6 +2591,96 @@ describe("POST /api/changes/:id/github-pr", () => {
 
   const promote = (body?: unknown) =>
     app.fetch(request("POST", "/api/changes/chg_abc123/github-pr", body ?? {}, USER_AUTH), env);
+
+  describe("posting the verdict to the pull request", () => {
+    const run = (evaluatorType: string, passed: boolean, roundId: string) => ({
+      id: `evl_${evaluatorType}_${roundId}`,
+      changeId: "chg_abc123",
+      evaluatorType,
+      score: passed ? 1 : 0,
+      passed,
+      reason: `${evaluatorType} ${passed ? "passed" : "failed"} in ${roundId}`,
+      ranAt: roundId,
+      roundId,
+    });
+    const evaluated: Change = { ...acceptedChange, evaluatedSha: "sha-evaluated" };
+    const calls = (match: (url: string) => boolean) =>
+      fetchMock.mock.calls.filter((call) => match(String(call[0])));
+    const sent = (call: unknown[] | undefined) =>
+      JSON.parse((call?.[1] as RequestInit).body as string) as Record<string, unknown>;
+
+    beforeEach(() => {
+      vi.mocked(getChange).mockResolvedValue({ success: true, data: evaluated });
+      vi.mocked(resolveLocalTip).mockResolvedValue({ success: true, data: "sha-evaluated" });
+      vi.mocked(listEvalRuns).mockResolvedValue({
+        success: true,
+        data: [
+          run("llm", false, "2026-11-01T00:00:00.000Z#a"),
+          run("llm", true, "2026-11-02T00:00:00.000Z#b"),
+          run("diff", true, "2026-11-02T00:00:00.000Z#b"),
+        ],
+      });
+    });
+
+    it("posts the latest round as a comment and a stratum/evaluation status on the new PR", async () => {
+      expect((await promote()).status).toBe(200);
+
+      const comment = calls((u) => u.endsWith("/repos/acme/widgets/issues/42/comments"));
+      expect(comment).toHaveLength(1);
+      const body = String(sent(comment[0]).body);
+      expect(body).toContain("llm passed in 2026-11-02");
+      // Only the latest round: the earlier failure is not reported.
+      expect(body).not.toContain("llm failed");
+
+      const status = calls((u) => u.endsWith("/repos/acme/widgets/statuses/sha-evaluated"));
+      expect(status).toHaveLength(1);
+      expect(sent(status[0])).toMatchObject({ state: "success", context: "stratum/evaluation" });
+    });
+
+    it("posts it again on re-promotion, against the pushed revision", async () => {
+      vi.mocked(getChange).mockResolvedValue({
+        success: true,
+        data: {
+          ...evaluated,
+          githubOwner: "acme",
+          githubRepo: "widgets",
+          githubBranch: "stratum/chg_abc123",
+          githubPrNumber: 42,
+          githubPrUrl: "https://github.com/acme/widgets/pull/42",
+          githubPrState: "open",
+          githubHeadSha: "sha-older",
+        },
+      });
+
+      expect((await promote()).status).toBe(200);
+
+      expect(calls((u) => u.endsWith("/statuses/sha-evaluated"))).toHaveLength(1);
+      expect(calls((u) => u.endsWith("/statuses/sha-older"))).toEqual([]);
+    });
+
+    it("still promotes when the verdict cannot be read or posted", async () => {
+      vi.mocked(listEvalRuns).mockRejectedValueOnce(new Error("D1 down"));
+      expect((await promote()).status).toBe(200);
+
+      fetchMock.mockImplementation(async (url: string) =>
+        String(url).includes("/statuses/") || String(url).includes("/comments")
+          ? new Response("{}", { status: 422 })
+          : githubPrCreated(String(url)),
+      );
+      expect((await promote()).status).toBe(200);
+    });
+
+    it("posts nothing for a change with no recorded verdict", async () => {
+      vi.mocked(getChange).mockResolvedValue({
+        success: true,
+        data: { ...evaluated, evalScore: undefined, evalPassed: undefined },
+      });
+
+      expect((await promote()).status).toBe(200);
+
+      expect(calls((u) => u.includes("/statuses/") || u.includes("/comments"))).toEqual([]);
+    });
+  });
 
   it("pushes the change branch to GitHub, then opens the PR from it", async () => {
     const res = await promote();
