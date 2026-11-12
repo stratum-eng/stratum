@@ -7,6 +7,7 @@ import { githubRepoKey } from "../github/issue-import";
 import { toExternalPullRequestView } from "../github/mirror-pulls";
 import { resolveResyncSource, resyncSourceRepo } from "../github/resync";
 import { cannotMintLegacyCredential } from "../middleware/auth";
+import { setHtmlSecurityHeaders } from "../middleware/security-headers";
 import { NO_ANALYTICS_HEADER } from "../middleware/web-analytics";
 import { userConnectionConfig } from "../services/github-pr-author";
 import {
@@ -571,6 +572,13 @@ async function renderSettings(
   // A notice about the action just taken outranks a listing's own failure —
   // the caller needs to know what their POST did first.
   const notice = extras.notice ?? tokens.notice ?? grants.notice;
+  // The Connect GitHub form is answered with a redirect to GitHub, and Chromium
+  // and WebKit hold every hop of a form's redirect chain to the page's
+  // `form-action` (see `CspOptions`). Under the site-wide `'self'` the button
+  // silently did nothing. Widened only while that form is on the page.
+  if (githubConnection?.state === "not_connected" && githubConnection.canConnect) {
+    setHtmlSecurityHeaders(c, { formAction: ["https://github.com"] });
+  }
   return (
     <SettingsPage
       user={user}
