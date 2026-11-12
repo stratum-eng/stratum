@@ -7782,12 +7782,18 @@ components:
         evaluated revision (and for a re-run), signed with
         `X-Stratum-Signature`. Not a request any client sends to Stratum;
         documented here because a runner is built against it.
-      required: [event, changeId, project, baseSha, headSha, headTreeSha, diff, checkRunIds, callbackUrl, deadline]
+      required: [event, changeId, title, description, project, baseSha, headSha, headTreeSha, diff, checkRunIds, callbackUrl, deadline]
       properties:
         event:
           type: string
           enum: [checks.requested]
         changeId: { type: string }
+        title:
+          type: [string, "null"]
+          description: The change's title as its author wrote it; null if it has none
+        description:
+          type: [string, "null"]
+          description: The change's description (Markdown source); null if it has none
         project:
           type: string
           description: "`@namespace/slug`"

@@ -36,7 +36,7 @@ import { AppError } from "../utils/errors";
 import type { Logger } from "../utils/logger";
 import { type Result, err, ok } from "../utils/result";
 import { evaluateWorkspace } from "./change-flow";
-import { dispatchChecks } from "./check-runs";
+import { dispatchChecks, dispatchTextOf } from "./check-runs";
 
 /**
  * A run that could not produce a verdict. `permanent` decides whether the
@@ -252,6 +252,7 @@ export async function runEvaluationJob(
   // `change.evaluated` finds the revision's checks already queued.
   await dispatchChecks(env, log, {
     changeId,
+    ...dispatchTextOf(change),
     project,
     policy,
     diff,

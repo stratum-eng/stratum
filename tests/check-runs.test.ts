@@ -94,6 +94,8 @@ interface Dispatch {
   body: {
     event: string;
     changeId: string;
+    title: string | null;
+    description: string | null;
     project: string;
     baseSha: string;
     headSha: string;
@@ -144,10 +146,13 @@ async function api<T>(method: string, path: string, body?: unknown, headers = AU
 }
 
 /** Open a change and return its id with the dispatch it caused, if any. */
-async function createChange(): Promise<{ id: string; dispatch: Dispatch | undefined }> {
+async function createChange(
+  text: { title?: string; description?: string } = {},
+): Promise<{ id: string; dispatch: Dispatch | undefined }> {
   const before = dispatches.length;
   const res = await api<{ change: { id: string } }>("POST", "/api/projects/@owner%2Fapp/changes", {
     workspace: "feature",
+    ...text,
   });
   expect([201, 202]).toContain(res.status);
   return { id: res.body.change.id, dispatch: dispatches[before] };
@@ -330,6 +335,18 @@ afterEach(() => {
 });
 
 describe("dispatch", () => {
+  it("carries the change's title and description as the author wrote them", async () => {
+    const { dispatch } = await createChange({
+      title: "Retry the flaky upload",
+      description: "Uploads time out under load.\n\n- adds a retry",
+    });
+    if (!dispatch) throw new Error("no dispatch was sent");
+    expect(dispatch.body).toMatchObject({
+      title: "Retry the flaky upload",
+      description: "Uploads time out under load.\n\n- adds a retry",
+    });
+  });
+
   it("POSTs a signed payload naming one queued check run per declared check", async () => {
     const { id, dispatch } = await createChange();
     if (!dispatch) throw new Error("no dispatch was sent");
@@ -346,15 +363,20 @@ describe("dispatch", () => {
       "changeId",
       "checkRunIds",
       "deadline",
+      "description",
       "diff",
       "event",
       "headSha",
       "headTreeSha",
       "project",
+      "title",
     ]);
     expect(dispatch.body).toMatchObject({
       event: "checks.requested",
       changeId: id,
+      // Sent even when the change has none, so a runner can rely on the keys.
+      title: null,
+      description: null,
       project: "@owner/app",
       baseSha: "base-1",
       headSha: "tip-1",
