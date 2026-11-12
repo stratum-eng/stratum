@@ -30,7 +30,8 @@ For programmatic access:
   an already-finished deployment is not a deciding endpoint and *is* open to an
   agent with write access. Neither is promoting an accepted change to a GitHub
   pull request (`POST /api/changes/{id}/github-pr`): an agent with write access
-  may, as a draft only, except for a change whose workspace `.github/` differs
+  may, as a draft only (a scoped API token and an OAuth grant are held to
+  drafts too, and to `403 READY_NEEDS_PERSON` on marking ready), except for a change whose workspace `.github/` differs
   from the project's or that edits merge-protection configuration, which
   answers `403 PROMOTION_NEEDS_PERSON` to an agent token, a read-write scoped
   API token and an `mcp:write` OAuth grant alike (a read-only token or an

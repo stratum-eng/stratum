@@ -318,9 +318,16 @@ requests share the per-address anonymous rate limit.
 Users and agents, with write access to the project. An agent may promote because
 a change can only be promoted once its gates have passed, and whether the pull
 request merges is still decided on GitHub; `promotedBy` records the agent's id.
-An agent can only open a **draft**: `"draft": false` from an agent is refused
-with `403 PROMOTION_NEEDS_PERSON`, because asking for review is a person's
-decision (see [Mark the PR ready for review](#mark-the-pr-ready-for-review)).
+An agent can only open a **draft**: `"draft": false` is refused with
+`403 PROMOTION_NEEDS_PERSON` from an agent token, a scoped API token or an OAuth
+grant, because asking for review is a person's decision (see
+[Mark the PR ready for review](#mark-the-pr-ready-for-review)). For the same
+reason, when one of those credentials promotes a change whose pull request is
+already open and ready, for example after a review asked for changes, the pull
+request is first **returned to draft**, and then the new commits are pushed: new
+code does not reach a pull request marked ready until a person marks it ready
+again. If GitHub refuses that, the answer is `502 GITHUB_ERROR` and nothing is
+pushed.
 
 Two kinds of change have to be promoted by a person. For them, three kinds of
 credential get `403 PROMOTION_NEEDS_PERSON`: an agent token, a scoped API
@@ -414,8 +421,12 @@ evaluation finishes; that re-pushes to the same PR.
 `POST /api/changes/{id}/github-pr/ready`
 
 Takes the change's pull request out of draft, so promoting a change and asking
-for its review stay two separate decisions. Users only, with write access to the
-project; no body. It acts on the pull request the change was promoted to, with
+for its review stay two separate decisions. A person only, with write access to
+the project; no body. An agent token is refused with `401`, and a scoped API
+token or an OAuth grant with `403 READY_NEEDS_PERSON`: those act for a user
+but are what an agent is handed, and on a repository whose workflows deploy or
+test pull requests, marking one ready can be what lets its code run with
+secrets. Use the change page, signed in, or GitHub. It acts on the pull request the change was promoted to, with
 the instance credential that pushes a promoted branch, under the same rules. It
 never uses a person's connected GitHub account, whoever the pull request was
 opened as.

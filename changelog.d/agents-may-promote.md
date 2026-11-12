@@ -17,6 +17,13 @@
   tests pull requests runs an agent-promoted change's code with whatever
   secrets it is given, so keep secrets out of workflows that run on
   `stratum/**` pull requests if agents promote on your project.
+- **A scoped API token or an OAuth grant (an MCP client, the CLI) can only open
+  a draft pull request, and cannot mark one ready** (`403 READY_NEEDS_PERSON`).
+  Promoting again with one onto a pull request that is already ready, after a
+  review asked for changes, first returns it to draft. Those credentials act
+  for a person but are what an agent is handed, and marking a pull request
+  ready is what asks for review and, on repositories whose workflows deploy
+  pull requests, lets its code run with secrets. Mark ready on the change page.
 - **Promoting such a change with a scoped API token or an OAuth grant is now
   refused** with `403 PROMOTION_NEEDS_PERSON`, as it is for an agent. Those
   credentials act for a user but are what an agent is handed; before, they

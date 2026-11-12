@@ -3518,7 +3518,9 @@ paths:
       tags: [changes]
       summary: Take a promoted change's GitHub pull request out of draft
       description: >-
-        Users only, with write access to the project. Acts on the pull request
+        A person only, with write access to the project: an agent token is
+        refused with 401, and a scoped API token or an OAuth grant with
+        `403 READY_NEEDS_PERSON`. Acts on the pull request
         the change was promoted to, always with the instance's GitHub
         credential and never with a person's connected GitHub account, whoever
         the pull request was opened as. A pull request that is already ready
@@ -3544,6 +3546,10 @@ paths:
                       url: { type: string }
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >-
+            Refused to a scoped API token or an OAuth grant
+            (`READY_NEEDS_PERSON`), or no write access to the project
         "404":
           $ref: "#/components/responses/NotFound"
         "409":

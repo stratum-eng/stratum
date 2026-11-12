@@ -2327,6 +2327,20 @@ app.post("/changes/:id/github-pr/ready", async (c) => {
 
   const userId = c.get("userId");
   if (!userId) return unauthorized("Authentication required");
+  // A browser session, not an API token or an OAuth grant: those act for a
+  // person but are exactly what an agent is handed, and marking ready is the
+  // step that lets the pull request's code run with the repository's secrets
+  // (its preview deploy) and asks people to review it.
+  if (cannotMintLegacyCredential(c)) {
+    return c.json(
+      {
+        error:
+          "Only a person signed in to Stratum can mark a pull request ready for review; an API token or an OAuth connection cannot.",
+        code: "READY_NEEDS_PERSON",
+      },
+      403,
+    );
+  }
 
   const { id } = c.req.param();
   const changeResult = await getChange(c.env.DB, logger, id);
@@ -2639,13 +2653,18 @@ app.post("/changes/:id/github-pr", async (c) => {
   if (body instanceof Response) return body;
 
   // Opening a pull request and asking people to review it are two decisions,
-  // and the second is a person's: `/github-pr/ready` refuses agents. An agent
-  // that could promote with `draft: false` would make both at once.
-  if (userId === undefined && body.draft === false) {
+  // and the second is a person's: `/github-pr/ready` refuses delegated
+  // credentials. One that could promote with `draft: false` would make both at
+  // once. "A person" is a browser session here, as for the `.github/` check
+  // below: an API token or an OAuth grant acts for a user but is exactly what
+  // an agent is handed. It matters beyond review: a ready pull request runs
+  // this repository's preview deploy, with its secrets, on every push.
+  const delegated = userId === undefined || cannotMintLegacyCredential(c);
+  if (delegated && body.draft === false) {
     return c.json(
       {
         error:
-          "An agent can only open a draft pull request. Leave `draft` out, and ask a person to mark the pull request ready for review.",
+          "Only a person signed in to Stratum can open a pull request that is not a draft; an agent, an API token or an OAuth connection opens a draft. Leave `draft` out, and ask a person to mark the pull request ready for review.",
         code: "PROMOTION_NEEDS_PERSON",
       },
       403,
@@ -2774,7 +2793,7 @@ app.post("/changes/:id/github-pr", async (c) => {
   //
   // "A person" means a browser session, as it does for approvals: an API token
   // or an OAuth grant acts for a user but is exactly what an agent is handed.
-  if (userId === undefined || cannotMintLegacyCredential(c)) {
+  if (delegated) {
     const refusal = await promotionNeedsPerson(c.env, logger, {
       change,
       project,
@@ -2795,6 +2814,41 @@ app.post("/changes/:id/github-pr", async (c) => {
         reason: refusal.reason,
       });
       return c.json({ error: refusal.reason, code: "PROMOTION_NEEDS_PERSON" }, 403);
+    }
+  }
+
+  // New commits on a delegated credential's say-so must not land on a pull
+  // request a person has already marked ready: that would put them in front of
+  // reviewers, and through the preview deploy run them with the repository's
+  // secrets, without anyone choosing to. So such a pull request goes back to
+  // draft first, and a person marks it ready again. This is every re-promotion
+  // after review asked for changes, and also the rarer case of a pull request
+  // that exists on GitHub but not on the change's record.
+  if (delegated) {
+    const toDraft = await new GitHubClient(githubToken, logger).returnHeadPRsToDraft(
+      repo.owner,
+      repo.repo,
+      branch,
+    );
+    if (!toDraft.success) {
+      logger.error("Could not return the change's pull request to draft", undefined, {
+        changeId: id,
+        branch,
+        error: toDraft.error,
+      });
+      return c.json(
+        {
+          error: `Promoting again on a delegated credential first returns the open pull request to draft, and GitHub refused: ${toDraft.error}. Nothing was pushed.`,
+          code: "GITHUB_ERROR",
+        },
+        502,
+      );
+    }
+    if (toDraft.converted.length > 0) {
+      logger.info("Returned the change's pull request to draft before pushing", {
+        changeId: id,
+        prNumbers: toDraft.converted,
+      });
     }
   }
 
