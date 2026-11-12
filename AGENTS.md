@@ -115,7 +115,7 @@ it is network-dependent and not part of the offline gate.
 CI (`pr-checks.yml`) runs **lint, typecheck, unit tests, and the `cli/`/`agent/`/`ci-executor/`
 package suites in parallel**, then integration tests. It deliberately deploys nothing —
 staging and production deploy only from `ci.yml` on `main`; PRs get an isolated per-PR
-preview Worker from `pr-preview.yml` instead.
+preview Worker from `pr-preview.yml` instead, once a person has marked the PR ready (drafts get none).
 Mirror lint → typecheck → test locally before pushing to a workspace: passing Stratum's evaluation gates
 does not mean this suite passes.
 

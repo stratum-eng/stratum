@@ -114,6 +114,11 @@ The exact URL is posted as a comment on your PR. Each preview is a dedicated
 `stratum-pr-<number>` Worker with its own D1 database and KV namespace, and it is
 destroyed when the PR closes.
 
+A draft PR gets no preview. The deploy runs the PR's code with the Cloudflare API
+token, and agents can open draft PRs by promoting a Stratum change, so the preview
+is deployed when a person marks the PR ready for review, and on every push after
+that.
+
 ### Testing on Your Preview
 
 1. **Manual Testing** - Use the preview URL to manually test your changes
