@@ -3,6 +3,7 @@ import { diffTouchesProtectedConfig, loadPolicy } from "../evaluation";
 import { llmProviderCatalog } from "../evaluation/llm-providers";
 import type { EvalPolicy } from "../evaluation/types";
 import { resolveGitHubToken } from "../github/app-auth";
+import { reportChecksToGitHub } from "../github/check-status";
 import { GitHubClient } from "../github/client";
 import { requestPushMirror } from "../github/mirror";
 import { importPullRequest, toExternalPullRequestView } from "../github/mirror-pulls";
@@ -45,6 +46,7 @@ import {
   updateChangeStatus,
   updateChangeText,
 } from "../storage/changes";
+import { listChecksForChange } from "../storage/checks";
 import {
   type CostSample,
   getChangeCostSummary,
@@ -372,6 +374,15 @@ async function reportVerdictOnPromotion(
         evaluation,
         logger,
       );
+      // Checks that finished before the promotion had no PR to report to.
+      const checks = await listChecksForChange(c.env.DB, logger, change.id);
+      if (checks.success) {
+        await reportChecksToGitHub(c.env, logger, {
+          change: { ...current, ...pullRequestFieldsOf(change) },
+          project,
+          checks: checks.data,
+        });
+      }
     } catch (error) {
       logger.warn("Posting the verdict to the promoted PR threw; the promotion stands", {
         changeId: change.id,

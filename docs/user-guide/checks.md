@@ -356,6 +356,14 @@ share one checkout, so every step gets a new run.
   `?all=true` returns every revision and attempt. See the
   [API reference](../api/endpoints/changes.md#check-runs).
 - **MCP** — `stratum_list_checks`.
+- **GitHub** — once a change is promoted, each check also appears on the pull
+  request as a `stratum/check/<name>` commit status: pending while queued or
+  running, then success, failure or error, linked to the run's `detailsUrl`.
+  It is updated as the runner reports, and posted when the change is promoted
+  for checks that finished before. Only the newest attempt on the pull
+  request's own head commit is posted: after a re-evaluation the statuses wait
+  until the change is promoted again. Like `stratum/evaluation`, posting is
+  best-effort, so a status GitHub refused stays stale until the next report.
 
 An agent waiting to merge should poll `stratum_list_checks` (or the API) until
 every required check is terminal.

@@ -13,6 +13,7 @@
  *   dispatcher, so no tool call can reach it.
  */
 import { type Context, Hono } from "hono";
+import { syncChangeChecksToGitHub } from "../github/check-status";
 import {
   CHECK_SIGNATURE_HEADER,
   type CheckReportConflict,
@@ -35,6 +36,7 @@ import {
   credentialBindingFrom,
   refuseProjectAccess,
 } from "../utils/authz";
+import { getWaitUntil } from "../utils/execution-ctx";
 import { createLogger } from "../utils/logger";
 import { readTextWithLimit } from "../utils/request-body";
 import {
@@ -327,6 +329,18 @@ checkCallback.post("/:id", async (c) => {
     rawBody: read.text,
     signatureHeader: c.req.header(CHECK_SIGNATURE_HEADER),
   });
+  // A report that changed the check, or a late one that ended it, changes
+  // what the pull request should show. After the response: the runner is
+  // waiting on it, and GitHub is only a mirror.
+  if (
+    (outcome.kind === "ok" && outcome.applied) ||
+    (outcome.kind === "conflict" && outcome.code === "CHECK_DEADLINE_EXCEEDED")
+  ) {
+    const sync = syncChangeChecksToGitHub(c.env, logger, outcome.check.changeId);
+    const waitUntil = getWaitUntil(c);
+    if (waitUntil) waitUntil(sync);
+    else await sync;
+  }
   switch (outcome.kind) {
     case "unauthenticated":
       return c.json({ error: "Invalid signature", code: "INVALID_SIGNATURE" }, 401);

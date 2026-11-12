@@ -190,6 +190,8 @@ verdict to the PR as a comment (edited in place on re-evaluation) and as a
 `stratum/evaluation` commit status: the verdict that let the change be promoted
 when the PR is opened, and each later one after that. That makes
 `stratum/evaluation` usable as a required check in GitHub's branch protection.
+Each of the change's [checks](checks.md#seeing-check-runs) is posted beside it
+as `stratum/check/<name>`, since checks finish after the verdict.
 Posting it is best-effort and is not retried: if GitHub refused it when the PR
 was opened, the PR has no status until the change is evaluated again, and a
 required check would hold the merge. Promote the change again to re-post it. See

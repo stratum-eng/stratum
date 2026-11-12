@@ -39,6 +39,7 @@ import {
 import { llmProviderCatalog } from "../evaluation/llm-providers";
 import { hmacSha256Hex, resolveSigningKey } from "../evaluation/signing-secret";
 import type { ChecksEvaluatorConfig, EvalPolicy } from "../evaluation/types";
+import { syncChangeChecksToGitHub } from "../github/check-status";
 import { getChange } from "../storage/changes";
 import {
   CHECK_SUMMARY_DEADLINE,
@@ -73,6 +74,9 @@ import {
   ciExecutorConfig,
   submitCiJob,
 } from "./ci-executor";
+
+/** How many changes one deadline sweep reports to GitHub. */
+const MAX_SWEEP_GITHUB_SYNCS = 20;
 
 /** Header carrying `sha256=<hex HMAC-SHA256 of the raw body>`, in both directions. */
 export const CHECK_SIGNATURE_HEADER = "X-Stratum-Signature";
@@ -477,6 +481,7 @@ export async function dispatchChecks(
       { changeId: target.changeId, revision: target.headSha },
     );
   }
+  if (dispatched.length > 0) await syncChangeChecksToGitHub(env, logger, target.changeId);
   return dispatched;
 }
 
@@ -614,6 +619,7 @@ export async function rerunCheck(
   if (!result.success) return err(new AppError(result.error.message, "DATABASE_ERROR", 500));
   const rerun = result.data.runs.find((run) => run.name === check.name);
   if (!rerun) return err(new AppError("Check run was not created", "INTERNAL_ERROR", 500));
+  await syncChangeChecksToGitHub(env, logger, change.id);
   return ok({ check: rerun, dispatchFailure: result.data.failure });
 }
 
@@ -897,7 +903,14 @@ export async function sweepOverdueChecks(
   now: Date = new Date(),
 ): Promise<{ expired: number }> {
   const result = await expireOverdueChecks(env.DB, logger, now.toISOString());
-  const expired = result.success ? result.data : 0;
+  if (!result.success) return { expired: 0 };
+  const { expired, changeIds } = result.data;
   if (expired > 0) logger.warn("Expired check runs past their deadline", { expired });
+  // A pull request would otherwise show these as pending forever. Bounded so a
+  // backlog cannot spend the cron's subrequests; the rest stay correct in
+  // Stratum, and their next report or re-run posts them.
+  for (const changeId of changeIds.slice(0, MAX_SWEEP_GITHUB_SYNCS)) {
+    await syncChangeChecksToGitHub(env, logger, changeId);
+  }
   return { expired };
 }

@@ -465,16 +465,18 @@ export async function expireOverdueChecks(
   db: D1Database,
   logger: Logger,
   now: string,
-): Promise<Result<number, Error>> {
+): Promise<Result<{ expired: number; changeIds: string[] }, Error>> {
   try {
     const result = await db
       .prepare(
         `UPDATE checks SET status = 'errored', summary = ?, completed_at = ?, updated_at = ?
-         WHERE ${PENDING} AND deadline_at <= ?`,
+         WHERE ${PENDING} AND deadline_at <= ?
+         RETURNING change_id`,
       )
       .bind(CHECK_SUMMARY_DEADLINE, now, now, now)
-      .run();
-    return ok(result.meta.changes ?? 0);
+      .all<{ change_id: string }>();
+    const changeIds = [...new Set(result.results.map((row) => row.change_id))];
+    return ok({ expired: result.results.length, changeIds });
   } catch (error) {
     logger.error("Failed to expire overdue check runs", toError(error));
     return err(toError(error));
