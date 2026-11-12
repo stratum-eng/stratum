@@ -3518,9 +3518,9 @@ paths:
       tags: [changes]
       summary: Take a promoted change's GitHub pull request out of draft
       description: >-
-        A person only, with write access to the project: an agent token is
-        refused with 401, and a scoped API token or an OAuth grant with
-        `403 READY_NEEDS_PERSON`. Acts on the pull request
+        A person only, with write access to the project: a scoped API token or
+        an OAuth grant (one acting as an agent included) is refused with
+        `403 READY_NEEDS_PERSON`, and an agent token with 401. Acts on the pull request
         the change was promoted to, always with the instance's GitHub
         credential and never with a person's connected GitHub account, whoever
         the pull request was opened as. A pull request that is already ready

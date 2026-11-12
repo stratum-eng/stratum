@@ -44,8 +44,8 @@ leaving Stratum. Once the pull request is ready, whichever side that happened
 on, the button becomes **Open GitHub PR**. The text above it links to the pull
 request in both states.
 
-Marking ready is a person's step, done here signed in or on GitHub: an agent, an
-API token or an OAuth connection (an MCP client, the CLI) can only open a draft
+Marking ready is a person's step, done here signed in or on GitHub: an agent, a
+scoped API token or an OAuth connection (an MCP client, the CLI) can only open a draft
 and cannot mark one ready. When one of them promotes a change again after a
 review asked for changes, its pull request goes back to draft before the new
 commits are pushed, and a person marks it ready again. On a repository whose

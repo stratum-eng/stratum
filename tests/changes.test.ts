@@ -2949,11 +2949,13 @@ describe("POST /api/changes/:id/github-pr", () => {
     });
 
     it("cannot open a pull request that is not a draft", async () => {
-      const res = await app.fetch(
-        request("POST", "/api/changes/chg_abc123/github-pr", { draft: false }, AGENT_AUTH),
-        env,
-      );
-      expect(await refusal(res)).toContain("draft");
+      for (const draft of [false, "false", 0, null]) {
+        const res = await app.fetch(
+          request("POST", "/api/changes/chg_abc123/github-pr", { draft }, AGENT_AUTH),
+          env,
+        );
+        expect(await refusal(res)).toContain("draft");
+      }
     });
 
     it("opens a draft when it asks for one, or says nothing", async () => {
@@ -3017,6 +3019,10 @@ describe("POST /api/changes/:id/github-pr", () => {
 
       // Only the ready one is converted, and before anything is pushed.
       expect(draftConversions()).toHaveLength(1);
+      // Recorded, so the change page offers "Mark ready for review" again.
+      expect(recordGithubPrLink).toHaveBeenCalledWith(env.DB, expect.anything(), "chg_abc123", {
+        githubPrDraft: true,
+      });
       expect(JSON.parse((draftConversions()[0]?.[1] as RequestInit).body as string)).toMatchObject({
         variables: { id: "PR_42" },
       });
@@ -3217,6 +3223,18 @@ describe("POST /api/changes/:id/github-pr", () => {
       );
       expect(res.status).toBe(200);
       expect(draftConversions()).toHaveLength(1);
+    });
+
+    it("does not touch a person's own ready pull request when they promote again", async () => {
+      openForHead = [{ number: 42, node_id: "PR_42", draft: false }];
+
+      expect((await promote()).status).toBe(200);
+
+      // Neither listed nor converted: the person promoting is the one who decides.
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/pulls?head="))).toBe(
+        false,
+      );
+      expect(draftConversions()).toEqual([]);
     });
 
     it("leaves a person free to promote a change under .github", async () => {

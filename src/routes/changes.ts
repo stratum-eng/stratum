@@ -2325,22 +2325,24 @@ app.post("/changes/:id/github-pr/ready", async (c) => {
     method: c.req.method,
   });
 
-  const userId = c.get("userId");
-  if (!userId) return unauthorized("Authentication required");
-  // A browser session, not an API token or an OAuth grant: those act for a
-  // person but are exactly what an agent is handed, and marking ready is the
+  // A browser session, not a scoped API token or an OAuth grant: those act for
+  // a person but are exactly what an agent is handed, and marking ready is the
   // step that lets the pull request's code run with the repository's secrets
-  // (its preview deploy) and asks people to review it.
+  // (its preview deploy) and asks people to review it. Checked before the
+  // `userId` test so an OAuth grant bound to an agent, which carries no
+  // `userId`, gets this answer too and not a bare 401.
   if (cannotMintLegacyCredential(c)) {
     return c.json(
       {
         error:
-          "Only a person signed in to Stratum can mark a pull request ready for review; an API token or an OAuth connection cannot.",
+          "Only a person signed in to Stratum can mark a pull request ready for review; a scoped API token or an OAuth connection cannot.",
         code: "READY_NEEDS_PERSON",
       },
       403,
     );
   }
+  const userId = c.get("userId");
+  if (!userId) return unauthorized("Authentication required");
 
   const { id } = c.req.param();
   const changeResult = await getChange(c.env.DB, logger, id);
@@ -2660,11 +2662,13 @@ app.post("/changes/:id/github-pr", async (c) => {
   // an agent is handed. It matters beyond review: a ready pull request runs
   // this repository's preview deploy, with its secrets, on every push.
   const delegated = userId === undefined || cannotMintLegacyCredential(c);
-  if (delegated && body.draft === false) {
+  // Anything but an explicit or absent `true` is a request not to open a
+  // draft; GitHub is not left to decide what `"false"` or `0` means.
+  if (delegated && body.draft !== undefined && body.draft !== true) {
     return c.json(
       {
         error:
-          "Only a person signed in to Stratum can open a pull request that is not a draft; an agent, an API token or an OAuth connection opens a draft. Leave `draft` out, and ask a person to mark the pull request ready for review.",
+          "Only a person signed in to Stratum can open a pull request that is not a draft; an agent, a scoped API token or an OAuth connection opens a draft. Leave `draft` out, and ask a person to mark the pull request ready for review.",
         code: "PROMOTION_NEEDS_PERSON",
       },
       403,
@@ -2849,6 +2853,16 @@ app.post("/changes/:id/github-pr", async (c) => {
         changeId: id,
         prNumbers: toDraft.converted,
       });
+      // The change page offers "Mark ready for review" only while the record
+      // says draft, and the `converted_to_draft` webhook may be late or lost.
+      // Not fatal: the pull request is a draft either way, which is the safe
+      // side; the webhook still corrects the record when it arrives.
+      const noted = await recordGithubPrLink(c.env.DB, logger, id, { githubPrDraft: true });
+      if (!noted.success) {
+        logger.error("Returned the pull request to draft but did not record it", noted.error, {
+          changeId: id,
+        });
+      }
     }
   }
 
