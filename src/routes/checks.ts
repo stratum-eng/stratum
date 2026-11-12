@@ -13,6 +13,7 @@
  *   dispatcher, so no tool call can reach it.
  */
 import { type Context, Hono } from "hono";
+import { syncChangeChecksToGitHub } from "../github/check-status";
 import {
   CHECK_SIGNATURE_HEADER,
   type CheckReportConflict,
@@ -35,7 +36,8 @@ import {
   credentialBindingFrom,
   refuseProjectAccess,
 } from "../utils/authz";
-import { createLogger } from "../utils/logger";
+import { getWaitUntil } from "../utils/execution-ctx";
+import { type Logger, createLogger } from "../utils/logger";
 import { readTextWithLimit } from "../utils/request-body";
 import {
   badRequest,
@@ -162,6 +164,7 @@ changeChecks.post("/changes/:id/checks/:checkId/rerun", async (c) => {
     );
   }
 
+  await deferGitHubSync(c, logger, id);
   const check = toCheckRunView(rerun.data.check);
   logger.info("Check re-run dispatched", {
     changeId: id,
@@ -290,6 +293,22 @@ const CONFLICT_STATUS: Record<CheckReportConflict, 409> = {
 const checkCallback = new Hono<{ Bindings: Env }>();
 
 /**
+ * Post a change's checks to its pull request after the response, so neither a
+ * runner nor a person re-running a check waits on GitHub. Awaited only where
+ * there is no execution context to hand it to (tests).
+ */
+async function deferGitHubSync(
+  c: Context<{ Bindings: Env }>,
+  logger: Logger,
+  changeId: string,
+): Promise<void> {
+  const sync = syncChangeChecksToGitHub(c.env, logger, changeId);
+  const waitUntil = getWaitUntil(c);
+  if (waitUntil) waitUntil(sync);
+  else await sync;
+}
+
+/**
  * The runner's callback.
  *
  * How the shared middleware treats it, since it is the one API route with no
@@ -327,6 +346,15 @@ checkCallback.post("/:id", async (c) => {
     rawBody: read.text,
     signatureHeader: c.req.header(CHECK_SIGNATURE_HEADER),
   });
+  // A report that changed the check, or a late one that ended it, changes
+  // what the pull request should show. After the response: the runner is
+  // waiting on it, and GitHub is only a mirror.
+  if (
+    (outcome.kind === "ok" && outcome.applied) ||
+    (outcome.kind === "conflict" && outcome.code === "CHECK_DEADLINE_EXCEEDED")
+  ) {
+    await deferGitHubSync(c, logger, outcome.check.changeId);
+  }
   switch (outcome.kind) {
     case "unauthenticated":
       return c.json({ error: "Invalid signature", code: "INVALID_SIGNATURE" }, 401);

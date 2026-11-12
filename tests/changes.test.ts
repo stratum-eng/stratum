@@ -163,6 +163,12 @@ vi.mock("../src/storage/eval-runs", () => ({
   recordEvalRuns: vi.fn().mockResolvedValue([]),
 }));
 
+// Partial: the route reads check runs only to post them to a promoted PR.
+vi.mock("../src/storage/checks", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/storage/checks")>()),
+  listChecksForChange: vi.fn(async () => ({ success: true, data: [] })),
+}));
+
 vi.mock("../src/storage/provenance", () => ({
   recordProvenance: vi.fn().mockResolvedValue({}),
 }));
@@ -241,6 +247,7 @@ import {
   updateChangeStatus,
   updateChangeText,
 } from "../src/storage/changes";
+import { listChecksForChange } from "../src/storage/checks";
 import { isTargetDeleting } from "../src/storage/deletion";
 import { listEvalRuns, recordEvalRuns } from "../src/storage/eval-runs";
 import {
@@ -2668,6 +2675,41 @@ describe("POST /api/changes/:id/github-pr", () => {
           : githubPrCreated(String(url)),
       );
       expect((await promote()).status).toBe(200);
+    });
+
+    it("posts the change's finished checks even when its verdict cannot be read", async () => {
+      vi.mocked(listEvalRuns).mockResolvedValue({ success: false, error: new Error("D1 down") });
+      vi.mocked(listChecksForChange).mockResolvedValueOnce({
+        success: true,
+        data: [
+          {
+            id: "chk_1",
+            changeId: "chg_abc123",
+            projectId: "proj_1",
+            revision: "sha-evaluated",
+            name: "stratum-review",
+            attempt: 1,
+            status: "failed",
+            summary: "1 P1 finding",
+            secretRef: "RUNNER",
+            lastSequence: 2,
+            createdAt: "2026-11-02T00:00:00.000Z",
+            updatedAt: "2026-11-02T00:00:00.000Z",
+            deadlineAt: "2026-11-02T01:00:00.000Z",
+          },
+        ],
+      });
+
+      expect((await promote()).status).toBe(200);
+
+      const statuses = calls((u) => u.endsWith("/statuses/sha-evaluated")).map(sent);
+      expect(statuses).toEqual([
+        expect.objectContaining({
+          state: "failure",
+          context: "stratum/check/stratum-review",
+          description: "1 P1 finding",
+        }),
+      ]);
     });
 
     it("leaves the verdict to an evaluation that started after the promotion read the change", async () => {

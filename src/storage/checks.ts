@@ -457,6 +457,14 @@ export async function failCheckRuns(
 }
 
 /**
+ * How many overdue runs one sweep ends. Each can cost a GitHub status post for
+ * its change, so a backlog is worked off over several five-minute ticks rather
+ * than in one invocation. Runs left over stay pending, which the merge gate
+ * already treats as blocking, and a late report still ends them itself.
+ */
+export const MAX_EXPIRED_PER_SWEEP = 100;
+
+/**
  * Flip every pending run whose deadline has passed to `errored`. One indexed
  * statement, safe to run from the five-minute cron and idempotent across
  * overlapping invocations.
@@ -465,16 +473,23 @@ export async function expireOverdueChecks(
   db: D1Database,
   logger: Logger,
   now: string,
-): Promise<Result<number, Error>> {
+  /** At most this many runs per call; the rest stay pending for the next. */
+  limit = MAX_EXPIRED_PER_SWEEP,
+): Promise<Result<{ expired: number; changeIds: string[] }, Error>> {
   try {
     const result = await db
       .prepare(
         `UPDATE checks SET status = 'errored', summary = ?, completed_at = ?, updated_at = ?
-         WHERE ${PENDING} AND deadline_at <= ?`,
+         WHERE id IN (
+           SELECT id FROM checks WHERE ${PENDING} AND deadline_at <= ?
+           ORDER BY deadline_at LIMIT ?
+         )
+         RETURNING change_id`,
       )
-      .bind(CHECK_SUMMARY_DEADLINE, now, now, now)
-      .run();
-    return ok(result.meta.changes ?? 0);
+      .bind(CHECK_SUMMARY_DEADLINE, now, now, now, limit)
+      .all<{ change_id: string }>();
+    const changeIds = [...new Set(result.results.map((row) => row.change_id))];
+    return ok({ expired: result.results.length, changeIds });
   } catch (error) {
     logger.error("Failed to expire overdue check runs", toError(error));
     return err(toError(error));

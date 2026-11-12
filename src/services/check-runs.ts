@@ -39,6 +39,7 @@ import {
 import { llmProviderCatalog } from "../evaluation/llm-providers";
 import { hmacSha256Hex, resolveSigningKey } from "../evaluation/signing-secret";
 import type { ChecksEvaluatorConfig, EvalPolicy } from "../evaluation/types";
+import { syncChangeChecksToGitHub } from "../github/check-status";
 import { getChange } from "../storage/changes";
 import {
   CHECK_SUMMARY_DEADLINE,
@@ -500,6 +501,7 @@ export async function dispatchChecks(
       { changeId: target.changeId, revision: target.headSha },
     );
   }
+  if (dispatched.length > 0) await syncChangeChecksToGitHub(env, logger, target.changeId);
   return dispatched;
 }
 
@@ -921,7 +923,15 @@ export async function sweepOverdueChecks(
   now: Date = new Date(),
 ): Promise<{ expired: number }> {
   const result = await expireOverdueChecks(env.DB, logger, now.toISOString());
-  const expired = result.success ? result.data : 0;
+  if (!result.success) return { expired: 0 };
+  const { expired, changeIds } = result.data;
   if (expired > 0) logger.warn("Expired check runs past their deadline", { expired });
+  // A pull request would otherwise show these as pending forever: once a run
+  // is errored no later sweep returns its change again, so every change it
+  // ended is posted now. Bounded by `MAX_EXPIRED_PER_SWEEP`, which caps the
+  // runs ended per sweep rather than the posts, so nothing is left unposted.
+  for (const changeId of changeIds) {
+    await syncChangeChecksToGitHub(env, logger, changeId);
+  }
   return { expired };
 }
